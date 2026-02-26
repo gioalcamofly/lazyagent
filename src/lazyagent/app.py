@@ -223,12 +223,11 @@ class LazyAgent(App):
         state.status = AgentStatus.NO_AGENT
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
-
-        # Clean up the terminal widget
-        center = self.query_one(CenterPanel)
-        panel = center.get_panel(event.worktree_path)
-        if panel:
-            panel.cleanup_agent()
+        self.notify(
+            "Agent process exited. Check the Agent tab output for details, then press s to retry.",
+            severity="warning",
+            timeout=5,
+        )
 
     # --- Hang detection ---
 
@@ -260,7 +259,10 @@ class LazyAgent(App):
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
                 panel = center.switch_to(worktree.path)
-                panel.spawn_agent(skip_permissions=result)
+                panel.spawn_agent(
+                    skip_permissions=result,
+                    agent_provider=self._config.agent.provider,
+                )
 
         self.push_screen(SpawnModal(worktree.display_label), on_spawn_dismiss)
 

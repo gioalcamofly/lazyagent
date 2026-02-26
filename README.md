@@ -73,6 +73,10 @@ Create a `.lazyagent.toml` in your repository root:
 # Branch to base new worktrees on (default: "master")
 default_branch = "main"
 
+[agent]
+# Agent CLI to launch in each worktree: "claude" (default) or "codex"
+provider = "codex"
+
 [worktree]
 # Custom command template for creating worktrees
 # Available placeholders: {branch}, {name}, {base}, {path}, {repo}
