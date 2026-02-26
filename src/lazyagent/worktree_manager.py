@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
-from lazyagent.models import GitStatus, WorktreeInfo
+from lazyagent.models import CiCheck, GitStatus, PrInfo, WorktreeInfo
 
 
 class WorktreeManagerError(Exception):
@@ -192,6 +193,111 @@ class WorktreeManager:
             status.last_commit_subject = self.get_last_commit_subject(wt.path)
             statuses[wt.path] = status
         return statuses
+
+    @staticmethod
+    def get_diff(worktree_path: str | Path) -> str:
+        """Get diff showing all working tree changes including untracked files.
+
+        Uses ``git diff HEAD`` for staged + unstaged tracked changes, then
+        ``git diff --no-index`` per untracked file to show their contents.
+        """
+        cwd = str(worktree_path)
+        parts: list[str] = []
+        try:
+            # Tracked changes (staged + unstaged) vs HEAD
+            result = subprocess.run(
+                ["git", "diff", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                parts.append(result.stdout.strip())
+
+            # Untracked files — get actual diff content
+            result = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                files = result.stdout.strip().splitlines()
+                for f in files:
+                    diff_result = subprocess.run(
+                        ["git", "diff", "--no-index", "--", "/dev/null", f],
+                        capture_output=True,
+                        text=True,
+                        cwd=cwd,
+                    )
+                    # --no-index returns exit code 1 when files differ
+                    if diff_result.stdout.strip():
+                        parts.append(diff_result.stdout.strip())
+
+            return "\n\n".join(parts)
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _parse_pr_info(raw: str) -> PrInfo | None:
+        """Parse JSON output from ``gh pr view``."""
+        if not raw or not raw.strip():
+            return None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        checks: list[CiCheck] = []
+        for item in data.get("statusCheckRollup", []) or []:
+            name = item.get("name") or item.get("context", "")
+            status = item.get("status", "")
+            conclusion = item.get("conclusion") or item.get("state", "") or ""
+            checks.append(CiCheck(name=name, status=status, conclusion=conclusion))
+
+        return PrInfo(
+            number=data.get("number", 0),
+            title=data.get("title", ""),
+            state=data.get("state", ""),
+            checks=checks,
+            url=data.get("url", ""),
+            review_decision=data.get("reviewDecision") or "",
+            mergeable=data.get("mergeable") or "",
+        )
+
+    @staticmethod
+    def get_pr_info(worktree_path: str | Path) -> PrInfo | None:
+        """Get PR info for a worktree via ``gh pr view``."""
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "pr", "view",
+                    "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_path),
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            return WorktreeManager._parse_pr_info(result.stdout)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+
+    @staticmethod
+    def is_gh_available() -> bool:
+        """Check if ``gh`` CLI is installed and authenticated."""
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
 
 def find_repo_root(start_path: str | Path | None = None) -> Path:

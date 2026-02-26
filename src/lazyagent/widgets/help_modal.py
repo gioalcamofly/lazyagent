@@ -12,6 +12,7 @@ _HELP_TEXT = """\
   [bold]j / k[/bold]           Move down / up in sidebar
   [bold]Ctrl+K[/bold]          Focus sidebar
   [bold]Ctrl+J[/bold]          Focus agent pane
+  [bold]Ctrl+D[/bold]          Diff pane
   [bold]Ctrl+L[/bold]          Focus terminal pane
 
 [bold cyan]Agents[/bold cyan]

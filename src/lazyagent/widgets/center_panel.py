@@ -4,10 +4,12 @@ import hashlib
 import os
 import shlex
 
-from textual.containers import Container
-from textual.widgets import ContentSwitcher, Static
+from rich.text import Text
+from textual.containers import Container, VerticalScroll
+from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent.models import GitStatus
+from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
@@ -71,43 +73,62 @@ class GitInfoBar(Static):
 class WorktreePanel(Container):
     """Per-worktree panel with Agent and Terminal panes in a vertical split."""
 
-    DEFAULT_CSS = """
-    WorktreePanel {
+    DEFAULT_CSS = f"""
+    WorktreePanel {{
         layout: vertical;
         width: 1fr;
         height: 1fr;
-    }
-    #agent-pane {
+    }}
+    #agent-tabs {{
         height: 2fr;
         border: solid $secondary;
         border-title-color: $text-muted;
-    }
-    #agent-pane:focus-within {
+    }}
+    #agent-tabs:focus-within {{
         border: solid $accent;
         border-title-color: $accent;
-    }
-    #terminal-pane {
+    }}
+    #agent-tab {{
+        height: 1fr;
+    }}
+    #diff-tab {{
+        height: 1fr;
+    }}
+    #diff-scroll {{
+        height: 1fr;
+        width: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: $background;
+{SCROLLBAR_CSS}
+    }}
+    #diff-content {{
+        width: 1fr;
+        height: auto;
+        padding: 0 1;
+    }}
+    #terminal-pane {{
         height: 1fr;
         border: solid $secondary;
         border-title-color: $text-muted;
-    }
-    #terminal-pane:focus-within {
+    }}
+    #terminal-pane:focus-within {{
         border: solid $accent;
         border-title-color: $accent;
-    }
-    #agent-placeholder {
+    }}
+    #agent-placeholder {{
         width: 1fr;
         height: 1fr;
         content-align: center middle;
         color: $text-muted;
-    }
-    #terminal-placeholder {
+    }}
+    #terminal-placeholder {{
         width: 1fr;
         height: 1fr;
         content-align: center middle;
         color: $text-muted;
-    }
-    ScrollableTerminal { height: 1fr; width: 1fr; }
+    }}
+    ScrollableTerminal {{ height: 1fr; width: 1fr; }}
     """
 
     def __init__(self, worktree_path: str, **kwargs) -> None:
@@ -117,11 +138,18 @@ class WorktreePanel(Container):
 
     def compose(self):
         yield GitInfoBar(id="git-info-bar")
-        with Container(id="agent-pane"):
-            yield Static(
-                "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent",
-                id="agent-placeholder",
-            )
+        with TabbedContent(id="agent-tabs"):
+            with TabPane("Agent", id="agent-tab"):
+                yield Static(
+                    "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent",
+                    id="agent-placeholder",
+                )
+            with TabPane("Diff", id="diff-tab"):
+                with VerticalScroll(id="diff-scroll"):
+                    yield Static(
+                        Text("No changes"),
+                        id="diff-content",
+                    )
         with Container(id="terminal-pane"):
             yield Static(
                 "Terminal",
@@ -129,8 +157,6 @@ class WorktreePanel(Container):
             )
 
     def on_mount(self) -> None:
-        agent_pane = self.query_one("#agent-pane", Container)
-        agent_pane.border_title = "Ctrl+J Agent"
         terminal_pane = self.query_one("#terminal-pane", Container)
         terminal_pane.border_title = "Ctrl+L Terminal"
         self._try_start_terminal()
@@ -164,6 +190,25 @@ class WorktreePanel(Container):
         except Exception:
             pass
 
+    def update_diff(self, diff_text: str) -> None:
+        """Update the diff tab content."""
+        try:
+            diff_widget = self.query_one("#diff-content", Static)
+            if diff_text:
+                diff_widget.update(Text(diff_text))
+            else:
+                diff_widget.update(Text("No changes"))
+        except Exception:
+            pass
+
+    def switch_to_tab(self, tab_id: str) -> None:
+        """Switch the TabbedContent to the given tab."""
+        try:
+            tabs = self.query_one("#agent-tabs", TabbedContent)
+            tabs.active = tab_id
+        except Exception:
+            pass
+
     @property
     def agent_terminal(self) -> MonitoredTerminal | None:
         return self._agent_terminal
@@ -179,7 +224,7 @@ class WorktreePanel(Container):
             self._agent_terminal.remove()
             self._agent_terminal = None
 
-        pane = self.query_one("#agent-pane", Container)
+        pane = self.query_one("#agent-tab", TabPane)
         try:
             pane.query_one("#agent-placeholder")
         except Exception:
@@ -192,7 +237,7 @@ class WorktreePanel(Container):
 
     def spawn_agent(self, skip_permissions: bool = False) -> None:
         """Spawn a Claude Code CLI process in the Agent pane."""
-        pane = self.query_one("#agent-pane", Container)
+        pane = self.query_one("#agent-tab", TabPane)
 
         # Remove previous terminal or placeholder
         if self._agent_terminal is not None:

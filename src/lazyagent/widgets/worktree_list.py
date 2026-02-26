@@ -94,8 +94,7 @@ class WorktreeList(ListView):
 
     DEFAULT_CSS = """
     WorktreeList {
-        width: 32;
-        dock: left;
+        height: 1fr;
         border: solid $secondary;
         border-title-color: $text-muted;
     }

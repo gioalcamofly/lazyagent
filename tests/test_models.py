@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, CiCheck, GitStatus, PrInfo, WorktreeInfo
 
 
 def _make_worktree(**kwargs) -> WorktreeInfo:
@@ -109,6 +109,94 @@ class TestAgentState:
         state = AgentState(status=AgentStatus.RUNNING, last_output_time=123.456)
         assert state.status == AgentStatus.RUNNING
         assert state.last_output_time == 123.456
+
+
+class TestCiCheck:
+    def test_basic_construction(self):
+        check = CiCheck(name="build", status="COMPLETED", conclusion="success")
+        assert check.name == "build"
+        assert check.status == "COMPLETED"
+        assert check.conclusion == "success"
+
+
+class TestPrInfo:
+    def test_checks_summary_all_pass(self):
+        checks = [
+            CiCheck("build", "COMPLETED", "success"),
+            CiCheck("lint", "COMPLETED", "success"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.checks_summary == "2/2 passed"
+
+    def test_checks_summary_with_failures(self):
+        checks = [
+            CiCheck("build", "COMPLETED", "success"),
+            CiCheck("lint", "COMPLETED", "failure"),
+            CiCheck("test", "COMPLETED", "success"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.checks_summary == "2/3 passed"
+
+    def test_checks_summary_with_pending(self):
+        checks = [
+            CiCheck("build", "IN_PROGRESS", ""),
+            CiCheck("lint", "COMPLETED", "success"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.checks_summary == "1/2 passed"
+
+    def test_checks_summary_no_checks(self):
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=[])
+        assert pr.checks_summary == "no checks"
+
+    def test_overall_status_pass(self):
+        checks = [
+            CiCheck("build", "COMPLETED", "success"),
+            CiCheck("lint", "COMPLETED", "success"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.overall_status == "pass"
+
+    def test_overall_status_fail(self):
+        checks = [
+            CiCheck("build", "COMPLETED", "success"),
+            CiCheck("lint", "COMPLETED", "failure"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.overall_status == "fail"
+
+    def test_overall_status_pending(self):
+        checks = [
+            CiCheck("build", "IN_PROGRESS", ""),
+            CiCheck("lint", "COMPLETED", "success"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.overall_status == "pending"
+
+    def test_overall_status_none(self):
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=[])
+        assert pr.overall_status == "none"
+
+    def test_checks_summary_uppercase_github_values(self):
+        checks = [
+            CiCheck("build", "COMPLETED", "SUCCESS"),
+            CiCheck("lint", "COMPLETED", "FAILURE"),
+            CiCheck("test", "COMPLETED", "SUCCESS"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.checks_summary == "2/3 passed"
+        assert pr.overall_status == "fail"
+
+    def test_overall_status_skipped_and_empty_status(self):
+        """Real GitHub data: SKIPPED conclusion, and StatusContext with empty status."""
+        checks = [
+            CiCheck("claude", "COMPLETED", "SKIPPED"),
+            CiCheck("build", "COMPLETED", "SUCCESS"),
+            CiCheck("ci/jenkins", "", "SUCCESS"),
+        ]
+        pr = PrInfo(number=42, title="Fix bug", state="OPEN", checks=checks)
+        assert pr.checks_summary == "2/3 passed"
+        assert pr.overall_status == "pass"
 
 
 class TestGitStatus:

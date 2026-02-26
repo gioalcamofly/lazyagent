@@ -25,6 +25,8 @@ from textual.geometry import Size
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
+from lazyagent.styles import SCROLLBAR_CSS
+
 # textual-terminal 0.3.0 imports DEFAULT_COLORS from textual.app, which was
 # removed in textual 8.0.  Provide a shim so the import succeeds.
 import textual.app as _textual_app
@@ -107,19 +109,13 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     the :class:`ScrollbackScreen` to capture scrolled-off lines.
     """
 
-    DEFAULT_CSS = """
-    ScrollableTerminal {
+    DEFAULT_CSS = f"""
+    ScrollableTerminal {{
         overflow-y: auto;
         overflow-x: hidden;
         background: $background;
-        scrollbar-size-vertical: 1;
-        scrollbar-color: $text-muted 40%;
-        scrollbar-color-hover: $text-muted 70%;
-        scrollbar-color-active: $text-muted;
-        scrollbar-background: $background;
-        scrollbar-background-hover: $background;
-        scrollbar-background-active: $background;
-    }
+{SCROLLBAR_CSS}
+    }}
     """
 
     def __init__(

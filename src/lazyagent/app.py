@@ -6,7 +6,9 @@ import sys
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.widgets import Footer, Header
+from textual import work
 
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.messages import AgentExited, AgentStatusChanged
@@ -15,6 +17,7 @@ from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
+from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.prompt_modal import SpawnModal
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
@@ -40,6 +43,11 @@ class LazyAgent(App):
         height: 1;
         background: $boost;
     }
+    #sidebar {
+        dock: left;
+        width: 38;
+        layout: vertical;
+    }
     """
 
     BINDINGS = [
@@ -51,6 +59,7 @@ class LazyAgent(App):
         Binding("d", "remove_worktree", "Remove"),
         Binding("ctrl+k", "focus_sidebar", "Ctrl+K Sidebar", priority=True),
         Binding("ctrl+j", "focus_agent", "Ctrl+J Agent", priority=True),
+        Binding("ctrl+d", "focus_diff", "Ctrl+D Diff", priority=True),
         Binding("ctrl+l", "focus_terminal", "Ctrl+L Terminal", priority=True),
         Binding("question_mark", "help", "Help"),
     ]
@@ -64,10 +73,13 @@ class LazyAgent(App):
         self._selected_worktree: WorktreeInfo | None = None
         self._config: Config = Config()
         self._repo_root: str = ""
+        self._gh_available: bool | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield WorktreeList()
+        with Vertical(id="sidebar"):
+            yield WorktreeList()
+            yield PrStatusBar(id="pr-status-bar")
         yield CenterPanel()
         yield Footer()
 
@@ -76,6 +88,8 @@ class LazyAgent(App):
         self._load_config()
         self.set_interval(60, self._check_hangs)
         self.set_interval(30, self._refresh_git_statuses)
+        self.set_interval(30, self._refresh_selected_diff)
+        self.set_interval(60, self._refresh_pr_status)
 
     def _load_config(self) -> None:
         if self._repo_root:
@@ -144,6 +158,40 @@ class LazyAgent(App):
         if panel:
             panel.update_git_status(gs, wt.display_branch)
 
+    def _refresh_selected_diff(self) -> None:
+        """Refresh the diff tab for the currently selected worktree."""
+        wt = self._selected_worktree
+        if wt is None:
+            return
+        center = self.query_one(CenterPanel)
+        panel = center.get_panel(wt.path)
+        if panel:
+            diff_text = WorktreeManager.get_diff(wt.path)
+            panel.update_diff(diff_text)
+
+    @work(thread=True)
+    def _refresh_pr_status(self) -> None:
+        """Refresh PR/CI status for the selected worktree (runs in thread)."""
+        wt = self._selected_worktree
+        if wt is None:
+            return
+
+        if self._gh_available is None:
+            self._gh_available = WorktreeManager.is_gh_available()
+        if not self._gh_available:
+            return
+
+        pr_info = WorktreeManager.get_pr_info(wt.path)
+        self.call_from_thread(self._apply_pr_info, pr_info)
+
+    def _apply_pr_info(self, pr_info) -> None:
+        """Apply PR info to the status bar (must run on main thread)."""
+        try:
+            bar = self.query_one("#pr-status-bar", PrStatusBar)
+            bar.update_pr_info(pr_info)
+        except Exception:
+            pass
+
     # --- Navigation ---
 
     def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
@@ -152,6 +200,8 @@ class LazyAgent(App):
             self._selected_worktree = event.item.worktree
             center.switch_to(event.item.worktree.path)
             self._push_git_status_to_selected_panel()
+            self._refresh_selected_diff()
+            self._refresh_pr_status()
         else:
             self._selected_worktree = None
 
@@ -242,10 +292,24 @@ class LazyAgent(App):
         if not wt:
             return
         panel = self.query_one(CenterPanel).get_panel(wt.path)
-        if panel and panel.agent_terminal:
-            panel.agent_terminal.focus()
-        else:
-            self.action_spawn_agent()
+        if panel:
+            panel.switch_to_tab("agent-tab")
+            if panel.agent_terminal:
+                panel.agent_terminal.focus()
+            else:
+                self.action_spawn_agent()
+
+    def action_focus_diff(self) -> None:
+        wt = self._get_selected_worktree()
+        if not wt:
+            return
+        panel = self.query_one(CenterPanel).get_panel(wt.path)
+        if panel:
+            panel.switch_to_tab("diff-tab")
+            try:
+                panel.query_one("#diff-scroll").focus()
+            except Exception:
+                pass
 
     def action_focus_terminal(self) -> None:
         wt = self._get_selected_worktree()
@@ -366,6 +430,9 @@ class LazyAgent(App):
             terminal.send_queue.put_nowait(["stdin", cmd + "\n"])
         except Exception:
             self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
+
+    def action_open_pr_url(self, url: str) -> None:
+        self.open_url(url)
 
     def action_help(self) -> None:
         self.push_screen(HelpModal())

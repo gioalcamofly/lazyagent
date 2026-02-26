@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -327,3 +328,260 @@ class TestGetLastCommitSubject:
             result = manager.get_last_commit_subject("/bad/path")
 
         assert result == ""
+
+
+class TestGetDiff:
+    def test_subprocess_args(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.returncode = 0
+            WorktreeManager.get_diff("/path/to/worktree")
+
+        assert mock_run.call_count == 2
+        calls = mock_run.call_args_list
+        assert calls[0][0][0] == ["git", "diff", "HEAD"]
+        assert calls[0][1]["cwd"] == "/path/to/worktree"
+        assert calls[1][0][0] == ["git", "ls-files", "--others", "--exclude-standard"]
+        assert calls[1][1]["cwd"] == "/path/to/worktree"
+
+    def test_tracked_changes(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            diff_result = type("R", (), {"returncode": 0, "stdout": "diff --git a/f\n"})()
+            ls_result = type("R", (), {"returncode": 0, "stdout": ""})()
+            mock_run.side_effect = [diff_result, ls_result]
+            result = WorktreeManager.get_diff("/path/to/worktree")
+
+        assert result == "diff --git a/f"
+
+    def test_untracked_files_shows_diff(self):
+        def _side_effect(*args, **kwargs):
+            cmd = args[0]
+            r = type("R", (), {"returncode": 0, "stdout": ""})()
+            if cmd == ["git", "diff", "HEAD"]:
+                r.stdout = ""
+            elif cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
+                r.stdout = "new.txt\n"
+            elif cmd[0:3] == ["git", "diff", "--no-index"]:
+                r.returncode = 1
+                r.stdout = "diff --git a/dev/null b/new.txt\n+new content\n"
+            return r
+
+        with patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect):
+            result = WorktreeManager.get_diff("/path/to/worktree")
+
+        assert "new.txt" in result
+        assert "+new content" in result
+
+    def test_tracked_and_untracked_combined(self):
+        def _side_effect(*args, **kwargs):
+            cmd = args[0]
+            r = type("R", (), {"returncode": 0, "stdout": ""})()
+            if cmd == ["git", "diff", "HEAD"]:
+                r.stdout = "tracked diff\n"
+            elif cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
+                r.stdout = "new.txt\n"
+            elif cmd[0:3] == ["git", "diff", "--no-index"]:
+                r.returncode = 1
+                r.stdout = "untracked diff\n"
+            return r
+
+        with patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect):
+            result = WorktreeManager.get_diff("/path/to/worktree")
+
+        assert "tracked diff" in result
+        assert "untracked diff" in result
+
+    def test_empty_on_failure(self):
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=OSError("not a repo"),
+        ):
+            result = WorktreeManager.get_diff("/bad/path")
+
+        assert result == ""
+
+    def test_empty_when_clean(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.returncode = 0
+            result = WorktreeManager.get_diff("/clean/repo")
+
+        assert result == ""
+
+
+class TestParsePrInfo:
+    def test_valid_json_with_checks(self):
+        raw = json.dumps({
+            "number": 42,
+            "title": "Fix bug",
+            "state": "OPEN",
+            "statusCheckRollup": [
+                {"name": "build", "status": "COMPLETED", "conclusion": "success"},
+                {"name": "lint", "status": "COMPLETED", "conclusion": "failure"},
+            ],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.number == 42
+        assert pr.title == "Fix bug"
+        assert pr.state == "OPEN"
+        assert len(pr.checks) == 2
+        assert pr.checks[0].name == "build"
+        assert pr.checks[0].conclusion == "success"
+        assert pr.checks[1].conclusion == "failure"
+
+    def test_without_checks(self):
+        raw = json.dumps({
+            "number": 10,
+            "title": "Add feature",
+            "state": "OPEN",
+            "statusCheckRollup": [],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.checks == []
+        assert pr.overall_status == "none"
+
+    def test_merged_pr(self):
+        raw = json.dumps({
+            "number": 5,
+            "title": "Merged PR",
+            "state": "MERGED",
+            "statusCheckRollup": [
+                {"name": "build", "status": "COMPLETED", "conclusion": "success"},
+            ],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.state == "MERGED"
+
+    def test_invalid_json(self):
+        assert WorktreeManager._parse_pr_info("not json") is None
+
+    def test_empty_string(self):
+        assert WorktreeManager._parse_pr_info("") is None
+
+    def test_context_field_fallback(self):
+        raw = json.dumps({
+            "number": 7,
+            "title": "PR with context",
+            "state": "OPEN",
+            "statusCheckRollup": [
+                {"context": "ci/build", "status": "COMPLETED", "state": "success"},
+            ],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.checks[0].name == "ci/build"
+        assert pr.checks[0].conclusion == "success"
+
+    def test_null_status_check_rollup(self):
+        raw = json.dumps({
+            "number": 8,
+            "title": "No rollup",
+            "state": "OPEN",
+            "statusCheckRollup": None,
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.checks == []
+
+    def test_parses_url_and_review_and_mergeable(self):
+        raw = json.dumps({
+            "number": 50,
+            "title": "Full PR",
+            "state": "OPEN",
+            "statusCheckRollup": [],
+            "url": "https://github.com/org/repo/pull/50",
+            "reviewDecision": "APPROVED",
+            "mergeable": "CONFLICTING",
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.url == "https://github.com/org/repo/pull/50"
+        assert pr.review_decision == "APPROVED"
+        assert pr.mergeable == "CONFLICTING"
+
+    def test_missing_new_fields_default_empty(self):
+        raw = json.dumps({
+            "number": 51,
+            "title": "Minimal",
+            "state": "OPEN",
+            "statusCheckRollup": [],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.url == ""
+        assert pr.review_decision == ""
+        assert pr.mergeable == ""
+
+    def test_null_review_decision(self):
+        raw = json.dumps({
+            "number": 52,
+            "title": "Null review",
+            "state": "OPEN",
+            "statusCheckRollup": [],
+            "reviewDecision": None,
+            "mergeable": None,
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert pr is not None
+        assert pr.review_decision == ""
+        assert pr.mergeable == ""
+
+
+class TestGetPrInfo:
+    def test_subprocess_args(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = json.dumps({
+                "number": 1, "title": "t", "state": "OPEN",
+                "statusCheckRollup": [],
+            })
+            WorktreeManager.get_pr_info("/path/to/worktree")
+
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable"],
+            capture_output=True,
+            text=True,
+            cwd="/path/to/worktree",
+            timeout=10,
+        )
+
+    def test_none_on_failure(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            result = WorktreeManager.get_pr_info("/bad/path")
+
+        assert result is None
+
+    def test_none_on_timeout(self):
+        import subprocess as sp
+
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=sp.TimeoutExpired("gh", 10),
+        ):
+            result = WorktreeManager.get_pr_info("/path")
+
+        assert result is None
+
+
+class TestIsGhAvailable:
+    def test_true_when_authenticated(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            assert WorktreeManager.is_gh_available() is True
+
+    def test_false_on_os_error(self):
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=OSError("not found"),
+        ):
+            assert WorktreeManager.is_gh_available() is False
+
+    def test_false_on_auth_failure(self):
+        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            assert WorktreeManager.is_gh_available() is False
