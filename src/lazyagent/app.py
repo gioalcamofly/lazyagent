@@ -218,17 +218,22 @@ class LazyAgent(App):
                 state.last_output_time = panel.agent_terminal.last_output_time
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 
-    def on_agent_exited(self, event: AgentExited) -> None:
+    async def on_agent_exited(self, event: AgentExited) -> None:
         state = self._get_agent_state(event.worktree_path)
         state.status = AgentStatus.NO_AGENT
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 
-        # Clean up the terminal widget
         center = self.query_one(CenterPanel)
         panel = center.get_panel(event.worktree_path)
-        if panel:
-            panel.cleanup_agent()
+        if panel is not None:
+            await panel.cleanup_agent()
+
+        self.notify(
+            "Agent exited — press s to spawn again",
+            severity="warning",
+            timeout=5,
+        )
 
     # --- Hang detection ---
 
@@ -255,16 +260,19 @@ class LazyAgent(App):
             self.notify("Agent already running in this worktree", severity="warning")
             return
 
-        def on_spawn_dismiss(result: bool | None) -> None:
+        async def on_spawn_dismiss(result: bool | None) -> None:
             if result is not None and worktree is not None:
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
                 panel = center.switch_to(worktree.path)
-                panel.spawn_agent(skip_permissions=result)
+                await panel.spawn_agent(
+                    skip_permissions=result,
+                    agent_provider=self._config.agent.provider,
+                )
 
         self.push_screen(SpawnModal(worktree.display_label), on_spawn_dismiss)
 
-    def action_stop_agent(self) -> None:
+    async def action_stop_agent(self) -> None:
         worktree = self._get_selected_worktree()
         if worktree is None:
             self.notify("No worktree selected", severity="warning")
@@ -281,7 +289,7 @@ class LazyAgent(App):
         state.status = AgentStatus.NO_AGENT
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(worktree.path, state)
-        panel.cleanup_agent()
+        await panel.cleanup_agent()
         self.notify("Agent stopped")
 
     def action_focus_sidebar(self) -> None:

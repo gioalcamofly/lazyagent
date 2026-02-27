@@ -10,13 +10,20 @@ from lazyagent.widgets.center_panel import _SENTINEL_SYSTEM_PROMPT
 def _build_spawn_command(
     worktree_path: str,
     skip_permissions: bool = False,
+    agent_provider: str = "claude",
     path_val: str = "/usr/local/bin:/usr/bin:/bin",
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
-    parts = ["claude"]
-    if skip_permissions:
-        parts.append("--dangerously-skip-permissions")
-    parts.extend(["--append-system-prompt", _SENTINEL_SYSTEM_PROMPT])
+    provider = (agent_provider or "claude").strip().lower()
+    if provider == "codex":
+        parts = ["codex"]
+        if skip_permissions:
+            parts.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        parts = ["claude"]
+        if skip_permissions:
+            parts.append("--dangerously-skip-permissions")
+        parts.extend(["--append-system-prompt", _SENTINEL_SYSTEM_PROMPT])
 
     inner_cmd = " ".join(shlex.quote(p) for p in parts)
     script = (
@@ -93,3 +100,15 @@ class TestCommandBuilding:
         cmd = _build_spawn_command("/tmp/wt", path_val=path)
         script = shlex.split(cmd)[2]
         assert path in script
+
+    def test_codex_provider_uses_codex_command(self):
+        cmd = _build_spawn_command("/tmp/wt", agent_provider="codex")
+        script = shlex.split(cmd)[2]
+        assert "exec codex" in script
+
+    def test_codex_provider_uses_dangerous_flag_when_selected(self):
+        cmd = _build_spawn_command("/tmp/wt", skip_permissions=True, agent_provider="codex")
+        script = shlex.split(cmd)[2]
+        assert "exec codex" in script
+        assert "--dangerously-bypass-approvals-and-sandbox" in script
+        assert "--dangerously-skip-permissions" not in script

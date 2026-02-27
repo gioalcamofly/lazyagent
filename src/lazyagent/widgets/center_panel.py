@@ -17,6 +17,7 @@ _SENTINEL_SYSTEM_PROMPT = (
     "Always output exactly 'your turn' on its own line "
     "when you need user input or have completed your task."
 )
+_DEFAULT_AGENT_PROVIDER = "claude"
 
 
 def _panel_id(worktree_path: str) -> str:
@@ -215,13 +216,16 @@ class WorktreePanel(Container):
 
     @property
     def has_agent(self) -> bool:
-        return self._agent_terminal is not None
+        return (
+            self._agent_terminal is not None
+            and self._agent_terminal.emulator is not None
+        )
 
-    def cleanup_agent(self) -> None:
+    async def cleanup_agent(self) -> None:
         """Remove the agent terminal widget and restore the placeholder."""
         if self._agent_terminal is not None:
             self._agent_terminal.stop()
-            self._agent_terminal.remove()
+            await self._agent_terminal.remove()
             self._agent_terminal = None
 
         pane = self.query_one("#agent-tab", TabPane)
@@ -235,30 +239,44 @@ class WorktreePanel(Container):
                 )
             )
 
-    def spawn_agent(self, skip_permissions: bool = False) -> None:
-        """Spawn a Claude Code CLI process in the Agent pane."""
+    async def spawn_agent(
+        self,
+        skip_permissions: bool = False,
+        agent_provider: str = _DEFAULT_AGENT_PROVIDER,
+    ) -> None:
+        """Spawn the configured coding agent process in the Agent pane."""
         pane = self.query_one("#agent-tab", TabPane)
 
-        # Remove previous terminal or placeholder
+        # Remove previous terminal or placeholder (await to ensure DOM is clean
+        # before mounting the new widget with the same ID).
         if self._agent_terminal is not None:
             self._agent_terminal.stop()
-            self._agent_terminal.remove()
+            await self._agent_terminal.remove()
             self._agent_terminal = None
 
         try:
             placeholder = self.query_one("#agent-placeholder", Static)
-            placeholder.remove()
+            await placeholder.remove()
         except Exception:
             pass
 
-        # Build the claude command
+        provider = (agent_provider or _DEFAULT_AGENT_PROVIDER).strip().lower()
+        if provider not in {"claude", "codex"}:
+            provider = _DEFAULT_AGENT_PROVIDER
+
+        # Build the agent command.
         parts = ["claude"]
-        if skip_permissions:
-            parts.append("--dangerously-skip-permissions")
-        parts.extend([
-            "--append-system-prompt",
-            _SENTINEL_SYSTEM_PROMPT,
-        ])
+        if provider == "codex":
+            parts = ["codex"]
+            if skip_permissions:
+                parts.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            if skip_permissions:
+                parts.append("--dangerously-skip-permissions")
+            parts.extend([
+                "--append-system-prompt",
+                _SENTINEL_SYSTEM_PROMPT,
+            ])
 
         # Build a shell script that restores PATH (textual-terminal strips
         # the environment to only TERM/LC_ALL/HOME, so claude won't be found),

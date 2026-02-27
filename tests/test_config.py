@@ -11,6 +11,7 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert config.worktree.create is None
         assert config.worktree.remove is None
+        assert config.agent.provider == "claude"
         assert config.default_branch == "master"
 
     def test_loads_toml_file(self, tmp_path: Path):
@@ -45,6 +46,24 @@ create = "my-create-script.sh"
         (tmp_path / ".lazyagent.toml").write_text(toml_content)
         config = load_config(tmp_path)
         assert config.default_branch == "main"
+
+    def test_agent_provider_codex(self, tmp_path: Path):
+        toml_content = """\
+[agent]
+provider = "codex"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.agent.provider == "codex"
+
+    def test_invalid_agent_provider_falls_back_to_default(self, tmp_path: Path):
+        toml_content = """\
+[agent]
+provider = "other"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.agent.provider == "claude"
 
     def test_default_branch_when_not_set(self, tmp_path: Path):
         (tmp_path / ".lazyagent.toml").write_text("[worktree]\n")

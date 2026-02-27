@@ -17,6 +17,7 @@ CONFIG_FILENAME = ".lazyagent.toml"
 
 
 DEFAULT_BRANCH = "master"
+DEFAULT_AGENT_PROVIDER = "claude"
 
 
 @dataclass
@@ -28,10 +29,18 @@ class WorktreeConfig:
 
 
 @dataclass
+class AgentConfig:
+    """Configuration for agent process selection."""
+
+    provider: str = DEFAULT_AGENT_PROVIDER
+
+
+@dataclass
 class Config:
     """Application configuration loaded from .lazyagent.toml."""
 
     worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -63,8 +72,16 @@ def load_config(repo_root: str | Path) -> Config:
         create=wt_data.get("create"),
         remove=wt_data.get("remove"),
     )
+    agent_data = data.get("agent", {})
+    provider = str(agent_data.get("provider", DEFAULT_AGENT_PROVIDER)).strip().lower()
+    if provider not in {"claude", "codex"}:
+        provider = DEFAULT_AGENT_PROVIDER
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
-    return Config(worktree=worktree_config, default_branch=default_branch)
+    return Config(
+        worktree=worktree_config,
+        agent=AgentConfig(provider=provider),
+        default_branch=default_branch,
+    )
 
 
 def format_command(

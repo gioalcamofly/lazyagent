@@ -9,7 +9,9 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import signal
 from collections import deque
 
 import pyte
@@ -141,6 +143,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.send_queue: asyncio.Queue | None = None
         self.recv_queue: asyncio.Queue | None = None
         self.recv_task: asyncio.Task | None = None
+        self._stopped = False
 
         # pyte screen + stream
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
@@ -186,6 +189,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         """Spawn the PTY subprocess and begin the recv loop."""
         if self.emulator is not None:
             return
+        self._stopped = False
         self.emulator = TerminalEmulator(command=self.command)
         self.emulator.start()
         self.send_queue = self.emulator.recv_queue
@@ -196,8 +200,45 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         """Kill the PTY subprocess and cancel the recv loop."""
         if self.emulator is None:
             return
+        self._stopped = True
         self.recv_task.cancel()
-        self.emulator.stop()
+
+        pid = self.emulator.pid
+
+        # Cancel the emulator's internal async tasks.
+        self.emulator.run_task.cancel()
+        self.emulator.send_task.cancel()
+
+        # Kill the entire process group so child processes are cleaned up.
+        # pty.fork() children have pgid == pid (due to setsid).
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+        # Reap the main process.
+        try:
+            rpid, _ = os.waitpid(pid, os.WNOHANG)
+            if rpid == 0:
+                # Still alive after SIGTERM — force-kill.
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+        # Remove event-loop reader and close the PTY fd.
+        try:
+            asyncio.get_event_loop().remove_reader(self.emulator.p_out)
+        except Exception:
+            pass
+        try:
+            self.emulator.p_out.close()
+        except OSError:
+            pass
+
         self.emulator = None
 
     # ------------------------------------------------------------------
@@ -208,6 +249,8 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         try:
             while True:
                 message = await self.recv_queue.get()
+                if self._stopped:
+                    break
                 cmd = message[0]
 
                 if cmd == "setup":

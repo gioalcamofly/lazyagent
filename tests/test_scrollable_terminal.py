@@ -77,6 +77,7 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.send_queue = None
     terminal.recv_queue = None
     terminal.recv_task = None
+    terminal._stopped = False
     terminal._screen = ScrollbackScreen(80, 5)
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
