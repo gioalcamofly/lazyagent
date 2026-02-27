@@ -4,14 +4,13 @@ from __future__ import annotations
 import os
 import shlex
 
-from lazyagent.widgets.center_panel import _SENTINEL_SYSTEM_PROMPT
+from lazyagent.widgets.center_panel import _SENTINEL_SYSTEM_PROMPT, _env_exports
 
 
 def _build_spawn_command(
     worktree_path: str,
     skip_permissions: bool = False,
     agent_provider: str = "claude",
-    path_val: str = "/usr/local/bin:/usr/bin:/bin",
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
     provider = (agent_provider or "claude").strip().lower()
@@ -27,7 +26,7 @@ def _build_spawn_command(
 
     inner_cmd = " ".join(shlex.quote(p) for p in parts)
     script = (
-        f"export PATH={shlex.quote(path_val)}"
+        f"{_env_exports()}"
         f" && cd {shlex.quote(worktree_path)}"
         f" && exec {inner_cmd}"
     )
@@ -43,11 +42,12 @@ class TestCommandBuilding:
         assert argv[1] == "-c"
         assert len(argv) == 3
 
-    def test_script_contains_path_export(self):
-        cmd = _build_spawn_command("/tmp/wt", path_val="/foo:/bar")
+    def test_script_contains_env_export(self):
+        cmd = _build_spawn_command("/tmp/wt")
         script = shlex.split(cmd)[2]
-        assert "export PATH=" in script
-        assert "/foo:/bar" in script
+        assert "export " in script
+        # PATH should be among the exported vars
+        assert "PATH=" in script
 
     def test_script_contains_cd(self):
         cmd = _build_spawn_command("/home/user/my-worktree")
@@ -94,13 +94,6 @@ class TestCommandBuilding:
         script = shlex.split(cmd)[2]
         assert "--dangerously-skip-permissions" not in script
 
-    def test_path_with_colons_preserved(self):
-        """PATH contains colons that must survive quoting."""
-        path = "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
-        cmd = _build_spawn_command("/tmp/wt", path_val=path)
-        script = shlex.split(cmd)[2]
-        assert path in script
-
     def test_codex_provider_uses_codex_command(self):
         cmd = _build_spawn_command("/tmp/wt", agent_provider="codex")
         script = shlex.split(cmd)[2]
@@ -112,3 +105,40 @@ class TestCommandBuilding:
         assert "exec codex" in script
         assert "--dangerously-bypass-approvals-and-sandbox" in script
         assert "--dangerously-skip-permissions" not in script
+
+
+class TestEnvExports:
+    def test_includes_path(self):
+        """PATH should be exported."""
+        exports = _env_exports()
+        assert "PATH=" in exports
+
+    def test_skips_term(self):
+        """TERM is set by textual-terminal, should not be overridden."""
+        exports = _env_exports()
+        # TERM should not appear as a key (it could appear as substring of another var)
+        parts = exports.removeprefix("export ").split()
+        keys = [p.split("=")[0] for p in parts]
+        assert "TERM" not in keys
+
+    def test_skips_home(self):
+        """HOME is set by textual-terminal, should not be overridden."""
+        exports = _env_exports()
+        parts = exports.removeprefix("export ").split()
+        keys = [p.split("=")[0] for p in parts]
+        assert "HOME" not in keys
+
+    def test_custom_var_included(self, monkeypatch):
+        """Custom env vars like API keys should be exported."""
+        monkeypatch.setenv("CLICKUP_API_KEY", "test-key-123")
+        exports = _env_exports()
+        assert "CLICKUP_API_KEY=" in exports
+        assert "test-key-123" in exports
+
+    def test_values_are_quoted(self, monkeypatch):
+        """Values with spaces/special chars should be shell-quoted."""
+        monkeypatch.setenv("MY_VAR", "value with spaces")
+        exports = _env_exports()
+        assert "MY_VAR=" in exports
+        # shlex.quote wraps in single quotes
+        assert "'value with spaces'" in exports

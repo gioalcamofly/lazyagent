@@ -19,6 +19,23 @@ _SENTINEL_SYSTEM_PROMPT = (
 )
 _DEFAULT_AGENT_PROVIDER = "claude"
 
+# Vars that textual-terminal already sets or that may cause issues if overridden.
+_ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
+
+
+def _env_exports() -> str:
+    """Build a shell snippet that restores the parent process environment.
+
+    textual-terminal strips the env to TERM/LC_ALL/HOME, so we re-export
+    everything else (PATH, API keys, etc.) from the lazyclaude process.
+    """
+    parts = []
+    for key, val in os.environ.items():
+        if key in _ENV_SKIP:
+            continue
+        parts.append(f"{key}={shlex.quote(val)}")
+    return "export " + " ".join(parts) if parts else "true"
+
 
 def _panel_id(worktree_path: str) -> str:
     """Derive a DOM-safe ID from a worktree path."""
@@ -168,9 +185,8 @@ class WorktreePanel(Container):
             placeholder = self.query_one("#terminal-placeholder", Static)
             pane = self.query_one("#terminal-pane", Container)
             placeholder.remove()
-            path_val = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
             script = (
-                f"export PATH={shlex.quote(path_val)}"
+                f"{_env_exports()}"
                 f" && cd {shlex.quote(self.worktree_path)}"
                 f" && exec bash -l"
             )
@@ -278,13 +294,12 @@ class WorktreePanel(Container):
                 _SENTINEL_SYSTEM_PROMPT,
             ])
 
-        # Build a shell script that restores PATH (textual-terminal strips
-        # the environment to only TERM/LC_ALL/HOME, so claude won't be found),
-        # cd's into the worktree, and exec's the command.
+        # Build a shell script that restores the parent environment
+        # (textual-terminal strips it to TERM/LC_ALL/HOME), cd's into the
+        # worktree, and exec's the command.
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
-        path_val = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
         script = (
-            f"export PATH={shlex.quote(path_val)}"
+            f"{_env_exports()}"
             f" && cd {shlex.quote(self.worktree_path)}"
             f" && exec {inner_cmd}"
         )
