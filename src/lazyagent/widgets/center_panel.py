@@ -221,11 +221,11 @@ class WorktreePanel(Container):
             and self._agent_terminal.emulator is not None
         )
 
-    def cleanup_agent(self) -> None:
+    async def cleanup_agent(self) -> None:
         """Remove the agent terminal widget and restore the placeholder."""
         if self._agent_terminal is not None:
             self._agent_terminal.stop()
-            self._agent_terminal.remove()
+            await self._agent_terminal.remove()
             self._agent_terminal = None
 
         pane = self.query_one("#agent-tab", TabPane)
@@ -239,7 +239,7 @@ class WorktreePanel(Container):
                 )
             )
 
-    def spawn_agent(
+    async def spawn_agent(
         self,
         skip_permissions: bool = False,
         agent_provider: str = _DEFAULT_AGENT_PROVIDER,
@@ -247,15 +247,16 @@ class WorktreePanel(Container):
         """Spawn the configured coding agent process in the Agent pane."""
         pane = self.query_one("#agent-tab", TabPane)
 
-        # Remove previous terminal or placeholder
+        # Remove previous terminal or placeholder (await to ensure DOM is clean
+        # before mounting the new widget with the same ID).
         if self._agent_terminal is not None:
             self._agent_terminal.stop()
-            self._agent_terminal.remove()
+            await self._agent_terminal.remove()
             self._agent_terminal = None
 
         try:
             placeholder = self.query_one("#agent-placeholder", Static)
-            placeholder.remove()
+            await placeholder.remove()
         except Exception:
             pass
 

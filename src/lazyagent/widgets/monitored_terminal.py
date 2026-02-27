@@ -47,7 +47,8 @@ class MonitoredTerminal(ScrollableTerminal):
     def _set_status(self, new_status: AgentStatus) -> None:
         if new_status != self._status:
             self._status = new_status
-            self.post_message(AgentStatusChanged(self.worktree_path, new_status))
+            if not self._stopped:
+                self.post_message(AgentStatusChanged(self.worktree_path, new_status))
 
     def _on_pty_output(self, chars: str) -> None:
         """Track output timing. Called from recv() on each stdout chunk."""
@@ -79,7 +80,8 @@ class MonitoredTerminal(ScrollableTerminal):
     def _on_recv_disconnect(self) -> None:
         """Handle pty disconnect."""
         self._status = AgentStatus.NO_AGENT
-        self.post_message(AgentExited(self.worktree_path))
+        if not self._stopped:
+            self.post_message(AgentExited(self.worktree_path))
 
     def check_hang(self) -> None:
         """Called periodically by the app timer. Posts POSSIBLY_HANGED if stale."""
@@ -104,6 +106,8 @@ class MonitoredTerminal(ScrollableTerminal):
         try:
             while True:
                 message = await self.recv_queue.get()
+                if self._stopped:
+                    break
                 cmd = message[0]
 
                 if cmd == "setup":
