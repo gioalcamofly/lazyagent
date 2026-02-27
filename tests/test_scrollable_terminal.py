@@ -139,6 +139,11 @@ class TestStyleHelpers:
         c2 = Char("a", "blue", "default", False, False, False, False, False, False)
         assert ScrollableTerminal._char_style_cmp(c1, c2) is False
 
+    def test_char_style_cmp_different_dim(self):
+        c1 = Char("a", "default", "default", False, False, False, False, False, False, dim=True)
+        c2 = Char("a", "default", "default", False, False, False, False, False, False, dim=False)
+        assert ScrollableTerminal._char_style_cmp(c1, c2) is False
+
     def test_detect_color_brown(self):
         assert ScrollableTerminal._detect_color("brown") == "yellow"
 

@@ -413,6 +413,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             and given.strikethrough == other.strikethrough
             and given.reverse == other.reverse
             and given.blink == other.blink
+            and given.dim == other.dim
         )
 
     @staticmethod
@@ -436,6 +437,12 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                 color=foreground,
                 bgcolor=background,
                 bold=char.bold,
+                dim=char.dim,
+                italic=char.italics,
+                underline=char.underscore,
+                strike=char.strikethrough,
+                reverse=char.reverse,
+                blink=char.blink,
             )
         except ColorParseError as error:
             log.warning("color parse error:", error)
@@ -480,6 +487,13 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         char = self.ctrl_keys.get(event.key) or event.character
         if char:
             await self.send_queue.put(["stdin", char])
+
+    async def on_paste(self, event: events.Paste) -> None:
+        if self.emulator is None:
+            return
+        if event.text:
+            await self.send_queue.put(["stdin", event.text])
+        event.stop()
 
     async def on_click(self, event: events.MouseEvent) -> None:
         if self.emulator is None:
