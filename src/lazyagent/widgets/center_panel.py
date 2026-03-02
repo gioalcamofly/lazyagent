@@ -258,14 +258,17 @@ class WorktreePanel(Container):
             pass
 
         provider = get_agent_provider(agent_provider)
+        runtime_context = provider.build_runtime_context(self.worktree_path)
         command = provider.build_command(
             self.worktree_path,
             skip_permissions=skip_permissions,
+            runtime_context=runtime_context,
         )
 
         terminal = MonitoredTerminal(
             command=command,
             worktree_path=self.worktree_path,
+            observer=provider.create_observer_from_context(runtime_context),
             id="agent-terminal",
         )
         self._agent_terminal = terminal

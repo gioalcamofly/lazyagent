@@ -5,6 +5,11 @@ from unittest.mock import MagicMock
 
 import pyte
 
+from lazyagent.agent_observers import (
+    AgentLifecycleEvent,
+    AgentObserver,
+    LifecycleConfidence,
+)
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentStatus
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal, _HANG_SECONDS
@@ -21,6 +26,12 @@ def _make_terminal() -> MonitoredTerminal:
     terminal._status = AgentStatus.NO_AGENT
     terminal._last_output_time = None
     terminal._stopped = False
+    terminal._observer = MagicMock(spec=AgentObserver)
+    terminal._observer.on_terminal_output.return_value = []
+    terminal._observer.on_screen_update.return_value = []
+    terminal._observer.on_disconnect.return_value = []
+    terminal._observer.on_process_started.return_value = []
+    terminal._observer.cleanup.return_value = None
     terminal.post_message = MagicMock()
     # Set up pyte screen for sentinel detection via _scan_screen
     terminal._screen = ScrollbackScreen(80, 24)
@@ -54,6 +65,18 @@ class TestOnPtyOutput:
         t._on_pty_output("data")
         assert t._last_output_time >= before
 
+    def test_observer_output_events_are_applied(self):
+        t = _make_terminal()
+        t._status = AgentStatus.RUNNING
+        t._observer.on_terminal_output.return_value = [
+            AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.LOW,
+            )
+        ]
+        t._on_pty_output("hello")
+        assert t._status == AgentStatus.WAITING
+
 
 class TestScanScreen:
     """Sentinel detection using the pyte screen buffer."""
@@ -62,6 +85,16 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
         t.post_message.reset_mock()
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.WAITING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" in text.lower()
+            else []
+        )
         t.stream.feed("some output\nyour turn\n")
         t._scan_screen()
         assert t._status == AgentStatus.WAITING
@@ -72,6 +105,16 @@ class TestScanScreen:
     def test_sentinel_case_insensitive(self):
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.WAITING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" in text.lower()
+            else []
+        )
         t.stream.feed("Your Turn\n")
         t._scan_screen()
         assert t._status == AgentStatus.WAITING
@@ -89,6 +132,17 @@ class TestScanScreen:
         """When sentinel scrolls off screen, status goes back to RUNNING."""
         t = _make_terminal()
         t._status = AgentStatus.WAITING
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.RUNNING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" not in text.lower()
+            and current_status in (AgentStatus.WAITING, AgentStatus.POSSIBLY_HANGED)
+            else []
+        )
         # Fill screen with new content that doesn't contain sentinel
         t.stream.feed("\n".join(["line"] * 30) + "\n")
         t.post_message.reset_mock()
@@ -99,6 +153,16 @@ class TestScanScreen:
         """Repeated screen refreshes with sentinel visible stay WAITING."""
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.WAITING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" in text.lower()
+            else []
+        )
         t.stream.feed("your turn\n")
         t._scan_screen()
         assert t._status == AgentStatus.WAITING
@@ -114,6 +178,16 @@ class TestScanScreen:
         """Sentinel wrapped in ANSI color codes is detected via pyte screen."""
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.WAITING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" in text.lower()
+            else []
+        )
         t.stream.feed("\x1b[32myour turn\x1b[0m\n")
         t._scan_screen()
         assert t._status == AgentStatus.WAITING
@@ -121,6 +195,16 @@ class TestScanScreen:
     def test_sentinel_with_bold_and_per_word_colors(self):
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.WAITING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" in text.lower()
+            else []
+        )
         t.stream.feed("\x1b[1;32myour\x1b[0m \x1b[1;33mturn\x1b[0m\n")
         t._scan_screen()
         assert t._status == AgentStatus.WAITING
@@ -128,10 +212,42 @@ class TestScanScreen:
     def test_possibly_hanged_resumes_when_sentinel_gone(self):
         t = _make_terminal()
         t._status = AgentStatus.POSSIBLY_HANGED
+        t._observer.on_screen_update.side_effect = (
+            lambda text, *, current_status: [
+                AgentLifecycleEvent(
+                    status=AgentStatus.RUNNING,
+                    confidence=LifecycleConfidence.LOW,
+                )
+            ]
+            if "your turn" not in text.lower()
+            and current_status in (AgentStatus.WAITING, AgentStatus.POSSIBLY_HANGED)
+            else []
+        )
         t.stream.feed("\n".join(["new content"] * 30) + "\n")
         t.post_message.reset_mock()
         t._scan_screen()
         assert t._status == AgentStatus.RUNNING
+
+    def test_screen_text_is_passed_to_observer(self):
+        t = _make_terminal()
+        t.stream.feed("hello observer\n")
+        t._scan_screen()
+        assert t._observer.on_screen_update.called
+        screen_text = t._observer.on_screen_update.call_args.args[0]
+        assert "hello observer" in screen_text
+
+    def test_scan_screen_applies_polled_events(self):
+        t = _make_terminal()
+        t._status = AgentStatus.RUNNING
+        t._observer.poll.return_value = [
+            AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.HIGH,
+            )
+        ]
+        t.stream.feed("hello observer\n")
+        t._scan_screen()
+        assert t._status == AgentStatus.WAITING
 
 
 class TestOnDisconnect:
@@ -140,12 +256,25 @@ class TestOnDisconnect:
         t._status = AgentStatus.RUNNING
         t._on_recv_disconnect()
         assert t._status == AgentStatus.NO_AGENT
+        t._observer.cleanup.assert_called_once()
         msg = t.post_message.call_args[0][0]
         assert isinstance(msg, AgentExited)
         assert msg.worktree_path == WT_PATH
 
 
 class TestCheckHang:
+    def test_poll_events_are_applied_before_hang_check(self):
+        t = _make_terminal()
+        t._status = AgentStatus.RUNNING
+        t._observer.poll.return_value = [
+            AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.HIGH,
+            )
+        ]
+        t.check_hang()
+        assert t._status == AgentStatus.WAITING
+
     def test_no_hang_when_recent_output(self):
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
@@ -179,5 +308,3 @@ class TestCheckHang:
         t.check_hang()
         assert t._status == AgentStatus.RUNNING
         t.post_message.assert_not_called()
-
-
