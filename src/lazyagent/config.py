@@ -5,6 +5,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lazyagent.agent_providers import DEFAULT_AGENT_PROVIDER, normalize_provider_name
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -17,7 +19,6 @@ CONFIG_FILENAME = ".lazyagent.toml"
 
 
 DEFAULT_BRANCH = "master"
-DEFAULT_AGENT_PROVIDER = "claude"
 
 
 @dataclass
@@ -73,9 +74,7 @@ def load_config(repo_root: str | Path) -> Config:
         remove=wt_data.get("remove"),
     )
     agent_data = data.get("agent", {})
-    provider = str(agent_data.get("provider", DEFAULT_AGENT_PROVIDER)).strip().lower()
-    if provider not in {"claude", "codex"}:
-        provider = DEFAULT_AGENT_PROVIDER
+    provider = normalize_provider_name(agent_data.get("provider"))
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
     return Config(
         worktree=worktree_config,

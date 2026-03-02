@@ -1,10 +1,9 @@
 """Tests for center_panel command construction logic."""
 from __future__ import annotations
 
-import os
 import shlex
 
-from lazyagent.widgets.center_panel import _SENTINEL_SYSTEM_PROMPT, _env_exports
+from lazyagent.agent_providers import SENTINEL_SYSTEM_PROMPT, env_exports, get_agent_provider
 
 
 def _build_spawn_command(
@@ -13,24 +12,10 @@ def _build_spawn_command(
     agent_provider: str = "claude",
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
-    provider = (agent_provider or "claude").strip().lower()
-    if provider == "codex":
-        parts = ["codex"]
-        if skip_permissions:
-            parts.append("--dangerously-bypass-approvals-and-sandbox")
-    else:
-        parts = ["claude"]
-        if skip_permissions:
-            parts.append("--dangerously-skip-permissions")
-        parts.extend(["--append-system-prompt", _SENTINEL_SYSTEM_PROMPT])
-
-    inner_cmd = " ".join(shlex.quote(p) for p in parts)
-    script = (
-        f"{_env_exports()}"
-        f" && cd {shlex.quote(worktree_path)}"
-        f" && exec {inner_cmd}"
+    return get_agent_provider(agent_provider).build_command(
+        worktree_path,
+        skip_permissions=skip_permissions,
     )
-    return f"bash -c {shlex.quote(script)}"
 
 
 class TestCommandBuilding:
@@ -106,16 +91,29 @@ class TestCommandBuilding:
         assert "--dangerously-bypass-approvals-and-sandbox" in script
         assert "--dangerously-skip-permissions" not in script
 
+    def test_gemini_provider_uses_gemini_command(self):
+        cmd = _build_spawn_command("/tmp/wt", agent_provider="gemini")
+        script = shlex.split(cmd)[2]
+        assert "exec gemini" in script
+
+    def test_gemini_provider_uses_approval_mode_yolo_when_selected(self):
+        cmd = _build_spawn_command("/tmp/wt", skip_permissions=True, agent_provider="gemini")
+        script = shlex.split(cmd)[2]
+        assert "exec gemini" in script
+        assert "--approval-mode=yolo" in script
+        assert "--append-system-prompt" not in script
+        assert "--yolo" not in script
+
 
 class TestEnvExports:
     def test_includes_path(self):
         """PATH should be exported."""
-        exports = _env_exports()
+        exports = env_exports()
         assert "PATH=" in exports
 
     def test_skips_term(self):
         """TERM is set by textual-terminal, should not be overridden."""
-        exports = _env_exports()
+        exports = env_exports()
         # TERM should not appear as a key (it could appear as substring of another var)
         parts = exports.removeprefix("export ").split()
         keys = [p.split("=")[0] for p in parts]
@@ -123,7 +121,7 @@ class TestEnvExports:
 
     def test_skips_home(self):
         """HOME is set by textual-terminal, should not be overridden."""
-        exports = _env_exports()
+        exports = env_exports()
         parts = exports.removeprefix("export ").split()
         keys = [p.split("=")[0] for p in parts]
         assert "HOME" not in keys
@@ -131,14 +129,14 @@ class TestEnvExports:
     def test_custom_var_included(self, monkeypatch):
         """Custom env vars like API keys should be exported."""
         monkeypatch.setenv("CLICKUP_API_KEY", "test-key-123")
-        exports = _env_exports()
+        exports = env_exports()
         assert "CLICKUP_API_KEY=" in exports
         assert "test-key-123" in exports
 
     def test_values_are_quoted(self, monkeypatch):
         """Values with spaces/special chars should be shell-quoted."""
         monkeypatch.setenv("MY_VAR", "value with spaces")
-        exports = _env_exports()
+        exports = env_exports()
         assert "MY_VAR=" in exports
         # shlex.quote wraps in single quotes
         assert "'value with spaces'" in exports

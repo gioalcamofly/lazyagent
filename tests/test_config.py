@@ -56,6 +56,15 @@ provider = "codex"
         config = load_config(tmp_path)
         assert config.agent.provider == "codex"
 
+    def test_agent_provider_gemini(self, tmp_path: Path):
+        toml_content = """\
+[agent]
+provider = "gemini"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.agent.provider == "gemini"
+
     def test_invalid_agent_provider_falls_back_to_default(self, tmp_path: Path):
         toml_content = """\
 [agent]

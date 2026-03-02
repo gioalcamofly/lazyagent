@@ -1,40 +1,21 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import shlex
 
 from rich.text import Text
 from textual.containers import Container, VerticalScroll
 from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
+from lazyagent.agent_providers import (
+    DEFAULT_AGENT_PROVIDER,
+    env_exports,
+    get_agent_provider,
+)
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
-
-_SENTINEL_SYSTEM_PROMPT = (
-    "Always output exactly 'your turn' on its own line "
-    "when you need user input or have completed your task."
-)
-_DEFAULT_AGENT_PROVIDER = "claude"
-
-# Vars that textual-terminal already sets or that may cause issues if overridden.
-_ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
-
-
-def _env_exports() -> str:
-    """Build a shell snippet that restores the parent process environment.
-
-    textual-terminal strips the env to TERM/LC_ALL/HOME, so we re-export
-    everything else (PATH, API keys, etc.) from the lazyclaude process.
-    """
-    parts = []
-    for key, val in os.environ.items():
-        if key in _ENV_SKIP:
-            continue
-        parts.append(f"{key}={shlex.quote(val)}")
-    return "export " + " ".join(parts) if parts else "true"
 
 
 def _panel_id(worktree_path: str) -> str:
@@ -186,7 +167,7 @@ class WorktreePanel(Container):
             pane = self.query_one("#terminal-pane", Container)
             placeholder.remove()
             script = (
-                f"{_env_exports()}"
+                f"{env_exports()}"
                 f" && cd {shlex.quote(self.worktree_path)}"
                 f" && exec bash -l"
             )
@@ -258,7 +239,7 @@ class WorktreePanel(Container):
     async def spawn_agent(
         self,
         skip_permissions: bool = False,
-        agent_provider: str = _DEFAULT_AGENT_PROVIDER,
+        agent_provider: str = DEFAULT_AGENT_PROVIDER,
     ) -> None:
         """Spawn the configured coding agent process in the Agent pane."""
         pane = self.query_one("#agent-tab", TabPane)
@@ -276,35 +257,11 @@ class WorktreePanel(Container):
         except Exception:
             pass
 
-        provider = (agent_provider or _DEFAULT_AGENT_PROVIDER).strip().lower()
-        if provider not in {"claude", "codex"}:
-            provider = _DEFAULT_AGENT_PROVIDER
-
-        # Build the agent command.
-        parts = ["claude"]
-        if provider == "codex":
-            parts = ["codex"]
-            if skip_permissions:
-                parts.append("--dangerously-bypass-approvals-and-sandbox")
-        else:
-            if skip_permissions:
-                parts.append("--dangerously-skip-permissions")
-            parts.extend([
-                "--append-system-prompt",
-                _SENTINEL_SYSTEM_PROMPT,
-            ])
-
-        # Build a shell script that restores the parent environment
-        # (textual-terminal strips it to TERM/LC_ALL/HOME), cd's into the
-        # worktree, and exec's the command.
-        inner_cmd = " ".join(shlex.quote(p) for p in parts)
-        script = (
-            f"{_env_exports()}"
-            f" && cd {shlex.quote(self.worktree_path)}"
-            f" && exec {inner_cmd}"
+        provider = get_agent_provider(agent_provider)
+        command = provider.build_command(
+            self.worktree_path,
+            skip_permissions=skip_permissions,
         )
-        # shlex.quote the whole script so nested single-quotes are handled
-        command = f"bash -c {shlex.quote(script)}"
 
         terminal = MonitoredTerminal(
             command=command,
