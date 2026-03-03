@@ -99,4 +99,4 @@ uv run pytest
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE)
