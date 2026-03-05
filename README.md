@@ -16,16 +16,16 @@ A lazygit-inspired TUI for managing coding agents across git worktrees.
 
 ## Installation
 
-From GitHub:
+From PyPI:
 
 ```bash
-uv tool install git+https://github.com/gioalcamofly/lazyagent.git
+uv tool install lazyagent
 ```
 
 Or with pip:
 
 ```bash
-pip install git+https://github.com/gioalcamofly/lazyagent.git
+pip install lazyagent
 ```
 
 ## Quick Start
