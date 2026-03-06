@@ -156,3 +156,100 @@ class TestStyleHelpers:
     def test_detect_color_passthrough(self):
         assert ScrollableTerminal._detect_color("red") == "red"
         assert ScrollableTerminal._detect_color("default") == "default"
+
+
+# ---------------------------------------------------------------------------
+# Selection support tests
+# ---------------------------------------------------------------------------
+
+
+class TestRenderLineOffsets:
+    def test_render_line_strips_contain_offset_metadata(self):
+        """render_line() strips should contain offset metadata for selection."""
+        from unittest.mock import patch, PropertyMock
+        from rich.console import Console
+        from textual.geometry import Offset, Region
+
+        t = _make_scrollable_terminal()
+        mock_app = MagicMock()
+        mock_app.console = Console()
+
+        # Feed some text so there's content to render
+        t.stream.feed("hello world")
+
+        with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
+            with patch.object(type(t), "scroll_offset", new_callable=lambda: property(lambda self: Offset(0, 0))):
+                with patch.object(type(t), "scrollable_content_region", new_callable=lambda: property(lambda self: Region(0, 0, 80, 5))):
+                    with patch.object(type(t), "rich_style", new_callable=lambda: property(lambda self: None)):
+                        strip = t.render_line(0)
+                        # Check that at least one segment has offset metadata
+                        has_offset = any(
+                            seg.style and seg.style.meta and "offset" in seg.style.meta
+                            for seg in strip._segments
+                            if seg.style
+                        )
+                        assert has_offset, "render_line() strips should contain offset metadata"
+
+
+class TestGetSelection:
+    def test_get_selection_returns_text_from_buffer(self):
+        """get_selection() returns text from scrollback + screen buffer."""
+        from textual.selection import Selection
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello\nworld\n")
+
+        # Create a selection covering the full text
+        selection = Selection(start=None, end=None)
+        result = t.get_selection(selection)
+
+        assert result is not None
+        text, ending = result
+        assert ending == "\n"
+        assert "hello" in text
+        assert "world" in text
+
+    def test_get_selection_includes_scrollback(self):
+        """get_selection() includes lines from scrollback buffer."""
+        from textual.selection import Selection
+
+        t = _make_scrollable_terminal()
+        # Push enough lines to create scrollback (screen is 5 lines)
+        for i in range(10):
+            t.stream.feed(f"line {i}\n")
+
+        assert len(t._screen.scrollback) > 0
+
+        selection = Selection(start=None, end=None)
+        result = t.get_selection(selection)
+
+        assert result is not None
+        text, _ = result
+        # Scrollback lines should be in the output
+        assert "line 0" in text
+
+
+class TestOnKeyCopy:
+    def test_ctrl_shift_c_does_not_forward_to_pty(self):
+        """ctrl+shift+c should not be forwarded to the PTY."""
+        import asyncio
+        from textual import events
+
+        t = _make_scrollable_terminal()
+        t.emulator = MagicMock()
+        t.send_queue = asyncio.Queue()
+
+        # Mock screen and app for clipboard
+        mock_screen = MagicMock()
+        mock_screen.get_selected_text.return_value = None
+        mock_app = MagicMock()
+
+        event = events.Key("ctrl+shift+c", None)
+
+        from unittest.mock import patch
+        with patch.object(type(t), "screen", new_callable=lambda: property(lambda self: mock_screen)):
+            with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
+                asyncio.get_event_loop().run_until_complete(t.on_key(event))
+
+        # Nothing should be in the send queue
+        assert t.send_queue.empty()

@@ -25,6 +25,7 @@ from rich.text import Text
 from textual import events, log
 from textual.geometry import Size
 from textual.scroll_view import ScrollView
+from textual.selection import Selection
 from textual.strip import Strip
 
 from lazyagent.styles import SCROLLBAR_CSS
@@ -340,25 +341,26 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         width = self.scrollable_content_region.width
 
         if virtual_y < scrollback_len:
-            strip = self._render_scrollback_line(virtual_y, width)
+            strip = self._render_scrollback_line(virtual_y, width, virtual_y)
         else:
             screen_y = virtual_y - scrollback_len
-            strip = self._render_screen_line(screen_y, width)
+            strip = self._render_screen_line(screen_y, width, virtual_y)
 
+        strip = strip.apply_offsets(0, virtual_y)
         return strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
 
-    def _render_scrollback_line(self, index: int, width: int) -> Strip:
+    def _render_scrollback_line(self, index: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the scrollback buffer."""
         row = self._screen.scrollback[index]
-        return self._row_to_strip(row, width, show_cursor=False)
+        return self._row_to_strip(row, width, show_cursor=False, virtual_y=virtual_y)
 
-    def _render_screen_line(self, screen_y: int, width: int) -> Strip:
+    def _render_screen_line(self, screen_y: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the live pyte screen buffer."""
         if screen_y < 0 or screen_y >= self._screen.lines:
             return Strip.blank(width, self.rich_style)
         row = self._screen.buffer[screen_y]
         show_cursor = self._screen.cursor.y == screen_y
-        return self._row_to_strip(row, width, show_cursor=show_cursor, screen_y=screen_y)
+        return self._row_to_strip(row, width, show_cursor=show_cursor, screen_y=screen_y, virtual_y=virtual_y)
 
     def _row_to_strip(
         self,
@@ -367,6 +369,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         *,
         show_cursor: bool = False,
         screen_y: int = -1,
+        virtual_y: int = -1,
     ) -> Strip:
         """Convert a pyte row (dict of column→Char) to a textual Strip."""
         text = Text()
@@ -393,6 +396,21 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                 and self._screen.cursor.y == screen_y
             ):
                 text.stylize("reverse", x, x + 1)
+
+        try:
+            selection = self.text_selection
+        except (RuntimeError, Exception):
+            selection = None
+        if selection is not None and virtual_y >= 0:
+            span = selection.get_span(virtual_y)
+            if span is not None:
+                start, end = span
+                if end == -1:
+                    end = len(text)
+                selection_style = self.screen.get_component_rich_style(
+                    "screen--selection"
+                )
+                text.stylize(selection_style, start, end)
 
         segments = list(text.render(self.app.console))
         return Strip(segments)
@@ -483,6 +501,12 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self.scroll_page_down(animate=False)
             return
 
+        if event.key == "ctrl+shift+c":
+            selection = self.screen.get_selected_text()
+            if selection:
+                self.app.copy_to_clipboard(selection)
+            return
+
         event.stop()
         char = self.ctrl_keys.get(event.key) or event.character
         if char:
@@ -537,3 +561,26 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         await self.send_queue.put(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
         self._update_virtual_size()
+
+    # ------------------------------------------------------------------
+    # Selection support
+    # ------------------------------------------------------------------
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Extract text from scrollback + screen buffer for selection."""
+        lines: list[str] = []
+        for row_data in self._screen.scrollback:
+            line = "".join(
+                row_data.get(x, self._screen.default_char).data
+                for x in range(self._screen.columns)
+            )
+            lines.append(line.rstrip())
+        for y in range(self._screen.lines):
+            row_data = self._screen.buffer[y]
+            line = "".join(
+                row_data.get(x, self._screen.default_char).data
+                for x in range(self._screen.columns)
+            )
+            lines.append(line.rstrip())
+        full_text = "\n".join(lines)
+        return selection.extract(full_text), "\n"
