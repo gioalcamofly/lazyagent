@@ -21,10 +21,12 @@ def _make_terminal() -> MonitoredTerminal:
     terminal._status = AgentStatus.NO_AGENT
     terminal._last_output_time = None
     terminal._stopped = False
+    terminal._follow_output = True
     terminal.post_message = MagicMock()
     # Set up pyte screen for sentinel detection via _scan_screen
     terminal._screen = ScrollbackScreen(80, 24)
     terminal.stream = pyte.Stream(terminal._screen)
+    terminal._scan_timer = None
     return terminal
 
 

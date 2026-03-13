@@ -9,9 +9,7 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
-import signal
 from collections import deque
 
 import pyte
@@ -27,39 +25,8 @@ from textual.geometry import Size
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
+from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
 from lazyagent.styles import SCROLLBAR_CSS
-
-# textual-terminal 0.3.0 imports DEFAULT_COLORS from textual.app, which was
-# removed in textual 8.0.  Provide a shim so the import succeeds.
-import textual.app as _textual_app
-
-if not hasattr(_textual_app, "DEFAULT_COLORS"):
-    from textual.design import ColorSystem
-
-    _textual_app.DEFAULT_COLORS = {
-        "dark": ColorSystem(
-            primary="#0178D4",
-            secondary="#004578",
-            accent="#ffa62b",
-            warning="#ffa62b",
-            error="#ba3c5b",
-            success="#4EBF71",
-        ),
-        "light": ColorSystem(
-            primary="#0178D4",
-            secondary="#004578",
-            accent="#ffa62b",
-            warning="#ffa62b",
-            error="#ba3c5b",
-            success="#4EBF71",
-        ),
-    }
-
-from textual_terminal._terminal import (  # noqa: E402
-    DECSET_PREFIX,
-    TerminalEmulator,
-    _re_ansi_sequence,
-)
 
 # ---------------------------------------------------------------------------
 # ScrollbackScreen — lightweight pyte Screen subclass
@@ -93,9 +60,12 @@ class ScrollbackScreen(pyte.Screen):
 
     def index(self):
         top, bottom = self.margins or Margins(0, self.lines - 1)
-        if self.cursor.y == bottom:
-            # Snapshot the top line before it is discarded by super().index()
-            self.scrollback.append(dict(self.buffer[top]))
+        if self.cursor.y == bottom and top == 0:
+            # Only capture to scrollback when the scroll region starts at
+            # row 0 (full-screen scroll).  When an app sets custom margins
+            # (DECSTBM), lines scrolling within a sub-region should not be
+            # saved — matching the behaviour of kitty, xterm, etc.
+            self.scrollback.append(dict(self.buffer[0]))
         super().index()
 
 
@@ -139,11 +109,12 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.mouse_tracking = False
 
         # PTY emulator (created in start())
-        self.emulator: TerminalEmulator | None = None
+        self.emulator: PtyEmulator | None = None
         self.send_queue: asyncio.Queue | None = None
         self.recv_queue: asyncio.Queue | None = None
         self.recv_task: asyncio.Task | None = None
         self._stopped = False
+        self._follow_output = True  # tracks auto-scroll intent across visibility
 
         # pyte screen + stream
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
@@ -190,7 +161,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if self.emulator is not None:
             return
         self._stopped = False
-        self.emulator = TerminalEmulator(command=self.command)
+        self.emulator = PtyEmulator(command=self.command)
         self.emulator.start()
         self.send_queue = self.emulator.recv_queue
         self.recv_queue = self.emulator.send_queue
@@ -202,43 +173,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             return
         self._stopped = True
         self.recv_task.cancel()
-
-        pid = self.emulator.pid
-
-        # Cancel the emulator's internal async tasks.
-        self.emulator.run_task.cancel()
-        self.emulator.send_task.cancel()
-
-        # Kill the entire process group so child processes are cleaned up.
-        # pty.fork() children have pgid == pid (due to setsid).
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-
-        # Reap the main process.
-        try:
-            rpid, _ = os.waitpid(pid, os.WNOHANG)
-            if rpid == 0:
-                # Still alive after SIGTERM — force-kill.
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
-
-        # Remove event-loop reader and close the PTY fd.
-        try:
-            asyncio.get_event_loop().remove_reader(self.emulator.p_out)
-        except Exception:
-            pass
-        try:
-            self.emulator.p_out.close()
-        except OSError:
-            pass
-
+        self.emulator.stop()
         self.emulator = None
 
     # ------------------------------------------------------------------
@@ -263,7 +198,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                     self._on_stdout(chars)
 
                     # Detect mouse tracking toggles
-                    for sep_match in re.finditer(_re_ansi_sequence, chars):
+                    for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
                         sequence = sep_match.group(0)
                         if sequence.startswith(DECSET_PREFIX):
                             parameters = sequence.removeprefix(
@@ -274,8 +209,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                             if "1000l" in parameters:
                                 self.mouse_tracking = False
 
-                    # Remember whether we're at the bottom *before* feeding
-                    was_at_bottom = self.is_vertical_scroll_end
+                    # Use the flag instead of is_vertical_scroll_end which
+                    # returns unreliable values when the widget is hidden
+                    # (e.g. after a ContentSwitcher worktree change).
+                    was_at_bottom = self._follow_output
 
                     # Feed to pyte (may trigger index() → scrollback capture)
                     try:
@@ -283,13 +220,24 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                     except TypeError as error:
                         log.warning("could not feed:", error)
 
-                    # Update virtual size and repaint
-                    self._update_virtual_size()
-                    self.refresh()
+                    # Only update layout/scroll when the widget is visible.
+                    # When hidden by ContentSwitcher (display: none) the
+                    # widget's size is (0, 0); calling _update_virtual_size
+                    # would trigger _refresh_scrollbars on a zero-sized
+                    # region, and scroll_end would compute a bogus
+                    # max_scroll_y.  on_show() catches up when the widget
+                    # becomes visible again.
+                    if self.size.height > 0:
+                        self._update_virtual_size()
+                        self.refresh()
+                        if was_at_bottom:
+                            self.scroll_end(
+                                animate=False, immediate=True, x_axis=False
+                            )
 
-                    # Auto-scroll to bottom if we were there before
-                    if was_at_bottom:
-                        self.scroll_end(animate=False)
+                    # Post-processing hook for subclasses (e.g. sentinel
+                    # scanning — must run regardless of visibility)
+                    self._after_stdout_processed()
 
                 elif cmd == "disconnect":
                     self._on_recv_disconnect()
@@ -313,6 +261,29 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
         Override in subclasses for cleanup.
         """
+
+    def _after_stdout_processed(self) -> None:
+        """Called after each stdout chunk is fed and scroll is updated.
+
+        Override in subclasses for post-processing (e.g. sentinel scanning).
+        """
+
+    # ------------------------------------------------------------------
+    # Auto-scroll tracking
+    # ------------------------------------------------------------------
+
+    def on_show(self) -> None:
+        """Catch up after being hidden: sync virtual size and scroll."""
+
+        def _restore() -> None:
+            self._update_virtual_size()
+            self.refresh()
+            if self._follow_output:
+                self.scroll_end(animate=False, immediate=True, x_axis=False)
+
+        # Defer until after the first layout pass so the widget has
+        # a real size and scrollable_content_region is valid.
+        self.call_after_refresh(_restore)
 
     # ------------------------------------------------------------------
     # Virtual size management
@@ -476,11 +447,13 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         # PageUp/Down scroll the widget (history) instead of sending to PTY
         if event.key == "pageup":
             event.stop()
+            self._follow_output = False
             self.scroll_page_up(animate=False)
             return
         if event.key == "pagedown":
             event.stop()
             self.scroll_page_down(animate=False)
+            self._follow_output = self.is_vertical_scroll_end
             return
 
         event.stop()
@@ -512,6 +485,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             # Default ScrollView behavior — scroll the widget
             event.stop()
             self.scroll_down()
+            self._follow_output = self.is_vertical_scroll_end
 
     async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         if self.emulator is None:
@@ -522,6 +496,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         else:
             # Default ScrollView behavior
             event.stop()
+            self._follow_output = False
             self.scroll_up()
 
     # ------------------------------------------------------------------
@@ -532,8 +507,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if self.emulator is None:
             return
 
-        self.ncol = self.scrollable_content_region.width or self.size.width
-        self.nrow = self.scrollable_content_region.height or self.size.height
+        ncol = self.scrollable_content_region.width or self.size.width
+        nrow = self.scrollable_content_region.height or self.size.height
+
+        # Skip zero dimensions — happens when widget is hidden by
+        # ContentSwitcher.  Sending 0×0 to the PTY would cause the child
+        # process to format output for a zero-column terminal, corrupting
+        # the scrollback captured during that window.
+        if ncol == 0 or nrow == 0:
+            return
+
+        self.ncol = ncol
+        self.nrow = nrow
         await self.send_queue.put(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
         self._update_virtual_size()
