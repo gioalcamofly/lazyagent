@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
-
-from textual import log
 
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentStatus
-from lazyagent.widgets.scrollable_terminal import (
-    DECSET_PREFIX,
-    ScrollableTerminal,
-    _re_ansi_sequence,
-)
+from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 _SENTINEL = "your turn"
 _HANG_SECONDS = 600  # 10 minutes
+_SCAN_DEBOUNCE_SECONDS = 0.15
 
 
 class MonitoredTerminal(ScrollableTerminal):
@@ -35,6 +29,7 @@ class MonitoredTerminal(ScrollableTerminal):
         self.worktree_path = worktree_path
         self._status = AgentStatus.NO_AGENT
         self._last_output_time: float | None = None
+        self._scan_timer: asyncio.TimerHandle | None = None
 
     @property
     def agent_status(self) -> AgentStatus:
@@ -101,59 +96,18 @@ class MonitoredTerminal(ScrollableTerminal):
         """Hook from ScrollableTerminal.recv() — intercept for monitoring."""
         self._on_pty_output(chars)
 
-    async def recv(self) -> None:
-        """Override to add sentinel scanning after each stdout chunk."""
-        try:
-            while True:
-                message = await self.recv_queue.get()
-                if self._stopped:
-                    break
-                cmd = message[0]
+    def _after_stdout_processed(self) -> None:
+        """Debounced sentinel scanning after stdout is processed."""
+        if self._scan_timer is not None:
+            self._scan_timer.cancel()
+        loop = asyncio.get_running_loop()
+        self._scan_timer = loop.call_later(
+            _SCAN_DEBOUNCE_SECONDS, self._scan_screen
+        )
 
-                if cmd == "setup":
-                    await self.send_queue.put(["set_size", self.nrow, self.ncol])
-
-                elif cmd == "stdout":
-                    chars = message[1]
-
-                    # Monitoring hook
-                    self._on_stdout(chars)
-
-                    # Detect mouse tracking toggles
-                    for sep_match in re.finditer(_re_ansi_sequence, chars):
-                        sequence = sep_match.group(0)
-                        if sequence.startswith(DECSET_PREFIX):
-                            parameters = sequence.removeprefix(
-                                DECSET_PREFIX
-                            ).split(";")
-                            if "1000h" in parameters:
-                                self.mouse_tracking = True
-                            if "1000l" in parameters:
-                                self.mouse_tracking = False
-
-                    # Remember whether we're at the bottom before feeding
-                    was_at_bottom = self.is_vertical_scroll_end
-
-                    # Feed to pyte
-                    try:
-                        self.stream.feed(chars)
-                    except TypeError as error:
-                        log.warning("could not feed:", error)
-
-                    # Update virtual size and repaint
-                    self._update_virtual_size()
-                    self.refresh()
-
-                    # Auto-scroll to bottom if we were there before
-                    if was_at_bottom:
-                        self.scroll_end(animate=False)
-
-                    # Sentinel detection (uses rendered screen, immune to ANSI)
-                    self._scan_screen()
-
-                elif cmd == "disconnect":
-                    self._on_recv_disconnect()
-                    self.stop()
-
-        except asyncio.CancelledError:
-            pass
+    def stop(self) -> None:
+        """Cancel pending scan timer, then stop the terminal."""
+        if self._scan_timer is not None:
+            self._scan_timer.cancel()
+            self._scan_timer = None
+        super().stop()

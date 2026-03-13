@@ -53,6 +53,23 @@ class TestScrollbackScreen:
         # But only keep 3 (maxlen)
         assert len(screen.scrollback) == 3
 
+    def test_no_scrollback_with_custom_margins(self):
+        """Lines scrolling within a sub-region (top > 0) should NOT be captured."""
+        screen = ScrollbackScreen(80, 5)
+        stream = pyte.Stream(screen)
+
+        # set_margins takes 1-based args; (2, 5) → 0-based Margins(1, 4),
+        # leaving row 0 as a fixed "status bar".
+        screen.set_margins(2, 5)
+        screen.cursor_position(2, 1)  # move cursor into scroll region
+
+        # Push enough lines to scroll within the region
+        for i in range(10):
+            stream.feed(f"region line {i}\n")
+
+        # No lines should go to scrollback — sub-region scroll
+        assert len(screen.scrollback) == 0
+
     def test_set_margins_strips_private(self):
         """TERM=linux compat: private kwarg is stripped."""
         screen = ScrollbackScreen(80, 24)
@@ -78,6 +95,7 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.recv_queue = None
     terminal.recv_task = None
     terminal._stopped = False
+    terminal._follow_output = True
     terminal._screen = ScrollbackScreen(80, 5)
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
@@ -108,6 +126,13 @@ class TestOnStdoutHook:
         """Base class _on_stdout does nothing (no error)."""
         t = _make_scrollable_terminal()
         t._on_stdout("hello world")  # Should not raise
+
+
+class TestAfterStdoutProcessedHook:
+    def test_after_stdout_processed_default_is_noop(self):
+        """Base class _after_stdout_processed does nothing (no error)."""
+        t = _make_scrollable_terminal()
+        t._after_stdout_processed()  # Should not raise
 
 
 class TestRowToStrip:
