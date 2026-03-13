@@ -4,8 +4,8 @@ version = "0.2.0"
 description = "A Textual TUI for managing coding agents across git worktrees"
 requires-python = ">=3.10"
 dependencies = [
+    "pyte>=0.8.0",
     "textual>=8.0.0",
-    "textual-terminal>=0.3.0,<0.4.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 

@@ -112,7 +112,7 @@ class TestEnvExports:
         assert "PATH=" in exports
 
     def test_skips_term(self):
-        """TERM is set by textual-terminal, should not be overridden."""
+        """TERM is set by the PTY emulator, should not be overridden."""
         exports = env_exports()
         # TERM should not appear as a key (it could appear as substring of another var)
         parts = exports.removeprefix("export ").split()
@@ -120,7 +120,7 @@ class TestEnvExports:
         assert "TERM" not in keys
 
     def test_skips_home(self):
-        """HOME is set by textual-terminal, should not be overridden."""
+        """HOME is set by the PTY emulator, should not be overridden."""
         exports = env_exports()
         parts = exports.removeprefix("export ").split()
         keys = [p.split("=")[0] for p in parts]
