@@ -210,6 +210,8 @@ class LazyAgent(App):
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
         state = self._get_agent_state(event.worktree_path)
         state.status = event.status
+        state.confidence = event.confidence
+        state.detail = event.detail
         if event.status == AgentStatus.RUNNING:
             # Update last_output_time from the terminal
             center = self.query_one(CenterPanel)
@@ -221,6 +223,8 @@ class LazyAgent(App):
     async def on_agent_exited(self, event: AgentExited) -> None:
         state = self._get_agent_state(event.worktree_path)
         state.status = AgentStatus.NO_AGENT
+        state.confidence = LifecycleConfidence.LOW
+        state.detail = ""
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 

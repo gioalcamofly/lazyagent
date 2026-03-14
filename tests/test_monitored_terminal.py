@@ -8,10 +8,9 @@ import pyte
 from lazyagent.agent_observers import (
     AgentLifecycleEvent,
     AgentObserver,
-    LifecycleConfidence,
 )
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentStatus
+from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal, _HANG_SECONDS
 from lazyagent.widgets.scrollable_terminal import ScrollbackScreen
 
@@ -51,6 +50,8 @@ class TestOnPtyOutput:
         msg = t.post_message.call_args[0][0]
         assert isinstance(msg, AgentStatusChanged)
         assert msg.status == AgentStatus.RUNNING
+        assert msg.confidence == LifecycleConfidence.LOW
+        assert msg.detail == ""
 
     def test_running_output_no_duplicate_status_post(self):
         t = _make_terminal()
@@ -92,6 +93,7 @@ class TestScanScreen:
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
+                    detail="sentinel visible",
                 )
             ]
             if "your turn" in text.lower()
@@ -103,6 +105,8 @@ class TestScanScreen:
         msg = t.post_message.call_args[0][0]
         assert isinstance(msg, AgentStatusChanged)
         assert msg.status == AgentStatus.WAITING
+        assert msg.confidence == LifecycleConfidence.LOW
+        assert msg.detail == "sentinel visible"
 
     def test_sentinel_case_insensitive(self):
         t = _make_terminal()
@@ -294,6 +298,7 @@ class TestCheckHang:
         msg = t.post_message.call_args[0][0]
         assert isinstance(msg, AgentStatusChanged)
         assert msg.status == AgentStatus.POSSIBLY_HANGED
+        assert msg.confidence == LifecycleConfidence.LOW
 
     def test_no_hang_when_not_running(self):
         t = _make_terminal()

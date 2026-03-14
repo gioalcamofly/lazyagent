@@ -74,12 +74,25 @@ class AgentStatus(Enum):
     NO_AGENT = "no_agent"
     RUNNING = "running"
     WAITING = "waiting"
+    WAITING_FOR_USER = "waiting_for_user"
+    WAITING_FOR_APPROVAL = "waiting_for_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
     POSSIBLY_HANGED = "possibly_hanged"
+
+
+class LifecycleConfidence(Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 @dataclass
 class AgentState:
     status: AgentStatus = AgentStatus.NO_AGENT
+    confidence: LifecycleConfidence = LifecycleConfidence.LOW
+    detail: str = ""
     last_output_time: float | None = None  # time.monotonic()
 
 

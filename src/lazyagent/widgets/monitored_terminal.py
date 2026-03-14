@@ -9,7 +9,7 @@ from textual import log
 from lazyagent.agent_observers import AgentObserver, TerminalSentinelObserver
 from lazyagent.agent_providers import SENTINEL_TEXT
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentStatus
+from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 _HANG_SECONDS = 600  # 10 minutes
@@ -45,11 +45,23 @@ class MonitoredTerminal(ScrollableTerminal):
     def last_output_time(self) -> float | None:
         return self._last_output_time
 
-    def _set_status(self, new_status: AgentStatus) -> None:
+    def _set_status(
+        self,
+        new_status: AgentStatus,
+        confidence: LifecycleConfidence = LifecycleConfidence.LOW,
+        detail: str = "",
+    ) -> None:
         if new_status != self._status:
             self._status = new_status
             if not self._stopped:
-                self.post_message(AgentStatusChanged(self.worktree_path, new_status))
+                self.post_message(
+                    AgentStatusChanged(
+                        self.worktree_path,
+                        new_status,
+                        confidence=confidence,
+                        detail=detail,
+                    )
+                )
 
     def _on_pty_output(self, chars: str) -> None:
         """Track output timing. Called from recv() on each stdout chunk."""
@@ -62,7 +74,11 @@ class MonitoredTerminal(ScrollableTerminal):
 
     def _apply_events(self, events) -> None:
         for event in events:
-            self._set_status(event.status)
+            self._set_status(
+                event.status,
+                confidence=event.confidence,
+                detail=event.detail,
+            )
 
     def _rendered_screen_text(self) -> str:
         lines: list[str] = []

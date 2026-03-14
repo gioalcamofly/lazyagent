@@ -79,6 +79,10 @@ class AgentProvider:
         """Build provider-specific runtime metadata for the spawned session."""
         if self.name == "claude":
             return _build_claude_runtime_context(self, worktree_path)
+        if self.name == "codex":
+            return _build_codex_runtime_context(self, worktree_path)
+        if self.name == "gemini":
+            return _build_gemini_runtime_context(self, worktree_path)
         return ProviderRuntimeContext(
             provider_name=self.name,
             worktree_path=worktree_path,
@@ -95,22 +99,43 @@ class AgentProvider:
         """Create the lifecycle observer for the prepared runtime context."""
         from lazyagent.agent_observers import (
             ClaudeHooksObserver,
+            CodexAppServerObserver,
             CompositeObserver,
+            GeminiTelemetryObserver,
             TerminalSentinelObserver,
         )
 
+        observers = []
         if self.name == "claude":
-            return CompositeObserver(
-                [
-                    ClaudeHooksObserver(
-                        context.metadata["hook_log_path"],
-                        temp_dir=context.metadata["temp_dir"],
-                    ),
-                    TerminalSentinelObserver(context.sentinel_text or SENTINEL_TEXT),
-                ]
+            observers.append(
+                ClaudeHooksObserver(
+                    context.metadata["hook_log_path"],
+                    temp_dir=context.metadata["temp_dir"],
+                )
             )
-        sentinel = context.sentinel_text or SENTINEL_TEXT
-        return TerminalSentinelObserver(sentinel)
+        elif self.name == "codex":
+            observers.append(
+                CodexAppServerObserver(
+                    context.metadata["app_server_log_path"],
+                    temp_dir=context.metadata["temp_dir"],
+                )
+            )
+        elif self.name == "gemini":
+            observers.append(
+                GeminiTelemetryObserver(
+                    context.metadata["telemetry_log_path"],
+                    temp_dir=context.metadata["temp_dir"],
+                )
+            )
+
+        # Always include terminal sentinel as fallback
+        observers.append(
+            TerminalSentinelObserver(context.sentinel_text or SENTINEL_TEXT)
+        )
+
+        if len(observers) == 1:
+            return observers[0]
+        return CompositeObserver(observers)
 
 
 PROVIDERS = {
@@ -169,6 +194,54 @@ def normalize_provider_name(provider: str | None) -> str:
 def get_agent_provider(provider: str | None) -> AgentProvider:
     """Return the supported provider for the given config value."""
     return PROVIDERS[normalize_provider_name(provider)]
+
+
+def _build_gemini_runtime_context(
+    provider: AgentProvider,
+    worktree_path: str,
+) -> ProviderRuntimeContext:
+    temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-gemini-telemetry-"))
+    telemetry_log_path = temp_dir / "telemetry.jsonl"
+
+    return ProviderRuntimeContext(
+        provider_name=provider.name,
+        worktree_path=worktree_path,
+        observation_mode=provider.observation_mode,
+        sentinel_text=provider.sentinel_text,
+        env_overrides={
+            "GEMINI_TELEMETRY_LOG": str(telemetry_log_path),
+        },
+        metadata={
+            "temp_dir": str(temp_dir),
+            "telemetry_log_path": str(telemetry_log_path),
+        },
+    )
+
+
+def _build_codex_runtime_context(
+    provider: AgentProvider,
+    worktree_path: str,
+) -> ProviderRuntimeContext:
+    temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-codex-events-"))
+    app_server_log_path = temp_dir / "app-server-events.jsonl"
+
+    # NOTE: In a real implementation we might start a sidecar process here
+    # or use a Codex-specific flag to pipe events to this file.
+    # For now, we prepare the environment so Codex knows where to log.
+
+    return ProviderRuntimeContext(
+        provider_name=provider.name,
+        worktree_path=worktree_path,
+        observation_mode=provider.observation_mode,
+        sentinel_text=provider.sentinel_text,
+        env_overrides={
+            "CODEX_APP_SERVER_LOG": str(app_server_log_path),
+        },
+        metadata={
+            "temp_dir": str(temp_dir),
+            "app_server_log_path": str(app_server_log_path),
+        },
+    )
 
 
 def _build_claude_runtime_context(

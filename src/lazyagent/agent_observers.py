@@ -6,13 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from lazyagent.models import AgentStatus
-
-
-class LifecycleConfidence(Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
+from lazyagent.models import AgentStatus, LifecycleConfidence
 
 
 @dataclass(frozen=True)
@@ -159,22 +153,155 @@ class ClaudeHooksObserver(AgentObserver):
         event_name = data.get("hook_event_name")
         if event_name == "Notification":
             notification_type = str(data.get("notification_type", "")).strip().lower()
-            if notification_type in {
-                "permission_prompt",
-                "idle_prompt",
-                "elicitation_dialog",
-            }:
+            if notification_type == "permission_prompt":
                 return AgentLifecycleEvent(
-                    status=AgentStatus.WAITING,
+                    status=AgentStatus.WAITING_FOR_APPROVAL,
                     confidence=LifecycleConfidence.HIGH,
-                    detail=f"claude notification:{notification_type}",
+                    detail="claude permission prompt",
+                )
+            if notification_type in {"idle_prompt", "elicitation_dialog"}:
+                return AgentLifecycleEvent(
+                    status=AgentStatus.WAITING_FOR_USER,
+                    confidence=LifecycleConfidence.HIGH,
+                    detail=f"claude {notification_type}",
                 )
             return None
         if event_name in {"Stop", "TaskCompleted"}:
             return AgentLifecycleEvent(
-                status=AgentStatus.WAITING,
+                status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.HIGH,
                 detail=f"claude hook:{event_name.lower()}",
+            )
+        return None
+
+
+class CodexAppServerObserver(AgentObserver):
+    """Observer that consumes Codex App Server events from a JSONL file."""
+
+    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
+        self._log_path = Path(log_path)
+        self._temp_dir = Path(temp_dir) if temp_dir else None
+        self._offset = 0
+
+    def poll(self) -> list[AgentLifecycleEvent]:
+        if not self._log_path.exists():
+            return []
+
+        events: list[AgentLifecycleEvent] = []
+        with self._log_path.open("r", encoding="utf-8") as handle:
+            handle.seek(self._offset)
+            for line in handle:
+                payload = line.strip()
+                if not payload:
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                mapped = self._map_app_server_event(data)
+                if mapped is not None:
+                    events.append(mapped)
+            self._offset = handle.tell()
+        return events
+
+    def cleanup(self) -> None:
+        if self._temp_dir is not None:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+
+    def _map_app_server_event(self, data: dict) -> AgentLifecycleEvent | None:
+        # Based on documented Codex App Server event shapes
+        method = data.get("method")
+        params = data.get("params", {})
+
+        if method == "turn/started":
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="codex turn started",
+            )
+        if method == "turn/completed":
+            return AgentLifecycleEvent(
+                status=AgentStatus.COMPLETED,
+                confidence=LifecycleConfidence.HIGH,
+                detail="codex turn completed",
+            )
+        if method == "turn/failed":
+            return AgentLifecycleEvent(
+                status=AgentStatus.FAILED,
+                confidence=LifecycleConfidence.HIGH,
+                detail=f"codex turn failed: {params.get('error', 'unknown error')}",
+            )
+        if method == "thread/status/changed":
+            status = params.get("status")
+            if status == "waitingOnApproval":
+                return AgentLifecycleEvent(
+                    status=AgentStatus.WAITING_FOR_APPROVAL,
+                    confidence=LifecycleConfidence.HIGH,
+                    detail="codex waiting on approval",
+                )
+            if status == "waitingOnUser":
+                return AgentLifecycleEvent(
+                    status=AgentStatus.WAITING_FOR_USER,
+                    confidence=LifecycleConfidence.HIGH,
+                    detail="codex waiting on user",
+                )
+        return None
+
+
+class GeminiTelemetryObserver(AgentObserver):
+    """Observer that interprets Gemini telemetry streams from a JSONL file."""
+
+    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
+        self._log_path = Path(log_path)
+        self._temp_dir = Path(temp_dir) if temp_dir else None
+        self._offset = 0
+
+    def poll(self) -> list[AgentLifecycleEvent]:
+        if not self._log_path.exists():
+            return []
+
+        events: list[AgentLifecycleEvent] = []
+        with self._log_path.open("r", encoding="utf-8") as handle:
+            handle.seek(self._offset)
+            for line in handle:
+                payload = line.strip()
+                if not payload:
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                mapped = self._map_telemetry_event(data)
+                if mapped is not None:
+                    events.append(mapped)
+            self._offset = handle.tell()
+        return events
+
+    def cleanup(self) -> None:
+        if self._temp_dir is not None:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+
+    def _map_telemetry_event(self, data: dict) -> AgentLifecycleEvent | None:
+        event_type = data.get("event_type")
+
+        # Telemetry provides activity signals
+        if event_type in {"request", "tool_call", "file_operation"}:
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.MEDIUM,
+                detail=f"gemini activity: {event_type}",
+            )
+        if event_type == "error":
+            return AgentLifecycleEvent(
+                status=AgentStatus.FAILED,
+                confidence=LifecycleConfidence.HIGH,
+                detail=f"gemini error: {data.get('message', 'unknown')}",
+            )
+        if event_type == "session_end":
+            return AgentLifecycleEvent(
+                status=AgentStatus.COMPLETED,
+                confidence=LifecycleConfidence.MEDIUM,
+                detail="gemini session end",
             )
         return None
 

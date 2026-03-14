@@ -44,15 +44,40 @@ class WorktreeListItem(ListItem):
 
     def _status_line(self) -> str:
         state = self._agent_state
-        if state.status == AgentStatus.NO_AGENT:
+        status = state.status
+        conf = state.confidence
+        detail = state.detail
+
+        from lazyagent.models import LifecycleConfidence
+
+        def _fmt(text: str, color: str) -> str:
+            if conf == LifecycleConfidence.LOW:
+                return f"[dim {color}]{text}[/dim {color}]"
+            return f"[{color}]{text}[/{color}]"
+
+        if status == AgentStatus.NO_AGENT:
             return "[dim]---[/dim]"
-        elif state.status == AgentStatus.RUNNING:
-            return "[green]running[/green]"
-        elif state.status == AgentStatus.WAITING:
-            return "[bold yellow]waiting[/bold yellow]"
-        elif state.status == AgentStatus.POSSIBLY_HANGED:
-            return "[bold red]hanged?[/bold red]"
-        return "[dim]---[/dim]"
+
+        res = ""
+        if status == AgentStatus.RUNNING:
+            res = _fmt("running", "green")
+        elif status in (AgentStatus.WAITING, AgentStatus.WAITING_FOR_USER):
+            res = _fmt("waiting", "bold yellow")
+        elif status == AgentStatus.WAITING_FOR_APPROVAL:
+            res = _fmt("approving", "bold yellow")
+        elif status == AgentStatus.COMPLETED:
+            res = _fmt("completed", "bold cyan")
+        elif status == AgentStatus.FAILED:
+            res = _fmt("failed", "bold red")
+        elif status == AgentStatus.INTERRUPTED:
+            res = _fmt("interrupted", "dim red")
+        elif status == AgentStatus.POSSIBLY_HANGED:
+            res = "[bold red]hanged?[/bold red]"
+
+        if detail and status not in (AgentStatus.RUNNING, AgentStatus.NO_AGENT):
+            res += f" [dim]({detail})[/dim]"
+
+        return res or "[dim]---[/dim]"
 
     def _git_status_line(self) -> str:
         gs = self._git_status
