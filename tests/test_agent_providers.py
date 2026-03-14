@@ -65,7 +65,10 @@ class TestBuildCommand:
         command = get_agent_provider("claude").build_command("/tmp/wt")
         script = shlex.split(command)[2]
         assert "--append-system-prompt" in script
-        assert SENTINEL_SYSTEM_PROMPT in script
+        # The sentinel prompt contains single quotes which get shell-escaped
+        # by shlex.quote(), so check the inner args after splitting.
+        inner_args = shlex.split(script.split("exec ", 1)[1])
+        assert SENTINEL_SYSTEM_PROMPT in inner_args
 
     def test_codex_command_does_not_append_sentinel_prompt(self):
         command = get_agent_provider("codex").build_command("/tmp/wt")

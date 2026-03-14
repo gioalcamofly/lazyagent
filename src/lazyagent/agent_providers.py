@@ -23,7 +23,7 @@ SENTINEL_SYSTEM_PROMPT = (
 )
 DEFAULT_AGENT_PROVIDER = "claude"
 
-# Vars that textual-terminal already sets or that may cause issues if overridden.
+# Vars that the PTY emulator already sets or that may cause issues if overridden.
 ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
 
 

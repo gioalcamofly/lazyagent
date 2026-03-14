@@ -32,10 +32,12 @@ def _make_terminal() -> MonitoredTerminal:
     terminal._observer.on_disconnect.return_value = []
     terminal._observer.on_process_started.return_value = []
     terminal._observer.cleanup.return_value = None
+    terminal._follow_output = True
     terminal.post_message = MagicMock()
     # Set up pyte screen for sentinel detection via _scan_screen
     terminal._screen = ScrollbackScreen(80, 24)
     terminal.stream = pyte.Stream(terminal._screen)
+    terminal._scan_timer = None
     return terminal
 
 
