@@ -166,11 +166,17 @@ class ClaudeHooksObserver(AgentObserver):
                     detail=f"claude {notification_type}",
                 )
             return None
-        if event_name in {"Stop", "TaskCompleted"}:
+        if event_name == "Stop":
+            return AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="claude stopped (waiting for input)",
+            )
+        if event_name == "TaskCompleted":
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.HIGH,
-                detail=f"claude hook:{event_name.lower()}",
+                detail="claude task completed",
             )
         return None
 
@@ -233,13 +239,27 @@ class CodexAppServerObserver(AgentObserver):
             )
         if method == "thread/status/changed":
             status = params.get("status")
-            if status == "waitingOnApproval":
+            if isinstance(status, dict):
+                active_flags = status.get("activeFlags", [])
+                if "waitingOnApproval" in active_flags:
+                    return AgentLifecycleEvent(
+                        status=AgentStatus.WAITING_FOR_APPROVAL,
+                        confidence=LifecycleConfidence.HIGH,
+                        detail="codex waiting on approval",
+                    )
+                if "waitingOnUser" in active_flags:
+                    return AgentLifecycleEvent(
+                        status=AgentStatus.WAITING_FOR_USER,
+                        confidence=LifecycleConfidence.HIGH,
+                        detail="codex waiting on user",
+                    )
+            elif status == "waitingOnApproval":
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_APPROVAL,
                     confidence=LifecycleConfidence.HIGH,
                     detail="codex waiting on approval",
                 )
-            if status == "waitingOnUser":
+            elif status == "waitingOnUser":
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_USER,
                     confidence=LifecycleConfidence.HIGH,
@@ -284,24 +304,32 @@ class GeminiTelemetryObserver(AgentObserver):
     def _map_telemetry_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_type = data.get("event_type")
 
-        # Telemetry provides activity signals
-        if event_type in {"request", "tool_call", "file_operation"}:
+        # Telemetry provides activity signals (with gemini_cli. prefix)
+        if event_type in {
+            "gemini_cli.api_request",
+            "gemini_cli.tool_call",
+            "gemini_cli.file.operation",
+            "request",  # keep old values as fallback
+            "tool_call",
+            "file_operation",
+        }:
             return AgentLifecycleEvent(
                 status=AgentStatus.RUNNING,
                 confidence=LifecycleConfidence.MEDIUM,
                 detail=f"gemini activity: {event_type}",
             )
-        if event_type == "error":
+        if event_type in {"gemini_cli.error", "error"}:
             return AgentLifecycleEvent(
                 status=AgentStatus.FAILED,
                 confidence=LifecycleConfidence.HIGH,
                 detail=f"gemini error: {data.get('message', 'unknown')}",
             )
-        if event_type == "session_end":
+        if event_type in {"gemini_cli.session", "session_end"}:
+            # session event usually marks lifecycle boundaries
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.MEDIUM,
-                detail="gemini session end",
+                detail="gemini session update",
             )
         return None
 
