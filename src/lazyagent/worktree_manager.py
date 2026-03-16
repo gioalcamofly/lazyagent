@@ -198,41 +198,53 @@ class WorktreeManager:
     def get_diff(worktree_path: str | Path) -> str:
         """Get diff showing all working tree changes including untracked files.
 
-        Uses ``git diff HEAD`` for staged + unstaged tracked changes, then
-        ``git diff --no-index`` per untracked file to show their contents.
+        Uses ``git diff HEAD`` for tracked changes. For untracked files,
+        shows file contents directly (or a binary marker if not text).
         """
         cwd = str(worktree_path)
         parts: list[str] = []
         try:
-            # Tracked changes (staged + unstaged) vs HEAD
+            # Tracked changes (staged + unstaged)
             result = subprocess.run(
-                ["git", "diff", "HEAD"],
+                ["git", "diff"],
                 capture_output=True,
-                text=True,
                 cwd=cwd,
             )
             if result.returncode == 0 and result.stdout.strip():
-                parts.append(result.stdout.strip())
+                parts.append(result.stdout.decode("utf-8", errors="replace").strip())
 
-            # Untracked files — get actual diff content
+            # Staged binary files — git diff skips these, show a marker
             result = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
+                ["git", "diff", "--cached", "--numstat", "-z"],
                 capture_output=True,
-                text=True,
                 cwd=cwd,
             )
             if result.returncode == 0 and result.stdout.strip():
-                files = result.stdout.strip().splitlines()
+                for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
+                    if entry.startswith("-\t-\t"):
+                        f = entry[len("-\t-\t"):]
+                        parts.append(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
+
+            # Untracked files — show contents or binary marker
+            result = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+                capture_output=True,
+                cwd=cwd,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                files = [f for f in result.stdout.decode("utf-8", errors="replace").split("\0") if f]
                 for f in files:
-                    diff_result = subprocess.run(
-                        ["git", "diff", "--no-index", "--", "/dev/null", f],
-                        capture_output=True,
-                        text=True,
-                        cwd=cwd,
-                    )
-                    # --no-index returns exit code 1 when files differ
-                    if diff_result.stdout.strip():
-                        parts.append(diff_result.stdout.strip())
+                    filepath = Path(cwd) / f
+                    header = f"diff --git a/{f} b/{f}\nnew file"
+                    try:
+                        chunk = filepath.read_bytes()[:8000]
+                        if b"\x00" in chunk or chunk.startswith(b"%PDF"):
+                            parts.append(f"{header}\nBinary file")
+                        else:
+                            content = filepath.read_text(encoding="utf-8", errors="replace")
+                            parts.append(f"{header}\n{content}")
+                    except OSError:
+                        continue
 
             return "\n\n".join(parts)
         except OSError:
