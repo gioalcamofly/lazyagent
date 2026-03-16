@@ -102,6 +102,7 @@ class AgentProvider:
             CodexAppServerObserver,
             CompositeObserver,
             GeminiTelemetryObserver,
+            GeminiPromptObserver,
             TerminalSentinelObserver,
         )
 
@@ -127,6 +128,7 @@ class AgentProvider:
                     temp_dir=context.metadata["temp_dir"],
                 )
             )
+            observers.append(GeminiPromptObserver())
 
         # Always include terminal sentinel as fallback
         observers.append(

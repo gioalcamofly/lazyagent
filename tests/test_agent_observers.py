@@ -6,6 +6,7 @@ from lazyagent.agent_observers import (
     ClaudeHooksObserver,
     CodexAppServerObserver,
     GeminiTelemetryObserver,
+    GeminiPromptObserver,
     LifecycleConfidence,
     TerminalSentinelObserver,
 )
@@ -18,6 +19,7 @@ class TestTerminalSentinelObserver:
         events = observer.on_screen_update(
             "line 1\nyour turn\n",
             current_status=AgentStatus.RUNNING,
+            current_detail="",
         )
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING
@@ -28,6 +30,7 @@ class TestTerminalSentinelObserver:
         events = observer.on_screen_update(
             "line 1\nstill working\n",
             current_status=AgentStatus.WAITING,
+            current_detail="sentinel visible on rendered screen",
         )
         assert len(events) == 1
         assert events[0].status == AgentStatus.RUNNING
@@ -37,6 +40,40 @@ class TestTerminalSentinelObserver:
         events = observer.on_screen_update(
             "line 1\nstill working\n",
             current_status=AgentStatus.RUNNING,
+            current_detail="",
+        )
+        assert events == []
+
+
+class TestGeminiPromptObserver:
+    def test_prompt_visible_sets_waiting(self):
+        observer = GeminiPromptObserver()
+        events = observer.on_screen_update(
+            "some output\n\ngemini > ",
+            current_status=AgentStatus.RUNNING,
+            current_detail="",
+        )
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.WAITING
+        assert events[0].detail == "gemini prompt detected on screen"
+
+    def test_prompt_missing_resumes_running(self):
+        observer = GeminiPromptObserver()
+        events = observer.on_screen_update(
+            "some output\n\nrunning command...",
+            current_status=AgentStatus.WAITING,
+            current_detail="gemini prompt detected on screen",
+        )
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+
+    def test_no_transition_if_detail_mismatch(self):
+        observer = GeminiPromptObserver()
+        # If someone else set WAITING, we don't force it back to RUNNING
+        events = observer.on_screen_update(
+            "some output\n\nno prompt here",
+            current_status=AgentStatus.WAITING,
+            current_detail="sentinel visible on rendered screen",
         )
         assert events == []
 
@@ -77,7 +114,7 @@ class TestClaudeHooksObserver:
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING_FOR_USER
 
-    def test_stop_event_sets_completed(self, tmp_path):
+    def test_stop_event_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
         log_path.write_text(
             json.dumps({"hook_event_name": "Stop"}) + "\n",
@@ -86,7 +123,7 @@ class TestClaudeHooksObserver:
         observer = ClaudeHooksObserver(str(log_path))
         events = observer.poll()
         assert len(events) == 1
-        assert events[0].status == AgentStatus.COMPLETED
+        assert events[0].status == AgentStatus.WAITING
 
     def test_poll_is_incremental(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"

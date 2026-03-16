@@ -23,6 +23,7 @@ def _make_terminal() -> MonitoredTerminal:
     terminal = MonitoredTerminal.__new__(MonitoredTerminal)
     terminal.worktree_path = WT_PATH
     terminal._status = AgentStatus.NO_AGENT
+    terminal._detail = ""
     terminal._last_output_time = None
     terminal._stopped = False
     terminal._observer = MagicMock(spec=AgentObserver)
@@ -89,7 +90,7 @@ class TestScanScreen:
         t._status = AgentStatus.RUNNING
         t.post_message.reset_mock()
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
@@ -112,7 +113,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
@@ -139,7 +140,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.WAITING
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.RUNNING,
                     confidence=LifecycleConfidence.LOW,
@@ -160,7 +161,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
@@ -185,7 +186,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
@@ -202,7 +203,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.RUNNING
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.LOW,
@@ -219,7 +220,7 @@ class TestScanScreen:
         t = _make_terminal()
         t._status = AgentStatus.POSSIBLY_HANGED
         t._observer.on_screen_update.side_effect = (
-            lambda text, *, current_status: [
+            lambda text, *, current_status, current_detail: [
                 AgentLifecycleEvent(
                     status=AgentStatus.RUNNING,
                     confidence=LifecycleConfidence.LOW,

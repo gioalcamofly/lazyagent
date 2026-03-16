@@ -32,6 +32,7 @@ class AgentObserver:
         screen_text: str,
         *,
         current_status: AgentStatus,
+        current_detail: str = "",
     ) -> list[AgentLifecycleEvent]:
         return []
 
@@ -64,11 +65,13 @@ class CompositeObserver(AgentObserver):
         screen_text: str,
         *,
         current_status: AgentStatus,
+        current_detail: str = "",
     ) -> list[AgentLifecycleEvent]:
         return _flatten(
             observer.on_screen_update(
                 screen_text,
                 current_status=current_status,
+                current_detail=current_detail,
             )
             for observer in self._observers
         )
@@ -95,6 +98,7 @@ class TerminalSentinelObserver(AgentObserver):
         screen_text: str,
         *,
         current_status: AgentStatus,
+        current_detail: str = "",
     ) -> list[AgentLifecycleEvent]:
         rendered = screen_text.lower()
         if self._sentinel_text in rendered:
@@ -105,7 +109,9 @@ class TerminalSentinelObserver(AgentObserver):
                     detail="sentinel visible on rendered screen",
                 )
             ]
-        if current_status in (AgentStatus.WAITING, AgentStatus.POSSIBLY_HANGED):
+        # Only revert to RUNNING if we were the one who set WAITING via sentinel
+        if current_status in (AgentStatus.WAITING, AgentStatus.POSSIBLY_HANGED) and \
+           current_detail == "sentinel visible on rendered screen":
             return [
                 AgentLifecycleEvent(
                     status=AgentStatus.RUNNING,
@@ -318,13 +324,24 @@ class GeminiTelemetryObserver(AgentObserver):
                 confidence=LifecycleConfidence.MEDIUM,
                 detail=f"gemini activity: {event_type}",
             )
+        if event_type in {
+            "gemini_cli.turn_end",
+            "gemini_cli.waiting_for_input",
+            "gemini_cli.prompt",
+            "gemini_cli.api_response",  # After response, we usually wait
+        }:
+            return AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.HIGH,
+                detail=f"gemini {event_type}",
+            )
         if event_type in {"gemini_cli.error", "error"}:
             return AgentLifecycleEvent(
                 status=AgentStatus.FAILED,
                 confidence=LifecycleConfidence.HIGH,
                 detail=f"gemini error: {data.get('message', 'unknown')}",
             )
-        if event_type in {"gemini_cli.session", "session_end"}:
+        if event_type in {"gemini_cli.session", "session_end", "gemini_cli.completion"}:
             # session event usually marks lifecycle boundaries
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
@@ -332,6 +349,45 @@ class GeminiTelemetryObserver(AgentObserver):
                 detail="gemini session update",
             )
         return None
+
+
+class GeminiPromptObserver(AgentObserver):
+    """Observer that detects the Gemini CLI prompt (e.g., 'gemini >') on the screen."""
+
+    def on_screen_update(
+        self,
+        screen_text: str,
+        *,
+        current_status: AgentStatus,
+        current_detail: str = "",
+    ) -> list[AgentLifecycleEvent]:
+        # Typical gemini prompts end with "> " or "gemini > "
+        # We check if any of the last few lines (non-empty) matches this
+        lines = [line.strip() for line in screen_text.splitlines() if line.strip()]
+        if not lines:
+            return []
+
+        last_line = lines[-1]
+        # Match "gemini >", "ai >", or just ">" at the end of the line
+        if last_line.endswith(">") or " > " in last_line:
+            if current_status == AgentStatus.RUNNING:
+                return [
+                    AgentLifecycleEvent(
+                        status=AgentStatus.WAITING,
+                        confidence=LifecycleConfidence.MEDIUM,
+                        detail="gemini prompt detected on screen",
+                    )
+                ]
+        elif current_status == AgentStatus.WAITING and \
+             current_detail == "gemini prompt detected on screen":
+            return [
+                AgentLifecycleEvent(
+                    status=AgentStatus.RUNNING,
+                    confidence=LifecycleConfidence.LOW,
+                    detail="gemini prompt no longer visible",
+                )
+            ]
+        return []
 
 
 def _flatten(batches) -> list[AgentLifecycleEvent]:

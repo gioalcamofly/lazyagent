@@ -33,6 +33,7 @@ class MonitoredTerminal(ScrollableTerminal):
         super().__init__(command=command, **kwargs)
         self.worktree_path = worktree_path
         self._status = AgentStatus.NO_AGENT
+        self._detail = ""
         self._last_output_time: float | None = None
         self._observer = observer or TerminalSentinelObserver(SENTINEL_TEXT)
         self._scan_timer: asyncio.TimerHandle | None = None
@@ -51,8 +52,9 @@ class MonitoredTerminal(ScrollableTerminal):
         confidence: LifecycleConfidence = LifecycleConfidence.LOW,
         detail: str = "",
     ) -> None:
-        if new_status != self._status:
+        if new_status != self._status or detail != self._detail:
             self._status = new_status
+            self._detail = detail
             if not self._stopped:
                 self.post_message(
                     AgentStatusChanged(
@@ -100,6 +102,7 @@ class MonitoredTerminal(ScrollableTerminal):
             self._observer.on_screen_update(
                 screen_text,
                 current_status=self._status,
+                current_detail=self._detail,
             )
         )
         self._apply_events(self._observer.poll())

@@ -111,7 +111,7 @@ class LazyAgent(App):
             return
 
         wt_list = self.query_one(WorktreeList)
-        wt_list.set_worktrees(self.worktrees)
+        wt_list.set_worktrees(self.worktrees, agent_states=self._agent_states)
 
         count = len(self.worktrees)
         self.sub_title = f"{count} worktree{'s' if count != 1 else ''}"

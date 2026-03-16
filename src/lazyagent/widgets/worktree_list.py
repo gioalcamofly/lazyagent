@@ -137,11 +137,13 @@ class WorktreeList(ListView):
     def on_mount(self) -> None:
         self.border_title = "Ctrl+K Sidebar"
 
-    def set_worktrees(self, worktrees: list[WorktreeInfo]) -> None:
-        """Replace the list contents with the given worktrees."""
+    def set_worktrees(self, worktrees: list[WorktreeInfo], agent_states: dict[str, AgentState] | None = None) -> None:
+        """Replace the list contents with the given worktrees, restoring agent state if provided."""
         self.clear()
+        agent_states = agent_states or {}
         for wt in worktrees:
-            self.append(WorktreeListItem(wt))
+            state = agent_states.get(wt.path)
+            self.append(WorktreeListItem(wt, agent_state=state))
 
     def update_agent_state(self, worktree_path: str, state: AgentState) -> None:
         """Find the item for the given worktree path and update its agent state."""
