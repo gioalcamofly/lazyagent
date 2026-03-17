@@ -16,11 +16,6 @@ class ObservationMode(Enum):
     APP_SERVER = "app_server"
     TELEMETRY = "telemetry"
 
-SENTINEL_TEXT = "your turn"
-SENTINEL_SYSTEM_PROMPT = (
-    f"Always output exactly '{SENTINEL_TEXT}' on its own line "
-    "when you need user input or have completed your task."
-)
 DEFAULT_AGENT_PROVIDER = "claude"
 
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
@@ -34,7 +29,6 @@ class ProviderRuntimeContext:
     provider_name: str
     worktree_path: str
     observation_mode: ObservationMode
-    sentinel_text: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
 
@@ -47,11 +41,9 @@ class AgentProvider:
     executable: str
     dangerous_flag: str
     observation_mode: ObservationMode = ObservationMode.TERMINAL
-    supports_append_system_prompt: bool = False
     supports_structured_turn_events: bool = False
     supports_approval_events: bool = False
     supports_completion_events: bool = False
-    sentinel_text: str | None = SENTINEL_TEXT
 
     def build_command(
         self,
@@ -64,9 +56,8 @@ class AgentProvider:
         parts = [self.executable]
         if skip_permissions:
             parts.append(self.dangerous_flag)
-        if self.supports_append_system_prompt:
-            parts.extend(["--append-system-prompt", SENTINEL_SYSTEM_PROMPT])
-
+        if "settings_path" in context.metadata:
+            parts.extend(["--settings", context.metadata["settings_path"]])
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
         script = (
             f"{env_exports(context.env_overrides)}"
@@ -87,7 +78,6 @@ class AgentProvider:
             provider_name=self.name,
             worktree_path=worktree_path,
             observation_mode=self.observation_mode,
-            sentinel_text=self.sentinel_text,
         )
 
     def create_observer(self, worktree_path: str):
@@ -103,7 +93,6 @@ class AgentProvider:
             CompositeObserver,
             GeminiTelemetryObserver,
             GeminiPromptObserver,
-            TerminalSentinelObserver,
         )
 
         observers = []
@@ -130,11 +119,6 @@ class AgentProvider:
             )
             observers.append(GeminiPromptObserver())
 
-        # Always include terminal sentinel as fallback
-        observers.append(
-            TerminalSentinelObserver(context.sentinel_text or SENTINEL_TEXT)
-        )
-
         if len(observers) == 1:
             return observers[0]
         return CompositeObserver(observers)
@@ -146,7 +130,6 @@ PROVIDERS = {
         executable="claude",
         dangerous_flag="--dangerously-skip-permissions",
         observation_mode=ObservationMode.HOOKS,
-        supports_append_system_prompt=True,
         supports_approval_events=True,
         supports_completion_events=True,
     ),
@@ -209,7 +192,7 @@ def _build_gemini_runtime_context(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
-        sentinel_text=provider.sentinel_text,
+
         env_overrides={
             "GEMINI_TELEMETRY_LOG": str(telemetry_log_path),
         },
@@ -235,7 +218,7 @@ def _build_codex_runtime_context(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
-        sentinel_text=provider.sentinel_text,
+
         env_overrides={
             "CODEX_APP_SERVER_LOG": str(app_server_log_path),
         },
@@ -253,65 +236,35 @@ def _build_claude_runtime_context(
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
     hook_script_path = temp_dir / "log_hook.py"
-    settings_path = temp_dir / "settings.json"
+    settings_path = temp_dir / "hooks-settings.json"
 
     hook_script_path.write_text(_claude_hook_script(), encoding="utf-8")
     hook_script_path.chmod(hook_script_path.stat().st_mode | stat.S_IXUSR)
 
-    settings = {
+    hook_command = {"type": "command", "command": str(hook_script_path)}
+
+    hooks_settings = {
         "hooks": {
             "Notification": [
                 {
                     "matcher": "permission_prompt|idle_prompt|elicitation_dialog",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": str(hook_script_path),
-                        }
-                    ],
+                    "hooks": [hook_command],
                 }
             ],
-            "Stop": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": str(hook_script_path),
-                        }
-                    ],
-                }
-            ],
-            "TaskCompleted": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": str(hook_script_path),
-                        }
-                    ],
-                }
-            ],
-            "SessionEnd": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": str(hook_script_path),
-                        }
-                    ],
-                }
-            ],
+            "Stop": [{"hooks": [hook_command]}],
+            "TaskCompleted": [{"hooks": [hook_command]}],
+            "SessionEnd": [{"hooks": [hook_command]}],
+            "PreToolUse": [{"hooks": [hook_command]}],
+            "PostToolUse": [{"hooks": [hook_command]}],
         }
     }
-    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
     return ProviderRuntimeContext(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
-        sentinel_text=provider.sentinel_text,
         env_overrides={
-            "CLAUDE_CONFIG_DIR": str(temp_dir),
             "LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path),
         },
         metadata={

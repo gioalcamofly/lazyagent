@@ -6,8 +6,7 @@ import time
 
 from textual import log
 
-from lazyagent.agent_observers import AgentObserver, TerminalSentinelObserver
-from lazyagent.agent_providers import SENTINEL_TEXT
+from lazyagent.agent_observers import AgentObserver
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
@@ -19,8 +18,8 @@ _SCAN_DEBOUNCE_SECONDS = 0.15
 class MonitoredTerminal(ScrollableTerminal):
     """ScrollableTerminal subclass that intercepts pty output for agent status detection.
 
-    Scans raw chars for a sentinel phrase ("your turn") and tracks output
-    timing for hang detection.
+    Delegates lifecycle detection to a provider-specific observer and tracks
+    output timing for hang detection.
     """
 
     def __init__(
@@ -35,7 +34,7 @@ class MonitoredTerminal(ScrollableTerminal):
         self._status = AgentStatus.NO_AGENT
         self._detail = ""
         self._last_output_time: float | None = None
-        self._observer = observer or TerminalSentinelObserver(SENTINEL_TEXT)
+        self._observer = observer or AgentObserver()
         self._scan_timer: asyncio.TimerHandle | None = None
 
     @property

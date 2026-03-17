@@ -8,41 +8,8 @@ from lazyagent.agent_observers import (
     GeminiTelemetryObserver,
     GeminiPromptObserver,
     LifecycleConfidence,
-    TerminalSentinelObserver,
 )
 from lazyagent.models import AgentStatus
-
-
-class TestTerminalSentinelObserver:
-    def test_sentinel_visible_sets_waiting(self):
-        observer = TerminalSentinelObserver("your turn")
-        events = observer.on_screen_update(
-            "line 1\nyour turn\n",
-            current_status=AgentStatus.RUNNING,
-            current_detail="",
-        )
-        assert len(events) == 1
-        assert events[0].status == AgentStatus.WAITING
-        assert events[0].confidence == LifecycleConfidence.LOW
-
-    def test_sentinel_missing_resumes_running(self):
-        observer = TerminalSentinelObserver("your turn")
-        events = observer.on_screen_update(
-            "line 1\nstill working\n",
-            current_status=AgentStatus.WAITING,
-            current_detail="sentinel visible on rendered screen",
-        )
-        assert len(events) == 1
-        assert events[0].status == AgentStatus.RUNNING
-
-    def test_no_status_change_when_running_without_sentinel(self):
-        observer = TerminalSentinelObserver("your turn")
-        events = observer.on_screen_update(
-            "line 1\nstill working\n",
-            current_status=AgentStatus.RUNNING,
-            current_detail="",
-        )
-        assert events == []
 
 
 class TestGeminiPromptObserver:
@@ -113,6 +80,25 @@ class TestClaudeHooksObserver:
         events = observer.poll()
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING_FOR_USER
+        assert events[0].detail == "idle"
+
+    def test_elicitation_sets_waiting_for_user(self, tmp_path):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps(
+                {
+                    "hook_event_name": "Notification",
+                    "notification_type": "elicitation_dialog",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.WAITING_FOR_USER
+        assert events[0].detail == "asking a question"
 
     def test_stop_event_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
@@ -124,6 +110,51 @@ class TestClaudeHooksObserver:
         events = observer.poll()
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING
+
+    def test_session_end_sets_completed(self, tmp_path):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps({"hook_event_name": "SessionEnd"}) + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.COMPLETED
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "session ended"
+
+    def test_pre_tool_use_sets_running(self, tmp_path):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps(
+                {"hook_event_name": "PreToolUse", "tool_name": "Bash"}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "using Bash"
+
+    def test_post_tool_use_sets_running(self, tmp_path):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps(
+                {"hook_event_name": "PostToolUse", "tool_name": "Read"}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "Read done"
 
     def test_poll_is_incremental(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"

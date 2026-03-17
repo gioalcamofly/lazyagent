@@ -87,41 +87,6 @@ class CompositeObserver(AgentObserver):
             observer.cleanup()
 
 
-class TerminalSentinelObserver(AgentObserver):
-    """Fallback observer that infers state from rendered terminal contents."""
-
-    def __init__(self, sentinel_text: str) -> None:
-        self._sentinel_text = sentinel_text.lower()
-
-    def on_screen_update(
-        self,
-        screen_text: str,
-        *,
-        current_status: AgentStatus,
-        current_detail: str = "",
-    ) -> list[AgentLifecycleEvent]:
-        rendered = screen_text.lower()
-        if self._sentinel_text in rendered:
-            return [
-                AgentLifecycleEvent(
-                    status=AgentStatus.WAITING,
-                    confidence=LifecycleConfidence.LOW,
-                    detail="sentinel visible on rendered screen",
-                )
-            ]
-        # Only revert to RUNNING if we were the one who set WAITING via sentinel
-        if current_status in (AgentStatus.WAITING, AgentStatus.POSSIBLY_HANGED) and \
-           current_detail == "sentinel visible on rendered screen":
-            return [
-                AgentLifecycleEvent(
-                    status=AgentStatus.RUNNING,
-                    confidence=LifecycleConfidence.LOW,
-                    detail="sentinel no longer visible on rendered screen",
-                )
-            ]
-        return []
-
-
 class ClaudeHooksObserver(AgentObserver):
     """Observer that tails Claude hook events written to a JSONL file."""
 
@@ -163,26 +128,55 @@ class ClaudeHooksObserver(AgentObserver):
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_APPROVAL,
                     confidence=LifecycleConfidence.HIGH,
-                    detail="claude permission prompt",
+                    detail="needs approval",
                 )
-            if notification_type in {"idle_prompt", "elicitation_dialog"}:
+            if notification_type == "idle_prompt":
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_USER,
                     confidence=LifecycleConfidence.HIGH,
-                    detail=f"claude {notification_type}",
+                    detail="idle",
+                )
+            if notification_type == "elicitation_dialog":
+                return AgentLifecycleEvent(
+                    status=AgentStatus.WAITING_FOR_USER,
+                    confidence=LifecycleConfidence.HIGH,
+                    detail="asking a question",
                 )
             return None
         if event_name == "Stop":
+            # In interactive PTY sessions, Stop means Claude finished responding
+            # and is waiting for the next user prompt — WAITING is correct here,
+            # not COMPLETED (which is reserved for TaskCompleted/SessionEnd).
             return AgentLifecycleEvent(
                 status=AgentStatus.WAITING,
                 confidence=LifecycleConfidence.HIGH,
-                detail="claude stopped (waiting for input)",
+                detail="waiting for input",
             )
         if event_name == "TaskCompleted":
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.HIGH,
-                detail="claude task completed",
+                detail="task completed",
+            )
+        if event_name == "SessionEnd":
+            return AgentLifecycleEvent(
+                status=AgentStatus.COMPLETED,
+                confidence=LifecycleConfidence.HIGH,
+                detail="session ended",
+            )
+        if event_name == "PreToolUse":
+            tool_name = data.get("tool_name", "unknown")
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail=f"using {tool_name}",
+            )
+        if event_name == "PostToolUse":
+            tool_name = data.get("tool_name", "unknown")
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail=f"{tool_name} done",
             )
         return None
 
