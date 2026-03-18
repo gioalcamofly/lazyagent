@@ -15,22 +15,37 @@ from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeResult
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
 
 
-WORKTREES = [
-    WorktreeInfo(
-        path="/repo",
-        head="a" * 40,
-        branch="main",
-        is_main=True,
-        is_bare=False,
-    ),
-    WorktreeInfo(
-        path="/repo-feature",
-        head="b" * 40,
-        branch="feature/demo",
-        is_main=False,
-        is_bare=False,
-    ),
-]
+MAIN_WORKTREE = WorktreeInfo(
+    path="/repo",
+    head="a" * 40,
+    branch="main",
+    is_main=True,
+    is_bare=False,
+)
+
+FEATURE_WORKTREE = WorktreeInfo(
+    path="/repo-feature",
+    head="b" * 40,
+    branch="feature/demo",
+    is_main=False,
+    is_bare=False,
+)
+
+WORKTREES = [MAIN_WORKTREE, FEATURE_WORKTREE]
+
+
+def _make_app_with_config(
+    create: str | None = None,
+    remove: str | None = None,
+) -> LazyAgent:
+    """Create a LazyAgent with custom worktree config and mocked I/O."""
+    app = LazyAgent(repo_path="/repo")
+    app._repo_root = "/repo"
+    app._config = Config(worktree=WorktreeConfig(create=create, remove=remove))
+    app._send_to_terminal = MagicMock()
+    app.action_focus_terminal = MagicMock()
+    app.notify = MagicMock()
+    return app
 
 
 class DummyWorktreeManager:
@@ -139,15 +154,9 @@ async def test_ctrl_j_uses_spawn_flow_when_selected_worktree_has_no_agent(
 
 
 def test_do_create_worktree_injects_custom_command_into_terminal() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(
-            create="create-worktree {branch} {name} {base} {path} {repo}"
-        )
+    app = _make_app_with_config(
+        create="create-worktree {branch} {name} {base} {path} {repo}"
     )
-    app._send_to_terminal = MagicMock()
-    app.notify = MagicMock()
 
     app._do_create_worktree(
         CreateWorktreeResult(branch="feature/demo", base_branch="main")
@@ -161,24 +170,9 @@ def test_do_create_worktree_injects_custom_command_into_terminal() -> None:
 
 
 def test_do_remove_worktree_injects_custom_command_with_repo_cd_prefix() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(remove="remove-worktree {name} {path}")
-    )
-    app._send_to_terminal = MagicMock()
-    app.action_focus_terminal = MagicMock()
-    app.notify = MagicMock()
+    app = _make_app_with_config(remove="remove-worktree {name} {path}")
 
-    worktree = WorktreeInfo(
-        path="/repo-feature",
-        head="b" * 40,
-        branch="feature/demo",
-        is_main=False,
-        is_bare=False,
-    )
-
-    app._do_remove_worktree(worktree)
+    app._do_remove_worktree(FEATURE_WORKTREE)
 
     app._send_to_terminal.assert_called_once_with(
         "cd /repo && remove-worktree repo-feature /repo-feature"
@@ -189,14 +183,7 @@ def test_do_remove_worktree_injects_custom_command_with_repo_cd_prefix() -> None
 @pytest.mark.parametrize("status", [AgentStatus.RUNNING, AgentStatus.WAITING])
 def test_remove_worktree_is_blocked_for_active_agents(status: AgentStatus) -> None:
     app = LazyAgent(repo_path="/repo")
-    worktree = WorktreeInfo(
-        path="/repo-feature",
-        head="b" * 40,
-        branch="feature/demo",
-        is_main=False,
-        is_bare=False,
-    )
-    app._get_selected_worktree = lambda: worktree
+    app._get_selected_worktree = lambda: FEATURE_WORKTREE
     app._get_agent_state = lambda path: AgentState(status=status)
     app.notify = MagicMock()
     app.push_screen = MagicMock()
@@ -210,14 +197,7 @@ def test_remove_worktree_is_blocked_for_active_agents(status: AgentStatus) -> No
 
 def test_remove_worktree_is_blocked_for_main_worktree() -> None:
     app = LazyAgent(repo_path="/repo")
-    main_worktree = WorktreeInfo(
-        path="/repo",
-        head="a" * 40,
-        branch="main",
-        is_main=True,
-        is_bare=False,
-    )
-    app._get_selected_worktree = lambda: main_worktree
+    app._get_selected_worktree = lambda: MAIN_WORKTREE
     app.notify = MagicMock()
     app.push_screen = MagicMock()
 
@@ -242,14 +222,10 @@ def test_remove_worktree_result_force() -> None:
 
 
 def test_do_remove_worktree_passes_force_to_builtin() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config()  # no custom remove
-
+    app = _make_app_with_config()
     mock_manager = MagicMock()
     monkeypatch_manager = MagicMock()
     mock_manager.return_value = monkeypatch_manager
-    app.notify = MagicMock()
     app._load_worktrees = MagicMock()
 
     import lazyagent.app as app_module
@@ -257,38 +233,16 @@ def test_do_remove_worktree_passes_force_to_builtin() -> None:
     original = app_module.WorktreeManager
     app_module.WorktreeManager = mock_manager
     try:
-        worktree = WorktreeInfo(
-            path="/repo-feature",
-            head="b" * 40,
-            branch="feature/demo",
-            is_main=False,
-            is_bare=False,
-        )
-        app._do_remove_worktree(worktree, force=True)
+        app._do_remove_worktree(FEATURE_WORKTREE, force=True)
         monkeypatch_manager.remove.assert_called_once_with("/repo-feature", force=True)
     finally:
         app_module.WorktreeManager = original
 
 
 def test_do_remove_worktree_expands_force_placeholder_in_custom_command() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(remove="remove-worktree {name} {path} {force}")
-    )
-    app._send_to_terminal = MagicMock()
-    app.action_focus_terminal = MagicMock()
-    app.notify = MagicMock()
+    app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
 
-    worktree = WorktreeInfo(
-        path="/repo-feature",
-        head="b" * 40,
-        branch="feature/demo",
-        is_main=False,
-        is_bare=False,
-    )
-
-    app._do_remove_worktree(worktree, force=True)
+    app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
     app._send_to_terminal.assert_called_once_with(
         "cd /repo && remove-worktree repo-feature /repo-feature --force"
@@ -296,27 +250,12 @@ def test_do_remove_worktree_expands_force_placeholder_in_custom_command() -> Non
 
 
 def test_do_remove_worktree_custom_without_force() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(remove="remove-worktree {name} {path} {force}")
-    )
-    app._send_to_terminal = MagicMock()
-    app.action_focus_terminal = MagicMock()
-    app.notify = MagicMock()
+    app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
 
-    worktree = WorktreeInfo(
-        path="/repo-feature",
-        head="b" * 40,
-        branch="feature/demo",
-        is_main=False,
-        is_bare=False,
-    )
-
-    app._do_remove_worktree(worktree, force=False)
+    app._do_remove_worktree(FEATURE_WORKTREE, force=False)
 
     app._send_to_terminal.assert_called_once_with(
-        "cd /repo && remove-worktree repo-feature /repo-feature "
+        "cd /repo && remove-worktree repo-feature /repo-feature"
     )
 
 
@@ -336,15 +275,9 @@ def test_create_worktree_result_extra_options() -> None:
 
 
 def test_do_create_worktree_expands_extra_placeholder() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(
-            create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
-        )
+    app = _make_app_with_config(
+        create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
     )
-    app._send_to_terminal = MagicMock()
-    app.notify = MagicMock()
 
     app._do_create_worktree(
         CreateWorktreeResult(
@@ -360,20 +293,14 @@ def test_do_create_worktree_expands_extra_placeholder() -> None:
 
 
 def test_do_create_worktree_no_extra_options() -> None:
-    app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(
-        worktree=WorktreeConfig(
-            create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
-        )
+    app = _make_app_with_config(
+        create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
     )
-    app._send_to_terminal = MagicMock()
-    app.notify = MagicMock()
 
     app._do_create_worktree(
         CreateWorktreeResult(branch="feature/demo", base_branch="main")
     )
 
     app._send_to_terminal.assert_called_once_with(
-        "create-worktree feature/demo repo-feature/demo main /repo-feature/demo /repo "
+        "create-worktree feature/demo repo-feature/demo main /repo-feature/demo /repo"
     )

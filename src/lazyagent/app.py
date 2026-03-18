@@ -14,7 +14,6 @@ from lazyagent.config import Config, format_command, load_config
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
-from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
@@ -416,6 +415,7 @@ class LazyAgent(App):
         )
 
     def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
+        force_flag = "--force" if force else ""
         if self._config.has_custom_remove:
             cmd = format_command(
                 self._config.worktree.remove,  # type: ignore[arg-type]
@@ -424,7 +424,7 @@ class LazyAgent(App):
                 base="",
                 path=worktree.path,
                 repo=self._repo_root,
-                force=force,
+                force=force_flag,
             )
             self._send_to_terminal(f"cd {self._repo_root} && {cmd}")
             self.action_focus_terminal()
@@ -433,9 +433,10 @@ class LazyAgent(App):
             try:
                 manager = WorktreeManager(self._repo_root)
                 manager.remove(worktree.path, force=force)
+                self._agent_states.pop(worktree.path, None)
                 self._load_worktrees()
                 if self.worktrees:
-                    self._select_worktree_by_path(self.worktrees[0].path)
+                    self.query_one(WorktreeList).index = 0
                 self.notify(f"Removed worktree: {worktree.name}")
             except WorktreeManagerError as e:
                 self.notify(str(e), severity="error", timeout=5)

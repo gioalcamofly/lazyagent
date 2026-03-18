@@ -91,7 +91,7 @@ def format_command(
     base: str = "",
     path: str = "",
     repo: str = "",
-    force: bool = False,
+    force: str = "",
     extra: str = "",
 ) -> str:
     """Expand placeholders and ~ in a command template.
@@ -105,6 +105,6 @@ def format_command(
         base=base,
         path=path,
         repo=repo,
-        force="--force" if force else "",
+        force=force,
         extra=extra,
-    )
+    ).strip()
