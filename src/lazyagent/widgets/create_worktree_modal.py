@@ -15,6 +15,7 @@ class CreateWorktreeResult:
 
     branch: str
     base_branch: str
+    extra_options: str = ""
 
 
 class CreateWorktreeModal(ModalScreen[CreateWorktreeResult | None]):
@@ -53,9 +54,15 @@ class CreateWorktreeModal(ModalScreen[CreateWorktreeResult | None]):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, default_branch: str = "master", **kwargs) -> None:
+    def __init__(
+        self,
+        default_branch: str = "master",
+        show_extra_options: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self._default_branch = default_branch
+        self._show_extra_options = show_extra_options
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -64,6 +71,9 @@ class CreateWorktreeModal(ModalScreen[CreateWorktreeResult | None]):
             yield Input(placeholder="my-feature-branch", id="branch-input")
             yield Static("Base branch:", classes="modal-label")
             yield Input(value=self._default_branch, id="base-input")
+            if self._show_extra_options:
+                yield Static("Extra options:", classes="modal-label")
+                yield Input(placeholder="e.g. --no-build", id="extra-input")
             yield Static("[dim]enter to confirm · esc to cancel[/dim]", classes="modal-hint")
 
     def on_mount(self) -> None:
@@ -73,6 +83,11 @@ class CreateWorktreeModal(ModalScreen[CreateWorktreeResult | None]):
         if event.input.id == "branch-input":
             self.query_one("#base-input", Input).focus()
         elif event.input.id == "base-input":
+            if self._show_extra_options:
+                self.query_one("#extra-input", Input).focus()
+            else:
+                self._confirm()
+        elif event.input.id == "extra-input":
             self._confirm()
 
     def _confirm(self) -> None:
@@ -82,7 +97,10 @@ class CreateWorktreeModal(ModalScreen[CreateWorktreeResult | None]):
             self.query_one("#branch-input", Input).focus()
             return
         base = self.query_one("#base-input", Input).value.strip() or self._default_branch
-        self.dismiss(CreateWorktreeResult(branch=branch, base_branch=base))
+        extra = ""
+        if self._show_extra_options:
+            extra = self.query_one("#extra-input", Input).value.strip()
+        self.dismiss(CreateWorktreeResult(branch=branch, base_branch=base, extra_options=extra))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

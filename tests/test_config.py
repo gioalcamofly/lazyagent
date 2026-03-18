@@ -128,3 +128,25 @@ class TestFormatCommand:
     def test_no_placeholders(self):
         result = format_command("simple-command", branch="ignored")
         assert result == "simple-command"
+
+    def test_force_placeholder_true(self):
+        result = format_command("script.sh {name} {force}", name="wt", force=True)
+        assert result == "script.sh wt --force"
+
+    def test_force_placeholder_false(self):
+        result = format_command("script.sh {name} {force}", name="wt", force=False)
+        assert result == "script.sh wt "
+
+    def test_extra_placeholder(self):
+        result = format_command(
+            "script.sh {branch} {extra}", branch="feat", extra="--no-build"
+        )
+        assert result == "script.sh feat --no-build"
+
+    def test_extra_placeholder_empty(self):
+        result = format_command("script.sh {branch} {extra}", branch="feat")
+        assert result == "script.sh feat "
+
+    def test_force_not_in_template_is_ignored(self):
+        result = format_command("script.sh {name}", name="wt", force=True)
+        assert result == "script.sh wt"

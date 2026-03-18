@@ -17,6 +17,7 @@ from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
+from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.prompt_modal import SpawnModal
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
@@ -117,6 +118,14 @@ class LazyAgent(App):
         self.sub_title = f"{count} worktree{'s' if count != 1 else ''}"
 
         self._refresh_git_statuses()
+
+    def _select_worktree_by_path(self, path: str) -> None:
+        """Highlight the worktree with the given path in the sidebar list."""
+        wt_list = self.query_one(WorktreeList)
+        for idx, child in enumerate(wt_list.children):
+            if isinstance(child, WorktreeListItem) and child.worktree.path == path:
+                wt_list.index = idx
+                break
 
     def _get_selected_worktree(self) -> WorktreeInfo | None:
         """Get the currently highlighted worktree."""
@@ -341,7 +350,10 @@ class LazyAgent(App):
             self._do_create_worktree(result)
 
         self.push_screen(
-            CreateWorktreeModal(default_branch=self._config.default_branch),
+            CreateWorktreeModal(
+                default_branch=self._config.default_branch,
+                show_extra_options=self._config.has_custom_create,
+            ),
             on_modal_dismiss,
         )
 
@@ -360,6 +372,7 @@ class LazyAgent(App):
                 base=result.base_branch,
                 path=wt_path,
                 repo=self._repo_root,
+                extra=result.extra_options,
             )
             self._send_to_terminal(cmd)
             self.notify("Command sent to terminal — press r to refresh when done", timeout=5)
@@ -368,6 +381,7 @@ class LazyAgent(App):
                 manager = WorktreeManager(self._repo_root)
                 new_path = manager.create(result.branch, result.base_branch)
                 self._load_worktrees()
+                self._select_worktree_by_path(new_path)
                 self.notify(f"Created worktree: {os.path.basename(new_path)}")
             except WorktreeManagerError as e:
                 self.notify(str(e), severity="error", timeout=5)
@@ -389,19 +403,19 @@ class LazyAgent(App):
             )
             return
 
-        def on_confirm(confirmed: bool) -> None:
-            if confirmed and worktree is not None:
-                self._do_remove_worktree(worktree)
+        def on_remove_dismiss(result: RemoveWorktreeResult | None) -> None:
+            if result is not None and worktree is not None:
+                self._do_remove_worktree(worktree, force=result.force)
 
         self.push_screen(
-            ConfirmModal(
+            RemoveWorktreeModal(
                 title="Remove worktree",
                 body=f"Remove [bold]{worktree.display_label}[/bold] ({worktree.name})?",
             ),
-            on_confirm,
+            on_remove_dismiss,
         )
 
-    def _do_remove_worktree(self, worktree: WorktreeInfo) -> None:
+    def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
         if self._config.has_custom_remove:
             cmd = format_command(
                 self._config.worktree.remove,  # type: ignore[arg-type]
@@ -410,6 +424,7 @@ class LazyAgent(App):
                 base="",
                 path=worktree.path,
                 repo=self._repo_root,
+                force=force,
             )
             self._send_to_terminal(f"cd {self._repo_root} && {cmd}")
             self.action_focus_terminal()
@@ -417,8 +432,10 @@ class LazyAgent(App):
         else:
             try:
                 manager = WorktreeManager(self._repo_root)
-                manager.remove(worktree.path)
+                manager.remove(worktree.path, force=force)
                 self._load_worktrees()
+                if self.worktrees:
+                    self._select_worktree_by_path(self.worktrees[0].path)
                 self.notify(f"Removed worktree: {worktree.name}")
             except WorktreeManagerError as e:
                 self.notify(str(e), severity="error", timeout=5)
