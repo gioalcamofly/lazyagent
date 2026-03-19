@@ -53,10 +53,16 @@ class ConfirmModal(ModalScreen[bool]):
         with Vertical():
             yield Static(self._title_text, classes="modal-title")
             yield Static(self._body_text, classes="modal-body")
-            yield Static(
-                "[bold cyan]y[/bold cyan] yes  [bold cyan]n[/bold cyan] no",
-                classes="modal-hint",
-            )
+            yield from self._extra_compose()
+            yield Static(self._hint_text(), classes="modal-hint")
+
+    def _extra_compose(self) -> ComposeResult:
+        """Override to add widgets between body and hint."""
+        return ()
+
+    def _hint_text(self) -> str:
+        """Override to customise the hint line."""
+        return "[bold cyan]y[/bold cyan] yes  [bold cyan]n[/bold cyan] no"
 
     def action_confirm(self) -> None:
         self.dismiss(True)

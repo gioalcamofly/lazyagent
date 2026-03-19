@@ -4,6 +4,7 @@ from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateW
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.prompt_modal import SpawnModal
+from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
 
 __all__ = [
@@ -13,6 +14,8 @@ __all__ = [
     "CreateWorktreeResult",
     "MonitoredTerminal",
     "PrStatusBar",
+    "RemoveWorktreeModal",
+    "RemoveWorktreeResult",
     "SpawnModal",
     "WorktreeList",
     "WorktreeListItem",
