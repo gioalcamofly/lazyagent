@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-03-19
+
+### Added
+- Provider observability: real-time agent lifecycle detection via JSONL log tailing for Claude, Codex, and Gemini
+- Claude observer with tool-use hook detection and `--settings` flag support
+- Codex and Gemini observers with structured event parsing
+- `AgentObserver` base interface and `CompositeObserver` for combining observation strategies
+- Rich agent status model with lifecycle confidence levels
+- Remove worktree modal with force-removal toggle (`f` key)
+
+### Changed
+- Worktree removal now supports `--force` flag for dirty worktrees
+- Pending observer events are flushed on PTY disconnect
+
 ## [0.2.2] - 2026-03-16
 
 ### Fixed
