@@ -3,13 +3,56 @@ from __future__ import annotations
 import json
 
 from lazyagent.agent_observers import (
+    AgentLifecycleEvent,
+    AgentObserver,
     ClaudeHooksObserver,
     CodexAppServerObserver,
+    CompositeObserver,
     GeminiTelemetryObserver,
     GeminiPromptObserver,
     LifecycleConfidence,
 )
 from lazyagent.models import AgentStatus
+
+
+class TestCompositeObserver:
+    def test_flattens_events_from_multiple_observers(self):
+        class FakeObserver(AgentObserver):
+            def __init__(self, event):
+                self._event = event
+
+            def on_process_started(self):
+                return [self._event]
+
+        evt_a = AgentLifecycleEvent(
+            status=AgentStatus.RUNNING,
+            confidence=LifecycleConfidence.HIGH,
+            detail="a",
+        )
+        evt_b = AgentLifecycleEvent(
+            status=AgentStatus.WAITING,
+            confidence=LifecycleConfidence.MEDIUM,
+            detail="b",
+        )
+        composite = CompositeObserver([FakeObserver(evt_a), FakeObserver(evt_b)])
+        events = composite.on_process_started()
+        assert len(events) == 2
+        assert events[0] is evt_a
+        assert events[1] is evt_b
+
+    def test_cleanup_calls_all_observers(self):
+        cleaned = []
+
+        class TrackingObserver(AgentObserver):
+            def __init__(self, name):
+                self._name = name
+
+            def cleanup(self):
+                cleaned.append(self._name)
+
+        composite = CompositeObserver([TrackingObserver("a"), TrackingObserver("b")])
+        composite.cleanup()
+        assert cleaned == ["a", "b"]
 
 
 class TestGeminiPromptObserver:

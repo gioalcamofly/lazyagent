@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 from lazyagent.models import AgentStatus, LifecycleConfidence
@@ -87,8 +86,12 @@ class CompositeObserver(AgentObserver):
             observer.cleanup()
 
 
-class ClaudeHooksObserver(AgentObserver):
-    """Observer that tails Claude hook events written to a JSONL file."""
+class JsonlTailObserver(AgentObserver):
+    """Base observer that incrementally tails a JSONL log file.
+
+    Subclasses implement ``_map_event`` to convert each parsed JSON object
+    into an optional ``AgentLifecycleEvent``.
+    """
 
     def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
         self._log_path = Path(log_path)
@@ -110,7 +113,7 @@ class ClaudeHooksObserver(AgentObserver):
                     data = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                mapped = self._map_hook_event(data)
+                mapped = self._map_event(data)
                 if mapped is not None:
                     events.append(mapped)
             self._offset = handle.tell()
@@ -120,7 +123,14 @@ class ClaudeHooksObserver(AgentObserver):
         if self._temp_dir is not None:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
 
-    def _map_hook_event(self, data: dict) -> AgentLifecycleEvent | None:
+    def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
+        raise NotImplementedError
+
+
+class ClaudeHooksObserver(JsonlTailObserver):
+    """Observer that tails Claude hook events written to a JSONL file."""
+
+    def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_name = data.get("hook_event_name")
         if event_name == "Notification":
             notification_type = str(data.get("notification_type", "")).strip().lower()
@@ -181,40 +191,10 @@ class ClaudeHooksObserver(AgentObserver):
         return None
 
 
-class CodexAppServerObserver(AgentObserver):
+class CodexAppServerObserver(JsonlTailObserver):
     """Observer that consumes Codex App Server events from a JSONL file."""
 
-    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
-        self._log_path = Path(log_path)
-        self._temp_dir = Path(temp_dir) if temp_dir else None
-        self._offset = 0
-
-    def poll(self) -> list[AgentLifecycleEvent]:
-        if not self._log_path.exists():
-            return []
-
-        events: list[AgentLifecycleEvent] = []
-        with self._log_path.open("r", encoding="utf-8") as handle:
-            handle.seek(self._offset)
-            for line in handle:
-                payload = line.strip()
-                if not payload:
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                mapped = self._map_app_server_event(data)
-                if mapped is not None:
-                    events.append(mapped)
-            self._offset = handle.tell()
-        return events
-
-    def cleanup(self) -> None:
-        if self._temp_dir is not None:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-
-    def _map_app_server_event(self, data: dict) -> AgentLifecycleEvent | None:
+    def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         # Based on documented Codex App Server event shapes
         method = data.get("method")
         params = data.get("params", {})
@@ -268,40 +248,10 @@ class CodexAppServerObserver(AgentObserver):
         return None
 
 
-class GeminiTelemetryObserver(AgentObserver):
+class GeminiTelemetryObserver(JsonlTailObserver):
     """Observer that interprets Gemini telemetry streams from a JSONL file."""
 
-    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
-        self._log_path = Path(log_path)
-        self._temp_dir = Path(temp_dir) if temp_dir else None
-        self._offset = 0
-
-    def poll(self) -> list[AgentLifecycleEvent]:
-        if not self._log_path.exists():
-            return []
-
-        events: list[AgentLifecycleEvent] = []
-        with self._log_path.open("r", encoding="utf-8") as handle:
-            handle.seek(self._offset)
-            for line in handle:
-                payload = line.strip()
-                if not payload:
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                mapped = self._map_telemetry_event(data)
-                if mapped is not None:
-                    events.append(mapped)
-            self._offset = handle.tell()
-        return events
-
-    def cleanup(self) -> None:
-        if self._temp_dir is not None:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-
-    def _map_telemetry_event(self, data: dict) -> AgentLifecycleEvent | None:
+    def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_type = data.get("event_type")
 
         # Telemetry provides activity signals (with gemini_cli. prefix)
@@ -372,8 +322,10 @@ class GeminiPromptObserver(AgentObserver):
                         detail="gemini prompt detected on screen",
                     )
                 ]
-        elif current_status == AgentStatus.WAITING and \
-             current_detail == "gemini prompt detected on screen":
+        elif (
+            current_status == AgentStatus.WAITING
+            and current_detail == "gemini prompt detected on screen"
+        ):
             return [
                 AgentLifecycleEvent(
                     status=AgentStatus.RUNNING,

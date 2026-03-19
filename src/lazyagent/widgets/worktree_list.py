@@ -3,7 +3,7 @@ from __future__ import annotations
 from textual.binding import Binding
 from textual.widgets import ListItem, ListView, Static
 
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
 
 
 class WorktreeListItem(ListItem):
@@ -47,8 +47,6 @@ class WorktreeListItem(ListItem):
         status = state.status
         conf = state.confidence
         detail = state.detail
-
-        from lazyagent.models import LifecycleConfidence
 
         def _fmt(text: str, color: str) -> str:
             if conf == LifecycleConfidence.LOW:

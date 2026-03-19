@@ -6,16 +6,11 @@ The first implementation slice for this plan is already in progress on branch `f
 
 Implemented so far:
 - `src/lazyagent/agent_providers.py` now carries provider observability metadata in addition to command-building logic
-- `src/lazyagent/agent_observers.py` exists and defines a normalized observer layer
-- `src/lazyagent/widgets/monitored_terminal.py` now delegates lifecycle detection to observers instead of hardcoding all logic internally
-- the terminal sentinel behavior has been preserved as a fallback observer
-- Claude now has an initial hooks-based runtime context and `ClaudeHooksObserver`, layered together with the sentinel fallback through a composite observer
-
-Current limitations:
-- the app still uses the existing coarse `AgentStatus` model (`RUNNING`, `WAITING`, `POSSIBLY_HANGED`, `NO_AGENT`)
-- Claude hook events are currently mapped into the existing status model rather than richer normalized statuses
-- Codex and Gemini still use the terminal fallback observer only
-- full `pytest` verification is still blocked in the current sandbox, although the touched modules compile successfully with `python3 -m compileall src/lazyagent tests`
+- `src/lazyagent/agent_observers.py` defines a normalized observer layer with a `JsonlTailObserver` base class for file-based observers
+- `src/lazyagent/widgets/monitored_terminal.py` delegates lifecycle detection to observers instead of hardcoding logic internally
+- the terminal sentinel (`"your turn"` + `--append-system-prompt`) has been fully removed in favor of provider-native observers
+- Claude uses hooks via `ClaudeHooksObserver`, Codex uses `CodexAppServerObserver`, Gemini uses `GeminiTelemetryObserver` + `GeminiPromptObserver`
+- Rich `AgentStatus` model supports `RUNNING`, `WAITING`, `WAITING_FOR_USER`, `WAITING_FOR_APPROVAL`, `COMPLETED`, `FAILED`, `INTERRUPTED`, `POSSIBLY_HANGED`, and `NO_AGENT`
 
 ## Immediate Next Steps
 

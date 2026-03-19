@@ -75,8 +75,7 @@ By default it launches `claude`; set `provider = "codex"` or `provider = "gemini
 
 - **Claude**: Uses **Hooks** (via JSONL logs) to detect permission prompts, idle states, and task completion with high confidence.
 - **Codex**: Uses **App Server Events** (JSON-RPC) to track turns, approval requests, and failures.
-- **Gemini**: Uses **Telemetry** (via file export) to monitor activity (requests, tool calls) and session boundaries.
-- **Universal Fallback**: All providers include a **Terminal Sentinel** observer that scans for configured phrases (like "your turn") as a secondary signal.
+- **Gemini**: Uses **Telemetry** (via file export) and **screen prompt detection** to monitor activity and session boundaries.
 
 Statuses are normalized across providers into a clear lifecycle:
 - `running` (green): Agent is actively working or calling tools.

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
-
-from textual import log
 
 from lazyagent.agent_observers import AgentObserver
 from lazyagent.messages import AgentExited, AgentStatusChanged
@@ -91,10 +88,10 @@ class MonitoredTerminal(ScrollableTerminal):
         return "\n".join(lines)
 
     def _scan_screen(self) -> None:
-        """Check the rendered pyte screen buffer for the sentinel phrase.
+        """Delegate screen-based lifecycle detection to the observer.
 
         Uses the already-parsed screen content so ANSI codes don't interfere.
-        Keeps WAITING as long as the sentinel is visible on screen.
+        Also polls the observer for any file-based events.
         """
         screen_text = self._rendered_screen_text()
         self._apply_events(
