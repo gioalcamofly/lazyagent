@@ -93,10 +93,15 @@ class TestAgentStatusEnum:
         assert AgentStatus.NO_AGENT.value == "no_agent"
         assert AgentStatus.RUNNING.value == "running"
         assert AgentStatus.WAITING.value == "waiting"
+        assert AgentStatus.WAITING_FOR_USER.value == "waiting_for_user"
+        assert AgentStatus.WAITING_FOR_APPROVAL.value == "waiting_for_approval"
+        assert AgentStatus.COMPLETED.value == "completed"
+        assert AgentStatus.FAILED.value == "failed"
+        assert AgentStatus.INTERRUPTED.value == "interrupted"
         assert AgentStatus.POSSIBLY_HANGED.value == "possibly_hanged"
 
-    def test_has_four_members(self):
-        assert len(AgentStatus) == 4
+    def test_has_expected_members(self):
+        assert len(AgentStatus) == 9
 
 
 class TestAgentState:
