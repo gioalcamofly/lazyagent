@@ -109,6 +109,7 @@ class MonitoredTerminal(ScrollableTerminal):
     def _on_recv_disconnect(self) -> None:
         """Handle pty disconnect."""
         self._apply_events(self._observer.on_disconnect())
+        self._apply_events(self._observer.poll())
         self._observer.cleanup()
         self._status = AgentStatus.NO_AGENT
         if not self._stopped:
