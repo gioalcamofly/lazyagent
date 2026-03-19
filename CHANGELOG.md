@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-03-19
+
+### Fixed
+- Stale `SENTINEL_SYSTEM_PROMPT` import in test_center_panel causing CI collection failure
+- Updated sentinel-based test assertions to match new hooks-based observer approach
+
 ## [0.3.0] - 2026-03-19
 
 ### Added
