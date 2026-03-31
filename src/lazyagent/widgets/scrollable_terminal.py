@@ -120,6 +120,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
         self.stream = pyte.Stream(self._screen)
 
+        # Cached resolved default colors (invalidated on theme change)
+        self._cached_default_fg: str | None = None
+        self._cached_default_bg: str | None = None
+
         # Key translation table (same as textual-terminal)
         self.ctrl_keys = {
             "up": "\x1bOA",
@@ -332,7 +336,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             not self._screen.cursor.hidden
             and self._screen.cursor.y == screen_y
         )
-        return self._row_to_strip(row, width, show_cursor=show_cursor, screen_y=screen_y)
+        return self._row_to_strip(row, width, show_cursor=show_cursor)
 
     def _row_to_strip(
         self,
@@ -340,7 +344,6 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         width: int,
         *,
         show_cursor: bool = False,
-        screen_y: int = -1,
     ) -> Strip:
         """Convert a pyte row (dict of column→Char) to a textual Strip."""
         text = Text()
@@ -375,6 +378,23 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # Style helpers (ported from textual-terminal Terminal)
     # ------------------------------------------------------------------
 
+    def notify_style_update(self) -> None:
+        self._cached_default_fg = None
+        self._cached_default_bg = None
+        super().notify_style_update()
+
+    def _resolved_default_colors(self) -> tuple[str, str]:
+        """Return resolved (fg, bg) for default/inherited colors, cached."""
+        if self._cached_default_fg is None:
+            wstyle = self.rich_style
+            self._cached_default_fg = (
+                wstyle.color.name if wstyle.color and wstyle.color.name else "white"
+            )
+            self._cached_default_bg = (
+                wstyle.bgcolor.name if wstyle.bgcolor and wstyle.bgcolor.name else "black"
+            )
+        return self._cached_default_fg, self._cached_default_bg
+
     @staticmethod
     def _char_style_cmp(given: Char, other: Char) -> bool:
         """Return True if two pyte Chars have the same style."""
@@ -406,19 +426,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
         Swaps the cell's fg/bg so the cursor appears as a solid block.
         When the cell uses default (inherited) colors, resolves actual
-        colors from the widget's own style so the swap produces visible
+        colors from the cached widget theme so the swap produces visible
         contrast — bare ``reverse`` on two default colors is a no-op.
         """
         cell_fg = self._detect_color(char.fg)
         cell_bg = self._detect_color(char.bg)
 
-        # Resolve "default" to the widget's actual theme colors
-        if cell_fg == "default":
-            wstyle = self.rich_style
-            cell_fg = wstyle.color.name if wstyle.color else "white"
-        if cell_bg == "default":
-            wstyle = self.rich_style
-            cell_bg = wstyle.bgcolor.name if wstyle.bgcolor else "black"
+        if cell_fg == "default" or cell_bg == "default":
+            default_fg, default_bg = self._resolved_default_colors()
+            if cell_fg == "default":
+                cell_fg = default_fg
+            if cell_bg == "default":
+                cell_bg = default_bg
 
         # Cursor = swapped fg/bg
         return Style(color=cell_bg, bgcolor=cell_fg)
