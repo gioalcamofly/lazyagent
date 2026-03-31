@@ -9,6 +9,7 @@ from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
+    ResumeMode,
     env_exports,
     get_agent_provider,
 )
@@ -240,6 +241,7 @@ class WorktreePanel(Container):
         self,
         skip_permissions: bool = False,
         agent_provider: str = DEFAULT_AGENT_PROVIDER,
+        resume_mode: ResumeMode = ResumeMode.NEW,
     ) -> None:
         """Spawn the configured coding agent process in the Agent pane."""
         pane = self.query_one("#agent-tab", TabPane)
@@ -263,6 +265,7 @@ class WorktreePanel(Container):
             self.worktree_path,
             skip_permissions=skip_permissions,
             runtime_context=runtime_context,
+            resume_mode=resume_mode,
         )
 
         terminal = MonitoredTerminal(

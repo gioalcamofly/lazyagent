@@ -16,6 +16,12 @@ class ObservationMode(Enum):
     APP_SERVER = "app_server"
     TELEMETRY = "telemetry"
 
+
+class ResumeMode(Enum):
+    NEW = "new"
+    RESUME_PICK = "pick"
+    RESUME_LAST = "last"
+
 DEFAULT_AGENT_PROVIDER = "claude"
 
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
@@ -44,18 +50,33 @@ class AgentProvider:
     supports_structured_turn_events: bool = False
     supports_approval_events: bool = False
     supports_completion_events: bool = False
+    resume_pick_args: tuple[str, ...] = ()
+    resume_last_args: tuple[str, ...] = ()
+    resume_is_subcommand: bool = False
 
     def build_command(
         self,
         worktree_path: str,
         skip_permissions: bool = False,
         runtime_context: ProviderRuntimeContext | None = None,
+        resume_mode: ResumeMode = ResumeMode.NEW,
     ) -> str:
         """Build the full shell command used to launch this provider."""
         context = runtime_context or self.build_runtime_context(worktree_path)
-        parts = [self.executable]
-        if skip_permissions:
-            parts.append(self.dangerous_flag)
+
+        resume_args = self._resume_args(resume_mode)
+
+        if self.resume_is_subcommand and resume_args:
+            # Subcommand providers (e.g. codex): executable + resume_args + flags
+            parts = [self.executable, *resume_args]
+            if skip_permissions:
+                parts.append(self.dangerous_flag)
+        else:
+            parts = [self.executable]
+            if skip_permissions:
+                parts.append(self.dangerous_flag)
+            parts.extend(resume_args)
+
         if "settings_path" in context.metadata:
             parts.extend(["--settings", context.metadata["settings_path"]])
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
@@ -65,6 +86,14 @@ class AgentProvider:
             f" && exec {inner_cmd}"
         )
         return f"bash -c {shlex.quote(script)}"
+
+    def _resume_args(self, resume_mode: ResumeMode) -> tuple[str, ...]:
+        """Return CLI args for the given resume mode."""
+        if resume_mode == ResumeMode.RESUME_PICK:
+            return self.resume_pick_args
+        if resume_mode == ResumeMode.RESUME_LAST:
+            return self.resume_last_args
+        return ()
 
     def build_runtime_context(self, worktree_path: str) -> ProviderRuntimeContext:
         """Build provider-specific runtime metadata for the spawned session."""
@@ -132,6 +161,8 @@ PROVIDERS = {
         observation_mode=ObservationMode.HOOKS,
         supports_approval_events=True,
         supports_completion_events=True,
+        resume_pick_args=("--resume",),
+        resume_last_args=("--continue",),
     ),
     "codex": AgentProvider(
         name="codex",
@@ -141,6 +172,9 @@ PROVIDERS = {
         supports_structured_turn_events=True,
         supports_approval_events=True,
         supports_completion_events=True,
+        resume_pick_args=("resume",),
+        resume_last_args=("resume", "--last"),
+        resume_is_subcommand=True,
     ),
     "gemini": AgentProvider(
         name="gemini",
@@ -148,6 +182,8 @@ PROVIDERS = {
         dangerous_flag="--approval-mode=yolo",
         observation_mode=ObservationMode.TELEMETRY,
         supports_completion_events=True,
+        resume_pick_args=("--resume",),
+        resume_last_args=("--resume",),
     ),
 }
 

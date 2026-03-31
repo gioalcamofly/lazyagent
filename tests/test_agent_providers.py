@@ -9,6 +9,7 @@ from lazyagent.agent_observers import (
 from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
     ObservationMode,
+    ResumeMode,
     get_agent_provider,
     normalize_provider_name,
 )
@@ -118,3 +119,74 @@ class TestClaudeHooksSettings:
         script = shlex.split(command)[2]
         assert "--settings" in script
         assert context.metadata["settings_path"] in script
+
+
+class TestBuildCommandResume:
+    def test_claude_new_has_no_resume_flags(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", resume_mode=ResumeMode.NEW)
+        )[2]
+        assert "--resume" not in script
+        assert "--continue" not in script
+
+    def test_claude_resume_pick(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_PICK)
+        )[2]
+        assert "--resume" in script
+        assert "--continue" not in script
+
+    def test_claude_resume_last(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_LAST)
+        )[2]
+        assert "--continue" in script
+        assert "--resume" not in script
+
+    def test_codex_resume_pick(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_PICK)
+        )[2]
+        assert "exec codex resume" in script
+
+    def test_codex_resume_last(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_LAST)
+        )[2]
+        assert "exec codex resume --last" in script
+
+    def test_codex_resume_pick_with_dangerous(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command(
+                "/tmp/wt", skip_permissions=True, resume_mode=ResumeMode.RESUME_PICK
+            )
+        )[2]
+        assert "exec codex resume" in script
+        assert "--dangerously-bypass-approvals-and-sandbox" in script
+
+    def test_codex_new_has_no_resume_subcommand(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", resume_mode=ResumeMode.NEW)
+        )[2]
+        assert "exec codex" in script
+        # Check the exec portion only — env vars may contain "resume" as substring
+        exec_part = script.split("exec ")[1]
+        assert "resume" not in exec_part
+
+    def test_gemini_resume_pick(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_PICK)
+        )[2]
+        assert "--resume" in script
+
+    def test_gemini_resume_last(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command("/tmp/wt", resume_mode=ResumeMode.RESUME_LAST)
+        )[2]
+        assert "--resume" in script
+
+    def test_gemini_new_has_no_resume_flags(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command("/tmp/wt", resume_mode=ResumeMode.NEW)
+        )[2]
+        assert "--resume" not in script

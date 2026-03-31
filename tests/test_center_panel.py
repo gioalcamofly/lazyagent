@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import shlex
 
-from lazyagent.agent_providers import env_exports, get_agent_provider
+from lazyagent.agent_providers import ResumeMode, env_exports, get_agent_provider
 
 
 def _build_spawn_command(
     worktree_path: str,
     skip_permissions: bool = False,
     agent_provider: str = "claude",
+    resume_mode: ResumeMode = ResumeMode.NEW,
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
     return get_agent_provider(agent_provider).build_command(
         worktree_path,
         skip_permissions=skip_permissions,
+        resume_mode=resume_mode,
     )
 
 
@@ -97,6 +99,35 @@ class TestCommandBuilding:
         assert "--approval-mode=yolo" in script
         assert "--append-system-prompt" not in script
         assert "--yolo" not in script
+
+
+class TestResumeCommandBuilding:
+    def test_claude_resume_pick_includes_resume_flag(self):
+        cmd = _build_spawn_command("/tmp/wt", resume_mode=ResumeMode.RESUME_PICK)
+        script = shlex.split(cmd)[2]
+        assert "--resume" in script
+
+    def test_claude_resume_last_includes_continue_flag(self):
+        cmd = _build_spawn_command("/tmp/wt", resume_mode=ResumeMode.RESUME_LAST)
+        script = shlex.split(cmd)[2]
+        assert "--continue" in script
+
+    def test_codex_resume_pick_uses_subcommand(self):
+        cmd = _build_spawn_command("/tmp/wt", agent_provider="codex", resume_mode=ResumeMode.RESUME_PICK)
+        script = shlex.split(cmd)[2]
+        assert "exec codex resume" in script
+
+    def test_gemini_resume_pick_includes_resume_flag(self):
+        cmd = _build_spawn_command("/tmp/wt", agent_provider="gemini", resume_mode=ResumeMode.RESUME_PICK)
+        script = shlex.split(cmd)[2]
+        assert "--resume" in script
+
+    def test_new_session_has_no_resume_flags(self):
+        cmd = _build_spawn_command("/tmp/wt", resume_mode=ResumeMode.NEW)
+        script = shlex.split(cmd)[2]
+        assert "--resume" not in script
+        assert "--continue" not in script
+        assert "resume" not in script.split("exec")[1].split("--settings")[0]
 
 
 class TestEnvExports:
