@@ -1,7 +1,7 @@
 """Tests for ScrollbackScreen and ScrollableTerminal."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pyte
 from pyte.screens import Char
