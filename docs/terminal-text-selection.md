@@ -2,67 +2,29 @@
 
 ## What we're doing
 
-Enabling mouse-based text selection and copy inside `ScrollableTerminal` panes (agent and terminal tabs). Textual has a built-in selection system, but it requires widgets to opt in by embedding offset metadata in rendered segments and rendering the selection highlight themselves.
+Enabling mouse-based text selection and copy inside `ScrollableTerminal` panes (agent and terminal tabs).
 
-## What was implemented
+## Architecture: Widget-local selection
 
-### 1. Offset metadata in `render_line()` (enables position mapping)
+We use a **widget-local** selection system instead of Textual's built-in cross-widget selection. Textual's Screen-level selection spans across all widgets in the drag region, which causes text in adjacent panes (agent terminal, shell terminal) to be highlighted when dragging within a single pane.
 
-`Strip.apply_offsets(x, y)` is called on each rendered strip so Textual's Screen can map mouse coordinates to text positions within the widget. This is what allows Textual to know *where* in the widget's content the user clicked/dragged.
+### How it works
 
-### 2. Selection highlight rendering in `_row_to_strip()`
+1. **`ALLOW_SELECT = False`** — Opts out of Textual's Screen-level selection tracking entirely. This prevents the cross-widget spatial-map selection in `Screen._watch__select_end`.
 
-Textual does **not** automatically render selection highlights — each widget must do it. We check `self.text_selection`, call `selection.get_span(virtual_y)` to find the selected range on each line, and apply the `screen--selection` component style. This follows the same pattern as Textual's built-in `Log` widget.
+2. **Mouse event handlers** (`on_mouse_down`, `on_mouse_move`, `on_mouse_up`) — Track selection start/end as `Offset` coordinates in virtual space (scrollback + screen). `capture_mouse()` is used during drag to keep events confined to the originating widget.
 
-### 3. `get_selection()` override
+3. **`_local_selection`** property — Returns a `Selection` object from the widget's own `_sel_start`/`_sel_end`, used by `_row_to_strip()` to render highlights and by `_selected_text()` to extract content.
 
-Extracts the full text content (scrollback + live screen buffer) from pyte so Textual's `Selection.extract()` can pull the selected substring.
-
-### 4. Ctrl+Shift+C copy handler
-
-Intercepts `ctrl+shift+c` in `on_key()` before the event is forwarded to the PTY. Calls `screen.get_selected_text()` and `app.copy_to_clipboard()`.
+4. **`Ctrl+Shift+C`** — Extracts text via `_selected_text()` and calls `app.copy_to_clipboard()`.
 
 ## Current state
 
-- Visual selection **works** — clicking and dragging within a terminal pane highlights text correctly.
-- Copy **does not work** — `Ctrl+Shift+C` fires, `screen.get_selected_text()` is called, but the copied text doesn't reach the system clipboard.
+- Visual selection **works** — clicking and dragging within a terminal pane highlights text correctly, confined to that pane only.
+- Copy uses `app.copy_to_clipboard()` (OSC 52). Terminal emulators may need OSC 52 enabled (Alacritty: `allow_osc52`, iTerm2: "Allow clipboard access").
 
-## What's failing (copy to clipboard)
+## Remaining items
 
-The likely issue is in the clipboard pipeline. Possible causes:
-
-1. **`app.copy_to_clipboard()` uses OSC 52** — Textual's clipboard support sends an OSC 52 escape sequence to the host terminal. Not all terminal emulators support OSC 52, and some require explicit opt-in (e.g., Alacritty needs `allow_osc52` in config, iTerm2 needs "Allow clipboard access" enabled).
-
-2. **`screen.get_selected_text()` returns `None`** — The selection might be cleared before `ctrl+shift+c` fires (e.g., the key event itself triggers a mouse-up or focus change that clears the selection).
-
-3. **`get_selection()` text extraction mismatch** — Our `get_selection()` builds text from the full scrollback + screen buffer, but `Selection.extract()` uses line/column offsets from the selection. If the offsets don't align with our text structure (e.g., off-by-one in line numbering, trailing whitespace differences), `extract()` may return empty or wrong text.
-
-## Next options to investigate
-
-### Option A: Debug the clipboard pipeline
-
-1. Add logging to the `ctrl+shift+c` handler to see what `screen.get_selected_text()` returns.
-2. If it returns text, the issue is OSC 52 support in the host terminal. Try `xclip`/`xsel` as a fallback.
-3. If it returns `None`, check `screen.selections` to see if the selection is being tracked.
-
-### Option B: Bypass Textual's clipboard, use system clipboard directly
-
-Instead of `app.copy_to_clipboard()`, use `subprocess` to pipe text to `xclip -selection clipboard` or `xsel --clipboard` on Linux, `pbcopy` on macOS. This bypasses OSC 52 entirely.
-
-```python
-import subprocess
-text = self.screen.get_selected_text()
-if text:
-    subprocess.Popen(
-        ["xclip", "-selection", "clipboard"],
-        stdin=subprocess.PIPE,
-    ).communicate(text.encode())
-```
-
-### Option C: Debug selection tracking
-
-The selection might be getting cleared on key press. Textual's Screen clears selection on certain events. Investigate whether pressing any key (including Ctrl+Shift+C) clears the selection before our handler runs.
-
-### Option D: Use Textual's built-in copy binding
-
-Textual may already have a built-in copy binding that works with the selection system. Check if there's a default key binding or action for copying selected text that we can leverage instead of implementing our own.
+- **System clipboard fallback** — If OSC 52 isn't supported, fall back to `xclip`/`xsel` on Linux, `pbcopy` on macOS.
+- **Double-click word selection** — Select the word under the cursor on double-click.
+- **Selection auto-scroll** — When dragging past the top/bottom edge, scroll the terminal.

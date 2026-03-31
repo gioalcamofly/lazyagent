@@ -9,7 +9,10 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
+import platform
 import re
+import shutil
+import subprocess
 from collections import deque
 
 import pyte
@@ -21,7 +24,7 @@ from rich.style import Style
 from rich.text import Text
 
 from textual import events, log
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
@@ -82,6 +85,8 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     the :class:`ScrollbackScreen` to capture scrolled-off lines.
     """
 
+    ALLOW_SELECT = False  # Disable Textual's cross-widget selection
+
     DEFAULT_CSS = f"""
     ScrollableTerminal {{
         overflow-y: auto;
@@ -116,6 +121,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.recv_task: asyncio.Task | None = None
         self._stopped = False
         self._follow_output = True  # tracks auto-scroll intent across visibility
+
+        # Widget-local text selection (replaces Textual's cross-widget system)
+        self._sel_start: Offset | None = None
+        self._sel_end: Offset | None = None
+        self._is_selecting: bool = False
 
         # pyte screen + stream
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
@@ -368,10 +378,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             ):
                 text.stylize("reverse", x, x + 1)
 
-        try:
-            selection = self.text_selection
-        except (RuntimeError, Exception):
-            selection = None
+        selection = self._local_selection
         if selection is not None and virtual_y >= 0:
             span = selection.get_span(virtual_y)
             if span is not None:
@@ -475,9 +482,9 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             return
 
         if event.key == "ctrl+shift+c":
-            selection = self.screen.get_selected_text()
-            if selection:
-                self.app.copy_to_clipboard(selection)
+            text = self._selected_text()
+            if text:
+                self._copy_to_system_clipboard(text)
             return
 
         event.stop()
@@ -548,11 +555,60 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._update_virtual_size()
 
     # ------------------------------------------------------------------
-    # Selection support
+    # Selection support — widget-local (no cross-pane leaking)
     # ------------------------------------------------------------------
 
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Extract text from scrollback + screen buffer for selection."""
+    @property
+    def _local_selection(self) -> Selection | None:
+        """Current widget-local selection, or None."""
+        if self._sel_start is None or self._sel_end is None:
+            return None
+        return Selection.from_offsets(self._sel_start, self._sel_end)
+
+    def _clear_selection(self) -> None:
+        """Clear the current selection."""
+        if self._sel_start is not None or self._sel_end is not None:
+            self._sel_start = None
+            self._sel_end = None
+            self.refresh()
+
+    def _selected_text(self) -> str | None:
+        """Extract selected text, or None if nothing selected."""
+        selection = self._local_selection
+        if selection is None:
+            return None
+        result = self._extract_selection(selection)
+        if result is None:
+            return None
+        text, _ = result
+        return text if text else None
+
+    @staticmethod
+    def _copy_to_system_clipboard(text: str) -> bool:
+        """Copy text to system clipboard. Returns True on success."""
+        system = platform.system()
+        if system == "Darwin":
+            cmd = ["pbcopy"]
+        elif system == "Linux":
+            if shutil.which("xclip"):
+                cmd = ["xclip", "-selection", "clipboard"]
+            elif shutil.which("xsel"):
+                cmd = ["xsel", "--clipboard", "--input"]
+            elif shutil.which("wl-copy"):
+                cmd = ["wl-copy"]
+            else:
+                return False
+        else:
+            return False
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            proc.communicate(text.encode(), timeout=2)
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    def _extract_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Extract text from scrollback + screen buffer for a selection."""
         lines: list[str] = []
         for row_data in self._screen.scrollback:
             line = "".join(
@@ -569,3 +625,52 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             lines.append(line.rstrip())
         full_text = "\n".join(lines)
         return selection.extract(full_text), "\n"
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Textual callback — delegates to internal extraction."""
+        return self._extract_selection(selection)
+
+    # ------------------------------------------------------------------
+    # Mouse-driven selection
+    # ------------------------------------------------------------------
+
+    def _mouse_to_virtual(self, event: events.MouseEvent) -> Offset:
+        """Convert mouse event coordinates to clamped virtual position."""
+        scroll_y = self.scroll_offset.y
+        virtual_y = scroll_y + event.y
+        width = self.scrollable_content_region.width or self.ncol
+        total_lines = len(self._screen.scrollback) + self._screen.lines
+
+        x = max(0, min(event.x, width - 1))
+        virtual_y = max(0, min(virtual_y, total_lines - 1))
+        return Offset(x, virtual_y)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if self.mouse_tracking:
+            return
+        if event.button != 1:
+            return
+        self._sel_start = self._mouse_to_virtual(event)
+        self._sel_end = None
+        self._is_selecting = True
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._is_selecting:
+            return
+        self._sel_end = self._mouse_to_virtual(event)
+        self.refresh()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._is_selecting:
+            return
+        self._is_selecting = False
+        self.release_mouse()
+        # A click with no drag — clear the selection
+        if self._sel_end is None or self._sel_start == self._sel_end:
+            self._clear_selection()
+            return
+        # Auto-copy selected text to system clipboard on mouse release
+        text = self._selected_text()
+        if text:
+            self._copy_to_system_clipboard(text)

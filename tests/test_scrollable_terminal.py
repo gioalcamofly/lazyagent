@@ -96,6 +96,9 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.recv_task = None
     terminal._stopped = False
     terminal._follow_output = True
+    terminal._sel_start = None
+    terminal._sel_end = None
+    terminal._is_selecting = False
     terminal._screen = ScrollbackScreen(80, 5)
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
@@ -217,8 +220,8 @@ class TestRenderLineOffsets:
 
 
 class TestGetSelection:
-    def test_get_selection_returns_text_from_buffer(self):
-        """get_selection() returns text from scrollback + screen buffer."""
+    def test_extract_selection_returns_text_from_buffer(self):
+        """_extract_selection() returns text from scrollback + screen buffer."""
         from textual.selection import Selection
 
         t = _make_scrollable_terminal()
@@ -226,7 +229,7 @@ class TestGetSelection:
 
         # Create a selection covering the full text
         selection = Selection(start=None, end=None)
-        result = t.get_selection(selection)
+        result = t._extract_selection(selection)
 
         assert result is not None
         text, ending = result
@@ -234,8 +237,8 @@ class TestGetSelection:
         assert "hello" in text
         assert "world" in text
 
-    def test_get_selection_includes_scrollback(self):
-        """get_selection() includes lines from scrollback buffer."""
+    def test_extract_selection_includes_scrollback(self):
+        """_extract_selection() includes lines from scrollback buffer."""
         from textual.selection import Selection
 
         t = _make_scrollable_terminal()
@@ -246,12 +249,59 @@ class TestGetSelection:
         assert len(t._screen.scrollback) > 0
 
         selection = Selection(start=None, end=None)
-        result = t.get_selection(selection)
+        result = t._extract_selection(selection)
 
         assert result is not None
         text, _ = result
         # Scrollback lines should be in the output
         assert "line 0" in text
+
+
+class TestLocalSelection:
+    def test_local_selection_none_when_no_selection(self):
+        """_local_selection returns None when nothing is selected."""
+        t = _make_scrollable_terminal()
+        assert t._local_selection is None
+
+    def test_local_selection_returns_selection(self):
+        """_local_selection returns a Selection when start and end are set."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(5, 0)
+        sel = t._local_selection
+        assert sel is not None
+        assert sel.get_span(0) == (0, 5)
+
+    def test_clear_selection(self):
+        """_clear_selection resets start and end."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(5, 0)
+        # Patch refresh since we're not in a running app
+        t.refresh = MagicMock()
+        t._clear_selection()
+        assert t._sel_start is None
+        assert t._sel_end is None
+
+    def test_selected_text_extracts_content(self):
+        """_selected_text() returns the text covered by the selection."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello world")
+        # Select "hello" (columns 0-5 on virtual row 0, which is screen row 0)
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(5, 0)
+        text = t._selected_text()
+        assert text == "hello"
+
+    def test_allow_select_is_false(self):
+        """ALLOW_SELECT should be False to prevent cross-widget selection."""
+        assert ScrollableTerminal.ALLOW_SELECT is False
 
 
 class TestOnKeyCopy:
@@ -264,17 +314,13 @@ class TestOnKeyCopy:
         t.emulator = MagicMock()
         t.send_queue = asyncio.Queue()
 
-        # Mock screen and app for clipboard
-        mock_screen = MagicMock()
-        mock_screen.get_selected_text.return_value = None
         mock_app = MagicMock()
 
         event = events.Key("ctrl+shift+c", None)
 
         from unittest.mock import patch
-        with patch.object(type(t), "screen", new_callable=lambda: property(lambda self: mock_screen)):
-            with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
-                asyncio.get_event_loop().run_until_complete(t.on_key(event))
+        with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
+            asyncio.get_event_loop().run_until_complete(t.on_key(event))
 
         # Nothing should be in the send queue
         assert t.send_queue.empty()
