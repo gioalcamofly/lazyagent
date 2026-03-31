@@ -1,10 +1,11 @@
 """Tests for ScrollbackScreen and ScrollableTerminal."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pyte
 from pyte.screens import Char
+from rich.style import Style
 
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal, ScrollbackScreen
 
@@ -99,6 +100,8 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal._screen = ScrollbackScreen(80, 5)
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
+    terminal._cached_default_fg = None
+    terminal._cached_default_bg = None
     return terminal
 
 
@@ -181,3 +184,123 @@ class TestStyleHelpers:
     def test_detect_color_passthrough(self):
         assert ScrollableTerminal._detect_color("red") == "red"
         assert ScrollableTerminal._detect_color("default") == "default"
+
+
+class TestCursorStyle:
+    """Tests for _cursor_style and the cached default color resolution."""
+
+    def _make_terminal_with_style(self, fg="white", bg="black"):
+        """Create a terminal with a mocked rich_style returning given colors."""
+        t = _make_scrollable_terminal()
+        style = Style(color=fg, bgcolor=bg)
+        patcher = patch.object(
+            type(t), "rich_style", new_callable=lambda: property(lambda self: style)
+        )
+        patcher.start()
+        # Ensure cache is clean so first call resolves
+        t._cached_default_fg = None
+        t._cached_default_bg = None
+        return t, patcher
+
+    def test_cursor_swaps_fg_bg_for_default_colors(self):
+        """Cursor on a default-color cell swaps resolved theme colors."""
+        t, patcher = self._make_terminal_with_style("white", "black")
+        try:
+            char = Char("x", "default", "default", False, False, False, False, False, False)
+            style = t._cursor_style(char)
+            # fg/bg should be swapped: cursor fg=theme bg, cursor bg=theme fg
+            assert style.color.name == "black"
+            assert style.bgcolor.name == "white"
+        finally:
+            patcher.stop()
+
+    def test_cursor_swaps_explicit_colors(self):
+        """Cursor on a cell with explicit fg/bg swaps those colors directly."""
+        t = _make_scrollable_terminal()
+        char = Char("x", "red", "blue", False, False, False, False, False, False)
+        style = t._cursor_style(char)
+        assert style.color.name == "blue"
+        assert style.bgcolor.name == "red"
+
+    def test_cursor_mixed_default_and_explicit(self):
+        """When only fg is default, it resolves from theme; bg stays explicit."""
+        t, patcher = self._make_terminal_with_style("green", "magenta")
+        try:
+            char = Char("x", "default", "red", False, False, False, False, False, False)
+            style = t._cursor_style(char)
+            # fg was default → resolved to "green", bg was "red"
+            # cursor swaps: color=bg("red"), bgcolor=fg("green")
+            assert style.color.name == "red"
+            assert style.bgcolor.name == "green"
+        finally:
+            patcher.stop()
+
+    def test_cursor_respects_hidden_flag(self):
+        """When cursor.hidden is set, show_cursor should be False."""
+        t = _make_scrollable_terminal()
+        t._screen.cursor.hidden = True
+        t._screen.cursor.y = 0
+        show_cursor = not t._screen.cursor.hidden and t._screen.cursor.y == 0
+        assert show_cursor is False
+
+
+class TestResolvedDefaultColors:
+    """Tests for _resolved_default_colors caching and invalidation."""
+
+    def test_caches_resolved_colors(self):
+        """rich_style is resolved once and then cached."""
+        t = _make_scrollable_terminal()
+        style = Style(color="cyan", bgcolor="yellow")
+        call_count = 0
+
+        def counting_style(self):
+            nonlocal call_count
+            call_count += 1
+            return style
+
+        with patch.object(type(t), "rich_style", new_callable=lambda: property(counting_style)):
+            fg1, bg1 = t._resolved_default_colors()
+            fg2, bg2 = t._resolved_default_colors()
+
+        assert (fg1, bg1) == ("cyan", "yellow")
+        assert (fg2, bg2) == ("cyan", "yellow")
+        assert call_count == 1  # resolved only once
+
+    def test_notify_style_update_invalidates_cache(self):
+        """notify_style_update clears cached colors so next call re-resolves."""
+        t = _make_scrollable_terminal()
+        style_v1 = Style(color="white", bgcolor="black")
+        style_v2 = Style(color="green", bgcolor="blue")
+        current_style = [style_v1]
+
+        with patch.object(
+            type(t), "rich_style",
+            new_callable=lambda: property(lambda self: current_style[0]),
+        ), patch.object(
+            # super().notify_style_update() touches Widget internals not
+            # present on our __new__-constructed instance; bypass it.
+            type(t).__mro__[1], "notify_style_update", lambda self: None,
+        ):
+            fg1, bg1 = t._resolved_default_colors()
+            assert (fg1, bg1) == ("white", "black")
+
+            # Simulate theme change
+            current_style[0] = style_v2
+            t.notify_style_update()
+
+            fg2, bg2 = t._resolved_default_colors()
+            assert (fg2, bg2) == ("green", "blue")
+
+    def test_fallback_when_style_has_no_color(self):
+        """Falls back to white/black when rich_style has no color set."""
+        t = _make_scrollable_terminal()
+        empty_style = Style()  # no color, no bgcolor
+
+        with patch.object(
+            type(t), "rich_style",
+            new_callable=lambda: property(lambda self: empty_style),
+        ):
+            fg, bg = t._resolved_default_colors()
+
+        assert fg == "white"
+        assert bg == "black"
