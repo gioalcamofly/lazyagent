@@ -14,11 +14,11 @@ from lazyagent.config import Config, format_command, load_config
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
-from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
+from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.pr_status_bar import PrStatusBar
-from lazyagent.widgets.prompt_modal import SpawnModal
+from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
 
@@ -111,12 +111,20 @@ class LazyAgent(App):
             return
 
         wt_list = self.query_one(WorktreeList)
-        wt_list.set_worktrees(self.worktrees)
+        wt_list.set_worktrees(self.worktrees, agent_states=self._agent_states)
 
         count = len(self.worktrees)
         self.sub_title = f"{count} worktree{'s' if count != 1 else ''}"
 
         self._refresh_git_statuses()
+
+    def _select_worktree_by_path(self, path: str) -> None:
+        """Highlight the worktree with the given path in the sidebar list."""
+        wt_list = self.query_one(WorktreeList)
+        for idx, child in enumerate(wt_list.children):
+            if isinstance(child, WorktreeListItem) and child.worktree.path == path:
+                wt_list.index = idx
+                break
 
     def _get_selected_worktree(self) -> WorktreeInfo | None:
         """Get the currently highlighted worktree."""
@@ -210,6 +218,8 @@ class LazyAgent(App):
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
         state = self._get_agent_state(event.worktree_path)
         state.status = event.status
+        state.confidence = event.confidence
+        state.detail = event.detail
         if event.status == AgentStatus.RUNNING:
             # Update last_output_time from the terminal
             center = self.query_one(CenterPanel)
@@ -221,6 +231,8 @@ class LazyAgent(App):
     async def on_agent_exited(self, event: AgentExited) -> None:
         state = self._get_agent_state(event.worktree_path)
         state.status = AgentStatus.NO_AGENT
+        state.confidence = LifecycleConfidence.LOW
+        state.detail = ""
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 
@@ -260,17 +272,18 @@ class LazyAgent(App):
             self.notify("Agent already running in this worktree", severity="warning")
             return
 
-        async def on_spawn_dismiss(result: bool | None) -> None:
+        async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None and worktree is not None:
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
                 panel = center.switch_to(worktree.path)
                 await panel.spawn_agent(
-                    skip_permissions=result,
+                    skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
+                    resume_mode=result.resume_mode,
                 )
 
-        self.push_screen(SpawnModal(worktree.display_label), on_spawn_dismiss)
+        self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
 
     async def action_stop_agent(self) -> None:
         worktree = self._get_selected_worktree()
@@ -341,7 +354,10 @@ class LazyAgent(App):
             self._do_create_worktree(result)
 
         self.push_screen(
-            CreateWorktreeModal(default_branch=self._config.default_branch),
+            CreateWorktreeModal(
+                default_branch=self._config.default_branch,
+                show_extra_options=self._config.has_custom_create,
+            ),
             on_modal_dismiss,
         )
 
@@ -360,6 +376,7 @@ class LazyAgent(App):
                 base=result.base_branch,
                 path=wt_path,
                 repo=self._repo_root,
+                extra=result.extra_options,
             )
             self._send_to_terminal(cmd)
             self.notify("Command sent to terminal — press r to refresh when done", timeout=5)
@@ -368,6 +385,7 @@ class LazyAgent(App):
                 manager = WorktreeManager(self._repo_root)
                 new_path = manager.create(result.branch, result.base_branch)
                 self._load_worktrees()
+                self._select_worktree_by_path(new_path)
                 self.notify(f"Created worktree: {os.path.basename(new_path)}")
             except WorktreeManagerError as e:
                 self.notify(str(e), severity="error", timeout=5)
@@ -389,19 +407,20 @@ class LazyAgent(App):
             )
             return
 
-        def on_confirm(confirmed: bool) -> None:
-            if confirmed and worktree is not None:
-                self._do_remove_worktree(worktree)
+        def on_remove_dismiss(result: RemoveWorktreeResult | None) -> None:
+            if result is not None and worktree is not None:
+                self._do_remove_worktree(worktree, force=result.force)
 
         self.push_screen(
-            ConfirmModal(
+            RemoveWorktreeModal(
                 title="Remove worktree",
                 body=f"Remove [bold]{worktree.display_label}[/bold] ({worktree.name})?",
             ),
-            on_confirm,
+            on_remove_dismiss,
         )
 
-    def _do_remove_worktree(self, worktree: WorktreeInfo) -> None:
+    def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
+        force_flag = "--force" if force else ""
         if self._config.has_custom_remove:
             cmd = format_command(
                 self._config.worktree.remove,  # type: ignore[arg-type]
@@ -410,6 +429,7 @@ class LazyAgent(App):
                 base="",
                 path=worktree.path,
                 repo=self._repo_root,
+                force=force_flag,
             )
             self._send_to_terminal(f"cd {self._repo_root} && {cmd}")
             self.action_focus_terminal()
@@ -417,8 +437,11 @@ class LazyAgent(App):
         else:
             try:
                 manager = WorktreeManager(self._repo_root)
-                manager.remove(worktree.path)
+                manager.remove(worktree.path, force=force)
+                self._agent_states.pop(worktree.path, None)
                 self._load_worktrees()
+                if self.worktrees:
+                    self.query_one(WorktreeList).index = 0
                 self.notify(f"Removed worktree: {worktree.name}")
             except WorktreeManagerError as e:
                 self.notify(str(e), severity="error", timeout=5)

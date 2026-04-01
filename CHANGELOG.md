@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-03-31
+
+### Fixed
+- Terminal cursor visibility by applying cursor style after character styles
+
+### Changed
+- Improved terminal cursor styling and cached resolved default colors for better performance
+
+## [0.3.1] - 2026-03-19
+
+### Fixed
+- Stale `SENTINEL_SYSTEM_PROMPT` import in test_center_panel causing CI collection failure
+- Updated sentinel-based test assertions to match new hooks-based observer approach
+
+## [0.3.0] - 2026-03-19
+
+### Added
+- Provider observability: real-time agent lifecycle detection via JSONL log tailing for Claude, Codex, and Gemini
+- Claude observer with tool-use hook detection and `--settings` flag support
+- Codex and Gemini observers with structured event parsing
+- `AgentObserver` base interface and `CompositeObserver` for combining observation strategies
+- Rich agent status model with lifecycle confidence levels
+- Remove worktree modal with force-removal toggle (`f` key)
+
+### Changed
+- Worktree removal now supports `--force` flag for dirty worktrees
+- Pending observer events are flushed on PTY disconnect
+
+## [0.2.2] - 2026-03-16
+
+### Fixed
+- UnicodeDecodeError when viewing diffs with binary or non-UTF-8 files (e.g. PDFs)
+
 ## [0.2.0] - 2026-03-05
 
 ### Added

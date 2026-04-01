@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import shlex
 
-from lazyagent.agent_providers import SENTINEL_SYSTEM_PROMPT, env_exports, get_agent_provider
+from lazyagent.agent_providers import ResumeMode, env_exports, get_agent_provider
 
 
 def _build_spawn_command(
     worktree_path: str,
     skip_permissions: bool = False,
     agent_provider: str = "claude",
+    resume_mode: ResumeMode = ResumeMode.NEW,
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
     return get_agent_provider(agent_provider).build_command(
         worktree_path,
         skip_permissions=skip_permissions,
+        resume_mode=resume_mode,
     )
 
 
@@ -44,18 +46,12 @@ class TestCommandBuilding:
         script = shlex.split(cmd)[2]
         assert "exec claude" in script
 
-    def test_no_trailing_positional_after_sentinel(self):
-        """Command should end with the sentinel, no positional prompt arg."""
+    def test_command_ends_with_settings_flag(self):
+        """Claude command should end with --settings pointing to hooks config."""
         cmd = _build_spawn_command("/tmp/wt")
         script = shlex.split(cmd)[2]
-        # The sentinel is the last argument. Find where it ends in the script.
-        sentinel_end = "completed your task."
-        idx = script.rfind(sentinel_end)
-        assert idx != -1, "Sentinel end not found in script"
-        after_sentinel = script[idx + len(sentinel_end):]
-        # After the sentinel's closing quote, only whitespace/quotes should remain
-        stripped = after_sentinel.strip().strip("'\"")
-        assert stripped == "", f"Unexpected trailing content after sentinel: {stripped!r}"
+        assert script.rstrip().endswith(".json"), "Command should end with settings JSON path"
+        assert "--settings" in script
 
     def test_worktree_path_with_spaces(self):
         cmd = _build_spawn_command("/home/user/my worktree")
@@ -63,11 +59,11 @@ class TestCommandBuilding:
         assert len(argv) == 3
         assert "/home/user/my worktree" in argv[2]
 
-    def test_sentinel_prompt_with_quotes_preserved(self):
-        """The sentinel system prompt contains 'your turn' with quotes."""
+    def test_settings_flag_points_to_hooks_json(self):
+        """The --settings flag should reference a hooks settings JSON file."""
         cmd = _build_spawn_command("/tmp/wt")
         script = shlex.split(cmd)[2]
-        assert "your turn" in script
+        assert "hooks-settings.json" in script
 
     def test_skip_permissions_flag(self):
         cmd = _build_spawn_command("/tmp/wt", skip_permissions=True)

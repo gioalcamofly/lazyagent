@@ -91,10 +91,12 @@ def format_command(
     base: str = "",
     path: str = "",
     repo: str = "",
+    force: str = "",
+    extra: str = "",
 ) -> str:
     """Expand placeholders and ~ in a command template.
 
-    Placeholders: {branch}, {name}, {base}, {path}, {repo}
+    Placeholders: {branch}, {name}, {base}, {path}, {repo}, {force}, {extra}
     """
     expanded = os.path.expanduser(template)
     return expanded.format(
@@ -103,4 +105,6 @@ def format_command(
         base=base,
         path=path,
         repo=repo,
-    )
+        force=force,
+        extra=extra,
+    ).strip()

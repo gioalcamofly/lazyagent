@@ -131,6 +131,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
         self.stream = pyte.Stream(self._screen)
 
+        # Cached resolved default colors (invalidated on theme change)
+        self._cached_default_fg: str | None = None
+        self._cached_default_bg: str | None = None
+
         # Key translation table (same as textual-terminal)
         self.ctrl_keys = {
             "up": "\x1bOA",
@@ -340,7 +344,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if screen_y < 0 or screen_y >= self._screen.lines:
             return Strip.blank(width, self.rich_style)
         row = self._screen.buffer[screen_y]
-        show_cursor = self._screen.cursor.y == screen_y
+        show_cursor = (
+            not self._screen.cursor.hidden
+            and self._screen.cursor.y == screen_y
+        )
         return self._row_to_strip(row, width, show_cursor=show_cursor, screen_y=screen_y, virtual_y=virtual_y)
 
     def _row_to_strip(
@@ -371,12 +378,12 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                     text.stylize(last_style, style_change_pos, x + 1)
                     style_change_pos = x
 
-            if (
-                show_cursor
-                and self._screen.cursor.x == x
-                and self._screen.cursor.y == screen_y
-            ):
-                text.stylize("reverse", x, x + 1)
+        # Apply cursor style AFTER all character styles so it is never
+        # overwritten by a later stylize() call that covers the same range.
+        if show_cursor and 0 <= self._screen.cursor.x < ncols:
+            cx = self._screen.cursor.x
+            cursor_char: Char = row.get(cx, self._screen.default_char)
+            text.stylize(self._cursor_style(cursor_char), cx, cx + 1)
 
         selection = self._local_selection
         if selection is not None and virtual_y >= 0:
@@ -396,6 +403,23 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
     # Style helpers (ported from textual-terminal Terminal)
     # ------------------------------------------------------------------
+
+    def notify_style_update(self) -> None:
+        self._cached_default_fg = None
+        self._cached_default_bg = None
+        super().notify_style_update()
+
+    def _resolved_default_colors(self) -> tuple[str, str]:
+        """Return resolved (fg, bg) for default/inherited colors, cached."""
+        if self._cached_default_fg is None:
+            wstyle = self.rich_style
+            self._cached_default_fg = (
+                wstyle.color.name if wstyle.color and wstyle.color.name else "white"
+            )
+            self._cached_default_bg = (
+                wstyle.bgcolor.name if wstyle.bgcolor and wstyle.bgcolor.name else "black"
+            )
+        return self._cached_default_fg, self._cached_default_bg
 
     @staticmethod
     def _char_style_cmp(given: Char, other: Char) -> bool:
@@ -422,6 +446,27 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if re.match("[0-9a-f]{6}", color, re.IGNORECASE):
             return f"#{color}"
         return color
+
+    def _cursor_style(self, char: Char) -> Style:
+        """Build a block-cursor style for the given cell.
+
+        Swaps the cell's fg/bg so the cursor appears as a solid block.
+        When the cell uses default (inherited) colors, resolves actual
+        colors from the cached widget theme so the swap produces visible
+        contrast — bare ``reverse`` on two default colors is a no-op.
+        """
+        cell_fg = self._detect_color(char.fg)
+        cell_bg = self._detect_color(char.bg)
+
+        if cell_fg == "default" or cell_bg == "default":
+            default_fg, default_bg = self._resolved_default_colors()
+            if cell_fg == "default":
+                cell_fg = default_fg
+            if cell_bg == "default":
+                cell_bg = default_bg
+
+        # Cursor = swapped fg/bg
+        return Style(color=cell_bg, bgcolor=cell_fg)
 
     def _char_rich_style(self, char: Char) -> Style:
         """Convert a pyte Char's attributes to a ``rich.Style``."""

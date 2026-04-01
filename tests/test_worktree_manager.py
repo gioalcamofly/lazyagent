@@ -333,22 +333,25 @@ class TestGetLastCommitSubject:
 class TestGetDiff:
     def test_subprocess_args(self):
         with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
-            mock_run.return_value.stdout = ""
+            mock_run.return_value.stdout = b""
             mock_run.return_value.returncode = 0
             WorktreeManager.get_diff("/path/to/worktree")
 
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
         calls = mock_run.call_args_list
-        assert calls[0][0][0] == ["git", "diff", "HEAD"]
+        assert calls[0][0][0] == ["git", "diff"]
         assert calls[0][1]["cwd"] == "/path/to/worktree"
-        assert calls[1][0][0] == ["git", "ls-files", "--others", "--exclude-standard"]
+        assert calls[1][0][0] == ["git", "diff", "--cached", "--numstat", "-z"]
         assert calls[1][1]["cwd"] == "/path/to/worktree"
+        assert calls[2][0][0] == ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        assert calls[2][1]["cwd"] == "/path/to/worktree"
 
     def test_tracked_changes(self):
         with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
-            diff_result = type("R", (), {"returncode": 0, "stdout": "diff --git a/f\n"})()
-            ls_result = type("R", (), {"returncode": 0, "stdout": ""})()
-            mock_run.side_effect = [diff_result, ls_result]
+            diff_result = type("R", (), {"returncode": 0, "stdout": b"diff --git a/f\n"})()
+            cached_result = type("R", (), {"returncode": 0, "stdout": b""})()
+            ls_result = type("R", (), {"returncode": 0, "stdout": b""})()
+            mock_run.side_effect = [diff_result, cached_result, ls_result]
             result = WorktreeManager.get_diff("/path/to/worktree")
 
         assert result == "diff --git a/f"
@@ -356,40 +359,46 @@ class TestGetDiff:
     def test_untracked_files_shows_diff(self):
         def _side_effect(*args, **kwargs):
             cmd = args[0]
-            r = type("R", (), {"returncode": 0, "stdout": ""})()
-            if cmd == ["git", "diff", "HEAD"]:
-                r.stdout = ""
-            elif cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
-                r.stdout = "new.txt\n"
-            elif cmd[0:3] == ["git", "diff", "--no-index"]:
-                r.returncode = 1
-                r.stdout = "diff --git a/dev/null b/new.txt\n+new content\n"
+            r = type("R", (), {"returncode": 0, "stdout": b""})()
+            if cmd == ["git", "diff"]:
+                r.stdout = b""
+            elif cmd == ["git", "diff", "--cached", "--numstat", "-z"]:
+                r.stdout = b""
+            elif cmd == ["git", "ls-files", "--others", "--exclude-standard", "-z"]:
+                r.stdout = b"new.txt\0"
             return r
 
-        with patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect):
+        with (
+            patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect),
+            patch("pathlib.Path.read_bytes", return_value=b"new content"),
+            patch("pathlib.Path.read_text", return_value="new content"),
+        ):
             result = WorktreeManager.get_diff("/path/to/worktree")
 
         assert "new.txt" in result
-        assert "+new content" in result
+        assert "new content" in result
 
     def test_tracked_and_untracked_combined(self):
         def _side_effect(*args, **kwargs):
             cmd = args[0]
-            r = type("R", (), {"returncode": 0, "stdout": ""})()
-            if cmd == ["git", "diff", "HEAD"]:
-                r.stdout = "tracked diff\n"
-            elif cmd == ["git", "ls-files", "--others", "--exclude-standard"]:
-                r.stdout = "new.txt\n"
-            elif cmd[0:3] == ["git", "diff", "--no-index"]:
-                r.returncode = 1
-                r.stdout = "untracked diff\n"
+            r = type("R", (), {"returncode": 0, "stdout": b""})()
+            if cmd == ["git", "diff"]:
+                r.stdout = b"tracked diff\n"
+            elif cmd == ["git", "diff", "--cached", "--numstat", "-z"]:
+                r.stdout = b""
+            elif cmd == ["git", "ls-files", "--others", "--exclude-standard", "-z"]:
+                r.stdout = b"new.txt\0"
             return r
 
-        with patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect):
+        with (
+            patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect),
+            patch("pathlib.Path.read_bytes", return_value=b"untracked content"),
+            patch("pathlib.Path.read_text", return_value="untracked content"),
+        ):
             result = WorktreeManager.get_diff("/path/to/worktree")
 
         assert "tracked diff" in result
-        assert "untracked diff" in result
+        assert "new.txt" in result
 
     def test_empty_on_failure(self):
         with patch(
@@ -402,7 +411,7 @@ class TestGetDiff:
 
     def test_empty_when_clean(self):
         with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
-            mock_run.return_value.stdout = ""
+            mock_run.return_value.stdout = b""
             mock_run.return_value.returncode = 0
             result = WorktreeManager.get_diff("/clean/repo")
 
