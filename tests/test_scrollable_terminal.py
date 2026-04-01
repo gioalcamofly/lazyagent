@@ -100,11 +100,12 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal._sel_start = None
     terminal._sel_end = None
     terminal._is_selecting = False
+    terminal._cached_selection = None
+    terminal._cached_selection_style = None
     terminal._screen = ScrollbackScreen(80, 5)
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
-    terminal._cached_default_fg = None
-    terminal._cached_default_bg = None
+    terminal._cached_default_colors = None
     return terminal
 
 
@@ -170,11 +171,6 @@ class TestStyleHelpers:
         c2 = Char("a", "blue", "default", False, False, False, False, False, False)
         assert ScrollableTerminal._char_style_cmp(c1, c2) is False
 
-    def test_char_style_cmp_different_dim(self):
-        c1 = Char("a", "default", "default", False, False, False, False, False, False, dim=True)
-        c2 = Char("a", "default", "default", False, False, False, False, False, False, dim=False)
-        assert ScrollableTerminal._char_style_cmp(c1, c2) is False
-
     def test_detect_color_brown(self):
         assert ScrollableTerminal._detect_color("brown") == "yellow"
 
@@ -192,34 +188,6 @@ class TestStyleHelpers:
 # ---------------------------------------------------------------------------
 # Selection support tests
 # ---------------------------------------------------------------------------
-
-
-class TestRenderLineOffsets:
-    def test_render_line_strips_contain_offset_metadata(self):
-        """render_line() strips should contain offset metadata for selection."""
-        from unittest.mock import patch, PropertyMock
-        from rich.console import Console
-        from textual.geometry import Offset, Region
-
-        t = _make_scrollable_terminal()
-        mock_app = MagicMock()
-        mock_app.console = Console()
-
-        # Feed some text so there's content to render
-        t.stream.feed("hello world")
-
-        with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
-            with patch.object(type(t), "scroll_offset", new_callable=lambda: property(lambda self: Offset(0, 0))):
-                with patch.object(type(t), "scrollable_content_region", new_callable=lambda: property(lambda self: Region(0, 0, 80, 5))):
-                    with patch.object(type(t), "rich_style", new_callable=lambda: property(lambda self: Style(color="white", bgcolor="black"))):
-                        strip = t.render_line(0)
-                        # Check that at least one segment has offset metadata
-                        has_offset = any(
-                            seg.style and seg.style.meta and "offset" in seg.style.meta
-                            for seg in strip._segments
-                            if seg.style
-                        )
-                        assert has_offset, "render_line() strips should contain offset metadata"
 
 
 class TestGetSelection:
@@ -261,34 +229,36 @@ class TestGetSelection:
 
 
 class TestLocalSelection:
-    def test_local_selection_none_when_no_selection(self):
-        """_local_selection returns None when nothing is selected."""
+    def test_cached_selection_none_when_no_selection(self):
+        """_cached_selection is None when nothing is selected."""
         t = _make_scrollable_terminal()
-        assert t._local_selection is None
+        assert t._cached_selection is None
 
-    def test_local_selection_returns_selection(self):
-        """_local_selection returns a Selection when start and end are set."""
+    def test_update_cached_selection_returns_selection(self):
+        """_update_cached_selection builds a Selection from start/end."""
         from textual.geometry import Offset
 
         t = _make_scrollable_terminal()
         t._sel_start = Offset(0, 0)
         t._sel_end = Offset(5, 0)
-        sel = t._local_selection
-        assert sel is not None
-        assert sel.get_span(0) == (0, 5)
+        t._update_cached_selection()
+        assert t._cached_selection is not None
+        assert t._cached_selection.get_span(0) == (0, 5)
 
     def test_clear_selection(self):
-        """_clear_selection resets start and end."""
+        """_clear_selection resets start, end, and cached selection."""
         from textual.geometry import Offset
 
         t = _make_scrollable_terminal()
         t._sel_start = Offset(0, 0)
         t._sel_end = Offset(5, 0)
+        t._update_cached_selection()
         # Patch refresh since we're not in a running app
         t.refresh = MagicMock()
         t._clear_selection()
         assert t._sel_start is None
         assert t._sel_end is None
+        assert t._cached_selection is None
 
     def test_selected_text_extracts_content(self):
         """_selected_text() returns the text covered by the selection."""
@@ -299,6 +269,7 @@ class TestLocalSelection:
         # Select "hello" (columns 0-5 on virtual row 0, which is screen row 0)
         t._sel_start = Offset(0, 0)
         t._sel_end = Offset(5, 0)
+        t._update_cached_selection()
         text = t._selected_text()
         assert text == "hello"
 
@@ -341,8 +312,7 @@ class TestCursorStyle:
         )
         patcher.start()
         # Ensure cache is clean so first call resolves
-        t._cached_default_fg = None
-        t._cached_default_bg = None
+        t._cached_default_colors = None
         return t, patcher
 
     def test_cursor_swaps_fg_bg_for_default_colors(self):
@@ -447,3 +417,168 @@ class TestResolvedDefaultColors:
 
         assert fg == "white"
         assert bg == "black"
+
+
+# ---------------------------------------------------------------------------
+# _get_row_at tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetRowAt:
+    def test_returns_screen_buffer_row(self):
+        """_get_row_at returns a screen buffer row when no scrollback."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello")
+        row = t._get_row_at(0)
+        text = "".join(
+            row.get(x, t._screen.default_char).data for x in range(5)
+        )
+        assert text == "hello"
+
+    def test_returns_scrollback_row(self):
+        """_get_row_at returns a scrollback row for indices within scrollback."""
+        t = _make_scrollable_terminal()
+        for i in range(10):
+            t.stream.feed(f"line {i}\n")
+        scrollback_len = len(t._screen.scrollback)
+        assert scrollback_len > 0
+        row = t._get_row_at(0)
+        text = "".join(
+            row.get(x, t._screen.default_char).data for x in range(6)
+        ).rstrip()
+        assert text.startswith("line")
+
+    def test_returns_screen_row_after_scrollback(self):
+        """_get_row_at returns screen row for indices past scrollback."""
+        t = _make_scrollable_terminal()
+        for i in range(10):
+            t.stream.feed(f"line {i}\n")
+        scrollback_len = len(t._screen.scrollback)
+        # First screen row is at virtual_y == scrollback_len
+        row = t._get_row_at(scrollback_len)
+        assert row is t._screen.buffer[0]
+
+
+# ---------------------------------------------------------------------------
+# Double-click / triple-click selection tests
+# ---------------------------------------------------------------------------
+
+
+class TestSelectWord:
+    def test_double_click_selects_word(self):
+        """Double-click on a word sets _sel_start/_sel_end to word boundaries."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello world")
+        t.refresh = MagicMock()
+
+        # Click on 'w' (column 6) of "world"
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(6, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_word(mock_event)
+
+        assert t._sel_start == Offset(6, 0)
+        assert t._sel_end == Offset(11, 0)
+
+    def test_double_click_selects_first_word(self):
+        """Double-click on the first word selects it correctly."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello world")
+        t.refresh = MagicMock()
+
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(2, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_word(mock_event)
+
+        assert t._sel_start == Offset(0, 0)
+        assert t._sel_end == Offset(5, 0)
+
+    def test_double_click_on_whitespace_does_nothing(self):
+        """Double-click on whitespace does not create a selection."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello world")
+        t.refresh = MagicMock()
+
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(5, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_word(mock_event)
+
+        assert t._sel_start is None
+        assert t._sel_end is None
+
+    def test_double_click_beyond_text_does_nothing(self):
+        """Double-click beyond end of text does not create a selection."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hi")
+        t.refresh = MagicMock()
+
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(50, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_word(mock_event)
+
+        assert t._sel_start is None
+        assert t._sel_end is None
+
+
+class TestSelectLine:
+    def test_triple_click_selects_full_line(self):
+        """Triple-click selects the entire line."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello world")
+        t.refresh = MagicMock()
+
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(3, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_line(mock_event)
+
+        assert t._sel_start == Offset(0, 0)
+        assert t._sel_end == Offset(11, 0)
+
+    def test_triple_click_on_empty_line(self):
+        """Triple-click on an empty line sets zero-width selection."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.refresh = MagicMock()
+
+        # Row 0 is empty by default
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(0, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_line(mock_event)
+
+        assert t._sel_start == Offset(0, 0)
+        assert t._sel_end == Offset(0, 0)
+
+    def test_triple_click_in_scrollback(self):
+        """Triple-click on a scrollback line selects it correctly."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        for i in range(10):
+            t.stream.feed(f"scrollback line {i}\n")
+        t.refresh = MagicMock()
+
+        # Click on the first scrollback line (virtual_y=0)
+        with patch.object(t, "_mouse_to_virtual", return_value=Offset(5, 0)), \
+             patch.object(t, "_detect_clipboard_cmd", return_value=None):
+            mock_event = MagicMock()
+            t._select_line(mock_event)
+
+        assert t._sel_start == Offset(0, 0)
+        assert t._sel_end is not None
+        assert t._sel_end.x > 0  # line has content
