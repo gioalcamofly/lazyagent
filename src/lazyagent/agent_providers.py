@@ -69,13 +69,12 @@ class AgentProvider:
         if self.resume_is_subcommand and resume_args:
             # Subcommand providers (e.g. codex): executable + resume_args + flags
             parts = [self.executable, *resume_args]
-            if skip_permissions:
-                parts.append(self.dangerous_flag)
         else:
             parts = [self.executable]
-            if skip_permissions:
-                parts.append(self.dangerous_flag)
             parts.extend(resume_args)
+
+        if skip_permissions:
+            parts.append(self.dangerous_flag)
 
         if "settings_path" in context.metadata:
             parts.extend(["--settings", context.metadata["settings_path"]])
