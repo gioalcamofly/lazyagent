@@ -16,7 +16,7 @@ _HELP_TEXT = """\
   [bold]Ctrl+L[/bold]          Focus terminal pane
 
 [bold cyan]Agents[/bold cyan]
-  [bold]s[/bold]               Spawn agent in selected worktree
+  [bold]s[/bold]               Spawn or resume agent in selected worktree
   [bold]x[/bold]               Stop agent in selected worktree
 
 [bold cyan]Worktrees[/bold cyan]

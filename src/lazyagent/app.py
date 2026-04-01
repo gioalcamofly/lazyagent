@@ -18,7 +18,7 @@ from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.pr_status_bar import PrStatusBar
-from lazyagent.widgets.prompt_modal import SpawnModal
+from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
 
@@ -272,17 +272,18 @@ class LazyAgent(App):
             self.notify("Agent already running in this worktree", severity="warning")
             return
 
-        async def on_spawn_dismiss(result: bool | None) -> None:
+        async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None and worktree is not None:
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
                 panel = center.switch_to(worktree.path)
                 await panel.spawn_agent(
-                    skip_permissions=result,
+                    skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
+                    resume_mode=result.resume_mode,
                 )
 
-        self.push_screen(SpawnModal(worktree.display_label), on_spawn_dismiss)
+        self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
 
     async def action_stop_agent(self) -> None:
         worktree = self._get_selected_worktree()
