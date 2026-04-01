@@ -283,7 +283,7 @@ class LazyAgent(App):
                     resume_mode=result.resume_mode,
                 )
 
-        self.push_screen(SpawnModal(worktree.display_label), on_spawn_dismiss)
+        self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
 
     async def action_stop_agent(self) -> None:
         worktree = self._get_selected_worktree()

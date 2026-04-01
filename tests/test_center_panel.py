@@ -101,7 +101,6 @@ class TestCommandBuilding:
         assert "--yolo" not in script
 
 
-
 class TestEnvExports:
     def test_includes_path(self):
         """PATH should be exported."""

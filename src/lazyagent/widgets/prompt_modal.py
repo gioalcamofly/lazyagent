@@ -8,7 +8,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from lazyagent.agent_providers import ResumeMode
+from lazyagent.agent_providers import DEFAULT_AGENT_PROVIDER, ResumeMode, get_agent_provider
 
 
 @dataclass
@@ -17,10 +17,16 @@ class SpawnResult:
     resume_mode: ResumeMode = ResumeMode.NEW
 
 
-_SESSION_LABELS: dict[ResumeMode, str] = {
+_LABELS_DISTINCT: dict[ResumeMode, str] = {
     ResumeMode.NEW: "[bold]New[/bold]  [dim](r: resume pick, l: resume last)[/dim]",
-    ResumeMode.RESUME_PICK: "[bold cyan]Resume (pick from list)[/bold cyan]  [dim](r/l to change, backspace: new)[/dim]",
-    ResumeMode.RESUME_LAST: "[bold cyan]Resume last[/bold cyan]  [dim](r/l to change, backspace: new)[/dim]",
+    ResumeMode.RESUME_PICK: "[bold cyan]Resume (pick from list)[/bold cyan]  [dim](l: resume last, backspace: new)[/dim]",
+    ResumeMode.RESUME_LAST: "[bold cyan]Resume last[/bold cyan]  [dim](r: resume pick, backspace: new)[/dim]",
+}
+
+_LABELS_SINGLE: dict[ResumeMode, str] = {
+    ResumeMode.NEW: "[bold]New[/bold]  [dim](r: resume)[/dim]",
+    ResumeMode.RESUME_PICK: "[bold cyan]Resume[/bold cyan]  [dim](backspace: new)[/dim]",
+    ResumeMode.RESUME_LAST: "[bold cyan]Resume[/bold cyan]  [dim](backspace: new)[/dim]",
 }
 
 
@@ -69,10 +75,12 @@ class SpawnModal(ModalScreen[SpawnResult | None]):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, worktree_label: str, **kwargs) -> None:
+    def __init__(self, worktree_label: str, agent_provider: str = DEFAULT_AGENT_PROVIDER, **kwargs) -> None:
         super().__init__(**kwargs)
         self.worktree_label = worktree_label
         self._resume_mode = ResumeMode.NEW
+        provider = get_agent_provider(agent_provider)
+        self._distinct_resume = provider.resume_pick_args != provider.resume_last_args
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -89,7 +97,7 @@ class SpawnModal(ModalScreen[SpawnResult | None]):
                 classes="modal-option",
             )
             yield Static(
-                f"Session: {_SESSION_LABELS[self._resume_mode]}",
+                f"Session: {self._session_labels[self._resume_mode]}",
                 id="session-status",
                 classes="modal-session",
             )
@@ -98,9 +106,13 @@ class SpawnModal(ModalScreen[SpawnResult | None]):
                 classes="modal-hint",
             )
 
+    @property
+    def _session_labels(self) -> dict[ResumeMode, str]:
+        return _LABELS_DISTINCT if self._distinct_resume else _LABELS_SINGLE
+
     def _update_session_label(self) -> None:
         self.query_one("#session-status", Static).update(
-            f"Session: {_SESSION_LABELS[self._resume_mode]}"
+            f"Session: {self._session_labels[self._resume_mode]}"
         )
 
     def action_normal(self) -> None:
@@ -114,7 +126,7 @@ class SpawnModal(ModalScreen[SpawnResult | None]):
         self._update_session_label()
 
     def action_resume_last(self) -> None:
-        self._resume_mode = ResumeMode.RESUME_LAST
+        self._resume_mode = ResumeMode.RESUME_PICK if not self._distinct_resume else ResumeMode.RESUME_LAST
         self._update_session_label()
 
     def action_reset_session(self) -> None:
