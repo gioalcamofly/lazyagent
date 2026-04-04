@@ -9,7 +9,10 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
+import platform
 import re
+import shutil
+import subprocess
 from collections import deque
 
 import pyte
@@ -21,8 +24,9 @@ from rich.style import Style
 from rich.text import Text
 
 from textual import events, log
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.scroll_view import ScrollView
+from textual.selection import Selection
 from textual.strip import Strip
 
 from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
@@ -81,6 +85,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     the :class:`ScrollbackScreen` to capture scrolled-off lines.
     """
 
+    ALLOW_SELECT = False  # Disable Textual's cross-widget selection
+
+    _clipboard_cmd: list[str] | None = None
+    _clipboard_cmd_resolved: bool = False
+
     DEFAULT_CSS = f"""
     ScrollableTerminal {{
         overflow-y: auto;
@@ -116,13 +125,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._stopped = False
         self._follow_output = True  # tracks auto-scroll intent across visibility
 
+        # Widget-local text selection (replaces Textual's cross-widget system)
+        self._sel_start: Offset | None = None
+        self._sel_end: Offset | None = None
+        self._is_selecting: bool = False
+        self._cached_selection: Selection | None = None
+        self._cached_selection_style: Style | None = None
+
         # pyte screen + stream
         self._screen = ScrollbackScreen(self.ncol, self.nrow)
         self.stream = pyte.Stream(self._screen)
 
         # Cached resolved default colors (invalidated on theme change)
-        self._cached_default_fg: str | None = None
-        self._cached_default_bg: str | None = None
+        self._cached_default_colors: tuple[str, str] | None = None
 
         # Key translation table (same as textual-terminal)
         self.ctrl_keys = {
@@ -315,19 +330,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         width = self.scrollable_content_region.width
 
         if virtual_y < scrollback_len:
-            strip = self._render_scrollback_line(virtual_y, width)
+            strip = self._render_scrollback_line(virtual_y, width, virtual_y)
         else:
             screen_y = virtual_y - scrollback_len
-            strip = self._render_screen_line(screen_y, width)
+            strip = self._render_screen_line(screen_y, width, virtual_y)
 
         return strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
 
-    def _render_scrollback_line(self, index: int, width: int) -> Strip:
+    def _render_scrollback_line(self, index: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the scrollback buffer."""
         row = self._screen.scrollback[index]
-        return self._row_to_strip(row, width, show_cursor=False)
+        return self._row_to_strip(row, width, show_cursor=False, virtual_y=virtual_y)
 
-    def _render_screen_line(self, screen_y: int, width: int) -> Strip:
+    def _render_screen_line(self, screen_y: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the live pyte screen buffer."""
         if screen_y < 0 or screen_y >= self._screen.lines:
             return Strip.blank(width, self.rich_style)
@@ -336,7 +351,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             not self._screen.cursor.hidden
             and self._screen.cursor.y == screen_y
         )
-        return self._row_to_strip(row, width, show_cursor=show_cursor)
+        return self._row_to_strip(row, width, show_cursor=show_cursor, virtual_y=virtual_y)
 
     def _row_to_strip(
         self,
@@ -344,6 +359,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         width: int,
         *,
         show_cursor: bool = False,
+        virtual_y: int = -1,
     ) -> Strip:
         """Convert a pyte row (dict of column→Char) to a textual Strip."""
         text = Text()
@@ -371,6 +387,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             cursor_char: Char = row.get(cx, self._screen.default_char)
             text.stylize(self._cursor_style(cursor_char), cx, cx + 1)
 
+        selection = self._cached_selection
+        if selection is not None and virtual_y >= 0:
+            span = selection.get_span(virtual_y)
+            if span is not None:
+                start, end = span
+                if end == -1:
+                    end = len(text)
+                if self._cached_selection_style is None:
+                    self._cached_selection_style = (
+                        self.screen.get_component_rich_style("screen--selection")
+                    )
+                text.stylize(self._cached_selection_style, start, end)
+
         segments = list(text.render(self.app.console))
         return Strip(segments)
 
@@ -379,21 +408,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
 
     def notify_style_update(self) -> None:
-        self._cached_default_fg = None
-        self._cached_default_bg = None
+        self._cached_default_colors = None
+        self._cached_selection_style = None
         super().notify_style_update()
 
     def _resolved_default_colors(self) -> tuple[str, str]:
         """Return resolved (fg, bg) for default/inherited colors, cached."""
-        if self._cached_default_fg is None:
+        if self._cached_default_colors is None:
             wstyle = self.rich_style
-            self._cached_default_fg = (
-                wstyle.color.name if wstyle.color and wstyle.color.name else "white"
-            )
-            self._cached_default_bg = (
-                wstyle.bgcolor.name if wstyle.bgcolor and wstyle.bgcolor.name else "black"
-            )
-        return self._cached_default_fg, self._cached_default_bg
+            fg = wstyle.color.name if wstyle.color and wstyle.color.name else "white"
+            bg = wstyle.bgcolor.name if wstyle.bgcolor and wstyle.bgcolor.name else "black"
+            self._cached_default_colors = (fg, bg)
+        return self._cached_default_colors
 
     @staticmethod
     def _char_style_cmp(given: Char, other: Char) -> bool:
@@ -407,7 +433,6 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             and given.strikethrough == other.strikethrough
             and given.reverse == other.reverse
             and given.blink == other.blink
-            and given.dim == other.dim
         )
 
     @staticmethod
@@ -452,7 +477,6 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                 color=foreground,
                 bgcolor=background,
                 bold=char.bold,
-                dim=char.dim,
                 italic=char.italics,
                 underline=char.underscore,
                 strike=char.strikethrough,
@@ -500,6 +524,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._follow_output = self.is_vertical_scroll_end
             return
 
+        if event.key == "ctrl+shift+c":
+            self._copy_selection_to_clipboard()
+            return
+
         event.stop()
         char = self.ctrl_keys.get(event.key) or event.character
         if char:
@@ -512,12 +540,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             await self.send_queue.put(["stdin", event.text])
         event.stop()
 
-    async def on_click(self, event: events.MouseEvent) -> None:
+    async def on_click(self, event: events.Click) -> None:
         if self.emulator is None:
             return
-        if not self.mouse_tracking:
+        if self.mouse_tracking:
+            await self.send_queue.put(["click", event.x, event.y, event.button])
             return
-        await self.send_queue.put(["click", event.x, event.y, event.button])
+        if event.button != 1:
+            return
+        if event.chain == 2:
+            self._select_word(event)
+        elif event.chain >= 3:
+            self._select_line(event)
 
     async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         if self.emulator is None:
@@ -566,3 +600,171 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         await self.send_queue.put(["set_size", self.nrow, self.ncol])
         self._screen.resize(self.nrow, self.ncol)
         self._update_virtual_size()
+
+    # ------------------------------------------------------------------
+    # Selection support — widget-local (no cross-pane leaking)
+    # ------------------------------------------------------------------
+
+    def _update_cached_selection(self) -> None:
+        """Recompute cached Selection from current start/end offsets."""
+        if self._sel_start is None or self._sel_end is None:
+            self._cached_selection = None
+        else:
+            self._cached_selection = Selection.from_offsets(
+                self._sel_start, self._sel_end
+            )
+
+    def _clear_selection(self) -> None:
+        """Clear the current selection."""
+        if self._sel_start is not None or self._sel_end is not None:
+            self._sel_start = None
+            self._sel_end = None
+            self._cached_selection = None
+            self.refresh()
+
+    def _selected_text(self) -> str | None:
+        """Extract selected text, or None if nothing selected."""
+        if self._cached_selection is None:
+            return None
+        result = self._extract_selection(self._cached_selection)
+        if result is None:
+            return None
+        text, _ = result
+        return text if text else None
+
+    def _row_to_text(self, row_data: dict[int, Char]) -> str:
+        """Convert a pyte row dict to a stripped text line."""
+        return "".join(
+            row_data.get(x, self._screen.default_char).data
+            for x in range(self._screen.columns)
+        ).rstrip()
+
+    def _extract_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Extract text from scrollback + screen buffer for a selection."""
+        lines = [self._row_to_text(row) for row in self._screen.scrollback]
+        for y in range(self._screen.lines):
+            lines.append(self._row_to_text(self._screen.buffer[y]))
+        full_text = "\n".join(lines)
+        return selection.extract(full_text), "\n"
+
+    @classmethod
+    def _detect_clipboard_cmd(cls) -> list[str] | None:
+        """Detect the system clipboard command (cached at class level)."""
+        if cls._clipboard_cmd_resolved:
+            return cls._clipboard_cmd
+        system = platform.system()
+        if system == "Darwin":
+            cls._clipboard_cmd = ["pbcopy"]
+        elif system == "Linux":
+            if shutil.which("xclip"):
+                cls._clipboard_cmd = ["xclip", "-selection", "clipboard"]
+            elif shutil.which("xsel"):
+                cls._clipboard_cmd = ["xsel", "--clipboard", "--input"]
+            elif shutil.which("wl-copy"):
+                cls._clipboard_cmd = ["wl-copy"]
+        cls._clipboard_cmd_resolved = True
+        return cls._clipboard_cmd
+
+    @staticmethod
+    def _copy_to_system_clipboard(text: str, cmd: list[str]) -> None:
+        """Copy text to system clipboard (fire-and-forget)."""
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            proc.stdin.write(text.encode())
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    def _copy_selection_to_clipboard(self) -> None:
+        """Copy current selection to system clipboard if available."""
+        text = self._selected_text()
+        cmd = self._detect_clipboard_cmd()
+        if text and cmd:
+            self._copy_to_system_clipboard(text, cmd)
+
+    # ------------------------------------------------------------------
+    # Mouse-driven selection
+    # ------------------------------------------------------------------
+
+    def _mouse_to_virtual(self, event: events.MouseEvent) -> Offset:
+        """Convert mouse event coordinates to clamped virtual position."""
+        scroll_y = self.scroll_offset.y
+        virtual_y = scroll_y + event.y
+        width = self.scrollable_content_region.width or self.ncol
+        total_lines = len(self._screen.scrollback) + self._screen.lines
+
+        x = max(0, min(event.x, width - 1))
+        virtual_y = max(0, min(virtual_y, total_lines - 1))
+        return Offset(x, virtual_y)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if self.mouse_tracking:
+            return
+        if event.button != 1:
+            return
+        self._sel_start = self._mouse_to_virtual(event)
+        self._sel_end = None
+        self._cached_selection = None
+        self._is_selecting = True
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._is_selecting:
+            return
+        new_end = self._mouse_to_virtual(event)
+        if new_end == self._sel_end:
+            return
+        self._sel_end = new_end
+        self._update_cached_selection()
+        self.refresh()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._is_selecting:
+            return
+        self._is_selecting = False
+        self.release_mouse()
+        # A click with no drag — clear the selection
+        if self._sel_end is None or self._sel_start == self._sel_end:
+            self._clear_selection()
+            return
+        # Auto-copy selected text to system clipboard on mouse release
+        self._copy_selection_to_clipboard()
+
+    # ------------------------------------------------------------------
+    # Double-click / triple-click selection helpers
+    # ------------------------------------------------------------------
+
+    def _get_row_at(self, virtual_y: int) -> dict[int, Char]:
+        """Return the row dict for a given virtual y coordinate."""
+        scrollback_len = len(self._screen.scrollback)
+        if virtual_y < scrollback_len:
+            return self._screen.scrollback[virtual_y]
+        return self._screen.buffer[virtual_y - scrollback_len]
+
+    def _select_word(self, event: events.Click) -> None:
+        """Select the word under the cursor (double-click)."""
+        pos = self._mouse_to_virtual(event)
+        row = self._get_row_at(pos.y)
+        line = self._row_to_text(row)
+        x = pos.x
+        if x >= len(line) or not line[x].strip():
+            return
+        for match in re.finditer(r"\w+", line):
+            if match.start() <= x < match.end():
+                self._sel_start = Offset(match.start(), pos.y)
+                self._sel_end = Offset(match.end(), pos.y)
+                self._update_cached_selection()
+                self._copy_selection_to_clipboard()
+                self.refresh()
+                return
+
+    def _select_line(self, event: events.Click) -> None:
+        """Select the entire line (triple-click)."""
+        pos = self._mouse_to_virtual(event)
+        row = self._get_row_at(pos.y)
+        line = self._row_to_text(row)
+        self._sel_start = Offset(0, pos.y)
+        self._sel_end = Offset(len(line), pos.y)
+        self._update_cached_selection()
+        self._copy_selection_to_clipboard()
+        self.refresh()

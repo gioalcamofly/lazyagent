@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import shlex
 
-from lazyagent.agent_providers import env_exports, get_agent_provider
+from lazyagent.agent_providers import ResumeMode, env_exports, get_agent_provider
 
 
 def _build_spawn_command(
     worktree_path: str,
     skip_permissions: bool = False,
     agent_provider: str = "claude",
+    resume_mode: ResumeMode = ResumeMode.NEW,
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
     return get_agent_provider(agent_provider).build_command(
         worktree_path,
         skip_permissions=skip_permissions,
+        resume_mode=resume_mode,
     )
 
 
