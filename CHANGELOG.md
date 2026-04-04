@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-04-04
+
+### Added
+- Mouse text selection in terminal panes (double-click word, triple-click line)
+- System clipboard copy support for terminal selection
+- Session resume support in spawn modal and agent providers
+
+### Fixed
+- Terminal cursor visibility by applying cursor style after character styles
+- Line ending normalization in terminal
+- Improved spawn modal UX
+
+### Changed
+- Improved terminal cursor styling and cached resolved default colors for better performance
+
 ## [0.3.2] - 2026-03-31
 
 ### Fixed
