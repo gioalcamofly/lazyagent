@@ -94,10 +94,14 @@ class AgentProvider:
             return self.resume_last_args
         return ()
 
-    def build_runtime_context(self, worktree_path: str) -> ProviderRuntimeContext:
+    def build_runtime_context(
+        self,
+        worktree_path: str,
+        socket_path: str | None = None,
+    ) -> ProviderRuntimeContext:
         """Build provider-specific runtime metadata for the spawned session."""
         if self.name == "claude":
-            return _build_claude_runtime_context(self, worktree_path)
+            return _build_claude_runtime_context(self, worktree_path, socket_path)
         if self.name == "codex":
             return _build_codex_runtime_context(self, worktree_path)
         if self.name == "gemini":
@@ -267,6 +271,7 @@ def _build_codex_runtime_context(
 def _build_claude_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
+    socket_path: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -278,7 +283,7 @@ def _build_claude_runtime_context(
 
     hook_command = {"type": "command", "command": str(hook_script_path)}
 
-    hooks_settings = {
+    hooks_settings: dict = {
         "hooks": {
             "Notification": [
                 {
@@ -293,6 +298,19 @@ def _build_claude_runtime_context(
             "PostToolUse": [{"hooks": [hook_command]}],
         }
     }
+
+    if socket_path:
+        hooks_settings["mcpServers"] = {
+            "lazyagent": {
+                "command": "python3",
+                "args": ["-m", "lazyagent.mcp_server"],
+                "env": {
+                    "PYTHONUNBUFFERED": "1",
+                    "LAZYAGENT_SOCKET": socket_path,
+                },
+            }
+        }
+
     settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
     return ProviderRuntimeContext(
