@@ -11,12 +11,14 @@ def _build_spawn_command(
     skip_permissions: bool = False,
     agent_provider: str = "claude",
     resume_mode: ResumeMode = ResumeMode.NEW,
+    instruction: str = "",
 ) -> str:
     """Reproduce the command-building logic from WorktreePanel.spawn_agent."""
     return get_agent_provider(agent_provider).build_command(
         worktree_path,
         skip_permissions=skip_permissions,
         resume_mode=resume_mode,
+        instruction=instruction or None,
     )
 
 
@@ -99,6 +101,35 @@ class TestCommandBuilding:
         assert "--approval-mode=yolo" in script
         assert "--append-system-prompt" not in script
         assert "--yolo" not in script
+
+
+class TestCommandBuildingWithInstruction:
+    def test_instruction_appears_in_claude_command(self):
+        cmd = _build_spawn_command("/tmp/wt", instruction="fix the bug")
+        script = shlex.split(cmd)[2]
+        assert "fix the bug" in script
+
+    def test_instruction_appears_in_gemini_command_with_flag(self):
+        cmd = _build_spawn_command("/tmp/wt", agent_provider="gemini", instruction="hello")
+        script = shlex.split(cmd)[2]
+        exec_part = script.split("exec ")[1]
+        assert "-i" in exec_part
+        assert "hello" in exec_part
+
+    def test_empty_instruction_not_in_command(self):
+        cmd = _build_spawn_command("/tmp/wt", instruction="")
+        script = shlex.split(cmd)[2]
+        exec_part = script.split("exec ")[1]
+        # Only claude + settings flag args
+        parts = shlex.split(exec_part)
+        assert parts[0] == "claude"
+        assert "-i" not in parts
+
+    def test_instruction_with_skip_permissions(self):
+        cmd = _build_spawn_command("/tmp/wt", skip_permissions=True, instruction="deploy")
+        script = shlex.split(cmd)[2]
+        assert "--dangerously-skip-permissions" in script
+        assert "deploy" in script
 
 
 class TestEnvExports:

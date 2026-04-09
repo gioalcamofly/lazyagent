@@ -281,6 +281,7 @@ class LazyAgent(App):
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
+                    instruction=result.instruction,
                 )
 
         self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
