@@ -13,7 +13,7 @@ from textual import work
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.ipc import IpcServer, start_ipc_server
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
@@ -292,6 +292,7 @@ class LazyAgent(App):
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
+                    socket_path=self._ipc_socket_path,
                 )
 
         self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)

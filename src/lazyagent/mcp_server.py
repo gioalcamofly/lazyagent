@@ -58,14 +58,20 @@ class IpcClient:
                 pass
 
 
+_cached_client: IpcClient | None = None
+
+
 def _get_client() -> IpcClient:
-    socket_path = os.environ.get("LAZYAGENT_SOCKET")
-    if not socket_path:
-        raise RuntimeError(
-            "LAZYAGENT_SOCKET environment variable is not set. "
-            "This server must be started by lazyagent."
-        )
-    return IpcClient(socket_path)
+    global _cached_client
+    if _cached_client is None:
+        socket_path = os.environ.get("LAZYAGENT_SOCKET")
+        if not socket_path:
+            raise RuntimeError(
+                "LAZYAGENT_SOCKET environment variable is not set. "
+                "This server must be started by lazyagent."
+            )
+        _cached_client = IpcClient(socket_path)
+    return _cached_client
 
 
 # ------------------------------------------------------------------

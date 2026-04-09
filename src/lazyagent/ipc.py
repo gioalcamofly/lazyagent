@@ -47,6 +47,15 @@ class IpcServer:
         self._app = app
         self._socket_path = socket_path
         self._server: asyncio.AbstractServer | None = None
+        self._handlers = {
+            "list_worktrees": self.handle_list_worktrees,
+            "create_worktree": self.handle_create_worktree,
+            "remove_worktree": self.handle_remove_worktree,
+            "spawn_agent": self.handle_spawn_agent,
+            "stop_agent": self.handle_stop_agent,
+            "get_agent_status": self.handle_get_agent_status,
+            "read_agent_output": self.handle_read_agent_output,
+        }
 
     @property
     def socket_path(self) -> str:
@@ -110,15 +119,7 @@ class IpcServer:
     async def _dispatch(
         self, request_id: str, method: str, params: dict
     ) -> dict:
-        handler = {
-            "list_worktrees": self.handle_list_worktrees,
-            "create_worktree": self.handle_create_worktree,
-            "remove_worktree": self.handle_remove_worktree,
-            "spawn_agent": self.handle_spawn_agent,
-            "stop_agent": self.handle_stop_agent,
-            "get_agent_status": self.handle_get_agent_status,
-            "read_agent_output": self.handle_read_agent_output,
-        }.get(method)
+        handler = self._handlers.get(method)
 
         if handler is None:
             return _err(request_id, "UNKNOWN_METHOD", f"Unknown method: {method}")
@@ -229,7 +230,7 @@ class IpcServer:
         if state and state.status in (AgentStatus.RUNNING, AgentStatus.WAITING):
             raise ValueError("Agent is already running in this worktree")
 
-        future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         initial_prompt = params.get("initial_prompt")
 
         async def _do_spawn() -> None:
@@ -241,6 +242,7 @@ class IpcServer:
                 await panel.spawn_agent(
                     skip_permissions=True,
                     agent_provider=self._app._config.agent.provider,
+                    socket_path=self._socket_path,
                 )
                 # If there's an initial prompt, send it to the agent terminal
                 if initial_prompt and panel.agent_terminal:
@@ -273,13 +275,18 @@ class IpcServer:
         if panel is None or not panel.has_agent:
             raise ValueError("No running agent in this worktree")
 
-        future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         async def _do_stop() -> None:
             try:
+                from lazyagent.widgets.worktree_list import WorktreeList
+
                 state = self._app._get_agent_state(worktree_path)
                 state.status = AgentStatus.NO_AGENT
                 state.last_output_time = None
+                self._app.query_one(WorktreeList).update_agent_state(
+                    worktree_path, state
+                )
                 await panel.cleanup_agent()
                 future.set_result(None)
             except Exception as e:
@@ -331,38 +338,40 @@ class IpcServer:
 
         terminal = panel.agent_terminal
         screen = terminal._screen
+        total_lines = len(screen.scrollback) + screen.lines
 
-        # Collect lines from scrollback + live screen buffer
-        lines: list[str] = []
+        def _row_text(row_data: dict) -> str:
+            return "".join(
+                row_data.get(x, screen.default_char).data
+                for x in range(screen.columns)
+            ).rstrip()
 
-        # Scrollback lines
-        for row_data in screen.scrollback:
-            line_chars = []
-            if row_data:
-                max_col = max(row_data.keys())
-                for col in range(max_col + 1):
-                    char = row_data.get(col)
-                    line_chars.append(char.data if char else " ")
-            lines.append("".join(line_chars).rstrip())
+        # Collect only the last num_lines by iterating from the end:
+        # first the live screen buffer (bottom), then scrollback (top).
+        collected: list[str] = []
+        remaining = min(num_lines, total_lines)
 
-        # Live screen lines
-        for row in range(screen.lines):
-            row_data = screen.buffer[row]
-            line_chars = []
-            if row_data:
-                max_col = max(row_data.keys()) if row_data else -1
-                for col in range(max_col + 1):
-                    char = row_data.get(col)
-                    line_chars.append(char.data if char else " ")
-            lines.append("".join(line_chars).rstrip())
+        # Live screen lines (bottom-up)
+        for row in range(screen.lines - 1, -1, -1):
+            if remaining <= 0:
+                break
+            collected.append(_row_text(screen.buffer[row]))
+            remaining -= 1
 
-        # Take the last N lines
-        output_lines = lines[-num_lines:]
+        # Scrollback lines (bottom-up)
+        if remaining > 0:
+            for row_data in reversed(screen.scrollback):
+                if remaining <= 0:
+                    break
+                collected.append(_row_text(row_data))
+                remaining -= 1
+
+        collected.reverse()
 
         return _ok(request_id, {
             "worktree_path": worktree_path,
-            "lines": output_lines,
-            "total_lines": len(lines),
+            "lines": collected,
+            "total_lines": total_lines,
         })
 
     # ------------------------------------------------------------------
