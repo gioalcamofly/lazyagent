@@ -242,7 +242,7 @@ class WorktreePanel(Container):
         skip_permissions: bool = False,
         agent_provider: str = DEFAULT_AGENT_PROVIDER,
         resume_mode: ResumeMode = ResumeMode.NEW,
-        instruction: str = "",
+        instruction: str | None = None,
     ) -> None:
         """Spawn the configured coding agent process in the Agent pane."""
         pane = self.query_one("#agent-tab", TabPane)
@@ -267,7 +267,7 @@ class WorktreePanel(Container):
             skip_permissions=skip_permissions,
             runtime_context=runtime_context,
             resume_mode=resume_mode,
-            instruction=instruction or None,
+            instruction=instruction,
         )
 
         terminal = MonitoredTerminal(

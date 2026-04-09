@@ -220,12 +220,11 @@ class TestBuildCommandInstruction:
             get_agent_provider("claude").build_command("/tmp/wt", instruction=None)
         )[2]
         exec_part = script.split("exec ")[1]
-        # Should only have claude + settings, no extra positional
+        # Should only have claude + --settings <path>
         parts = shlex.split(exec_part)
         assert parts[0] == "claude"
-        # No stray positional args (only --settings and its value)
-        non_flag_parts = [p for p in parts[1:] if not p.startswith("--") and "settings" not in parts[parts.index(p) - 1]]
-        assert len(non_flag_parts) == 0
+        assert parts[1] == "--settings"
+        assert len(parts) == 3
 
     def test_no_instruction_when_empty_string(self):
         script = shlex.split(
@@ -234,8 +233,8 @@ class TestBuildCommandInstruction:
         exec_part = script.split("exec ")[1]
         parts = shlex.split(exec_part)
         assert parts[0] == "claude"
-        non_flag_parts = [p for p in parts[1:] if not p.startswith("--") and "settings" not in parts[parts.index(p) - 1]]
-        assert len(non_flag_parts) == 0
+        assert parts[1] == "--settings"
+        assert len(parts) == 3
 
     def test_instruction_with_special_chars_is_escaped(self):
         script = shlex.split(
