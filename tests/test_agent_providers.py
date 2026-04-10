@@ -190,3 +190,76 @@ class TestBuildCommandResume:
             get_agent_provider("gemini").build_command("/tmp/wt", resume_mode=ResumeMode.NEW)
         )[2]
         assert "--resume" not in script
+
+
+class TestBuildCommandInstruction:
+    def test_claude_instruction_as_positional_arg(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", instruction="do stuff")
+        )[2]
+        exec_part = script.split("exec ")[1]
+        assert "'do stuff'" in exec_part or "do stuff" in exec_part
+
+    def test_codex_instruction_as_positional_arg(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", instruction="fix bug")
+        )[2]
+        exec_part = script.split("exec ")[1]
+        assert "'fix bug'" in exec_part or "fix bug" in exec_part
+
+    def test_gemini_instruction_via_flag(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command("/tmp/wt", instruction="hello")
+        )[2]
+        exec_part = script.split("exec ")[1]
+        assert "-i" in exec_part
+        assert "hello" in exec_part
+
+    def test_no_instruction_when_none(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", instruction=None)
+        )[2]
+        exec_part = script.split("exec ")[1]
+        # Should only have claude + --settings <path>
+        parts = shlex.split(exec_part)
+        assert parts[0] == "claude"
+        assert parts[1] == "--settings"
+        assert len(parts) == 3
+
+    def test_no_instruction_when_empty_string(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", instruction="")
+        )[2]
+        exec_part = script.split("exec ")[1]
+        parts = shlex.split(exec_part)
+        assert parts[0] == "claude"
+        assert parts[1] == "--settings"
+        assert len(parts) == 3
+
+    def test_instruction_with_special_chars_is_escaped(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command(
+                "/tmp/wt", instruction="hello 'world' && rm -rf /"
+            )
+        )[2]
+        # The instruction must survive shell escaping — it should appear quoted
+        assert "hello" in script
+        assert "rm -rf" in script
+
+    def test_instruction_combined_with_resume(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command(
+                "/tmp/wt", resume_mode=ResumeMode.RESUME_LAST, instruction="continue task"
+            )
+        )[2]
+        assert "--continue" in script
+        assert "continue task" in script
+
+    def test_instruction_combined_with_skip_permissions(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command(
+                "/tmp/wt", skip_permissions=True, instruction="deploy now"
+            )
+        )[2]
+        assert "--dangerously-skip-permissions" in script
+        assert "deploy now" in script
