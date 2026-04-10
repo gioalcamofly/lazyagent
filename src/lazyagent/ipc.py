@@ -216,7 +216,7 @@ class IpcServer:
     async def handle_spawn_agent(
         self, request_id: str, params: dict
     ) -> dict:
-        """Spawn an agent in a worktree. Params: worktree_path, initial_prompt (optional)."""
+        """Spawn an agent in a worktree. Params: worktree_path, instruction (optional)."""
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
@@ -231,7 +231,7 @@ class IpcServer:
             raise ValueError("Agent is already running in this worktree")
 
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        initial_prompt = params.get("initial_prompt")
+        instruction = params.get("instruction") or params.get("initial_prompt")
 
         async def _do_spawn() -> None:
             try:
@@ -243,14 +243,8 @@ class IpcServer:
                     skip_permissions=True,
                     agent_provider=self._app._config.agent.provider,
                     socket_path=self._socket_path,
+                    instruction=instruction,
                 )
-                # If there's an initial prompt, send it to the agent terminal
-                if initial_prompt and panel.agent_terminal:
-                    # Give the agent a moment to initialize
-                    await asyncio.sleep(0.5)
-                    panel.agent_terminal.send_queue.put_nowait(
-                        ["stdin", initial_prompt + "\n"]
-                    )
                 future.set_result(None)
             except Exception as e:
                 future.set_exception(e)

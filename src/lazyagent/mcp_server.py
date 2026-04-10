@@ -127,7 +127,7 @@ async def remove_worktree(worktree_path: str, force: bool = False) -> dict:
 
 @mcp.tool()
 async def spawn_agent(
-    worktree_path: str, initial_prompt: str | None = None
+    worktree_path: str, instruction: str | None = None
 ) -> dict:
     """Spawn a coding agent in a worktree.
 
@@ -136,14 +136,14 @@ async def spawn_agent(
 
     Args:
         worktree_path: Absolute path of the worktree.
-        initial_prompt: Optional initial prompt to send to the agent after it starts.
+        instruction: Optional initial instruction passed to the agent CLI.
 
     Returns:
         Object with worktree_path and status.
     """
     params: dict[str, Any] = {"worktree_path": worktree_path}
-    if initial_prompt is not None:
-        params["initial_prompt"] = initial_prompt
+    if instruction is not None:
+        params["instruction"] = instruction
     return await _get_client().call("spawn_agent", params)
 
 

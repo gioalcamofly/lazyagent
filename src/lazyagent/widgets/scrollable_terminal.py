@@ -639,35 +639,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             for x in range(self._screen.columns)
         ).rstrip()
 
-    def _get_text_line(self, virtual_y: int) -> str:
-        """Get text content of a single virtual line."""
-        scrollback_len = len(self._screen.scrollback)
-        if virtual_y < scrollback_len:
-            return self._row_to_text(self._screen.scrollback[virtual_y])
-        return self._row_to_text(self._screen.buffer[virtual_y - scrollback_len])
-
     def _extract_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Extract text from scrollback + screen buffer for a selection."""
-        if self._sel_start is not None and self._sel_end is not None:
-            # Optimized path: only process the rows within the selection range
-            min_y = min(self._sel_start.y, self._sel_end.y)
-            max_y = max(self._sel_start.y, self._sel_end.y)
-            total_lines = len(self._screen.scrollback) + self._screen.lines
-            min_y = max(0, min_y)
-            max_y = min(max_y, total_lines - 1)
-
-            lines = [self._get_text_line(y) for y in range(min_y, max_y + 1)]
-            partial_text = "\n".join(lines)
-
-            # Adjust selection to be relative to the partial text
-            adjusted_start = Offset(self._sel_start.x, self._sel_start.y - min_y)
-            adjusted_end = Offset(self._sel_end.x, self._sel_end.y - min_y)
-            adjusted_sel = Selection.from_offsets(adjusted_start, adjusted_end)
-            return adjusted_sel.extract(partial_text), "\n"
-
-        # Fallback: full buffer extraction (e.g. Selection with start=None)
-        total = len(self._screen.scrollback) + self._screen.lines
-        lines = [self._get_text_line(y) for y in range(total)]
+        lines = [self._row_to_text(row) for row in self._screen.scrollback]
+        for y in range(self._screen.lines):
+            lines.append(self._row_to_text(self._screen.buffer[y]))
         full_text = "\n".join(lines)
         return selection.extract(full_text), "\n"
 
