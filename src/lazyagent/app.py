@@ -293,6 +293,7 @@ class LazyAgent(App):
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
                     socket_path=self._ipc_socket_path,
+                    instruction=result.instruction,
                 )
 
         self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)

@@ -15,6 +15,7 @@ from lazyagent.agent_providers import DEFAULT_AGENT_PROVIDER, ResumeMode, get_ag
 class SpawnResult:
     skip_permissions: bool
     resume_mode: ResumeMode = ResumeMode.NEW
+    instruction: str | None = None
 
 
 _LABELS_DISTINCT: dict[ResumeMode, str] = {
