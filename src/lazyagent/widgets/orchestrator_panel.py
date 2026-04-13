@@ -6,12 +6,12 @@ from textual.widgets import Static
 from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
     ResumeMode,
-    env_exports,
     get_agent_provider,
 )
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 
 ORCHESTRATOR_KEY = "__orchestrator__"
+_PLACEHOLDER_TEXT = "Press [bold]s[/bold] to spawn orchestrator"
 
 
 class OrchestratorPanel(Container):
@@ -31,15 +31,13 @@ class OrchestratorPanel(Container):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, worktree_path: str, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.worktree_path = worktree_path
         self._agent_terminal: MonitoredTerminal | None = None
 
     def compose(self):
-        yield Static(
-            "Press [bold]s[/bold] to spawn orchestrator",
-            id="orch-placeholder",
-        )
+        yield Static(_PLACEHOLDER_TEXT, id="orch-placeholder")
 
     @property
     def agent_terminal(self) -> MonitoredTerminal | None:
@@ -62,16 +60,10 @@ class OrchestratorPanel(Container):
         try:
             self.query_one("#orch-placeholder")
         except Exception:
-            self.mount(
-                Static(
-                    "Press [bold]s[/bold] to spawn orchestrator",
-                    id="orch-placeholder",
-                )
-            )
+            self.mount(Static(_PLACEHOLDER_TEXT, id="orch-placeholder"))
 
     async def spawn_agent(
         self,
-        worktree_path: str,
         skip_permissions: bool = False,
         agent_provider: str = DEFAULT_AGENT_PROVIDER,
         resume_mode: ResumeMode = ResumeMode.NEW,
@@ -93,10 +85,10 @@ class OrchestratorPanel(Container):
 
         provider = get_agent_provider(agent_provider)
         runtime_context = provider.build_runtime_context(
-            worktree_path, socket_path=socket_path
+            self.worktree_path, socket_path=socket_path
         )
         command = provider.build_command(
-            worktree_path,
+            self.worktree_path,
             skip_permissions=skip_permissions,
             runtime_context=runtime_context,
             resume_mode=resume_mode,

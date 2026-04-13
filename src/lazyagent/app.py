@@ -74,7 +74,6 @@ class LazyAgent(App):
         self._git_statuses: dict[str, GitStatus] = {}
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
-        self._orchestrator_state: AgentState = AgentState()
         self._config: Config = Config()
         self._repo_root: str = ""
         self._gh_available: bool | None = None
@@ -149,10 +148,18 @@ class LazyAgent(App):
             return wt_list.highlighted_child.worktree
         return None
 
-    def _get_agent_state(self, worktree_path: str) -> AgentState:
-        if worktree_path not in self._agent_states:
-            self._agent_states[worktree_path] = AgentState()
-        return self._agent_states[worktree_path]
+    def _get_agent_state(self, key: str) -> AgentState:
+        """Get or create AgentState for a worktree path or ORCHESTRATOR_KEY."""
+        if key not in self._agent_states:
+            self._agent_states[key] = AgentState()
+        return self._agent_states[key]
+
+    def _get_any_panel(self, key: str):
+        """Get the panel for a worktree path or ORCHESTRATOR_KEY."""
+        center = self.query_one(CenterPanel)
+        if key == ORCHESTRATOR_KEY:
+            return center.get_orchestrator_panel()
+        return center.get_panel(key)
 
     def _refresh_git_statuses(self) -> None:
         """Fetch git statuses for all worktrees and push to UI."""
@@ -221,7 +228,7 @@ class LazyAgent(App):
         if event.item is not None and isinstance(event.item, OrchestratorListItem):
             self._orchestrator_selected = True
             self._selected_worktree = None
-            center.switch_to_orchestrator()
+            center.switch_to_orchestrator(self._repo_root)
         elif event.item is not None and isinstance(event.item, WorktreeListItem):
             self._orchestrator_selected = False
             self._selected_worktree = event.item.worktree
@@ -236,50 +243,17 @@ class LazyAgent(App):
     # --- Agent message handlers ---
 
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
-        if event.worktree_path == ORCHESTRATOR_KEY:
-            self._orchestrator_state.status = event.status
-            self._orchestrator_state.confidence = event.confidence
-            self._orchestrator_state.detail = event.detail
-            if event.status == AgentStatus.RUNNING:
-                center = self.query_one(CenterPanel)
-                panel = center.get_orchestrator_panel()
-                if panel and panel.agent_terminal:
-                    self._orchestrator_state.last_output_time = panel.agent_terminal.last_output_time
-            self.query_one(WorktreeList).update_orchestrator_state(self._orchestrator_state)
-            return
-
         state = self._get_agent_state(event.worktree_path)
         state.status = event.status
         state.confidence = event.confidence
         state.detail = event.detail
         if event.status == AgentStatus.RUNNING:
-            # Update last_output_time from the terminal
-            center = self.query_one(CenterPanel)
-            panel = center.get_panel(event.worktree_path)
+            panel = self._get_any_panel(event.worktree_path)
             if panel and panel.agent_terminal:
                 state.last_output_time = panel.agent_terminal.last_output_time
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 
     async def on_agent_exited(self, event: AgentExited) -> None:
-        if event.worktree_path == ORCHESTRATOR_KEY:
-            self._orchestrator_state.status = AgentStatus.NO_AGENT
-            self._orchestrator_state.confidence = LifecycleConfidence.LOW
-            self._orchestrator_state.detail = ""
-            self._orchestrator_state.last_output_time = None
-            self.query_one(WorktreeList).update_orchestrator_state(self._orchestrator_state)
-
-            center = self.query_one(CenterPanel)
-            panel = center.get_orchestrator_panel()
-            if panel is not None:
-                await panel.cleanup_agent()
-
-            self.notify(
-                "Orchestrator exited — press s to spawn again",
-                severity="warning",
-                timeout=5,
-            )
-            return
-
         state = self._get_agent_state(event.worktree_path)
         state.status = AgentStatus.NO_AGENT
         state.confidence = LifecycleConfidence.LOW
@@ -287,13 +261,13 @@ class LazyAgent(App):
         state.last_output_time = None
         self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
 
-        center = self.query_one(CenterPanel)
-        panel = center.get_panel(event.worktree_path)
+        panel = self._get_any_panel(event.worktree_path)
         if panel is not None:
             await panel.cleanup_agent()
 
+        label = "Orchestrator" if event.worktree_path == ORCHESTRATOR_KEY else "Agent"
         self.notify(
-            "Agent exited — press s to spawn again",
+            f"{label} exited — press s to spawn again",
             severity="warning",
             timeout=5,
         )
@@ -302,17 +276,9 @@ class LazyAgent(App):
 
     def _check_hangs(self) -> None:
         """Periodic timer callback: check all active agents for hangs."""
-        center = self.query_one(CenterPanel)
-
-        # Check orchestrator
-        if self._orchestrator_state.status == AgentStatus.RUNNING:
-            orch_panel = center.get_orchestrator_panel()
-            if orch_panel and orch_panel.agent_terminal:
-                orch_panel.agent_terminal.check_hang()
-
-        for worktree_path, state in self._agent_states.items():
+        for key, state in self._agent_states.items():
             if state.status == AgentStatus.RUNNING:
-                panel = center.get_panel(worktree_path)
+                panel = self._get_any_panel(key)
                 if panel and panel.agent_terminal:
                     panel.agent_terminal.check_hang()
 
@@ -351,18 +317,16 @@ class LazyAgent(App):
 
     def _spawn_orchestrator_agent(self) -> None:
         """Spawn agent in the orchestrator panel."""
-        center = self.query_one(CenterPanel)
-        orch_panel = center.get_orchestrator_panel()
-        if orch_panel and orch_panel.has_agent:
+        panel = self._get_any_panel(ORCHESTRATOR_KEY)
+        if panel and panel.has_agent:
             self.notify("Orchestrator agent already running", severity="warning")
             return
 
         async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None:
                 center = self.query_one(CenterPanel)
-                panel = center.switch_to_orchestrator()
+                panel = center.switch_to_orchestrator(self._repo_root)
                 await panel.spawn_agent(
-                    worktree_path=self._repo_root,
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
@@ -398,15 +362,15 @@ class LazyAgent(App):
 
     async def _stop_orchestrator_agent(self) -> None:
         """Stop the orchestrator agent."""
-        center = self.query_one(CenterPanel)
-        panel = center.get_orchestrator_panel()
+        panel = self._get_any_panel(ORCHESTRATOR_KEY)
         if panel is None or not panel.has_agent:
             self.notify("No running orchestrator agent", severity="warning")
             return
 
-        self._orchestrator_state.status = AgentStatus.NO_AGENT
-        self._orchestrator_state.last_output_time = None
-        self.query_one(WorktreeList).update_orchestrator_state(self._orchestrator_state)
+        state = self._get_agent_state(ORCHESTRATOR_KEY)
+        state.status = AgentStatus.NO_AGENT
+        state.last_output_time = None
+        self.query_one(WorktreeList).update_agent_state(ORCHESTRATOR_KEY, state)
         await panel.cleanup_agent()
         self.notify("Orchestrator agent stopped")
 

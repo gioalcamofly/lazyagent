@@ -222,7 +222,7 @@ async def test_orchestrator_status_changed_updates_sidebar(monkeypatch):
         app.on_agent_status_changed(event)
         await pilot.pause()
 
-        assert app._orchestrator_state.status == AgentStatus.RUNNING
+        assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.RUNNING
 
         # Verify sidebar was updated
         wt_list = app.query_one(WorktreeList)
@@ -240,14 +240,14 @@ async def test_orchestrator_exited_resets_state(monkeypatch):
         from lazyagent.messages import AgentExited
 
         # Set running state first
-        app._orchestrator_state.status = AgentStatus.RUNNING
+        app._get_agent_state(ORCHESTRATOR_KEY).status = AgentStatus.RUNNING
 
         app.notify = MagicMock()
         event = AgentExited(worktree_path=ORCHESTRATOR_KEY)
         await app.on_agent_exited(event)
         await pilot.pause()
 
-        assert app._orchestrator_state.status == AgentStatus.NO_AGENT
+        assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.NO_AGENT
         app.notify.assert_called_once()
         assert "Orchestrator exited" in app.notify.call_args.args[0]
 
