@@ -16,6 +16,7 @@ from lazyagent.agent_providers import (
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
+from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY, OrchestratorPanel
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 
@@ -346,3 +347,35 @@ class CenterPanel(Container):
             return None
         panel_id = self._panels[worktree_path]
         return self.query_one(f"#{panel_id}", WorktreePanel)
+
+    def ensure_orchestrator_panel(self) -> OrchestratorPanel:
+        """Get or lazily create the OrchestratorPanel."""
+        if ORCHESTRATOR_KEY in self._panels:
+            panel_id = self._panels[ORCHESTRATOR_KEY]
+            return self.query_one(f"#{panel_id}", OrchestratorPanel)
+
+        panel_id = "wp-orchestrator"
+        panel = OrchestratorPanel(id=panel_id)
+        switcher = self.query_one("#panel-switcher", ContentSwitcher)
+        switcher.mount(panel)
+        self._panels[ORCHESTRATOR_KEY] = panel_id
+        return panel
+
+    def switch_to_orchestrator(self) -> OrchestratorPanel:
+        """Switch the visible panel to the orchestrator."""
+        panel = self.ensure_orchestrator_panel()
+        panel_id = self._panels[ORCHESTRATOR_KEY]
+
+        placeholder = self.query_one("#center-placeholder", Static)
+        placeholder.display = False
+
+        switcher = self.query_one("#panel-switcher", ContentSwitcher)
+        switcher.current = panel_id
+        return panel
+
+    def get_orchestrator_panel(self) -> OrchestratorPanel | None:
+        """Get the orchestrator panel if it exists."""
+        if ORCHESTRATOR_KEY not in self._panels:
+            return None
+        panel_id = self._panels[ORCHESTRATOR_KEY]
+        return self.query_one(f"#{panel_id}", OrchestratorPanel)
