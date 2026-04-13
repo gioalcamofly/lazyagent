@@ -11,8 +11,9 @@ from textual.widgets import Footer, Header
 from textual import work
 
 from lazyagent.config import Config, format_command, load_config
+from lazyagent.ipc import IpcServer, start_ipc_server
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
@@ -74,6 +75,8 @@ class LazyAgent(App):
         self._config: Config = Config()
         self._repo_root: str = ""
         self._gh_available: bool | None = None
+        self._ipc_server: IpcServer | None = None
+        self._ipc_socket_path: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -83,13 +86,21 @@ class LazyAgent(App):
         yield CenterPanel()
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self._load_worktrees()
         self._load_config()
+        await self._start_ipc_server()
         self.set_interval(60, self._check_hangs)
         self.set_interval(30, self._refresh_git_statuses)
         self.set_interval(30, self._refresh_selected_diff)
         self.set_interval(60, self._refresh_pr_status)
+
+    async def _start_ipc_server(self) -> None:
+        """Start the IPC server for MCP communication."""
+        try:
+            self._ipc_server, self._ipc_socket_path = await start_ipc_server(self)
+        except Exception as e:
+            self.notify(f"IPC server failed to start: {e}", severity="warning", timeout=5)
 
     def _load_config(self) -> None:
         if self._repo_root:
@@ -281,6 +292,7 @@ class LazyAgent(App):
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
+                    socket_path=self._ipc_socket_path,
                     instruction=result.instruction,
                 )
 
@@ -343,6 +355,12 @@ class LazyAgent(App):
                 panel.query_one("#terminal-widget").focus()
             except Exception:
                 pass
+
+    async def action_quit(self) -> None:
+        if self._ipc_server is not None:
+            await self._ipc_server.stop()
+            self._ipc_server = None
+        self.exit()
 
     def action_refresh(self) -> None:
         self._load_worktrees()

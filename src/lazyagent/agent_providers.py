@@ -102,14 +102,18 @@ class AgentProvider:
             return self.resume_last_args
         return ()
 
-    def build_runtime_context(self, worktree_path: str) -> ProviderRuntimeContext:
+    def build_runtime_context(
+        self,
+        worktree_path: str,
+        socket_path: str | None = None,
+    ) -> ProviderRuntimeContext:
         """Build provider-specific runtime metadata for the spawned session."""
         if self.name == "claude":
-            return _build_claude_runtime_context(self, worktree_path)
+            return _build_claude_runtime_context(self, worktree_path, socket_path)
         if self.name == "codex":
-            return _build_codex_runtime_context(self, worktree_path)
+            return _build_codex_runtime_context(self, worktree_path, socket_path)
         if self.name == "gemini":
-            return _build_gemini_runtime_context(self, worktree_path)
+            return _build_gemini_runtime_context(self, worktree_path, socket_path)
         return ProviderRuntimeContext(
             provider_name=self.name,
             worktree_path=worktree_path,
@@ -228,18 +232,43 @@ def get_agent_provider(provider: str | None) -> AgentProvider:
 def _build_gemini_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
+    socket_path: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-gemini-telemetry-"))
     telemetry_log_path = temp_dir / "telemetry.jsonl"
+
+    env_overrides = {
+        "GEMINI_TELEMETRY_LOG": str(telemetry_log_path),
+    }
+
+    if socket_path:
+        # Gemini CLI reads settings.json from $GEMINI_CLI_HOME/.gemini/.
+        # Point it at a temp directory containing only our MCP entry.
+        gemini_home = temp_dir / "gemini_home"
+        (gemini_home / ".gemini").mkdir(parents=True, exist_ok=True)
+        settings = {
+            "mcpServers": {
+                "lazyagent": {
+                    "command": "python3",
+                    "args": ["-m", "lazyagent.mcp_server"],
+                    "env": {
+                        "PYTHONUNBUFFERED": "1",
+                        "LAZYAGENT_SOCKET": socket_path,
+                    },
+                }
+            }
+        }
+        (gemini_home / ".gemini" / "settings.json").write_text(
+            json.dumps(settings), encoding="utf-8"
+        )
+        env_overrides["GEMINI_CLI_HOME"] = str(gemini_home)
 
     return ProviderRuntimeContext(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
 
-        env_overrides={
-            "GEMINI_TELEMETRY_LOG": str(telemetry_log_path),
-        },
+        env_overrides=env_overrides,
         metadata={
             "temp_dir": str(temp_dir),
             "telemetry_log_path": str(telemetry_log_path),
@@ -250,6 +279,7 @@ def _build_gemini_runtime_context(
 def _build_codex_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
+    socket_path: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-codex-events-"))
     app_server_log_path = temp_dir / "app-server-events.jsonl"
@@ -258,14 +288,32 @@ def _build_codex_runtime_context(
     # or use a Codex-specific flag to pipe events to this file.
     # For now, we prepare the environment so Codex knows where to log.
 
+    env_overrides = {
+        "CODEX_APP_SERVER_LOG": str(app_server_log_path),
+    }
+
+    if socket_path:
+        # Codex reads MCP server config from $CODEX_HOME/config.toml.
+        # Point it at a temp directory containing only our MCP entry.
+        codex_home = temp_dir / "codex_home"
+        codex_home.mkdir(exist_ok=True)
+        config_toml = (
+            '[mcp_servers.lazyagent]\n'
+            f'command = "python3"\n'
+            f'args = ["-m", "lazyagent.mcp_server"]\n'
+            '\n[mcp_servers.lazyagent.env]\n'
+            'PYTHONUNBUFFERED = "1"\n'
+            f'LAZYAGENT_SOCKET = {json.dumps(socket_path)}\n'
+        )
+        (codex_home / "config.toml").write_text(config_toml, encoding="utf-8")
+        env_overrides["CODEX_HOME"] = str(codex_home)
+
     return ProviderRuntimeContext(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
 
-        env_overrides={
-            "CODEX_APP_SERVER_LOG": str(app_server_log_path),
-        },
+        env_overrides=env_overrides,
         metadata={
             "temp_dir": str(temp_dir),
             "app_server_log_path": str(app_server_log_path),
@@ -276,6 +324,7 @@ def _build_codex_runtime_context(
 def _build_claude_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
+    socket_path: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -287,7 +336,7 @@ def _build_claude_runtime_context(
 
     hook_command = {"type": "command", "command": str(hook_script_path)}
 
-    hooks_settings = {
+    hooks_settings: dict = {
         "hooks": {
             "Notification": [
                 {
@@ -302,6 +351,19 @@ def _build_claude_runtime_context(
             "PostToolUse": [{"hooks": [hook_command]}],
         }
     }
+
+    if socket_path:
+        hooks_settings["mcpServers"] = {
+            "lazyagent": {
+                "command": "python3",
+                "args": ["-m", "lazyagent.mcp_server"],
+                "env": {
+                    "PYTHONUNBUFFERED": "1",
+                    "LAZYAGENT_SOCKET": socket_path,
+                },
+            }
+        }
+
     settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
     return ProviderRuntimeContext(

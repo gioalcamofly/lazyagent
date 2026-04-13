@@ -242,6 +242,7 @@ class WorktreePanel(Container):
         skip_permissions: bool = False,
         agent_provider: str = DEFAULT_AGENT_PROVIDER,
         resume_mode: ResumeMode = ResumeMode.NEW,
+        socket_path: str | None = None,
         instruction: str | None = None,
     ) -> None:
         """Spawn the configured coding agent process in the Agent pane."""
@@ -261,7 +262,9 @@ class WorktreePanel(Container):
             pass
 
         provider = get_agent_provider(agent_provider)
-        runtime_context = provider.build_runtime_context(self.worktree_path)
+        runtime_context = provider.build_runtime_context(
+            self.worktree_path, socket_path=socket_path
+        )
         command = provider.build_command(
             self.worktree_path,
             skip_permissions=skip_permissions,

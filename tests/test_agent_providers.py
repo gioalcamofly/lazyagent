@@ -121,6 +121,35 @@ class TestClaudeHooksSettings:
         assert context.metadata["settings_path"] in script
 
 
+class TestClaudeMcpSettings:
+    def test_settings_file_with_mcp_server(self):
+        provider = get_agent_provider("claude")
+        context = provider.build_runtime_context("/tmp/wt", socket_path="/tmp/test.sock")
+
+        settings_path = context.metadata["settings_path"]
+        settings = json.loads(open(settings_path, encoding="utf-8").read())
+
+        # Both hooks and mcpServers should be present
+        assert "hooks" in settings
+        assert "mcpServers" in settings
+
+        mcp_cfg = settings["mcpServers"]["lazyagent"]
+        assert mcp_cfg["command"] == "python3"
+        assert mcp_cfg["args"] == ["-m", "lazyagent.mcp_server"]
+        assert mcp_cfg["env"]["LAZYAGENT_SOCKET"] == "/tmp/test.sock"
+        assert mcp_cfg["env"]["PYTHONUNBUFFERED"] == "1"
+
+    def test_settings_file_without_socket_path_has_no_mcp(self):
+        provider = get_agent_provider("claude")
+        context = provider.build_runtime_context("/tmp/wt")
+
+        settings_path = context.metadata["settings_path"]
+        settings = json.loads(open(settings_path, encoding="utf-8").read())
+
+        assert list(settings.keys()) == ["hooks"]
+        assert "mcpServers" not in settings
+
+
 class TestBuildCommandResume:
     def test_claude_new_has_no_resume_flags(self):
         script = shlex.split(
