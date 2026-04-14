@@ -221,6 +221,71 @@ class TestBuildCommandResume:
         assert "--resume" not in script
 
 
+class TestBuildCommandSystemPrompt:
+    def test_claude_uses_append_system_prompt_flag(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command(
+                "/tmp/wt", system_prompt="You are the orchestrator."
+            )
+        )[2]
+        assert "--append-system-prompt" in script
+        assert "You are the orchestrator." in script
+
+    def test_claude_no_system_prompt_no_flag(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt")
+        )[2]
+        assert "--append-system-prompt" not in script
+
+    def test_claude_none_system_prompt_no_flag(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", system_prompt=None)
+        )[2]
+        assert "--append-system-prompt" not in script
+
+    def test_codex_prepends_system_prompt_to_instruction(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command(
+                "/tmp/wt",
+                instruction="do stuff",
+                system_prompt="You are the orchestrator.",
+            )
+        )[2]
+        # Codex has no system_prompt_flag, so prompt is prepended to instruction
+        assert "--append-system-prompt" not in script
+        assert "You are the orchestrator." in script
+        assert "do stuff" in script
+
+    def test_codex_system_prompt_without_instruction(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command(
+                "/tmp/wt", system_prompt="You are the orchestrator."
+            )
+        )[2]
+        assert "You are the orchestrator." in script
+
+    def test_gemini_prepends_system_prompt_to_instruction(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command(
+                "/tmp/wt",
+                instruction="hello",
+                system_prompt="You are the orchestrator.",
+            )
+        )[2]
+        assert "-i" in script
+        assert "You are the orchestrator." in script
+        assert "hello" in script
+
+    def test_gemini_system_prompt_without_instruction(self):
+        script = shlex.split(
+            get_agent_provider("gemini").build_command(
+                "/tmp/wt", system_prompt="You are the orchestrator."
+            )
+        )[2]
+        assert "-i" in script
+        assert "You are the orchestrator." in script
+
+
 class TestBuildCommandInstruction:
     def test_claude_instruction_as_positional_arg(self):
         script = shlex.split(

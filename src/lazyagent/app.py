@@ -11,6 +11,7 @@ from textual.widgets import Footer, Header
 from textual import work
 
 from lazyagent.config import Config, format_command, load_config
+from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
 from lazyagent.ipc import IpcServer, start_ipc_server
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
@@ -322,6 +323,8 @@ class LazyAgent(App):
             self.notify("Orchestrator agent already running", severity="warning")
             return
 
+        orch_prompt = compose_orchestrator_prompt(self._config, self._repo_root)
+
         async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None:
                 center = self.query_one(CenterPanel)
@@ -332,6 +335,7 @@ class LazyAgent(App):
                     resume_mode=result.resume_mode,
                     socket_path=self._ipc_socket_path,
                     instruction=result.instruction,
+                    system_prompt=orch_prompt,
                 )
 
         self.push_screen(SpawnModal("Orchestrator", agent_provider=self._config.agent.provider), on_spawn_dismiss)

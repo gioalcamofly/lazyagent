@@ -69,6 +69,7 @@ class OrchestratorPanel(Container):
         resume_mode: ResumeMode = ResumeMode.NEW,
         socket_path: str | None = None,
         instruction: str | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         """Spawn the orchestrator agent process."""
         # Remove previous terminal or placeholder
@@ -93,6 +94,7 @@ class OrchestratorPanel(Container):
             runtime_context=runtime_context,
             resume_mode=resume_mode,
             instruction=instruction,
+            system_prompt=system_prompt,
         )
 
         terminal = MonitoredTerminal(
