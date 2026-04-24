@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lazyagent.config import Config, WorktreeConfig, format_command, load_config
+from lazyagent.config import Config, OrchestratorConfig, WorktreeConfig, format_command, load_config
 
 
 class TestLoadConfig:
@@ -78,6 +78,39 @@ provider = "other"
         (tmp_path / ".lazyagent.toml").write_text("[worktree]\n")
         config = load_config(tmp_path)
         assert config.default_branch == "master"
+
+    def test_orchestrator_defaults(self, tmp_path: Path):
+        config = load_config(tmp_path)
+        assert config.orchestrator.prompt_file is None
+        assert config.orchestrator.agent_instruction_template is None
+
+    def test_orchestrator_prompt_file(self, tmp_path: Path):
+        toml_content = """\
+[orchestrator]
+prompt_file = "my-prompt.md"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.orchestrator.prompt_file == "my-prompt.md"
+
+    def test_orchestrator_agent_instruction_template(self, tmp_path: Path):
+        toml_content = """\
+[orchestrator]
+agent_instruction_template = "/clickup-fix-card {task_id}"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.orchestrator.agent_instruction_template == "/clickup-fix-card {task_id}"
+
+    def test_orchestrator_partial_config(self, tmp_path: Path):
+        toml_content = """\
+[orchestrator]
+prompt_file = "custom.md"
+"""
+        (tmp_path / ".lazyagent.toml").write_text(toml_content)
+        config = load_config(tmp_path)
+        assert config.orchestrator.prompt_file == "custom.md"
+        assert config.orchestrator.agent_instruction_template is None
 
 
 class TestConfigProperties:

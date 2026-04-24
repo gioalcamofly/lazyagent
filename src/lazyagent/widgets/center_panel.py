@@ -16,6 +16,7 @@ from lazyagent.agent_providers import (
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
+from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY, OrchestratorPanel
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 
@@ -315,34 +316,58 @@ class CenterPanel(Container):
         )
         yield ContentSwitcher(id="panel-switcher", initial=None)
 
+    def _get_panel_by_key(self, key: str) -> Container | None:
+        """Get an existing panel by key, or None."""
+        if key not in self._panels:
+            return None
+        panel_id = self._panels[key]
+        return self.query_one(f"#{panel_id}", Container)
+
+    def _activate_panel(self, key: str) -> None:
+        """Hide placeholder and switch the ContentSwitcher to the given key."""
+        self.query_one("#center-placeholder", Static).display = False
+        self.query_one("#panel-switcher", ContentSwitcher).current = self._panels[key]
+
     def ensure_panel(self, worktree_path: str) -> WorktreePanel:
         """Get or lazily create a WorktreePanel for the given worktree."""
-        if worktree_path in self._panels:
-            panel_id = self._panels[worktree_path]
-            return self.query_one(f"#{panel_id}", WorktreePanel)
+        existing = self._get_panel_by_key(worktree_path)
+        if existing is not None:
+            return existing  # type: ignore[return-value]
 
         panel_id = _panel_id(worktree_path)
         panel = WorktreePanel(worktree_path, id=panel_id)
-        switcher = self.query_one("#panel-switcher", ContentSwitcher)
-        switcher.mount(panel)
+        self.query_one("#panel-switcher", ContentSwitcher).mount(panel)
         self._panels[worktree_path] = panel_id
         return panel
 
     def switch_to(self, worktree_path: str) -> WorktreePanel:
         """Switch the visible panel to the given worktree (creating if needed)."""
         panel = self.ensure_panel(worktree_path)
-        panel_id = self._panels[worktree_path]
-
-        placeholder = self.query_one("#center-placeholder", Static)
-        placeholder.display = False
-
-        switcher = self.query_one("#panel-switcher", ContentSwitcher)
-        switcher.current = panel_id
+        self._activate_panel(worktree_path)
         return panel
 
     def get_panel(self, worktree_path: str) -> WorktreePanel | None:
-        """Get existing panel or None."""
-        if worktree_path not in self._panels:
-            return None
-        panel_id = self._panels[worktree_path]
-        return self.query_one(f"#{panel_id}", WorktreePanel)
+        """Get existing WorktreePanel or None."""
+        return self._get_panel_by_key(worktree_path)  # type: ignore[return-value]
+
+    def ensure_orchestrator_panel(self, repo_root: str) -> OrchestratorPanel:
+        """Get or lazily create the OrchestratorPanel."""
+        existing = self._get_panel_by_key(ORCHESTRATOR_KEY)
+        if existing is not None:
+            return existing  # type: ignore[return-value]
+
+        panel_id = "wp-orchestrator"
+        panel = OrchestratorPanel(worktree_path=repo_root, id=panel_id)
+        self.query_one("#panel-switcher", ContentSwitcher).mount(panel)
+        self._panels[ORCHESTRATOR_KEY] = panel_id
+        return panel
+
+    def switch_to_orchestrator(self, repo_root: str) -> OrchestratorPanel:
+        """Switch the visible panel to the orchestrator."""
+        panel = self.ensure_orchestrator_panel(repo_root)
+        self._activate_panel(ORCHESTRATOR_KEY)
+        return panel
+
+    def get_orchestrator_panel(self) -> OrchestratorPanel | None:
+        """Get the orchestrator panel if it exists."""
+        return self._get_panel_by_key(ORCHESTRATOR_KEY)  # type: ignore[return-value]

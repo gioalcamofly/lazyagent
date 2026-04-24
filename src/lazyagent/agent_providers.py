@@ -54,6 +54,7 @@ class AgentProvider:
     resume_last_args: tuple[str, ...] = ()
     resume_is_subcommand: bool = False
     instruction_flag: str | None = None
+    system_prompt_flag: str | None = None
 
     def build_command(
         self,
@@ -62,6 +63,7 @@ class AgentProvider:
         runtime_context: ProviderRuntimeContext | None = None,
         resume_mode: ResumeMode = ResumeMode.NEW,
         instruction: str | None = None,
+        system_prompt: str | None = None,
     ) -> str:
         """Build the full shell command used to launch this provider."""
         context = runtime_context or self.build_runtime_context(worktree_path)
@@ -77,6 +79,15 @@ class AgentProvider:
 
         if skip_permissions:
             parts.append(self.dangerous_flag)
+
+        if system_prompt:
+            if self.system_prompt_flag:
+                parts.extend([self.system_prompt_flag, system_prompt])
+            elif instruction:
+                # Providers without a dedicated flag: prepend to instruction
+                instruction = system_prompt + "\n\n" + instruction
+            else:
+                instruction = system_prompt
 
         if instruction:
             if self.instruction_flag:
@@ -174,6 +185,7 @@ PROVIDERS = {
         supports_completion_events=True,
         resume_pick_args=("--resume",),
         resume_last_args=("--continue",),
+        system_prompt_flag="--append-system-prompt",
     ),
     "codex": AgentProvider(
         name="codex",
