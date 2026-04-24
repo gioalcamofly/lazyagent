@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-04-24
+
+### Added
+- MCP server and IPC layer for orchestrator communication
+- Orchestrator UI panel with dedicated sidebar entry
+- Orchestrator system prompt wired to MCP
+- Pass initial instruction to spawned agents via CLI argument
+
+### Fixed
+- Critical bugs and efficiency issues in MCP/IPC layer
+- Unified instruction type and fixed brittle test assertions
+- Thread socket_path to all providers for IPC spawn
+
+### Changed
+- Eliminated orchestrator/worktree code duplication
+- New dependency: `mcp>=1.0.0`
+
 ## [0.4.0] - 2026-04-04
 
 ### Added
