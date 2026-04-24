@@ -37,11 +37,20 @@ class AgentConfig:
 
 
 @dataclass
+class OrchestratorConfig:
+    """Configuration for the orchestrator agent."""
+
+    prompt_file: str | None = None
+    agent_instruction_template: str | None = None
+
+
+@dataclass
 class Config:
     """Application configuration loaded from .lazyagent.toml."""
 
     worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -75,10 +84,16 @@ def load_config(repo_root: str | Path) -> Config:
     )
     agent_data = data.get("agent", {})
     provider = normalize_provider_name(agent_data.get("provider"))
+    orch_data = data.get("orchestrator", {})
+    orchestrator_config = OrchestratorConfig(
+        prompt_file=orch_data.get("prompt_file"),
+        agent_instruction_template=orch_data.get("agent_instruction_template"),
+    )
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
     return Config(
         worktree=worktree_config,
         agent=AgentConfig(provider=provider),
+        orchestrator=orchestrator_config,
         default_branch=default_branch,
     )
 

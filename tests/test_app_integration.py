@@ -94,7 +94,8 @@ def _select_worktree(app: LazyAgent, index: int) -> WorktreeInfo:
         for child in worktree_list.children
         if isinstance(child, WorktreeListItem)
     ][index]
-    worktree_list.index = index
+    # +1 to account for the OrchestratorListItem at position 0
+    worktree_list.index = index + 1
     app.on_list_view_highlighted(WorktreeList.Highlighted(worktree_list, item))
     return item.worktree
 

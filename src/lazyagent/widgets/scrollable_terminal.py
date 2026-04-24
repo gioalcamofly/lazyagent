@@ -667,11 +667,9 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
     @staticmethod
     def _copy_to_system_clipboard(text: str, cmd: list[str]) -> None:
-        """Copy text to system clipboard (fire-and-forget)."""
+        """Copy text to system clipboard."""
         try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            proc.stdin.write(text.encode())
-            proc.stdin.close()
+            subprocess.run(cmd, input=text.encode(), check=False, timeout=5)
         except Exception:
             pass
 
