@@ -90,20 +90,30 @@ async def list_worktrees() -> list[dict]:
 
 
 @mcp.tool()
-async def create_worktree(branch: str, base_branch: str = "main") -> dict:
+async def create_worktree(
+    branch: str, base_branch: str = "main", extra: str = ""
+) -> dict:
     """Create a new git worktree with a new branch.
+
+    If the repo has a custom create command configured in ``.lazyagent.toml``
+    (``[worktree] create = "..."``), that command is run transparently —
+    same as when a user creates a worktree from the UI. This lets post-create hooks
+    (e.g. ``bun install``, copying ``.env``) run consistently.
 
     Args:
         branch: Name for the new branch.
         base_branch: Branch to base the new worktree on. Defaults to "main".
+        extra: Optional string substituted for the ``{extra}`` placeholder in
+            the custom create command template. Ignored when no custom command
+            is configured.
 
     Returns:
         Object with path and branch of the new worktree.
     """
-    return await _get_client().call(
-        "create_worktree",
-        {"branch": branch, "base_branch": base_branch},
-    )
+    params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}
+    if extra:
+        params["extra"] = extra
+    return await _get_client().call("create_worktree", params)
 
 
 @mcp.tool()
@@ -127,21 +137,33 @@ async def remove_worktree(worktree_path: str, force: bool = False) -> dict:
 
 @mcp.tool()
 async def spawn_agent(
-    worktree_path: str, instruction: str | None = None
+    worktree_path: str,
+    instruction: str | None = None,
+    skip_permissions: bool = True,
+    resume_mode: str = "new",
 ) -> dict:
     """Spawn a coding agent in a worktree.
 
-    The agent runs with skip_permissions=True. Only one agent can run
-    per worktree at a time.
+    Only one agent can run per worktree at a time.
 
     Args:
         worktree_path: Absolute path of the worktree.
         instruction: Optional initial instruction passed to the agent CLI.
+        skip_permissions: If True (default), the agent runs in "dangerous" mode
+            with permission prompts bypassed. Set to False for normal mode where
+            the agent asks before sensitive actions.
+        resume_mode: Session mode — "new" (default) starts a fresh session,
+            "last" resumes the most recent session for this worktree. Interactive
+            "pick from list" mode is not supported over MCP.
 
     Returns:
         Object with worktree_path and status.
     """
-    params: dict[str, Any] = {"worktree_path": worktree_path}
+    params: dict[str, Any] = {
+        "worktree_path": worktree_path,
+        "skip_permissions": skip_permissions,
+        "resume_mode": resume_mode,
+    }
     if instruction is not None:
         params["instruction"] = instruction
     return await _get_client().call("spawn_agent", params)
@@ -195,6 +217,26 @@ async def read_agent_output(worktree_path: str, lines: int = 50) -> dict:
     return await _get_client().call(
         "read_agent_output",
         {"worktree_path": worktree_path, "lines": lines},
+    )
+
+
+@mcp.tool()
+async def send_agent_input(worktree_path: str, text: str) -> dict:
+    """Send text input to a running agent's terminal.
+
+    Use this to provide follow-up instructions, answer prompts, or approve
+    actions without stopping and re-spawning the agent.
+
+    Args:
+        worktree_path: Absolute path of the worktree.
+        text: The text to send to the agent's stdin (a newline is appended automatically).
+
+    Returns:
+        Object confirming the input was sent.
+    """
+    return await _get_client().call(
+        "send_agent_input",
+        {"worktree_path": worktree_path, "text": text},
     )
 
 

@@ -20,6 +20,7 @@ def _make_app(worktrees=None, agent_states=None, git_statuses=None):
     app._git_statuses = git_statuses or {}
     app._repo_root = "/tmp/repo"
     app._config.agent.provider = "claude"
+    app._config.has_custom_create = False
     app._get_agent_state = MagicMock(side_effect=lambda p: app._agent_states.setdefault(p, AgentState()))
     return app
 
