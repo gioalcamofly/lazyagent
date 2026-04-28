@@ -10,8 +10,10 @@ Run with: ``python3 -m lazyagent.mcp_server``
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import os
+import tempfile
 import uuid
 from typing import Any
 
@@ -61,14 +63,26 @@ class IpcClient:
 _cached_client: IpcClient | None = None
 
 
+def _discover_socket() -> str | None:
+    """Find a running lazyagent IPC socket in the default temp directory."""
+    pattern = os.path.join(tempfile.gettempdir(), "lazyagent-*/ipc.sock")
+    candidates = glob.glob(pattern)
+    # Return the most recently modified socket (likely the active instance)
+    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _get_client() -> IpcClient:
     global _cached_client
     if _cached_client is None:
-        socket_path = os.environ.get("LAZYAGENT_SOCKET")
+        socket_path = os.environ.get("LAZYAGENT_SOCKET") or _discover_socket()
         if not socket_path:
             raise RuntimeError(
-                "LAZYAGENT_SOCKET environment variable is not set. "
-                "This server must be started by lazyagent."
+                "No running lazyagent instance found. "
+                "Start lazyagent first, or set LAZYAGENT_SOCKET."
             )
         _cached_client = IpcClient(socket_path)
     return _cached_client

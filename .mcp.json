@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lazyagent": {
+      "command": "uv",
+      "args": ["run", "python3", "-m", "lazyagent.mcp_server"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
