@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.agent_providers import ResumeMode
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
 
@@ -55,6 +56,7 @@ class IpcServer:
             "stop_agent": self.handle_stop_agent,
             "get_agent_status": self.handle_get_agent_status,
             "read_agent_output": self.handle_read_agent_output,
+            "send_agent_input": self.handle_send_agent_input,
         }
 
     @property
@@ -169,11 +171,88 @@ class IpcServer:
     async def handle_create_worktree(
         self, request_id: str, params: dict
     ) -> dict:
-        """Create a new worktree. Params: branch, base_branch (optional)."""
+        """Create a new worktree.
+
+        Params:
+            branch: required, non-empty branch name.
+            base_branch: optional, defaults to "main".
+            extra: optional, only used when a custom create command is
+                configured.
+
+        Two paths:
+        - **No custom create command**: runs ``git worktree add``
+          synchronously and returns the actual path. ``extra`` is ignored
+          (with a warning in the response so callers notice).
+        - **Custom create command** (``[worktree] create = "..."`` in
+          ``.lazyagent.toml``): the command is dispatched into the user's
+          currently-selected worktree terminal and runs asynchronously.
+          ``path`` in the response is *predicted* from the modal's naming
+          convention (``<parent>/<repo>-<branch>``); the caller MUST poll
+          ``list_worktrees`` to confirm the worktree actually appeared
+          before calling ``spawn_agent`` on it. ``custom_command: true``
+          flags this contract. If no worktree is selected in the UI the
+          call fails with VALIDATION_ERROR rather than silently dropping
+          the command.
+        """
         branch = params.get("branch", "").strip()
         if not branch:
             raise ValueError("branch is required and must not be empty")
         base_branch = params.get("base_branch", "main")
+        extra = params.get("extra", "")
+
+        if self._app._config.has_custom_create:
+            from lazyagent.config import format_command
+
+            # The custom command needs a terminal to run in. Without a
+            # selected worktree, _send_to_terminal silently no-ops via a
+            # warning notify and the caller would get "success" for an
+            # operation that never happened. Reject explicitly.
+            if self._app._get_selected_worktree() is None:
+                raise ValueError(
+                    "Custom create command requires a selected worktree to "
+                    "dispatch into; none is currently selected in the UI"
+                )
+
+            repo_root = self._app._repo_root
+            repo_name = os.path.basename(repo_root) if repo_root else ""
+            wt_name = f"{repo_name}-{branch}" if repo_name else branch
+            wt_path = str(
+                os.path.join(os.path.dirname(repo_root), wt_name)
+                if repo_root
+                else wt_name
+            )
+            cmd = format_command(
+                self._app._config.worktree.create,  # type: ignore[arg-type]
+                branch=branch,
+                name=wt_name,
+                base=base_branch,
+                path=wt_path,
+                repo=repo_root,
+                extra=extra,
+            )
+            self._app.call_later(self._app._send_to_terminal, cmd)
+            self._app.call_later(self._app._load_worktrees)
+            return _ok(request_id, {
+                "path": wt_path,
+                "branch": branch,
+                "custom_command": True,
+                "warning": (
+                    "Path is predicted, not verified. The custom create "
+                    "command runs asynchronously in the selected worktree's "
+                    "terminal. Poll list_worktrees to confirm the worktree "
+                    "exists before calling spawn_agent on it."
+                ),
+            })
+
+        # Plain ``git worktree add`` path. Surface a warning if extra was
+        # passed but cannot be honoured — easier for an LLM caller to
+        # notice than a silent drop.
+        result: dict[str, Any] = {}
+        if extra:
+            result["warning"] = (
+                "extra= was provided but this repo has no custom create "
+                "command configured; the value was ignored."
+            )
 
         manager = WorktreeManager(self._app._repo_root)
         new_path = await asyncio.to_thread(manager.create, branch, base_branch)
@@ -181,7 +260,9 @@ class IpcServer:
         # Refresh the worktree list on the Textual thread
         self._app.call_later(self._app._load_worktrees)
 
-        return _ok(request_id, {"path": new_path, "branch": branch})
+        result["path"] = new_path
+        result["branch"] = branch
+        return _ok(request_id, result)
 
     async def handle_remove_worktree(
         self, request_id: str, params: dict
@@ -216,7 +297,8 @@ class IpcServer:
     async def handle_spawn_agent(
         self, request_id: str, params: dict
     ) -> dict:
-        """Spawn an agent in a worktree. Params: worktree_path, instruction (optional)."""
+        """Spawn an agent in a worktree. Params: worktree_path, instruction (optional),
+        skip_permissions (optional), resume_mode (optional)."""
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
@@ -232,6 +314,15 @@ class IpcServer:
 
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         instruction = params.get("instruction") or params.get("initial_prompt")
+        skip_permissions = params.get("skip_permissions", True)
+        resume_mode_str = params.get("resume_mode", "new")
+        try:
+            resume_mode = ResumeMode(resume_mode_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid resume_mode: {resume_mode_str!r}. "
+                f"Must be one of: {', '.join(m.value for m in ResumeMode)}"
+            )
 
         async def _do_spawn() -> None:
             try:
@@ -240,8 +331,9 @@ class IpcServer:
                 center = self._app.query_one(CenterPanel)
                 panel = center.ensure_panel(worktree_path)
                 await panel.spawn_agent(
-                    skip_permissions=True,
+                    skip_permissions=skip_permissions,
                     agent_provider=self._app._config.agent.provider,
+                    resume_mode=resume_mode,
                     socket_path=self._socket_path,
                     instruction=instruction,
                 )
@@ -368,6 +460,32 @@ class IpcServer:
             "total_lines": total_lines,
         })
 
+    async def handle_send_agent_input(
+        self, request_id: str, params: dict
+    ) -> dict:
+        """Send text input to a running agent's terminal. Params: worktree_path, text."""
+        worktree_path = params.get("worktree_path", "")
+        text = params.get("text", "")
+        if not worktree_path:
+            raise ValueError("worktree_path is required")
+        if not text:
+            raise ValueError("text is required and must not be empty")
+
+        from lazyagent.widgets.center_panel import CenterPanel
+
+        center = self._app.query_one(CenterPanel)
+        panel = center.get_panel(worktree_path)
+        if panel is None or not panel.has_agent:
+            raise ValueError("No running agent in this worktree")
+
+        terminal = panel.agent_terminal
+        if terminal is None or terminal.send_queue is None:
+            raise ValueError("Agent terminal is not ready")
+
+        # Append newline like the UI does for submitted text
+        await terminal.send_queue.put(["stdin", text + "\n"])
+        return _ok(request_id, {"worktree_path": worktree_path, "status": "sent"})
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -384,10 +502,15 @@ async def start_ipc_server(app: LazyAgent) -> tuple[IpcServer, str]:
     """Factory: create and start an IPC server for the given app.
 
     Returns ``(server, socket_path)``.
-    Socket is created at ``/tmp/lazyagent-{pid}/ipc.sock``.
+    Socket is created at ``/tmp/lazyagent-{pid}/ipc.sock`` with 0o700 dir
+    and 0o600 socket perms so other users on the host cannot connect to it
+    (the IPC handlers can spawn agents and remove worktrees, so an
+    unauthenticated cross-user connection is privilege escalation).
     """
     socket_dir = os.path.join(tempfile.gettempdir(), f"lazyagent-{os.getpid()}")
     os.makedirs(socket_dir, exist_ok=True)
+    # Re-apply mode in case the directory already existed with looser perms.
+    os.chmod(socket_dir, 0o700)
     socket_path = os.path.join(socket_dir, "ipc.sock")
 
     # Remove stale socket if present
@@ -398,4 +521,9 @@ async def start_ipc_server(app: LazyAgent) -> tuple[IpcServer, str]:
 
     server = IpcServer(app, socket_path)
     await server.start()
+    # start_unix_server doesn't accept a mode arg; chmod after bind.
+    try:
+        os.chmod(socket_path, 0o600)
+    except OSError:
+        pass
     return server, socket_path

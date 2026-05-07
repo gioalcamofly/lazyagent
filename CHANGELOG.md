@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-05-07
+
+### Fixed
+- Add missing MCP tools and wire missing parameters
+- Auto-discover IPC socket and add `.mcp.json`
+- Filter DCS/CSI escape sequences that pyte 0.8.2 mishandles
+- Harden MCP/IPC layer, pyte filter, and PTY capture
+
 ## [0.5.0] - 2026-04-24
 
 ### Added

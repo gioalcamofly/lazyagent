@@ -120,12 +120,13 @@ class TestIpcClient:
 
 
 class TestGetClient:
-    def test_raises_when_env_not_set(self):
+    def test_raises_when_no_socket_found(self):
         with patch.dict(os.environ, {}, clear=True):
             # Ensure LAZYAGENT_SOCKET is not set
             os.environ.pop("LAZYAGENT_SOCKET", None)
-            with pytest.raises(RuntimeError, match="LAZYAGENT_SOCKET"):
-                _get_client()
+            with patch("lazyagent.mcp_server._discover_socket", return_value=None):
+                with pytest.raises(RuntimeError, match="No running lazyagent"):
+                    _get_client()
 
     def test_returns_client_when_env_set(self):
         with patch.dict(os.environ, {"LAZYAGENT_SOCKET": "/tmp/test.sock"}):
