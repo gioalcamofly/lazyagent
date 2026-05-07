@@ -81,6 +81,32 @@ From there:
 
 By default lazyagent launches `claude`. Set `provider = "codex"` or `provider = "gemini"` in `.lazyagent.toml` to switch.
 
+## Claude Code MCP Integration (optional)
+
+lazyagent ships an MCP server that exposes its worktree and agent tools (`list_worktrees`, `spawn_agent`, `read_agent_output`, …) to a standalone `claude` session — useful when you want `claude` running outside lazyagent's TUI to drive a lazyagent instance you have running elsewhere.
+
+> Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the MCP server wired up automatically. The setup below is only needed for `claude` sessions you start by hand in other projects.
+
+Register it once at user scope so `claude` finds it from any directory:
+
+```bash
+claude mcp add --scope user lazyagent $(which python3) -m lazyagent.mcp_server
+```
+
+If `claude mcp add` swallows `-m` as one of its own flags, separate args with `--`:
+
+```bash
+claude mcp add --scope user lazyagent $(which python3) -- -m lazyagent.mcp_server
+```
+
+Verify from a directory outside the lazyagent repo:
+
+```bash
+cd /tmp && claude mcp list | grep lazyagent
+```
+
+> **Interpreter caveat:** the python you register must be the one that pip-installed lazyagent. If `python3 -m lazyagent.mcp_server` fails with `No module named 'lazyagent'`, substitute the right interpreter (e.g. `/usr/bin/python3.11`, your `pipx` env's python, or `uv tool dir lazyagent`'s python) and re-run `claude mcp add`. The MCP tools talk to a running lazyagent over a Unix socket under `/tmp/lazyagent-<pid>/` and will return `No running lazyagent instance found` if no lazyagent is running.
+
 ## Features
 
 ### Worktree Management
