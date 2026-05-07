@@ -98,9 +98,17 @@ class PtyEmulator:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         loop = asyncio.get_running_loop()
 
+        # Optional raw-stream capture for debugging terminal-rendering issues.
+        # Set LAZYAGENT_PTY_CAPTURE=/path/to/file to log every byte the PTY
+        # emits to that file. Append mode; safe to leave on across runs.
+        capture_path = os.environ.get("LAZYAGENT_PTY_CAPTURE")
+        capture_file = open(capture_path, "ab", buffering=0) if capture_path else None
+
         def on_output():
             try:
                 raw = self.p_out.read(65536)
+                if capture_file is not None:
+                    capture_file.write(raw)
                 self.data_or_disconnect = decoder.decode(raw)
                 self.event.set()
             except Exception:
