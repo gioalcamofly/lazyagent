@@ -482,8 +482,11 @@ class IpcServer:
         if terminal is None or terminal.send_queue is None:
             raise ValueError("Agent terminal is not ready")
 
-        # Append newline like the UI does for submitted text
-        await terminal.send_queue.put(["stdin", text + "\n"])
+        # Append CR (\r) so the agent's TUI treats this as Enter/submit.
+        # Textual delivers Enter as event.character == "\r" in the UI key
+        # handler; LF would be interpreted as Shift+Enter (newline within
+        # the prompt) by Claude Code and most line-editing TUIs.
+        await terminal.send_queue.put(["stdin", text + "\r"])
         return _ok(request_id, {"worktree_path": worktree_path, "status": "sent"})
 
     # ------------------------------------------------------------------
