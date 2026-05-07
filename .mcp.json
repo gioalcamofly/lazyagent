@@ -2,8 +2,8 @@
   "mcpServers": {
     "lazyagent": {
       "type": "stdio",
-      "command": ".venv/bin/python3",
-      "args": ["-m", "lazyagent.mcp_server"],
+      "command": "uv",
+      "args": ["run", "--quiet", "python", "-m", "lazyagent.mcp_server"],
       "env": {
         "PYTHONUNBUFFERED": "1"
       }

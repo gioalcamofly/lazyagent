@@ -310,3 +310,77 @@ class TestPrivateCSIMarkers:
         assert screen.cursor.hidden is False
         stream.feed("\x1b[?25l")
         assert screen.cursor.hidden is True
+
+
+class TestDoubledEscape:
+    """Doubled ESC outside DCS context (xterm cancel-and-restart).
+
+    A naive filter would emit both ESCs literally and return to NORMAL,
+    bypassing the colon-stripping pass for any CSI that follows. Verify
+    the second ESC is treated as the start of a new escape and the
+    sub-param filter still fires.
+    """
+
+    def test_doubled_esc_then_subparam_does_not_leak(self):
+        screen = pyte.Screen(80, 24)
+        stream = pyte.Stream(screen)
+        # \x1b\x1b[4:0m — second ESC must be picked up as a new escape
+        # introducer and the colon atom dropped. Without the fix, "4:0m"
+        # could leak as drawn text or wrongly enable underline.
+        stream.feed("a\x1b\x1b[4:0mb")
+        assert _row_text(screen).rstrip() == "ab"
+        assert screen.buffer[0][0].underscore is False
+        assert screen.buffer[0][1].underscore is False
+
+    def test_doubled_esc_then_csi_color(self):
+        screen = pyte.Screen(80, 24)
+        stream = pyte.Stream(screen)
+        stream.feed("\x1b\x1b[31mred")
+        assert _row_text(screen).rstrip() == "red"
+        assert screen.buffer[0][0].fg == "red"
+
+    def test_triple_esc_then_csi(self):
+        """Three ESCs in a row: first two cancel, third starts escape."""
+        screen = pyte.Screen(80, 24)
+        stream = pyte.Stream(screen)
+        stream.feed("\x1b\x1b\x1b[31mred")
+        assert _row_text(screen).rstrip() == "red"
+        assert screen.buffer[0][0].fg == "red"
+
+
+class TestRunawayBuffers:
+    """A malformed stream that opens CSI/DCS and never closes must not
+    grow memory unboundedly. We assert against filter state directly
+    because the recovery side-effect (flushing accumulated bytes as text)
+    can scroll the visible screen, making screen-based assertions awkward.
+    """
+
+    def _filter(self):
+        from lazyagent.pyte_patch import _StreamFilter
+        return _StreamFilter()
+
+    def test_csi_buffer_is_bounded(self):
+        flt = self._filter()
+        # Feed a CSI that never finalises, well past the cap.
+        flt.filter("\x1b[" + "9;" * 500)
+        assert len(flt.csi_buf) <= flt.MAX_CSI_LEN
+
+    def test_csi_runaway_recovers_to_normal(self):
+        flt = self._filter()
+        flt.filter("\x1b[" + "9;" * 500)
+        # After the cap is hit the filter must abort CSI and return to
+        # NORMAL so subsequent input is processed correctly.
+        out = flt.filter("\x1b[31mX")
+        assert "\x1b[31mX" in out
+        assert flt.state == flt.NORMAL
+
+    def test_dcs_runaway_recovers_to_normal(self):
+        flt = self._filter()
+        # Feed a DCS that never terminates, well past the 64 KB cap.
+        flt.filter("\x1bP" + "x" * 100000)
+        # After the cap is hit the filter must abort DCS and return to
+        # NORMAL. Subsequent properly-terminated DCS is dropped, and text
+        # after it is rendered.
+        out = flt.filter("\x1bPpayload\x1b\\after")
+        assert "after" in out
+        assert flt.state == flt.NORMAL

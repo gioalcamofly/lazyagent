@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import fcntl
+import logging
 import os
 import pty
 import re
@@ -20,6 +21,8 @@ import signal
 import struct
 import termios
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # Constants previously imported from textual-terminal
 DECSET_PREFIX = "\x1b[?"
@@ -101,14 +104,32 @@ class PtyEmulator:
         # Optional raw-stream capture for debugging terminal-rendering issues.
         # Set LAZYAGENT_PTY_CAPTURE=/path/to/file to log every byte the PTY
         # emits to that file. Append mode; safe to leave on across runs.
+        # A bad path must not take down the agent: log and continue without
+        # capture rather than letting OSError propagate out of _run.
         capture_path = os.environ.get("LAZYAGENT_PTY_CAPTURE")
-        capture_file = open(capture_path, "ab", buffering=0) if capture_path else None
+        capture_file = None
+        if capture_path:
+            try:
+                capture_file = open(capture_path, "ab", buffering=0)
+            except OSError as e:
+                log.warning(
+                    "LAZYAGENT_PTY_CAPTURE: failed to open %s: %s — disabling capture",
+                    capture_path,
+                    e,
+                )
 
         def on_output():
             try:
                 raw = self.p_out.read(65536)
                 if capture_file is not None:
-                    capture_file.write(raw)
+                    # Capture is best-effort debug output; don't let it
+                    # break the read loop. A close/cancel race can leave
+                    # the reader callback firing after the file is closed,
+                    # which raises ValueError, not OSError.
+                    try:
+                        capture_file.write(raw)
+                    except (OSError, ValueError):
+                        pass
                 self.data_or_disconnect = decoder.decode(raw)
                 self.event.set()
             except Exception:
@@ -142,6 +163,12 @@ class PtyEmulator:
                         self.p_out.write(f"\x1b[<65;{x};{y}M".encode())
         except asyncio.CancelledError:
             pass
+        finally:
+            if capture_file is not None:
+                try:
+                    capture_file.close()
+                except OSError:
+                    pass
 
     async def _send_data(self) -> None:
         """Forward decoded output or disconnect signal to the send queue."""

@@ -34,7 +34,12 @@ and git status. Call this first to understand current state.
 - **`create_worktree(branch, base_branch="main", extra="")`** — Creates a new worktree on \
 a new branch forked from `base_branch`. Use descriptive branch names \
 (e.g., `fix-auth-redirect`, `add-user-export`). The `extra` param is substituted \
-into the `{extra}` placeholder of a custom create command (if configured).
+into the `{extra}` placeholder of a custom create command (if configured). \
+**Important:** if the response contains `custom_command: true`, the worktree is being \
+created asynchronously in the user's terminal and the returned `path` is *predicted*, \
+not verified. Before calling `spawn_agent` on it, poll `list_worktrees` until the new \
+path actually appears. If `extra` was ignored, the response will include a `warning` \
+field explaining why.
 - **`remove_worktree(worktree_path, force=false)`** — Removes a worktree. Will \
 fail if an agent is running — stop it first.
 
@@ -44,7 +49,10 @@ fail if an agent is running — stop it first.
 — Starts a coding agent in the given worktree. The `instruction` is the task prompt \
 the agent will execute. Make it specific and self-contained — the agent has no context \
 beyond what you write here. Set `skip_permissions=false` for normal permission mode. \
-Use `resume_mode="last"` to resume the most recent session.
+Use `resume_mode="last"` to resume the most recent session. **Note:** combining \
+`resume_mode="last"` with an `instruction` resumes the prior session and *also* sends \
+the new instruction as an additional turn — it does not replace the original task. \
+For a clean restart with new instructions, use the default `resume_mode="new"`.
 - **`stop_agent(worktree_path)`** — Kills the agent process. Use when an agent is \
 stuck, went off-track, or the task is done.
 - **`get_agent_status(worktree_path)`** — Returns status (`running`, `waiting`, \

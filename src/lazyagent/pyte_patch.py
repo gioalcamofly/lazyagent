@@ -107,16 +107,32 @@ class _StreamFilter:
     IN_DCS = 3
     DCS_SAW_ESC = 4
 
-    __slots__ = ("state", "csi_buf")
+    # Hard caps on intra-sequence buffers so a malformed stream that opens
+    # a CSI/DCS but never finalises cannot grow memory unboundedly. 256 bytes
+    # is well above any real-world CSI (the longest standard CSI is ~16
+    # bytes); for DCS the buffer is implicit (we just drop content).
+    MAX_CSI_LEN = 256
+    MAX_DCS_LEN = 65536
+
+    # NB. We watch for the 7-bit ST terminator only (\e\\). The 8-bit C1 ST
+    # \x9c is *not* recognised: by the time bytes reach this filter they
+    # have been UTF-8 decoded by the PTY layer, and a lone 0x9C is not a
+    # valid UTF-8 lead/continuation byte so it is replaced with U+FFFD
+    # before we ever see it. Real-world DCS streams from Claude Code use
+    # \e\\, so this is fine in practice.
+
+    __slots__ = ("state", "csi_buf", "dcs_len")
 
     def __init__(self) -> None:
         self.state = self.NORMAL
         self.csi_buf = ""
+        self.dcs_len = 0
 
     def filter(self, data: str) -> str:  # noqa: A003 — match common naming
         out: list[str] = []
         state = self.state
         csi_buf = self.csi_buf
+        dcs_len = self.dcs_len
         for ch in data:
             if state == self.NORMAL:
                 if ch == "\x1b":
@@ -130,6 +146,15 @@ class _StreamFilter:
                 elif ch == "P":
                     # DCS: discard \eP and everything until ST (\e\\).
                     state = self.IN_DCS
+                    dcs_len = 0
+                elif ch == "\x1b":
+                    # Doubled ESC. xterm treats the first ESC as cancelled
+                    # and the second as the start of a new escape. Without
+                    # this branch the prior code would emit "\x1b\x1b" and
+                    # return to NORMAL, defeating the colon-stripping pass
+                    # for any CSI that follows the doubled ESC. Stay in
+                    # SAW_ESC instead and discard the cancelled first ESC.
+                    pass
                 else:
                     # Other ESC-prefixed sequences pass through unchanged
                     # (pyte handles them, e.g. \eD, \eM, \eOA, \e]...).
@@ -140,12 +165,26 @@ class _StreamFilter:
                     out.append(_rewrite_csi(csi_buf, ch))
                     csi_buf = ""
                     state = self.NORMAL
+                elif len(csi_buf) >= self.MAX_CSI_LEN:
+                    # Runaway CSI — flush as plain text and abort. Better
+                    # to garble the screen briefly than leak unbounded
+                    # state across thousands of cells.
+                    out.append("\x1b[" + csi_buf + ch)
+                    csi_buf = ""
+                    state = self.NORMAL
                 else:
                     csi_buf += ch
             elif state == self.IN_DCS:
                 if ch == "\x1b":
                     state = self.DCS_SAW_ESC
-                # else: content byte, drop
+                else:
+                    # Content byte: drop, but track length so a DCS that
+                    # never terminates does not swallow the rest of the
+                    # output forever. Cap is generous (64 KB).
+                    dcs_len += 1
+                    if dcs_len >= self.MAX_DCS_LEN:
+                        state = self.NORMAL
+                        dcs_len = 0
             elif state == self.DCS_SAW_ESC:
                 # In tmux DCS passthrough, literal ESCs in the inner content
                 # are doubled (\e\e). The terminator is a single \e\\. So
@@ -154,10 +193,12 @@ class _StreamFilter:
                 # way, we are not at the terminator.
                 if ch == "\\":
                     state = self.NORMAL
+                    dcs_len = 0
                 else:
                     state = self.IN_DCS
         self.state = state
         self.csi_buf = csi_buf
+        self.dcs_len = dcs_len
         return "".join(out)
 
 

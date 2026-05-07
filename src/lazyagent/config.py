@@ -112,6 +112,23 @@ def format_command(
     """Expand placeholders and ~ in a command template.
 
     Placeholders: {branch}, {name}, {base}, {path}, {repo}, {force}, {extra}
+
+    **Security note:** the result is sent verbatim to a shell (``bash -c``
+    or pasted into a terminal). Substituted values are NOT shell-quoted —
+    template authors are responsible for placement. In particular:
+
+    - Do NOT embed placeholders inside double quotes; a value containing
+      ``"`` or ``$`` will break the surrounding quoting and can execute
+      arbitrary shell. Single-quote (``'{branch}'``) or use ``{branch}``
+      bare and rely on the value not containing whitespace.
+    - When values can come from an LLM (via the MCP ``extra`` param or
+      a branch name that passed through the orchestrator), prefer
+      template designs that don't depend on quoting at all (e.g. pass
+      values via env vars: ``BRANCH={branch} ./create-worktree.sh``).
+
+    This is intentional: locking values would break templates that already
+    rely on shell expansion (``{path}`` interpolating ``~``, ``{extra}``
+    expanding to multiple flags, etc.).
     """
     expanded = os.path.expanduser(template)
     return expanded.format(
