@@ -10,8 +10,11 @@ Run with: ``python3 -m lazyagent.mcp_server``
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import os
+import socket as _socket
+import tempfile
 import uuid
 from typing import Any
 
@@ -61,14 +64,107 @@ class IpcClient:
 _cached_client: IpcClient | None = None
 
 
+def _socket_alive(path: str) -> bool:
+    """Return True if a Unix socket at ``path`` accepts a connection.
+
+    A bare ``os.path.exists`` is not enough: a lazyagent crash leaves the
+    socket file in place but with no listener, and a stale entry would
+    poison ``_discover_socket`` until manual cleanup.
+    """
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect(path)
+            return True
+    except OSError:
+        return False
+
+
+def _walk_ancestors():
+    """Yield this process's ancestor pids, parent first.
+
+    Reads ``/proc/<pid>/status`` for the ``PPid:`` line — Linux only.
+    Other platforms get an empty walk and fall back to the mtime heuristic.
+    """
+    try:
+        pid = os.getppid()
+    except OSError:
+        return
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        yield pid
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                next_pid = 0
+                for line in f:
+                    if line.startswith("PPid:"):
+                        try:
+                            next_pid = int(line.split()[1])
+                        except (IndexError, ValueError):
+                            next_pid = 0
+                        break
+                if next_pid <= 0:
+                    return
+                pid = next_pid
+        except OSError:
+            return
+
+
+def _discover_socket() -> str | None:
+    """Find a running lazyagent IPC socket.
+
+    Two-phase: first try to scope to the lazyagent that owns this MCP
+    process by walking ancestor pids and checking ``/tmp/lazyagent-<pid>``.
+    This prevents an MCP spawned by lazyagent A from accidentally driving
+    lazyagent B (different repo) just because B's socket has a more recent
+    mtime. Only if no ancestor matches do we fall back to "most recently
+    modified live socket" — and we *connect* to verify it's alive, not
+    just that the file exists.
+    """
+    tmp = tempfile.gettempdir()
+
+    # Phase 1: ancestor-scoped lookup.
+    for ancestor_pid in _walk_ancestors():
+        candidate = os.path.join(tmp, f"lazyagent-{ancestor_pid}", "ipc.sock")
+        if _socket_alive(candidate):
+            return candidate
+
+    # Phase 2: fall back to scanning the temp dir.
+    pattern = os.path.join(tmp, "lazyagent-*/ipc.sock")
+    candidates = glob.glob(pattern)
+
+    def _safe_mtime(p: str) -> float:
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+
+    candidates.sort(key=_safe_mtime, reverse=True)
+    for path in candidates:
+        if _socket_alive(path):
+            return path
+    return None
+
+
 def _get_client() -> IpcClient:
+    """Return a (possibly cached) client to the lazyagent IPC server.
+
+    Invalidates the cache if the cached socket is no longer alive — this
+    matters when the user restarts lazyagent while a long-running MCP
+    process keeps running.
+    """
     global _cached_client
+    if _cached_client is not None and not _socket_alive(_cached_client._socket_path):
+        _cached_client = None
     if _cached_client is None:
-        socket_path = os.environ.get("LAZYAGENT_SOCKET")
+        socket_path = os.environ.get("LAZYAGENT_SOCKET") or _discover_socket()
         if not socket_path:
             raise RuntimeError(
-                "LAZYAGENT_SOCKET environment variable is not set. "
-                "This server must be started by lazyagent."
+                "No running lazyagent instance found. "
+                "Start lazyagent first, or set LAZYAGENT_SOCKET."
             )
         _cached_client = IpcClient(socket_path)
     return _cached_client
@@ -90,20 +186,46 @@ async def list_worktrees() -> list[dict]:
 
 
 @mcp.tool()
-async def create_worktree(branch: str, base_branch: str = "main") -> dict:
+async def create_worktree(
+    branch: str, base_branch: str = "main", extra: str = ""
+) -> dict:
     """Create a new git worktree with a new branch.
+
+    Two modes depending on the repo's ``.lazyagent.toml``:
+
+    1. **No custom create command**: runs ``git worktree add`` synchronously.
+       The returned ``path`` exists on disk when this call returns, and
+       ``spawn_agent`` can be called on it immediately. ``extra`` is ignored
+       (a ``warning`` field is included in the response so this is visible).
+
+    2. **Custom create command** (``[worktree] create = "..."``): the
+       configured command is dispatched into the user's currently-selected
+       worktree terminal and runs *asynchronously*. The response includes
+       ``custom_command: true`` and a ``warning`` field. The returned
+       ``path`` is *predicted* from a naming convention
+       (``<parent>/<repo>-<branch>``) and is **not** verified to exist.
+       Callers MUST poll ``list_worktrees`` until the new path appears
+       before calling ``spawn_agent`` on it. If no worktree is currently
+       selected in the UI, the call fails — there is no terminal to
+       dispatch into.
 
     Args:
         branch: Name for the new branch.
         base_branch: Branch to base the new worktree on. Defaults to "main".
+        extra: Optional string substituted for the ``{extra}`` placeholder
+            in the custom create command template. Ignored (with a warning)
+            when no custom command is configured. Note: this value is
+            interpolated into a shell command — avoid characters that would
+            break a shell template (``;``, ``$()``, backticks, etc.).
 
     Returns:
-        Object with path and branch of the new worktree.
+        Object with ``path``, ``branch``, optional ``custom_command``, and
+        optional ``warning`` describing any caveats.
     """
-    return await _get_client().call(
-        "create_worktree",
-        {"branch": branch, "base_branch": base_branch},
-    )
+    params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}
+    if extra:
+        params["extra"] = extra
+    return await _get_client().call("create_worktree", params)
 
 
 @mcp.tool()
@@ -127,21 +249,37 @@ async def remove_worktree(worktree_path: str, force: bool = False) -> dict:
 
 @mcp.tool()
 async def spawn_agent(
-    worktree_path: str, instruction: str | None = None
+    worktree_path: str,
+    instruction: str | None = None,
+    skip_permissions: bool = True,
+    resume_mode: str = "new",
 ) -> dict:
     """Spawn a coding agent in a worktree.
 
-    The agent runs with skip_permissions=True. Only one agent can run
-    per worktree at a time.
+    Only one agent can run per worktree at a time.
 
     Args:
         worktree_path: Absolute path of the worktree.
         instruction: Optional initial instruction passed to the agent CLI.
+        skip_permissions: If True (default), the agent runs in "dangerous" mode
+            with permission prompts bypassed. Set to False for normal mode where
+            the agent asks before sensitive actions.
+        resume_mode: Session mode — "new" (default) starts a fresh session,
+            "last" resumes the most recent session for this worktree. Interactive
+            "pick from list" mode is not supported over MCP. **Combining
+            ``resume_mode="last"`` with ``instruction``** resumes the prior
+            session AND passes the instruction as a new turn — it does not
+            replace the prior task. For a clean restart with new instructions,
+            use the default ``resume_mode="new"``.
 
     Returns:
         Object with worktree_path and status.
     """
-    params: dict[str, Any] = {"worktree_path": worktree_path}
+    params: dict[str, Any] = {
+        "worktree_path": worktree_path,
+        "skip_permissions": skip_permissions,
+        "resume_mode": resume_mode,
+    }
     if instruction is not None:
         params["instruction"] = instruction
     return await _get_client().call("spawn_agent", params)
@@ -195,6 +333,26 @@ async def read_agent_output(worktree_path: str, lines: int = 50) -> dict:
     return await _get_client().call(
         "read_agent_output",
         {"worktree_path": worktree_path, "lines": lines},
+    )
+
+
+@mcp.tool()
+async def send_agent_input(worktree_path: str, text: str) -> dict:
+    """Send text input to a running agent's terminal.
+
+    Use this to provide follow-up instructions, answer prompts, or approve
+    actions without stopping and re-spawning the agent.
+
+    Args:
+        worktree_path: Absolute path of the worktree.
+        text: The text to send to the agent's stdin (a newline is appended automatically).
+
+    Returns:
+        Object confirming the input was sent.
+    """
+    return await _get_client().call(
+        "send_agent_input",
+        {"worktree_path": worktree_path, "text": text},
     )
 
 

@@ -134,7 +134,10 @@ class TestClaudeMcpSettings:
         assert "mcpServers" in settings
 
         mcp_cfg = settings["mcpServers"]["lazyagent"]
-        assert mcp_cfg["command"] == "python3"
+        # sys.executable so the MCP server runs in the same interpreter
+        # lazyagent itself is running in (handles pipx/venv installs).
+        import sys
+        assert mcp_cfg["command"] == sys.executable
         assert mcp_cfg["args"] == ["-m", "lazyagent.mcp_server"]
         assert mcp_cfg["env"]["LAZYAGENT_SOCKET"] == "/tmp/test.sock"
         assert mcp_cfg["env"]["PYTHONUNBUFFERED"] == "1"

@@ -31,23 +31,37 @@ You are the only one with a global view. Use that to coordinate.
 
 - **`list_worktrees`** — Returns all worktrees with branch, path, agent status, \
 and git status. Call this first to understand current state.
-- **`create_worktree(branch, base_branch="main")`** — Creates a new worktree on \
+- **`create_worktree(branch, base_branch="main", extra="")`** — Creates a new worktree on \
 a new branch forked from `base_branch`. Use descriptive branch names \
-(e.g., `fix-auth-redirect`, `add-user-export`).
+(e.g., `fix-auth-redirect`, `add-user-export`). The `extra` param is substituted \
+into the `{extra}` placeholder of a custom create command (if configured). \
+**Important:** if the response contains `custom_command: true`, the worktree is being \
+created asynchronously in the user's terminal and the returned `path` is *predicted*, \
+not verified. Before calling `spawn_agent` on it, poll `list_worktrees` until the new \
+path actually appears. If `extra` was ignored, the response will include a `warning` \
+field explaining why.
 - **`remove_worktree(worktree_path, force=false)`** — Removes a worktree. Will \
 fail if an agent is running — stop it first.
 
 ### Agent lifecycle
 
-- **`spawn_agent(worktree_path, instruction?)`** — Starts a coding agent in the \
-given worktree. The `instruction` is the task prompt the agent will execute. Make \
-it specific and self-contained — the agent has no context beyond what you write here.
+- **`spawn_agent(worktree_path, instruction?, skip_permissions=true, resume_mode="new")`** \
+— Starts a coding agent in the given worktree. The `instruction` is the task prompt \
+the agent will execute. Make it specific and self-contained — the agent has no context \
+beyond what you write here. Set `skip_permissions=false` for normal permission mode. \
+Use `resume_mode="last"` to resume the most recent session. **Note:** combining \
+`resume_mode="last"` with an `instruction` resumes the prior session and *also* sends \
+the new instruction as an additional turn — it does not replace the original task. \
+For a clean restart with new instructions, use the default `resume_mode="new"`.
 - **`stop_agent(worktree_path)`** — Kills the agent process. Use when an agent is \
 stuck, went off-track, or the task is done.
 - **`get_agent_status(worktree_path)`** — Returns status (`running`, `waiting`, \
 `idle`, `no_agent`), confidence level, and detail text.
 - **`read_agent_output(worktree_path, lines=50)`** — Reads recent terminal output. \
 Use this to check progress, see errors, or verify completion.
+- **`send_agent_input(worktree_path, text)`** — Sends text input to a running \
+agent's terminal (a newline is appended automatically). Use this to answer prompts, \
+approve actions, or provide follow-up instructions without restarting the agent.
 
 ## Workflow
 
@@ -80,7 +94,9 @@ read_agent_output(worktree_path)  →  what has it done so far?
 
 If an agent is **waiting for approval** or **stuck**:
 - Read its output to understand the situation.
-- If you can resolve it, stop and re-spawn with refined instructions.
+- If the agent is waiting for simple input (e.g., a yes/no prompt), use \
+`send_agent_input` to respond directly.
+- If the task needs major course correction, stop and re-spawn with refined instructions.
 - If it needs human judgement, escalate to the user.
 
 ### 5. Verify & clean up

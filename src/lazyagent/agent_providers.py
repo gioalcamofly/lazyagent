@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
@@ -258,10 +259,14 @@ def _build_gemini_runtime_context(
         # Point it at a temp directory containing only our MCP entry.
         gemini_home = temp_dir / "gemini_home"
         (gemini_home / ".gemini").mkdir(parents=True, exist_ok=True)
+        # Use sys.executable (the interpreter running lazyagent) rather
+        # than "python3" — for pipx/isolated-venv installs, PATH's
+        # `python3` is the system one and doesn't have lazyagent
+        # installed, so the MCP server would fail to start.
         settings = {
             "mcpServers": {
                 "lazyagent": {
-                    "command": "python3",
+                    "command": sys.executable,
                     "args": ["-m", "lazyagent.mcp_server"],
                     "env": {
                         "PYTHONUNBUFFERED": "1",
@@ -309,9 +314,11 @@ def _build_codex_runtime_context(
         # Point it at a temp directory containing only our MCP entry.
         codex_home = temp_dir / "codex_home"
         codex_home.mkdir(exist_ok=True)
+        # See note in the gemini context builder: sys.executable handles
+        # pipx/isolated-venv installs that "python3" misses.
         config_toml = (
             '[mcp_servers.lazyagent]\n'
-            f'command = "python3"\n'
+            f'command = {json.dumps(sys.executable)}\n'
             f'args = ["-m", "lazyagent.mcp_server"]\n'
             '\n[mcp_servers.lazyagent.env]\n'
             'PYTHONUNBUFFERED = "1"\n'
@@ -365,9 +372,12 @@ def _build_claude_runtime_context(
     }
 
     if socket_path:
+        # sys.executable, not "python3": pipx/isolated-venv installs
+        # don't expose lazyagent on the system python, so a bare "python3"
+        # invocation in the agent's environment would ImportError.
         hooks_settings["mcpServers"] = {
             "lazyagent": {
-                "command": "python3",
+                "command": sys.executable,
                 "args": ["-m", "lazyagent.mcp_server"],
                 "env": {
                     "PYTHONUNBUFFERED": "1",
