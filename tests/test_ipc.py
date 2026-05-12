@@ -107,6 +107,65 @@ class TestCreateWorktree:
         assert "error" in result
         assert result["error"]["code"] == "WORKTREE_ERROR"
 
+    @pytest.mark.asyncio
+    async def test_custom_create_runs_subprocess_without_selected_worktree(self):
+        """Custom create command must not require a focused worktree in the UI.
+
+        Regression: previously dispatched into the selected worktree's
+        terminal pane, which made MCP-driven orchestration impossible when
+        no worktree was selected.
+        """
+        app = _make_app()
+        app._config.has_custom_create = True
+        app._config.worktree.create = "echo creating {branch}"
+        app._get_selected_worktree = MagicMock(return_value=None)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        proc = MagicMock()
+        proc.communicate = MagicMock(return_value=asyncio.Future())
+        proc.communicate.return_value.set_result((b"ok\n", b""))
+        proc.returncode = 0
+
+        async def _fake_shell(cmd, **kwargs):
+            _fake_shell.cmd = cmd
+            _fake_shell.kwargs = kwargs
+            return proc
+
+        with patch("asyncio.create_subprocess_shell", side_effect=_fake_shell):
+            result = await server._dispatch("req-1", "create_worktree", {
+                "branch": "feat",
+                "base_branch": "main",
+            })
+
+        assert "result" in result, result
+        assert result["result"]["custom_command"] is True
+        assert result["result"]["branch"] == "feat"
+        assert "creating feat" in _fake_shell.cmd
+        assert _fake_shell.kwargs["cwd"] == "/tmp/repo"
+        app._get_selected_worktree.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_custom_create_surfaces_subprocess_failure(self):
+        app = _make_app()
+        app._config.has_custom_create = True
+        app._config.worktree.create = "false"
+        server = IpcServer(app, "/tmp/test.sock")
+
+        proc = MagicMock()
+        proc.communicate = MagicMock(return_value=asyncio.Future())
+        proc.communicate.return_value.set_result((b"", b"boom\n"))
+        proc.returncode = 2
+
+        async def _fake_shell(cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_shell", side_effect=_fake_shell):
+            result = await server._dispatch("req-1", "create_worktree", {"branch": "feat"})
+
+        assert "error" in result
+        assert result["error"]["code"] == "WORKTREE_ERROR"
+        assert "boom" in result["error"]["message"]
+
 
 class TestRemoveWorktree:
     @pytest.mark.asyncio

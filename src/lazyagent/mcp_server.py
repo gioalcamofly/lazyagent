@@ -199,15 +199,15 @@ async def create_worktree(
        (a ``warning`` field is included in the response so this is visible).
 
     2. **Custom create command** (``[worktree] create = "..."``): the
-       configured command is dispatched into the user's currently-selected
-       worktree terminal and runs *asynchronously*. The response includes
-       ``custom_command: true`` and a ``warning`` field. The returned
-       ``path`` is *predicted* from a naming convention
-       (``<parent>/<repo>-<branch>``) and is **not** verified to exist.
-       Callers MUST poll ``list_worktrees`` until the new path appears
-       before calling ``spawn_agent`` on it. If no worktree is currently
-       selected in the UI, the call fails — there is no terminal to
-       dispatch into.
+       configured command is executed as a subprocess in the repo root and
+       awaited to completion before this call returns. No UI worktree
+       selection is required. The response includes ``custom_command: true``
+       and a ``warning`` field. The returned ``path`` is *predicted* from
+       a naming convention (``<parent>/<repo>-<branch>``); if the custom
+       script writes the worktree elsewhere, poll ``list_worktrees`` to find
+       the real path before calling ``spawn_agent`` on it. If the custom
+       command exits non-zero, the call fails with stderr/stdout in the
+       error message.
 
     Args:
         branch: Name for the new branch.
