@@ -617,7 +617,7 @@ wheels = [
 
 [[package]]
 name = "lazyagent"
-version = "0.5.0"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },

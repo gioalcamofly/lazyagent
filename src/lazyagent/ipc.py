@@ -203,16 +203,6 @@ class IpcServer:
         if self._app._config.has_custom_create:
             from lazyagent.config import format_command
 
-            # The custom command needs a terminal to run in. Without a
-            # selected worktree, _send_to_terminal silently no-ops via a
-            # warning notify and the caller would get "success" for an
-            # operation that never happened. Reject explicitly.
-            if self._app._get_selected_worktree() is None:
-                raise ValueError(
-                    "Custom create command requires a selected worktree to "
-                    "dispatch into; none is currently selected in the UI"
-                )
-
             repo_root = self._app._repo_root
             repo_name = os.path.basename(repo_root) if repo_root else ""
             wt_name = f"{repo_name}-{branch}" if repo_name else branch
@@ -230,17 +220,38 @@ class IpcServer:
                 repo=repo_root,
                 extra=extra,
             )
-            self._app.call_later(self._app._send_to_terminal, cmd)
+            # Run the custom command directly via subprocess so MCP callers
+            # don't need a worktree selected in the UI (which was previously
+            # required because we dispatched the command into a worktree's
+            # terminal pane). cwd defaults to repo_root; the template can
+            # still `cd` if it wants. Output is captured and surfaced on
+            # failure so the caller knows what went wrong.
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                cwd=repo_root or None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, stderr_b = await proc.communicate()
+            if proc.returncode != 0:
+                stderr = stderr_b.decode(errors="replace").strip()
+                stdout = stdout_b.decode(errors="replace").strip()
+                detail = stderr or stdout or f"exit code {proc.returncode}"
+                raise WorktreeManagerError(
+                    f"Custom create command failed: {detail}"
+                )
+
             self._app.call_later(self._app._load_worktrees)
             return _ok(request_id, {
                 "path": wt_path,
                 "branch": branch,
                 "custom_command": True,
                 "warning": (
-                    "Path is predicted, not verified. The custom create "
-                    "command runs asynchronously in the selected worktree's "
-                    "terminal. Poll list_worktrees to confirm the worktree "
-                    "exists before calling spawn_agent on it."
+                    "Path is predicted from the naming convention "
+                    "(<parent>/<repo>-<branch>), not parsed from the create "
+                    "command output. If the custom script writes elsewhere, "
+                    "poll list_worktrees to find the real path before calling "
+                    "spawn_agent on it."
                 ),
             })
 
@@ -482,8 +493,11 @@ class IpcServer:
         if terminal is None or terminal.send_queue is None:
             raise ValueError("Agent terminal is not ready")
 
-        # Append newline like the UI does for submitted text
-        await terminal.send_queue.put(["stdin", text + "\n"])
+        # Append CR (\r) so the agent's TUI treats this as Enter/submit.
+        # Textual delivers Enter as event.character == "\r" in the UI key
+        # handler; LF would be interpreted as Shift+Enter (newline within
+        # the prompt) by Claude Code and most line-editing TUIs.
+        await terminal.send_queue.put(["stdin", text + "\r"])
         return _ok(request_id, {"worktree_path": worktree_path, "status": "sent"})
 
     # ------------------------------------------------------------------

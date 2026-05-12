@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-05-12
+
+### Fixed
+- `send_agent_input` now sends a carriage return so the TUI actually submits the input
+- Custom `[worktree] create` command runs in the repo root via subprocess and no longer requires a worktree selected in the UI, unblocking MCP-driven orchestration
+
 ## [0.5.1] - 2026-05-07
 
 ### Fixed
