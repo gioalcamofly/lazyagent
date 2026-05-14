@@ -307,7 +307,11 @@ class CenterPanel(Container):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._panels: dict[str, str] = {}  # worktree_path -> panel DOM id
+        # worktree_path -> panel widget. Stored by instance (not DOM id) so we
+        # can reserve the slot before ContentSwitcher.add_content's await
+        # completes; concurrent ensure_panel calls for the same key then
+        # dedupe instead of trying to mount a second widget with the same id.
+        self._panels: dict[str, Container] = {}
 
     def compose(self):
         yield Static(
@@ -318,31 +322,34 @@ class CenterPanel(Container):
 
     def _get_panel_by_key(self, key: str) -> Container | None:
         """Get an existing panel by key, or None."""
-        if key not in self._panels:
-            return None
-        panel_id = self._panels[key]
-        return self.query_one(f"#{panel_id}", Container)
+        return self._panels.get(key)
 
     def _activate_panel(self, key: str) -> None:
         """Hide placeholder and switch the ContentSwitcher to the given key."""
         self.query_one("#center-placeholder", Static).display = False
-        self.query_one("#panel-switcher", ContentSwitcher).current = self._panels[key]
+        self.query_one("#panel-switcher", ContentSwitcher).current = self._panels[key].id
 
-    def ensure_panel(self, worktree_path: str) -> WorktreePanel:
-        """Get or lazily create a WorktreePanel for the given worktree."""
-        existing = self._get_panel_by_key(worktree_path)
+    async def ensure_panel(self, worktree_path: str) -> WorktreePanel:
+        """Get or lazily create a WorktreePanel for the given worktree.
+
+        Uses ContentSwitcher.add_content (not raw mount) so the new panel is
+        hidden until ``_activate_panel`` flips it via ``current``. Raw mount
+        leaves ``display=True`` and the panel renders as a stacked sibling.
+        """
+        existing = self._panels.get(worktree_path)
         if existing is not None:
             return existing  # type: ignore[return-value]
 
         panel_id = _panel_id(worktree_path)
         panel = WorktreePanel(worktree_path, id=panel_id)
-        self.query_one("#panel-switcher", ContentSwitcher).mount(panel)
-        self._panels[worktree_path] = panel_id
+        self._panels[worktree_path] = panel
+        switcher = self.query_one("#panel-switcher", ContentSwitcher)
+        await switcher.add_content(panel, id=panel_id)
         return panel
 
-    def switch_to(self, worktree_path: str) -> WorktreePanel:
+    async def switch_to(self, worktree_path: str) -> WorktreePanel:
         """Switch the visible panel to the given worktree (creating if needed)."""
-        panel = self.ensure_panel(worktree_path)
+        panel = await self.ensure_panel(worktree_path)
         self._activate_panel(worktree_path)
         return panel
 
@@ -350,21 +357,22 @@ class CenterPanel(Container):
         """Get existing WorktreePanel or None."""
         return self._get_panel_by_key(worktree_path)  # type: ignore[return-value]
 
-    def ensure_orchestrator_panel(self, repo_root: str) -> OrchestratorPanel:
+    async def ensure_orchestrator_panel(self, repo_root: str) -> OrchestratorPanel:
         """Get or lazily create the OrchestratorPanel."""
-        existing = self._get_panel_by_key(ORCHESTRATOR_KEY)
+        existing = self._panels.get(ORCHESTRATOR_KEY)
         if existing is not None:
             return existing  # type: ignore[return-value]
 
         panel_id = "wp-orchestrator"
         panel = OrchestratorPanel(worktree_path=repo_root, id=panel_id)
-        self.query_one("#panel-switcher", ContentSwitcher).mount(panel)
-        self._panels[ORCHESTRATOR_KEY] = panel_id
+        self._panels[ORCHESTRATOR_KEY] = panel
+        switcher = self.query_one("#panel-switcher", ContentSwitcher)
+        await switcher.add_content(panel, id=panel_id)
         return panel
 
-    def switch_to_orchestrator(self, repo_root: str) -> OrchestratorPanel:
+    async def switch_to_orchestrator(self, repo_root: str) -> OrchestratorPanel:
         """Switch the visible panel to the orchestrator."""
-        panel = self.ensure_orchestrator_panel(repo_root)
+        panel = await self.ensure_orchestrator_panel(repo_root)
         self._activate_panel(ORCHESTRATOR_KEY)
         return panel
 

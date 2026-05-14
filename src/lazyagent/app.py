@@ -224,16 +224,16 @@ class LazyAgent(App):
 
     # --- Navigation ---
 
-    def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
+    async def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
         center = self.query_one(CenterPanel)
         if event.item is not None and isinstance(event.item, OrchestratorListItem):
             self._orchestrator_selected = True
             self._selected_worktree = None
-            center.switch_to_orchestrator(self._repo_root)
+            await center.switch_to_orchestrator(self._repo_root)
         elif event.item is not None and isinstance(event.item, WorktreeListItem):
             self._orchestrator_selected = False
             self._selected_worktree = event.item.worktree
-            center.switch_to(event.item.worktree.path)
+            await center.switch_to(event.item.worktree.path)
             self._push_git_status_to_selected_panel()
             self._refresh_selected_diff()
             self._refresh_pr_status()
@@ -305,7 +305,7 @@ class LazyAgent(App):
             if result is not None and worktree is not None:
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
-                panel = center.switch_to(worktree.path)
+                panel = await center.switch_to(worktree.path)
                 await panel.spawn_agent(
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
@@ -328,7 +328,7 @@ class LazyAgent(App):
         async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None:
                 center = self.query_one(CenterPanel)
-                panel = center.switch_to_orchestrator(self._repo_root)
+                panel = await center.switch_to_orchestrator(self._repo_root)
                 await panel.spawn_agent(
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
@@ -541,7 +541,8 @@ class LazyAgent(App):
             return
         panel = self.query_one(CenterPanel).get_panel(wt.path)
         if panel is None:
-            panel = self.query_one(CenterPanel).switch_to(wt.path)
+            self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
+            return
         try:
             terminal = panel.query_one("#terminal-widget")
             # send_queue is an asyncio.Queue — must use put_nowait from sync context
