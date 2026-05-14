@@ -188,15 +188,30 @@ class LazyAgent(App):
         if panel:
             panel.update_git_status(gs, wt.display_branch)
 
+    @work(thread=True, exclusive=True, group="diff_refresh")
     def _refresh_selected_diff(self) -> None:
-        """Refresh the diff tab for the currently selected worktree."""
+        """Refresh the diff tab for the currently selected worktree.
+
+        Runs `git diff` in a worker thread so it doesn't block the message
+        pump on every navigation. ``exclusive=True`` cancels any in-flight
+        refresh when the user moves selection again — we only care about
+        the diff for the worktree that's *currently* selected.
+        """
         wt = self._selected_worktree
         if wt is None:
             return
-        center = self.query_one(CenterPanel)
-        panel = center.get_panel(wt.path)
+        diff_text = WorktreeManager.get_diff(wt.path)
+        self.call_from_thread(self._apply_diff, wt.path, diff_text)
+
+    def _apply_diff(self, worktree_path: str, diff_text: str) -> None:
+        """Apply diff text to the panel — runs on the main thread."""
+        if (
+            self._selected_worktree is None
+            or self._selected_worktree.path != worktree_path
+        ):
+            return  # selection changed; drop the stale result
+        panel = self.query_one(CenterPanel).get_panel(worktree_path)
         if panel:
-            diff_text = WorktreeManager.get_diff(wt.path)
             panel.update_diff(diff_text)
 
     @work(thread=True)
