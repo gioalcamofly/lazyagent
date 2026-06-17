@@ -10,6 +10,11 @@ from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 _HANG_SECONDS = 600  # 10 minutes
 _SCAN_DEBOUNCE_SECONDS = 0.15
+# Lower bound between two consecutive screen scans. The debounce alone lets
+# scans fire every ~150 ms when output is bursty; this caps the dispatch rate
+# regardless of stream cadence so a long stream of short bursts doesn't keep
+# scanning at full speed.
+_SCAN_MIN_INTERVAL = 0.5
 
 
 class MonitoredTerminal(ScrollableTerminal):
@@ -33,6 +38,9 @@ class MonitoredTerminal(ScrollableTerminal):
         self._last_output_time: float | None = None
         self._observer = observer or AgentObserver()
         self._scan_timer: asyncio.TimerHandle | None = None
+        # Predicted dispatch time of the latest scheduled scan; used in
+        # _after_stdout_processed to enforce _SCAN_MIN_INTERVAL.
+        self._next_scan_dispatch: float = 0.0
 
     @property
     def agent_status(self) -> AgentStatus:
@@ -133,13 +141,23 @@ class MonitoredTerminal(ScrollableTerminal):
         self._on_pty_output(chars)
 
     def _after_stdout_processed(self) -> None:
-        """Debounced sentinel scanning after stdout is processed."""
+        """Schedule a debounced screen scan, throttled to _SCAN_MIN_INTERVAL.
+
+        Without the floor, bursty output causes scans to fire every ~150 ms
+        whenever the stream briefly pauses. Capping the dispatch rate keeps
+        the full-screen text join from running more than ~2 Hz regardless
+        of output cadence.
+        """
         if self._scan_timer is not None:
             self._scan_timer.cancel()
         loop = asyncio.get_running_loop()
-        self._scan_timer = loop.call_later(
-            _SCAN_DEBOUNCE_SECONDS, self._scan_screen
+        now = loop.time()
+        delay = max(
+            _SCAN_DEBOUNCE_SECONDS,
+            self._next_scan_dispatch - now,
         )
+        self._next_scan_dispatch = now + delay + _SCAN_MIN_INTERVAL
+        self._scan_timer = loop.call_later(delay, self._scan_screen)
 
     def stop(self) -> None:
         """Cancel pending scan timer, then stop the terminal."""

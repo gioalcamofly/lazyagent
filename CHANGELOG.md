@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-06-17
+
+### Fixed
+- Newly-mounted `WorktreePanel` is now hidden until activated, fixing a phantom pane that stacked under the visible panel when an MCP `spawn_agent` targeted a non-focused worktree
+
+### Performance
+- Cut idle CPU and worktree-switch spikes on the navigation hot path: skip no-op terminal resizes, coalesce hidden-terminal stdout, throttle screen scans, and move the selected-diff git subprocess off the message pump
+
 ## [0.5.2] - 2026-05-12
 
 ### Fixed

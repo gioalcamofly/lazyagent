@@ -130,7 +130,7 @@ async def test_selecting_orchestrator_switches_to_orchestrator_panel(monkeypatch
         # Select orchestrator (index 0)
         orch_item = list(wt_list.children)[0]
         wt_list.index = 0
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
         await pilot.pause()
 
         assert app._orchestrator_selected is True
@@ -153,14 +153,14 @@ async def test_selecting_worktree_after_orchestrator_clears_flag(monkeypatch):
         # Select orchestrator
         orch_item = list(wt_list.children)[0]
         wt_list.index = 0
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
         await pilot.pause()
         assert app._orchestrator_selected is True
 
         # Select worktree
         wt_item = list(wt_list.children)[1]
         wt_list.index = 1
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, wt_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, wt_item))
         await pilot.pause()
         assert app._orchestrator_selected is False
         assert app._selected_worktree is not None
@@ -177,7 +177,7 @@ async def test_spawn_on_orchestrator_shows_modal(monkeypatch):
         # Select orchestrator
         orch_item = list(wt_list.children)[0]
         wt_list.index = 0
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
         await pilot.pause()
 
         # Mock push_screen to verify modal is shown
@@ -197,7 +197,7 @@ async def test_stop_on_orchestrator_without_agent_notifies(monkeypatch):
         # Select orchestrator
         orch_item = list(wt_list.children)[0]
         wt_list.index = 0
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
         await pilot.pause()
 
         app.notify = MagicMock()
@@ -263,7 +263,7 @@ async def test_ctrl_j_on_orchestrator_triggers_spawn_when_no_agent(monkeypatch):
         # Select orchestrator
         orch_item = list(wt_list.children)[0]
         wt_list.index = 0
-        app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orch_item))
         await pilot.pause()
 
         app.action_spawn_agent = MagicMock()

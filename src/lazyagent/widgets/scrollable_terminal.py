@@ -38,6 +38,12 @@ from lazyagent.styles import SCROLLBAR_CSS
 
 _DEFAULT_MAX_SCROLLBACK = 5000
 
+# When the widget is hidden (size 0×0), defer pyte.Stream.feed and coalesce
+# chunks. Hidden widgets don't need an up-to-the-millisecond screen; the
+# observer's lifecycle scan can read a slightly-stale state. Burning CPU on
+# every stdout chunk for off-screen agents was the dominant idle cost.
+_HIDDEN_FEED_INTERVAL = 0.25
+
 
 class ScrollbackScreen(pyte.Screen):
     """pyte Screen that captures lines scrolled off the top into a deque.
@@ -125,6 +131,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._stopped = False
         self._follow_output = True  # tracks auto-scroll intent across visibility
 
+        # Deferred pyte feed while hidden. See recv() / _flush_hidden_feed.
+        self._hidden_feed_buffer: list[str] = []
+        self._hidden_feed_handle: asyncio.TimerHandle | None = None
+
         # Widget-local text selection (replaces Textual's cross-widget system)
         self._sel_start: Offset | None = None
         self._sel_end: Offset | None = None
@@ -194,6 +204,31 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.recv_task.cancel()
         self.emulator.stop()
         self.emulator = None
+        if self._hidden_feed_handle is not None:
+            self._hidden_feed_handle.cancel()
+            self._hidden_feed_handle = None
+        self._hidden_feed_buffer.clear()
+
+    def _flush_hidden_feed(self) -> None:
+        """Feed any chars buffered while hidden into pyte in one batch.
+
+        Called from the deferred timer, from ``on_show`` (immediate catch-up),
+        and from ``on_resize`` (so a pending resize doesn't reorder against
+        buffered output). Idempotent; safe to call with an empty buffer.
+        """
+        if self._hidden_feed_handle is not None:
+            self._hidden_feed_handle.cancel()
+            self._hidden_feed_handle = None
+        if not self._hidden_feed_buffer:
+            return
+        chars = "".join(self._hidden_feed_buffer)
+        self._hidden_feed_buffer.clear()
+        try:
+            self.stream.feed(chars)
+        except TypeError as error:
+            log.warning("could not feed:", error)
+        # Fire the post-stdout hook once per batch (debounced scan).
+        self._after_stdout_processed()
 
     # ------------------------------------------------------------------
     # Recv loop — reads PTY output and updates screen + scrollback
@@ -213,40 +248,38 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                 elif cmd == "stdout":
                     chars = message[1]
 
-                    # Hook for subclasses (e.g. MonitoredTerminal)
+                    # Hook for subclasses (e.g. MonitoredTerminal) — runs per
+                    # chunk so hang detection updates last_output_time
+                    # promptly even while we're hidden.
                     self._on_stdout(chars)
 
-                    # Detect mouse tracking toggles
-                    for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
-                        sequence = sep_match.group(0)
-                        if sequence.startswith(DECSET_PREFIX):
-                            parameters = sequence.removeprefix(
-                                DECSET_PREFIX
-                            ).split(";")
-                            if "1000h" in parameters:
-                                self.mouse_tracking = True
-                            if "1000l" in parameters:
-                                self.mouse_tracking = False
-
-                    # Use the flag instead of is_vertical_scroll_end which
-                    # returns unreliable values when the widget is hidden
-                    # (e.g. after a ContentSwitcher worktree change).
-                    was_at_bottom = self._follow_output
-
-                    # Feed to pyte (may trigger index() → scrollback capture)
-                    try:
-                        self.stream.feed(chars)
-                    except TypeError as error:
-                        log.warning("could not feed:", error)
-
-                    # Only update layout/scroll when the widget is visible.
-                    # When hidden by ContentSwitcher (display: none) the
-                    # widget's size is (0, 0); calling _update_virtual_size
-                    # would trigger _refresh_scrollbars on a zero-sized
-                    # region, and scroll_end would compute a bogus
-                    # max_scroll_y.  on_show() catches up when the widget
-                    # becomes visible again.
                     if self.size.height > 0:
+                        # Visible: process immediately so the screen and any
+                        # observer scan reflect the latest output.
+                        for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
+                            sequence = sep_match.group(0)
+                            if sequence.startswith(DECSET_PREFIX):
+                                parameters = sequence.removeprefix(
+                                    DECSET_PREFIX
+                                ).split(";")
+                                if "1000h" in parameters:
+                                    self.mouse_tracking = True
+                                if "1000l" in parameters:
+                                    self.mouse_tracking = False
+
+                        # Use the flag instead of is_vertical_scroll_end
+                        # which returns unreliable values when the widget is
+                        # hidden (e.g. after a ContentSwitcher worktree
+                        # change).
+                        was_at_bottom = self._follow_output
+
+                        # Feed to pyte (may trigger index() → scrollback
+                        # capture)
+                        try:
+                            self.stream.feed(chars)
+                        except TypeError as error:
+                            log.warning("could not feed:", error)
+
                         self._update_virtual_size()
                         self.refresh()
                         if was_at_bottom:
@@ -254,9 +287,25 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                                 animate=False, immediate=True, x_axis=False
                             )
 
-                    # Post-processing hook for subclasses (e.g. sentinel
-                    # scanning — must run regardless of visibility)
-                    self._after_stdout_processed()
+                        # Post-processing hook for subclasses (e.g. sentinel
+                        # scanning) — only runs when visible because the
+                        # hidden path coalesces and fires the hook once per
+                        # flush instead of per chunk.
+                        self._after_stdout_processed()
+                    else:
+                        # Hidden: buffer chunks and flush every
+                        # _HIDDEN_FEED_INTERVAL seconds. Avoids pyte parsing
+                        # cost per chunk for off-screen agents (e.g. running
+                        # Claude Code instances). Mouse-tracking + refresh +
+                        # scroll are all visibility-dependent, so we skip
+                        # them entirely until the flush.
+                        self._hidden_feed_buffer.append(chars)
+                        if self._hidden_feed_handle is None:
+                            loop = asyncio.get_running_loop()
+                            self._hidden_feed_handle = loop.call_later(
+                                _HIDDEN_FEED_INTERVAL,
+                                self._flush_hidden_feed,
+                            )
 
                 elif cmd == "disconnect":
                     self._on_recv_disconnect()
@@ -292,7 +341,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
 
     def on_show(self) -> None:
-        """Catch up after being hidden: sync virtual size and scroll."""
+        """Catch up after being hidden: drain buffered output, sync size, scroll."""
+        # Drain anything that arrived while hidden so the first paint
+        # reflects the latest state.
+        self._flush_hidden_feed()
 
         def _restore() -> None:
             self._update_virtual_size()
@@ -594,6 +646,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         # the scrollback captured during that window.
         if ncol == 0 or nrow == 0:
             return
+
+        # Textual fires Resize whenever a widget enters the "shown" set,
+        # even if its dimensions are unchanged from the last visible state.
+        # Avoid the work — and avoid SIGWINCH'ing the child, which makes
+        # full-screen TUIs (Claude Code, etc.) repaint their whole UI and
+        # burst kilobytes of ANSI on every worktree switch.
+        if self.ncol == ncol and self.nrow == nrow:
+            return
+
+        # Real resize: flush any chars buffered while hidden BEFORE pyte's
+        # screen geometry changes, so the buffered output is applied at the
+        # dimensions it was produced for.
+        self._flush_hidden_feed()
 
         self.ncol = ncol
         self.nrow = nrow
