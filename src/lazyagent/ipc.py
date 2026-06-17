@@ -340,7 +340,7 @@ class IpcServer:
                 from lazyagent.widgets.center_panel import CenterPanel
 
                 center = self._app.query_one(CenterPanel)
-                panel = center.ensure_panel(worktree_path)
+                panel = await center.ensure_panel(worktree_path)
                 await panel.spawn_agent(
                     skip_permissions=skip_permissions,
                     agent_provider=self._app._config.agent.provider,

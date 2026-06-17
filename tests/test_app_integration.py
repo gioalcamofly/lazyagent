@@ -87,7 +87,7 @@ def _patch_app_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(LazyAgent, "_refresh_pr_status", no_pr_refresh)
 
 
-def _select_worktree(app: LazyAgent, index: int) -> WorktreeInfo:
+async def _select_worktree(app: LazyAgent, index: int) -> WorktreeInfo:
     worktree_list = app.query_one(WorktreeList)
     item = [
         child
@@ -96,7 +96,7 @@ def _select_worktree(app: LazyAgent, index: int) -> WorktreeInfo:
     ][index]
     # +1 to account for the OrchestratorListItem at position 0
     worktree_list.index = index + 1
-    app.on_list_view_highlighted(WorktreeList.Highlighted(worktree_list, item))
+    await app.on_list_view_highlighted(WorktreeList.Highlighted(worktree_list, item))
     return item.worktree
 
 
@@ -109,7 +109,7 @@ async def test_switching_worktrees_restores_existing_panel_state(
     app = LazyAgent(repo_path="/repo")
 
     async with app.run_test() as pilot:
-        first = _select_worktree(app, 0)
+        first = await _select_worktree(app, 0)
         await pilot.pause()
 
         center = app.query_one(CenterPanel)
@@ -120,14 +120,14 @@ async def test_switching_worktrees_restores_existing_panel_state(
         first_tabs = first_panel.query_one("#agent-tabs", TabbedContent)
         assert first_tabs.active == "diff-tab"
 
-        second = _select_worktree(app, 1)
+        second = await _select_worktree(app, 1)
         await pilot.pause()
 
         second_panel = center.get_panel(second.path)
         assert second_panel is not None
         assert second_panel is not first_panel
 
-        _select_worktree(app, 0)
+        await _select_worktree(app, 0)
         await pilot.pause()
 
         assert center.get_panel(first.path) is first_panel
@@ -143,7 +143,7 @@ async def test_ctrl_j_uses_spawn_flow_when_selected_worktree_has_no_agent(
     app = LazyAgent(repo_path="/repo")
 
     async with app.run_test() as pilot:
-        _select_worktree(app, 1)
+        await _select_worktree(app, 1)
         await pilot.pause()
 
         app.action_spawn_agent = MagicMock()
