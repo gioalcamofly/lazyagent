@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Multiple agents per worktree: press `s` to spawn additional agents in the
+  selected worktree; each gets its own tab to the left of the Diff tab. `x`
+  stops the active agent tab, and the sidebar shows a roll-up status (e.g.
+  `waiting (+1)`) when a worktree runs more than one agent
+- New `list_agents` MCP tool returning per-agent id/label/status; `spawn_agent`
+  now returns the new `agent_id` and no longer rejects a worktree that already
+  has a running agent
+- `agent_id` is now an optional parameter on `stop_agent`, `get_agent_status`,
+  `read_agent_output`, and `send_agent_input` — omit it when a worktree has a
+  single agent; supply it (else an error lists the choices) when there are
+  several. `list_worktrees` gains an `agents` array alongside the scalar
+  `agent_status` roll-up
+
 ## [0.5.3] - 2026-06-17
 
 ### Fixed

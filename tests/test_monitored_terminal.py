@@ -22,6 +22,7 @@ def _make_terminal() -> MonitoredTerminal:
     """Create a MonitoredTerminal without starting the emulator."""
     terminal = MonitoredTerminal.__new__(MonitoredTerminal)
     terminal.worktree_path = WT_PATH
+    terminal.agent_id = ""
     terminal._status = AgentStatus.NO_AGENT
     terminal._detail = ""
     terminal._last_output_time = None

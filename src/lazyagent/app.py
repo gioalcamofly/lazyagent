@@ -14,7 +14,7 @@ from lazyagent.config import Config, format_command, load_config
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
 from lazyagent.ipc import IpcServer, start_ipc_server
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
@@ -71,7 +71,10 @@ class LazyAgent(App):
         super().__init__()
         self.repo_path = repo_path
         self.worktrees: list[WorktreeInfo] = []
-        self._agent_states: dict[str, AgentState] = {}
+        # Two-level registry: outer key is a worktree path (or ORCHESTRATOR_KEY),
+        # inner maps agent id -> state. The orchestrator (and any single-agent
+        # caller) uses agent id "".
+        self._agent_states: dict[str, dict[str, AgentState]] = {}
         self._git_statuses: dict[str, GitStatus] = {}
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
@@ -149,11 +152,30 @@ class LazyAgent(App):
             return wt_list.highlighted_child.worktree
         return None
 
-    def _get_agent_state(self, key: str) -> AgentState:
-        """Get or create AgentState for a worktree path or ORCHESTRATOR_KEY."""
-        if key not in self._agent_states:
-            self._agent_states[key] = AgentState()
-        return self._agent_states[key]
+    def _get_agent_state(self, key: str, agent_id: str = "") -> AgentState:
+        """Get or create the AgentState for one agent in a worktree/orchestrator."""
+        bucket = self._agent_states.setdefault(key, {})
+        if agent_id not in bucket:
+            bucket[agent_id] = AgentState(agent_id=agent_id)
+        return bucket[agent_id]
+
+    def _worktree_agent_states(self, key: str) -> dict[str, AgentState]:
+        """All agent states for a worktree path / ORCHESTRATOR_KEY (may be empty)."""
+        return self._agent_states.get(key, {})
+
+    def _drop_agent_state(self, key: str, agent_id: str) -> None:
+        """Remove a single agent from the registry, pruning empty buckets."""
+        bucket = self._agent_states.get(key)
+        if bucket is not None:
+            bucket.pop(agent_id, None)
+            if not bucket:
+                self._agent_states.pop(key, None)
+
+    def _refresh_sidebar_agents(self, key: str) -> None:
+        """Push the worktree's current agent roll-up to the sidebar."""
+        self.query_one(WorktreeList).update_agent_states(
+            key, self._worktree_agent_states(key)
+        )
 
     def _get_any_panel(self, key: str):
         """Get the panel for a worktree path or ORCHESTRATOR_KEY."""
@@ -259,27 +281,28 @@ class LazyAgent(App):
     # --- Agent message handlers ---
 
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
-        state = self._get_agent_state(event.worktree_path)
+        state = self._get_agent_state(event.worktree_path, event.agent_id)
         state.status = event.status
         state.confidence = event.confidence
         state.detail = event.detail
-        if event.status == AgentStatus.RUNNING:
-            panel = self._get_any_panel(event.worktree_path)
-            if panel and panel.agent_terminal:
-                state.last_output_time = panel.agent_terminal.last_output_time
-        self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
+        panel = self._get_any_panel(event.worktree_path)
+        if panel is not None and not state.label:
+            label_fn = getattr(panel, "agent_label", None)
+            if label_fn is not None:
+                state.label = label_fn(event.agent_id)
+        if event.status == AgentStatus.RUNNING and panel is not None:
+            terminal = panel.get_agent(event.agent_id)
+            if terminal:
+                state.last_output_time = terminal.last_output_time
+        self._refresh_sidebar_agents(event.worktree_path)
 
     async def on_agent_exited(self, event: AgentExited) -> None:
-        state = self._get_agent_state(event.worktree_path)
-        state.status = AgentStatus.NO_AGENT
-        state.confidence = LifecycleConfidence.LOW
-        state.detail = ""
-        state.last_output_time = None
-        self.query_one(WorktreeList).update_agent_state(event.worktree_path, state)
+        self._drop_agent_state(event.worktree_path, event.agent_id)
+        self._refresh_sidebar_agents(event.worktree_path)
 
         panel = self._get_any_panel(event.worktree_path)
         if panel is not None:
-            await panel.cleanup_agent()
+            await panel.cleanup_agent(event.agent_id)
 
         label = "Orchestrator" if event.worktree_path == ORCHESTRATOR_KEY else "Agent"
         self.notify(
@@ -292,11 +315,18 @@ class LazyAgent(App):
 
     def _check_hangs(self) -> None:
         """Periodic timer callback: check all active agents for hangs."""
-        for key, state in self._agent_states.items():
-            if state.status == AgentStatus.RUNNING:
-                panel = self._get_any_panel(key)
-                if panel and panel.agent_terminal:
-                    panel.agent_terminal.check_hang()
+        for key, bucket in self._agent_states.items():
+            panel = None
+            for agent_id, state in bucket.items():
+                if state.status != AgentStatus.RUNNING:
+                    continue
+                if panel is None:
+                    panel = self._get_any_panel(key)
+                if panel is None:
+                    break
+                terminal = panel.get_agent(agent_id)
+                if terminal:
+                    terminal.check_hang()
 
     # --- Actions ---
 
@@ -310,24 +340,21 @@ class LazyAgent(App):
             self.notify("No worktree selected", severity="warning")
             return
 
-        center = self.query_one(CenterPanel)
-        panel = center.get_panel(worktree.path)
-        if panel and panel.has_agent:
-            self.notify("Agent already running in this worktree", severity="warning")
-            return
-
         async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None and worktree is not None:
                 center = self.query_one(CenterPanel)
                 # switch_to (not just ensure_panel) so the panel is visible
                 panel = await center.switch_to(worktree.path)
-                await panel.spawn_agent(
+                agent_id = await panel.spawn_agent(
                     skip_permissions=result.skip_permissions,
                     agent_provider=self._config.agent.provider,
                     resume_mode=result.resume_mode,
                     socket_path=self._ipc_socket_path,
                     instruction=result.instruction,
                 )
+                state = self._get_agent_state(worktree.path, agent_id)
+                state.label = panel.agent_label(agent_id)
+                self._refresh_sidebar_agents(worktree.path)
 
         self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
 
@@ -367,16 +394,15 @@ class LazyAgent(App):
 
         center = self.query_one(CenterPanel)
         panel = center.get_panel(worktree.path)
-        if panel is None or not panel.has_agent:
+        agent_id = panel.active_agent_id if panel else None
+        if panel is None or agent_id is None:
             self.notify("No running agent in this worktree", severity="warning")
             return
 
         # stop() cancels recv before disconnect fires, so update state directly.
-        state = self._get_agent_state(worktree.path)
-        state.status = AgentStatus.NO_AGENT
-        state.last_output_time = None
-        self.query_one(WorktreeList).update_agent_state(worktree.path, state)
-        await panel.cleanup_agent()
+        self._drop_agent_state(worktree.path, agent_id)
+        self._refresh_sidebar_agents(worktree.path)
+        await panel.cleanup_agent(agent_id)
         self.notify("Agent stopped")
 
     async def _stop_orchestrator_agent(self) -> None:
@@ -386,10 +412,8 @@ class LazyAgent(App):
             self.notify("No running orchestrator agent", severity="warning")
             return
 
-        state = self._get_agent_state(ORCHESTRATOR_KEY)
-        state.status = AgentStatus.NO_AGENT
-        state.last_output_time = None
-        self.query_one(WorktreeList).update_agent_state(ORCHESTRATOR_KEY, state)
+        self._drop_agent_state(ORCHESTRATOR_KEY, "")
+        self._refresh_sidebar_agents(ORCHESTRATOR_KEY)
         await panel.cleanup_agent()
         self.notify("Orchestrator agent stopped")
 
@@ -410,9 +434,12 @@ class LazyAgent(App):
             return
         panel = self.query_one(CenterPanel).get_panel(wt.path)
         if panel:
-            panel.switch_to_tab("agent-tab")
-            if panel.agent_terminal:
-                panel.agent_terminal.focus()
+            agent_id = panel.active_agent_id or (panel.agent_ids[-1] if panel.agent_ids else None)
+            if agent_id is not None:
+                panel.switch_to_tab(f"agent-tab-{agent_id}")
+                terminal = panel.get_agent(agent_id)
+                if terminal:
+                    terminal.focus()
             else:
                 self.action_spawn_agent()
 
@@ -501,8 +528,11 @@ class LazyAgent(App):
             self.notify("Cannot remove the main worktree", severity="error")
             return
 
-        state = self._get_agent_state(worktree.path)
-        if state.status in (AgentStatus.RUNNING, AgentStatus.WAITING):
+        states = self._worktree_agent_states(worktree.path)
+        if any(
+            s.status in (AgentStatus.RUNNING, AgentStatus.WAITING)
+            for s in states.values()
+        ):
             self.notify(
                 "Agent is running in this worktree — stop it first (x)",
                 severity="warning",

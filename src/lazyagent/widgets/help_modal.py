@@ -16,8 +16,9 @@ _HELP_TEXT = """\
   [bold]Ctrl+L[/bold]          Focus terminal pane
 
 [bold cyan]Agents[/bold cyan]
-  [bold]s[/bold]               Spawn or resume agent in selected worktree
-  [bold]x[/bold]               Stop agent in selected worktree
+  [bold]s[/bold]               Spawn a new agent (adds a tab; multiple per worktree)
+  [bold]x[/bold]               Stop the active agent tab
+  [bold]Ctrl+J[/bold]          Focus the active agent tab
 
 [bold cyan]Worktrees[/bold cyan]
   [bold]c[/bold]               Create new worktree

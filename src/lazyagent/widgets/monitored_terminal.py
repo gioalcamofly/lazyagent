@@ -29,10 +29,12 @@ class MonitoredTerminal(ScrollableTerminal):
         command: str,
         worktree_path: str,
         observer: AgentObserver | None = None,
+        agent_id: str = "",
         **kwargs,
     ) -> None:
         super().__init__(command=command, **kwargs)
         self.worktree_path = worktree_path
+        self.agent_id = agent_id
         self._status = AgentStatus.NO_AGENT
         self._detail = ""
         self._last_output_time: float | None = None
@@ -66,6 +68,7 @@ class MonitoredTerminal(ScrollableTerminal):
                         new_status,
                         confidence=confidence,
                         detail=detail,
+                        agent_id=self.agent_id,
                     )
                 )
 
@@ -118,7 +121,7 @@ class MonitoredTerminal(ScrollableTerminal):
         self._observer.cleanup()
         self._status = AgentStatus.NO_AGENT
         if not self._stopped:
-            self.post_message(AgentExited(self.worktree_path))
+            self.post_message(AgentExited(self.worktree_path, agent_id=self.agent_id))
 
     def check_hang(self) -> None:
         """Called periodically by the app timer. Posts POSSIBLY_HANGED if stale."""
