@@ -19,6 +19,8 @@ _HELP_TEXT = """\
   [bold]s[/bold]               Spawn a new agent (adds a tab; multiple per worktree)
   [bold]x[/bold]               Stop the active agent tab
   [bold]Ctrl+J[/bold]          Focus the active agent tab
+  [bold]Ctrl+][/bold]          Next agent tab
+  [bold]Ctrl+\\[/bold]          Previous agent tab
 
 [bold cyan]Worktrees[/bold cyan]
   [bold]c[/bold]               Create new worktree

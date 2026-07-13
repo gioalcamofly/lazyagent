@@ -64,6 +64,10 @@ class LazyAgent(App):
         Binding("ctrl+j", "focus_agent", "Ctrl+J Agent", priority=True),
         Binding("ctrl+d", "focus_diff", "Ctrl+D Diff", priority=True),
         Binding("ctrl+l", "focus_terminal", "Ctrl+L Terminal", priority=True),
+        # Cycle agent tabs. Ctrl+[ can't be used — terminals send it as the ESC
+        # byte, so Textual delivers `escape`, not ctrl+left_square_bracket.
+        Binding("ctrl+right_square_bracket", "next_agent", "Next agent", priority=True),
+        Binding("ctrl+backslash", "prev_agent", "Prev agent", priority=True),
         Binding("question_mark", "help", "Help"),
     ]
 
@@ -442,6 +446,33 @@ class LazyAgent(App):
                     terminal.focus()
             else:
                 self.action_spawn_agent()
+
+    def action_next_agent(self) -> None:
+        self._cycle_agent(1)
+
+    def action_prev_agent(self) -> None:
+        self._cycle_agent(-1)
+
+    def _cycle_agent(self, delta: int) -> None:
+        """Switch focus to the next/previous agent tab, wrapping around."""
+        if self._orchestrator_selected:
+            return  # orchestrator is single-agent
+        wt = self._get_selected_worktree()
+        if not wt:
+            return
+        panel = self.query_one(CenterPanel).get_panel(wt.path)
+        if panel is None:
+            return
+        ids = panel.agent_ids
+        if len(ids) < 2:
+            return  # nothing to cycle between
+        current = panel.active_agent_id
+        idx = ids.index(current) if current in ids else 0
+        new_id = ids[(idx + delta) % len(ids)]
+        panel.switch_to_tab(f"agent-tab-{new_id}")
+        terminal = panel.get_agent(new_id)
+        if terminal:
+            terminal.focus()
 
     def action_focus_diff(self) -> None:
         wt = self._get_selected_worktree()

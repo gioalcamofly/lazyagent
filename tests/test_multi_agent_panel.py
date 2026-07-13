@@ -206,6 +206,61 @@ async def test_spawn_then_stop_via_app_action(patched):
         assert panel.agent_ids == ["a1"]
 
 
+async def _select_feature(app, pilot):
+    """Highlight the feature worktree and return its panel."""
+    from lazyagent.widgets.worktree_list import WorktreeListItem
+
+    wt_list = app.query_one(WorktreeList)
+    item = [c for c in wt_list.children if isinstance(c, WorktreeListItem)][1]
+    wt_list.index = 2  # orchestrator(0) + main(1) + feature(2)
+    await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, item))
+    await pilot.pause()
+    return app.query_one(CenterPanel).get_panel(FEATURE_WORKTREE.path)
+
+
+@pytest.mark.asyncio
+async def test_cycle_agents_wraps_both_directions(patched):
+    app = LazyAgent(repo_path="/repo")
+    async with app.run_test() as pilot:
+        panel = await _select_feature(app, pilot)
+        await panel.spawn_agent()  # a1
+        await panel.spawn_agent()  # a2
+        await panel.spawn_agent()  # a3 (active)
+        await pilot.pause()
+
+        assert panel.active_agent_id == "a3"
+
+        app.action_next_agent()  # wraps a3 -> a1
+        await pilot.pause()
+        assert panel.active_agent_id == "a1"
+
+        app.action_next_agent()  # a1 -> a2
+        await pilot.pause()
+        assert panel.active_agent_id == "a2"
+
+        app.action_prev_agent()  # a2 -> a1
+        await pilot.pause()
+        assert panel.active_agent_id == "a1"
+
+        app.action_prev_agent()  # wraps a1 -> a3
+        await pilot.pause()
+        assert panel.active_agent_id == "a3"
+
+
+@pytest.mark.asyncio
+async def test_cycle_agents_noop_with_single_agent(patched):
+    app = LazyAgent(repo_path="/repo")
+    async with app.run_test() as pilot:
+        panel = await _select_feature(app, pilot)
+        await panel.spawn_agent()  # a1
+        await pilot.pause()
+
+        app.action_next_agent()
+        app.action_prev_agent()
+        await pilot.pause()
+        assert panel.active_agent_id == "a1"
+
+
 # --- Pure roll-up formatting ---
 
 
