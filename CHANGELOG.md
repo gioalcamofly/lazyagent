@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   single agent; supply it (else an error lists the choices) when there are
   several. `list_worktrees` gains an `agents` array alongside the scalar
   `agent_status` roll-up
+- Cycle between agent tabs with `Alt+]` (next) and `Alt+[` (previous); `Alt+n`
+  and `Alt+p` do the same on terminals that drop the Alt modifier from bracket
+  keys
 
 ## [0.5.3] - 2026-06-17
 

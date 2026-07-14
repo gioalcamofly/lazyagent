@@ -64,10 +64,12 @@ class LazyAgent(App):
         Binding("ctrl+j", "focus_agent", "Ctrl+J Agent", priority=True),
         Binding("ctrl+d", "focus_diff", "Ctrl+D Diff", priority=True),
         Binding("ctrl+l", "focus_terminal", "Ctrl+L Terminal", priority=True),
-        # Cycle agent tabs. Ctrl+[ can't be used — terminals send it as the ESC
-        # byte, so Textual delivers `escape`, not ctrl+left_square_bracket.
-        Binding("ctrl+right_square_bracket", "next_agent", "Next agent", priority=True),
-        Binding("ctrl+backslash", "prev_agent", "Prev agent", priority=True),
+        # Cycle agent tabs. Alt+] / Alt+[ are the primary keys; on terminals
+        # without the Kitty keyboard protocol the Alt modifier is dropped from
+        # bracket keys (they arrive as a bare `]`/`[`), so Alt+n / Alt+p are
+        # bound as universal fallbacks that keep the modifier everywhere.
+        Binding("alt+right_square_bracket,alt+n", "next_agent", "Next agent", priority=True),
+        Binding("alt+left_square_bracket,alt+p", "prev_agent", "Prev agent", priority=True),
         Binding("question_mark", "help", "Help"),
     ]
 
