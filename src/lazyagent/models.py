@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -94,6 +95,49 @@ class AgentState:
     confidence: LifecycleConfidence = LifecycleConfidence.LOW
     detail: str = ""
     last_output_time: float | None = None  # time.monotonic()
+    agent_id: str = ""   # "" = legacy/primary (single-agent, e.g. orchestrator)
+    label: str = ""      # human-facing tab label (e.g. "Agent 1")
+
+
+# Priority order for rolling up several per-agent statuses into one summary
+# status for a worktree. Earlier = "needs more attention", so it wins the
+# roll-up. Used by both the sidebar summary and the IPC scalar agent_status.
+_STATUS_PRIORITY: tuple[AgentStatus, ...] = (
+    AgentStatus.WAITING_FOR_APPROVAL,
+    AgentStatus.WAITING_FOR_USER,
+    AgentStatus.WAITING,
+    AgentStatus.POSSIBLY_HANGED,
+    AgentStatus.FAILED,
+    AgentStatus.RUNNING,
+    AgentStatus.INTERRUPTED,
+    AgentStatus.COMPLETED,
+    AgentStatus.NO_AGENT,
+)
+
+
+def _status_rank(status: AgentStatus) -> int:
+    try:
+        return _STATUS_PRIORITY.index(status)
+    except ValueError:
+        return len(_STATUS_PRIORITY)
+
+
+def rollup_status(statuses: Iterable[AgentStatus]) -> AgentStatus:
+    """Collapse several agent statuses into a single summary status.
+
+    Returns the highest-priority status (see ``_STATUS_PRIORITY``), or
+    ``NO_AGENT`` when there are no agents.
+    """
+    ranked = sorted(statuses, key=_status_rank)
+    return ranked[0] if ranked else AgentStatus.NO_AGENT
+
+
+def dominant_state(states: Iterable[AgentState]) -> AgentState | None:
+    """Return the agent state that wins the roll-up, or None if empty."""
+    items = list(states)
+    if not items:
+        return None
+    return min(items, key=lambda s: _status_rank(s.status))
 
 
 @dataclass
