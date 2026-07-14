@@ -3,7 +3,14 @@ from __future__ import annotations
 from textual.binding import Binding
 from textual.widgets import ListItem, ListView, Static
 
-from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
+from lazyagent.models import (
+    AgentState,
+    AgentStatus,
+    GitStatus,
+    LifecycleConfidence,
+    WorktreeInfo,
+    dominant_state,
+)
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
 
 
@@ -40,6 +47,22 @@ def format_agent_status(state: AgentState) -> str:
         res += f" [dim]({state.detail})[/dim]"
 
     return res or "[dim]---[/dim]"
+
+
+def format_agents_status(states: dict[str, AgentState]) -> str:
+    """Format a worktree's agents into a single roll-up status string.
+
+    No agents -> ``---``. One agent -> the single-agent format. Several ->
+    the highest-priority agent's status plus a ``(+N)`` overflow marker.
+    """
+    active = list(states.values())
+    if not active:
+        return "[dim]---[/dim]"
+    if len(active) == 1:
+        return format_agent_status(active[0])
+    dominant = dominant_state(active)
+    base = format_agent_status(dominant) if dominant else "[dim]---[/dim]"
+    return f"{base} [dim](+{len(active) - 1})[/dim]"
 
 
 class OrchestratorListItem(ListItem):
@@ -96,10 +119,14 @@ class WorktreeListItem(ListItem):
     }
     """
 
-    def __init__(self, worktree: WorktreeInfo, agent_state: AgentState | None = None) -> None:
+    def __init__(
+        self,
+        worktree: WorktreeInfo,
+        agent_states: dict[str, AgentState] | None = None,
+    ) -> None:
         super().__init__()
         self.worktree = worktree
-        self._agent_state = agent_state or AgentState()
+        self._agent_states: dict[str, AgentState] = dict(agent_states or {})
         self._git_status: GitStatus | None = None
         if worktree.is_main:
             self.add_class("--main")
@@ -110,7 +137,7 @@ class WorktreeListItem(ListItem):
     def _build_label(self) -> str:
         label = self.worktree.display_label
         branch = self.worktree.display_branch
-        status = format_agent_status(self._agent_state)
+        status = format_agents_status(self._agent_states)
         git = self._git_status_line()
         return f"[bold]{label}[/bold]\n{branch}\n{status}\n{git}"
 
@@ -130,9 +157,9 @@ class WorktreeListItem(ListItem):
                 parts.append(f"[red]\u2193{gs.behind}[/red]")
         return " ".join(parts)
 
-    def update_agent_state(self, state: AgentState) -> None:
-        """Re-render the label with updated agent state."""
-        self._agent_state = state
+    def update_agent_states(self, states: dict[str, AgentState]) -> None:
+        """Re-render the label with the worktree's full set of agent states."""
+        self._agent_states = dict(states)
         try:
             label_widget = self.query_one("#wt-label", Static)
             label_widget.update(self._build_label())
@@ -172,18 +199,28 @@ class WorktreeList(ListView):
     def on_mount(self) -> None:
         self.border_title = "Ctrl+K Sidebar"
 
-    def set_worktrees(self, worktrees: list[WorktreeInfo], agent_states: dict[str, AgentState] | None = None) -> None:
-        """Replace the list contents with the given worktrees, restoring agent state if provided."""
+    def set_worktrees(
+        self,
+        worktrees: list[WorktreeInfo],
+        agent_states: dict[str, dict[str, AgentState]] | None = None,
+    ) -> None:
+        """Replace the list contents, restoring per-agent state if provided.
+
+        ``agent_states`` is the app's two-level registry: outer key is a
+        worktree path (or ``ORCHESTRATOR_KEY``), inner maps agent id to state.
+        """
         self.clear()
         agent_states = agent_states or {}
-        self.append(OrchestratorListItem(agent_state=agent_states.get(ORCHESTRATOR_KEY)))
+        orch_states = agent_states.get(ORCHESTRATOR_KEY, {})
+        orch_state = dominant_state(orch_states.values()) if orch_states else None
+        self.append(OrchestratorListItem(agent_state=orch_state))
         for wt in worktrees:
-            state = agent_states.get(wt.path)
-            self.append(WorktreeListItem(wt, agent_state=state))
+            self.append(WorktreeListItem(wt, agent_states=agent_states.get(wt.path, {})))
 
-    def update_agent_state(self, key: str, state: AgentState) -> None:
-        """Update the sidebar item for the given key (worktree path or ORCHESTRATOR_KEY)."""
+    def update_agent_states(self, key: str, states: dict[str, AgentState]) -> None:
+        """Update the sidebar item for a worktree path or ORCHESTRATOR_KEY."""
         if key == ORCHESTRATOR_KEY:
+            state = dominant_state(states.values()) or AgentState()
             for child in self.children:
                 if isinstance(child, OrchestratorListItem):
                     child.update_agent_state(state)
@@ -191,7 +228,7 @@ class WorktreeList(ListView):
         else:
             for child in self.children:
                 if isinstance(child, WorktreeListItem) and child.worktree.path == key:
-                    child.update_agent_state(state)
+                    child.update_agent_states(states)
                     break
 
     def update_all_git_statuses(self, statuses: dict[str, GitStatus]) -> None:

@@ -25,6 +25,19 @@ def _panel_id(worktree_path: str) -> str:
     return "wp-" + hashlib.md5(worktree_path.encode()).hexdigest()[:8]
 
 
+_SPAWN_HINT = "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent"
+_PLACEHOLDER_TAB_ID = "agent-placeholder-tab"
+_DIFF_TAB_ID = "diff-tab"
+
+
+def _agent_tab_id(agent_id: str) -> str:
+    return f"agent-tab-{agent_id}"
+
+
+def _agent_terminal_id(agent_id: str) -> str:
+    return f"agent-terminal-{agent_id}"
+
+
 class GitInfoBar(Static):
     """Thin bar showing git status for the current worktree."""
 
@@ -89,10 +102,7 @@ class WorktreePanel(Container):
         border: solid $accent;
         border-title-color: $accent;
     }}
-    #agent-tab {{
-        height: 1fr;
-    }}
-    #diff-tab {{
+    #agent-tabs TabPane {{
         height: 1fr;
     }}
     #diff-scroll {{
@@ -135,17 +145,18 @@ class WorktreePanel(Container):
     def __init__(self, worktree_path: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
-        self._agent_terminal: MonitoredTerminal | None = None
+        # agent_id -> terminal. Ordered by spawn order; each agent gets its
+        # own TabPane to the left of the permanent Diff tab.
+        self._agents: dict[str, MonitoredTerminal] = {}
+        self._labels: dict[str, str] = {}
+        self._agent_counter = 0
 
     def compose(self):
         yield GitInfoBar(id="git-info-bar")
         with TabbedContent(id="agent-tabs"):
-            with TabPane("Agent", id="agent-tab"):
-                yield Static(
-                    "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent",
-                    id="agent-placeholder",
-                )
-            with TabPane("Diff", id="diff-tab"):
+            with TabPane("Agent", id=_PLACEHOLDER_TAB_ID):
+                yield Static(_SPAWN_HINT, id="agent-placeholder")
+            with TabPane("Diff", id=_DIFF_TAB_ID):
                 with VerticalScroll(id="diff-scroll"):
                     yield Static(
                         Text("No changes"),
@@ -209,34 +220,98 @@ class WorktreePanel(Container):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Multi-agent accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def agent_ids(self) -> list[str]:
+        """Agent ids in spawn order."""
+        return list(self._agents.keys())
+
+    def get_agent(self, agent_id: str) -> MonitoredTerminal | None:
+        """Return the terminal for a specific agent, or None."""
+        return self._agents.get(agent_id)
+
+    def agent_label(self, agent_id: str) -> str:
+        """Return the human-facing tab label for an agent."""
+        return self._labels.get(agent_id, "")
+
+    @property
+    def active_agent_id(self) -> str | None:
+        """The agent whose tab is currently active, the sole agent, or None.
+
+        Falls back to the only agent when the active tab is Diff/placeholder
+        but exactly one agent exists, so ``x``/focus behave intuitively.
+        """
+        try:
+            tabs = self.query_one("#agent-tabs", TabbedContent)
+            active = tabs.active or ""
+        except Exception:
+            active = ""
+        prefix = _agent_tab_id("")
+        if active.startswith(prefix):
+            aid = active[len(prefix):]
+            if aid in self._agents:
+                return aid
+        if len(self._agents) == 1:
+            return next(iter(self._agents))
+        return None
+
     @property
     def agent_terminal(self) -> MonitoredTerminal | None:
-        return self._agent_terminal
+        """Back-compat: the active agent's terminal (or the sole agent)."""
+        aid = self.active_agent_id
+        return self._agents.get(aid) if aid else None
 
     @property
     def has_agent(self) -> bool:
-        return (
-            self._agent_terminal is not None
-            and self._agent_terminal.emulator is not None
-        )
+        """True if any spawned agent has a live pty."""
+        return any(t.emulator is not None for t in self._agents.values())
 
-    async def cleanup_agent(self) -> None:
-        """Remove the agent terminal widget and restore the placeholder."""
-        if self._agent_terminal is not None:
-            self._agent_terminal.stop()
-            await self._agent_terminal.remove()
-            self._agent_terminal = None
+    def _new_agent_id(self) -> str:
+        self._agent_counter += 1
+        return f"a{self._agent_counter}"
 
-        pane = self.query_one("#agent-tab", TabPane)
+    async def _ensure_placeholder_tab(self) -> None:
+        """Re-add the placeholder tab when no agents remain."""
+        tabs = self.query_one("#agent-tabs", TabbedContent)
         try:
-            pane.query_one("#agent-placeholder")
+            self.query_one(f"#{_PLACEHOLDER_TAB_ID}", TabPane)
+            return  # already present
         except Exception:
-            pane.mount(
-                Static(
-                    "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent",
-                    id="agent-placeholder",
-                )
-            )
+            pass
+        pane = TabPane(
+            "Agent",
+            Static(_SPAWN_HINT, id="agent-placeholder"),
+            id=_PLACEHOLDER_TAB_ID,
+        )
+        await tabs.add_pane(pane, before=_DIFF_TAB_ID)
+        tabs.active = _PLACEHOLDER_TAB_ID
+
+    async def cleanup_agent(self, agent_id: str | None = None) -> None:
+        """Remove one agent's tab (or all), restoring the placeholder if empty.
+
+        ``agent_id=None`` cleans up every agent — used on worktree teardown.
+        """
+        tabs = self.query_one("#agent-tabs", TabbedContent)
+        targets = (
+            list(self._agents.keys())
+            if agent_id is None
+            else [agent_id] if agent_id in self._agents else []
+        )
+        for aid in targets:
+            terminal = self._agents.pop(aid, None)
+            self._labels.pop(aid, None)
+            if terminal is not None:
+                terminal.stop()
+            try:
+                await tabs.remove_pane(_agent_tab_id(aid))
+            except Exception:
+                pass
+
+        if not self._agents:
+            await self._ensure_placeholder_tab()
 
     async def spawn_agent(
         self,
@@ -245,22 +320,20 @@ class WorktreePanel(Container):
         resume_mode: ResumeMode = ResumeMode.NEW,
         socket_path: str | None = None,
         instruction: str | None = None,
-    ) -> None:
-        """Spawn the configured coding agent process in the Agent pane."""
-        pane = self.query_one("#agent-tab", TabPane)
+        label: str | None = None,
+    ) -> str:
+        """Spawn a new coding agent in its own tab. Returns the new agent id."""
+        tabs = self.query_one("#agent-tabs", TabbedContent)
 
-        # Remove previous terminal or placeholder (await to ensure DOM is clean
-        # before mounting the new widget with the same ID).
-        if self._agent_terminal is not None:
-            self._agent_terminal.stop()
-            await self._agent_terminal.remove()
-            self._agent_terminal = None
-
+        # First agent: drop the "press s to spawn" placeholder tab.
         try:
-            placeholder = self.query_one("#agent-placeholder", Static)
-            await placeholder.remove()
+            await tabs.remove_pane(_PLACEHOLDER_TAB_ID)
         except Exception:
             pass
+
+        agent_id = self._new_agent_id()
+        tab_label = label or f"Agent {agent_id[1:]}"
+        self._labels[agent_id] = tab_label
 
         provider = get_agent_provider(agent_provider)
         runtime_context = provider.build_runtime_context(
@@ -278,14 +351,18 @@ class WorktreePanel(Container):
             command=command,
             worktree_path=self.worktree_path,
             observer=provider.create_observer_from_context(runtime_context),
-            id="agent-terminal",
+            agent_id=agent_id,
+            id=_agent_terminal_id(agent_id),
         )
-        self._agent_terminal = terminal
-        pane.mount(terminal)
+        self._agents[agent_id] = terminal
+        pane = TabPane(tab_label, terminal, id=_agent_tab_id(agent_id))
+        await tabs.add_pane(pane, before=_DIFF_TAB_ID)
         terminal.start()
 
-        # Focus the terminal so the user can type immediately
+        # Make the new agent's tab active and focus its terminal.
+        tabs.active = _agent_tab_id(agent_id)
         terminal.focus()
+        return agent_id
 
 
 class CenterPanel(Container):

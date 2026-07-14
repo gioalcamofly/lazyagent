@@ -253,10 +253,14 @@ async def spawn_agent(
     instruction: str | None = None,
     skip_permissions: bool = True,
     resume_mode: str = "new",
+    label: str | None = None,
 ) -> dict:
-    """Spawn a coding agent in a worktree.
+    """Spawn a NEW coding agent in a worktree.
 
-    Only one agent can run per worktree at a time.
+    A worktree can host multiple agents, each in its own tab. Every call to
+    this tool adds another agent and returns its ``agent_id``; use that id with
+    the other agent tools to address this specific agent. Omitting ``agent_id``
+    on those tools works only when the worktree has exactly one agent.
 
     Args:
         worktree_path: Absolute path of the worktree.
@@ -271,9 +275,10 @@ async def spawn_agent(
             session AND passes the instruction as a new turn — it does not
             replace the prior task. For a clean restart with new instructions,
             use the default ``resume_mode="new"``.
+        label: Optional human-facing tab label (defaults to "Agent N").
 
     Returns:
-        Object with worktree_path and status.
+        Object with worktree_path, agent_id, and status.
     """
     params: dict[str, Any] = {
         "worktree_path": worktree_path,
@@ -282,62 +287,93 @@ async def spawn_agent(
     }
     if instruction is not None:
         params["instruction"] = instruction
+    if label is not None:
+        params["label"] = label
     return await _get_client().call("spawn_agent", params)
 
 
 @mcp.tool()
-async def stop_agent(worktree_path: str) -> dict:
-    """Stop the running agent in a worktree.
+async def list_agents(worktree_path: str) -> dict:
+    """List the agents running in a worktree.
 
     Args:
         worktree_path: Absolute path of the worktree.
 
     Returns:
-        Object confirming the agent was stopped.
+        Object with worktree_path and an ``agents`` list; each entry has
+        agent_id, label, status, confidence, and detail.
     """
     return await _get_client().call(
-        "stop_agent",
+        "list_agents",
         {"worktree_path": worktree_path},
     )
 
 
 @mcp.tool()
-async def get_agent_status(worktree_path: str) -> dict:
-    """Get the current status of the agent in a worktree.
+async def stop_agent(worktree_path: str, agent_id: str | None = None) -> dict:
+    """Stop a running agent in a worktree.
 
     Args:
         worktree_path: Absolute path of the worktree.
+        agent_id: Which agent to stop. May be omitted when the worktree has
+            exactly one agent; required (else an error lists the choices) when
+            there are several.
 
     Returns:
-        Object with status, confidence, and detail fields.
+        Object confirming the agent was stopped (includes agent_id).
     """
-    return await _get_client().call(
-        "get_agent_status",
-        {"worktree_path": worktree_path},
-    )
+    params: dict[str, Any] = {"worktree_path": worktree_path}
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    return await _get_client().call("stop_agent", params)
 
 
 @mcp.tool()
-async def read_agent_output(worktree_path: str, lines: int = 50) -> dict:
-    """Read recent terminal output from the agent in a worktree.
+async def get_agent_status(worktree_path: str, agent_id: str | None = None) -> dict:
+    """Get the current status of an agent in a worktree.
+
+    Args:
+        worktree_path: Absolute path of the worktree.
+        agent_id: Which agent to query. May be omitted when the worktree has
+            exactly one agent; required when there are several.
+
+    Returns:
+        Object with agent_id, status, confidence, and detail fields.
+    """
+    params: dict[str, Any] = {"worktree_path": worktree_path}
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    return await _get_client().call("get_agent_status", params)
+
+
+@mcp.tool()
+async def read_agent_output(
+    worktree_path: str, lines: int = 50, agent_id: str | None = None
+) -> dict:
+    """Read recent terminal output from an agent in a worktree.
 
     Includes both scrollback history and the current live screen buffer.
 
     Args:
         worktree_path: Absolute path of the worktree.
         lines: Number of recent lines to return (default 50).
+        agent_id: Which agent to read. May be omitted when the worktree has
+            exactly one agent; required when there are several.
 
     Returns:
-        Object with lines (list of strings), total_lines count, and worktree_path.
+        Object with lines (list of strings), total_lines count, worktree_path,
+        and agent_id.
     """
-    return await _get_client().call(
-        "read_agent_output",
-        {"worktree_path": worktree_path, "lines": lines},
-    )
+    params: dict[str, Any] = {"worktree_path": worktree_path, "lines": lines}
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    return await _get_client().call("read_agent_output", params)
 
 
 @mcp.tool()
-async def send_agent_input(worktree_path: str, text: str) -> dict:
+async def send_agent_input(
+    worktree_path: str, text: str, agent_id: str | None = None
+) -> dict:
     """Send text input to a running agent's terminal.
 
     Use this to provide follow-up instructions, answer prompts, or approve
@@ -346,14 +382,16 @@ async def send_agent_input(worktree_path: str, text: str) -> dict:
     Args:
         worktree_path: Absolute path of the worktree.
         text: The text to send to the agent's stdin (a newline is appended automatically).
+        agent_id: Which agent to send to. May be omitted when the worktree has
+            exactly one agent; required when there are several.
 
     Returns:
-        Object confirming the input was sent.
+        Object confirming the input was sent (includes agent_id).
     """
-    return await _get_client().call(
-        "send_agent_input",
-        {"worktree_path": worktree_path, "text": text},
-    )
+    params: dict[str, Any] = {"worktree_path": worktree_path, "text": text}
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    return await _get_client().call("send_agent_input", params)
 
 
 if __name__ == "__main__":

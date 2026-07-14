@@ -21,7 +21,11 @@ def _make_app(worktrees=None, agent_states=None, git_statuses=None):
     app._repo_root = "/tmp/repo"
     app._config.agent.provider = "claude"
     app._config.has_custom_create = False
-    app._get_agent_state = MagicMock(side_effect=lambda p: app._agent_states.setdefault(p, AgentState()))
+    app._get_agent_state = MagicMock(
+        side_effect=lambda p, aid="": app._agent_states.setdefault(p, {}).setdefault(
+            aid, AgentState(agent_id=aid)
+        )
+    )
     return app
 
 
@@ -46,7 +50,7 @@ class TestListWorktrees:
 
         app = _make_app(
             worktrees=[wt, wt2],
-            agent_states={"/tmp/repo-feat": state},
+            agent_states={"/tmp/repo-feat": {"a1": state}},
             git_statuses={"/tmp/repo": git_st},
         )
         server = IpcServer(app, "/tmp/test.sock")
@@ -59,11 +63,21 @@ class TestListWorktrees:
         assert data[0]["path"] == "/tmp/repo"
         assert data[0]["is_main"] is True
         assert data[0]["agent_status"] == "no_agent"
+        assert data[0]["agents"] == []
         assert data[0]["git_status"]["dirty_count"] == 2
 
-        # Feature worktree
+        # Feature worktree — scalar roll-up plus per-agent detail
         assert data[1]["path"] == "/tmp/repo-feat"
         assert data[1]["agent_status"] == "running"
+        assert data[1]["agents"] == [
+            {
+                "agent_id": "a1",
+                "label": "",
+                "status": "running",
+                "confidence": "low",
+                "detail": "",
+            }
+        ]
 
 
 class TestCreateWorktree:
@@ -182,7 +196,7 @@ class TestRemoveWorktree:
     async def test_rejects_worktree_with_running_agent(self):
         wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
         state = AgentState(status=AgentStatus.RUNNING)
-        app = _make_app(worktrees=[wt], agent_states={"/tmp/repo-feat": state})
+        app = _make_app(worktrees=[wt], agent_states={"/tmp/repo-feat": {"a1": state}})
         server = IpcServer(app, "/tmp/test.sock")
 
         result = await server._dispatch("req-1", "remove_worktree", {"worktree_path": "/tmp/repo-feat"})
@@ -235,15 +249,32 @@ class TestSpawnAgent:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_rejects_duplicate_spawn(self):
+    async def test_does_not_reject_when_agent_already_running(self):
+        """Duplicate spawn is now allowed — a second agent is added.
+
+        The guard that used to reject a running worktree is gone, so the
+        handler proceeds past validation into the Textual-thread spawn. We
+        stub call_later (so the UI work is never scheduled) and wait_for (so
+        it resolves to the new agent id), and assert no "already running"
+        validation error.
+        """
         wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
-        state = AgentState(status=AgentStatus.RUNNING)
-        app = _make_app(worktrees=[wt], agent_states={"/tmp/repo-feat": state})
+        state = AgentState(status=AgentStatus.RUNNING, agent_id="a1")
+        app = _make_app(
+            worktrees=[wt], agent_states={"/tmp/repo-feat": {"a1": state}}
+        )
+        app.call_later = MagicMock()
         server = IpcServer(app, "/tmp/test.sock")
 
-        result = await server._dispatch("req-1", "spawn_agent", {"worktree_path": "/tmp/repo-feat"})
-        assert "error" in result
-        assert "already running" in result["error"]["message"]
+        # asyncio.wait_for is async, so patch() auto-uses an AsyncMock.
+        with patch("asyncio.wait_for", return_value="a2"):
+            result = await server._dispatch(
+                "req-1", "spawn_agent", {"worktree_path": "/tmp/repo-feat"}
+            )
+
+        assert "result" in result, result
+        assert result["result"]["agent_id"] == "a2"
+        assert app.call_later.called
 
 
 class TestGetAgentStatus:
@@ -261,14 +292,94 @@ class TestGetAgentStatus:
             status=AgentStatus.WAITING_FOR_USER,
             confidence=LifecycleConfidence.HIGH,
             detail="needs input",
+            agent_id="a1",
         )
-        app = _make_app(agent_states={"/tmp/repo": state})
+        app = _make_app(agent_states={"/tmp/repo": {"a1": state}})
         server = IpcServer(app, "/tmp/test.sock")
 
         result = await server._dispatch("req-1", "get_agent_status", {"worktree_path": "/tmp/repo"})
         assert result["result"]["status"] == "waiting_for_user"
         assert result["result"]["confidence"] == "high"
         assert result["result"]["detail"] == "needs input"
+        assert result["result"]["agent_id"] == "a1"
+
+    @pytest.mark.asyncio
+    async def test_requires_agent_id_when_multiple(self):
+        app = _make_app(
+            agent_states={
+                "/tmp/repo": {
+                    "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1"),
+                    "a2": AgentState(status=AgentStatus.RUNNING, agent_id="a2"),
+                }
+            }
+        )
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "get_agent_status", {"worktree_path": "/tmp/repo"}
+        )
+        assert "error" in result
+        assert "specify agent_id" in result["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_selects_specific_agent_when_multiple(self):
+        app = _make_app(
+            agent_states={
+                "/tmp/repo": {
+                    "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1"),
+                    "a2": AgentState(
+                        status=AgentStatus.WAITING_FOR_USER, agent_id="a2"
+                    ),
+                }
+            }
+        )
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1",
+            "get_agent_status",
+            {"worktree_path": "/tmp/repo", "agent_id": "a2"},
+        )
+        assert result["result"]["agent_id"] == "a2"
+        assert result["result"]["status"] == "waiting_for_user"
+
+
+class TestListAgents:
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_agents(self):
+        app = _make_app()
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "list_agents", {"worktree_path": "/tmp/repo"}
+        )
+        assert result["result"] == {"worktree_path": "/tmp/repo", "agents": []}
+
+    @pytest.mark.asyncio
+    async def test_lists_agents(self):
+        app = _make_app(
+            agent_states={
+                "/tmp/repo": {
+                    "a1": AgentState(
+                        status=AgentStatus.RUNNING, agent_id="a1", label="Agent 1"
+                    ),
+                    "a2": AgentState(
+                        status=AgentStatus.WAITING_FOR_USER,
+                        agent_id="a2",
+                        label="Agent 2",
+                    ),
+                }
+            }
+        )
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "list_agents", {"worktree_path": "/tmp/repo"}
+        )
+        agents = result["result"]["agents"]
+        assert [a["agent_id"] for a in agents] == ["a1", "a2"]
+        assert agents[1]["label"] == "Agent 2"
+        assert agents[1]["status"] == "waiting_for_user"
 
 
 class TestReadAgentOutput:

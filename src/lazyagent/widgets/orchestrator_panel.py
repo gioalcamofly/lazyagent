@@ -43,6 +43,14 @@ class OrchestratorPanel(Container):
     def agent_terminal(self) -> MonitoredTerminal | None:
         return self._agent_terminal
 
+    def get_agent(self, agent_id: str = "") -> MonitoredTerminal | None:
+        """The orchestrator is single-agent; ``agent_id`` is ignored."""
+        return self._agent_terminal
+
+    @property
+    def agent_ids(self) -> list[str]:
+        return [""] if self._agent_terminal is not None else []
+
     @property
     def has_agent(self) -> bool:
         return (
@@ -50,7 +58,7 @@ class OrchestratorPanel(Container):
             and self._agent_terminal.emulator is not None
         )
 
-    async def cleanup_agent(self) -> None:
+    async def cleanup_agent(self, agent_id: str | None = None) -> None:
         """Remove the agent terminal and restore the placeholder."""
         if self._agent_terminal is not None:
             self._agent_terminal.stop()

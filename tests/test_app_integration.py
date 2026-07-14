@@ -185,7 +185,9 @@ def test_do_remove_worktree_injects_custom_command_with_repo_cd_prefix() -> None
 def test_remove_worktree_is_blocked_for_active_agents(status: AgentStatus) -> None:
     app = LazyAgent(repo_path="/repo")
     app._get_selected_worktree = lambda: FEATURE_WORKTREE
-    app._get_agent_state = lambda path: AgentState(status=status)
+    app._agent_states = {
+        FEATURE_WORKTREE.path: {"a1": AgentState(status=status, agent_id="a1")}
+    }
     app.notify = MagicMock()
     app.push_screen = MagicMock()
 

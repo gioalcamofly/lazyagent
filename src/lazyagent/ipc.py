@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_providers import ResumeMode
-from lazyagent.models import AgentStatus
+from lazyagent.models import AgentState, AgentStatus, rollup_status
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
 
 if TYPE_CHECKING:
@@ -57,6 +57,7 @@ class IpcServer:
             "get_agent_status": self.handle_get_agent_status,
             "read_agent_output": self.handle_read_agent_output,
             "send_agent_input": self.handle_send_agent_input,
+            "list_agents": self.handle_list_agents,
         }
 
     @property
@@ -149,15 +150,18 @@ class IpcServer:
         """List all worktrees with agent status and git status."""
         result = []
         for wt in self._app.worktrees:
-            state = self._app._agent_states.get(wt.path)
+            bucket = self._agent_bucket(wt.path)
             git_st = self._app._git_statuses.get(wt.path)
+            rolled = rollup_status(s.status for s in bucket.values())
             entry: dict[str, Any] = {
                 "path": wt.path,
                 "branch": wt.branch,
                 "head": wt.head,
                 "is_main": wt.is_main,
                 "is_bare": wt.is_bare,
-                "agent_status": state.status.value if state else AgentStatus.NO_AGENT.value,
+                # Scalar roll-up kept for back-compat; `agents` has the detail.
+                "agent_status": rolled.value,
+                "agents": self._agents_payload(bucket),
             }
             if git_st:
                 entry["git_status"] = {
@@ -292,9 +296,12 @@ class IpcServer:
         if wt_info.is_main:
             raise ValueError("Cannot remove the main worktree")
 
-        # Reject if agent is running
-        state = self._app._agent_states.get(worktree_path)
-        if state and state.status in (AgentStatus.RUNNING, AgentStatus.WAITING):
+        # Reject if any agent is running
+        bucket = self._agent_bucket(worktree_path)
+        if any(
+            s.status in (AgentStatus.RUNNING, AgentStatus.WAITING)
+            for s in bucket.values()
+        ):
             raise ValueError("Agent is running in this worktree — stop it first")
 
         manager = WorktreeManager(self._app._repo_root)
@@ -308,8 +315,12 @@ class IpcServer:
     async def handle_spawn_agent(
         self, request_id: str, params: dict
     ) -> dict:
-        """Spawn an agent in a worktree. Params: worktree_path, instruction (optional),
-        skip_permissions (optional), resume_mode (optional)."""
+        """Spawn a NEW agent in a worktree. Params: worktree_path, instruction
+        (optional), skip_permissions (optional), resume_mode (optional).
+
+        Each call adds another agent; the new agent id is returned. Multiple
+        agents per worktree are supported.
+        """
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
@@ -318,14 +329,10 @@ class IpcServer:
         if wt_info is None:
             raise ValueError(f"Unknown worktree: {worktree_path}")
 
-        # Reject if agent already running
-        state = self._app._agent_states.get(worktree_path)
-        if state and state.status in (AgentStatus.RUNNING, AgentStatus.WAITING):
-            raise ValueError("Agent is already running in this worktree")
-
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         instruction = params.get("instruction") or params.get("initial_prompt")
         skip_permissions = params.get("skip_permissions", True)
+        label = params.get("label")
         resume_mode_str = params.get("resume_mode", "new")
         try:
             resume_mode = ResumeMode(resume_mode_str)
@@ -341,26 +348,36 @@ class IpcServer:
 
                 center = self._app.query_one(CenterPanel)
                 panel = await center.ensure_panel(worktree_path)
-                await panel.spawn_agent(
+                agent_id = await panel.spawn_agent(
                     skip_permissions=skip_permissions,
                     agent_provider=self._app._config.agent.provider,
                     resume_mode=resume_mode,
                     socket_path=self._socket_path,
                     instruction=instruction,
+                    label=label,
                 )
-                future.set_result(None)
+                state = self._app._get_agent_state(worktree_path, agent_id)
+                state.label = panel.agent_label(agent_id)
+                self._app._refresh_sidebar_agents(worktree_path)
+                future.set_result(agent_id)
             except Exception as e:
                 future.set_exception(e)
 
         self._app.call_later(_do_spawn)
 
-        await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
-        return _ok(request_id, {"worktree_path": worktree_path, "status": "spawned"})
+        agent_id = await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
+        return _ok(
+            request_id,
+            {"worktree_path": worktree_path, "agent_id": agent_id, "status": "spawned"},
+        )
 
     async def handle_stop_agent(
         self, request_id: str, params: dict
     ) -> dict:
-        """Stop the agent in a worktree. Params: worktree_path."""
+        """Stop an agent in a worktree. Params: worktree_path, agent_id (optional).
+
+        ``agent_id`` may be omitted when the worktree has exactly one agent.
+        """
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
@@ -369,22 +386,18 @@ class IpcServer:
 
         center = self._app.query_one(CenterPanel)
         panel = center.get_panel(worktree_path)
-        if panel is None or not panel.has_agent:
+        if panel is None or not panel.agent_ids:
             raise ValueError("No running agent in this worktree")
+
+        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
 
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         async def _do_stop() -> None:
             try:
-                from lazyagent.widgets.worktree_list import WorktreeList
-
-                state = self._app._get_agent_state(worktree_path)
-                state.status = AgentStatus.NO_AGENT
-                state.last_output_time = None
-                self._app.query_one(WorktreeList).update_agent_state(
-                    worktree_path, state
-                )
-                await panel.cleanup_agent()
+                self._app._drop_agent_state(worktree_path, agent_id)
+                self._app._refresh_sidebar_agents(worktree_path)
+                await panel.cleanup_agent(agent_id)
                 future.set_result(None)
             except Exception as e:
                 future.set_exception(e)
@@ -392,26 +405,34 @@ class IpcServer:
         self._app.call_later(_do_stop)
 
         await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
-        return _ok(request_id, {"worktree_path": worktree_path, "status": "stopped"})
+        return _ok(
+            request_id,
+            {"worktree_path": worktree_path, "agent_id": agent_id, "status": "stopped"},
+        )
 
     async def handle_get_agent_status(
         self, request_id: str, params: dict
     ) -> dict:
-        """Get agent status for a worktree. Params: worktree_path."""
+        """Get agent status for a worktree. Params: worktree_path, agent_id
+        (optional). ``agent_id`` may be omitted when there is one agent."""
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        state = self._app._agent_states.get(worktree_path)
-        if state is None:
+        bucket = self._agent_bucket(worktree_path)
+        if not bucket:
             return _ok(request_id, {
                 "worktree_path": worktree_path,
+                "agent_id": "",
                 "status": AgentStatus.NO_AGENT.value,
                 "detail": "",
             })
 
+        agent_id = self._resolve_agent_id(list(bucket.keys()), params.get("agent_id"))
+        state = bucket[agent_id]
         return _ok(request_id, {
             "worktree_path": worktree_path,
+            "agent_id": agent_id,
             "status": state.status.value,
             "confidence": state.confidence.value,
             "detail": state.detail,
@@ -420,7 +441,8 @@ class IpcServer:
     async def handle_read_agent_output(
         self, request_id: str, params: dict
     ) -> dict:
-        """Read recent terminal output from an agent. Params: worktree_path, lines (optional)."""
+        """Read recent terminal output from an agent. Params: worktree_path,
+        agent_id (optional), lines (optional)."""
         worktree_path = params.get("worktree_path", "")
         num_lines = params.get("lines", 50)
         if not worktree_path:
@@ -430,10 +452,13 @@ class IpcServer:
 
         center = self._app.query_one(CenterPanel)
         panel = center.get_panel(worktree_path)
-        if panel is None or panel.agent_terminal is None:
+        if panel is None or not panel.agent_ids:
             raise ValueError("No agent terminal in this worktree")
 
-        terminal = panel.agent_terminal
+        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
+        terminal = panel.get_agent(agent_id)
+        if terminal is None:
+            raise ValueError("No agent terminal in this worktree")
         screen = terminal._screen
         total_lines = len(screen.scrollback) + screen.lines
 
@@ -467,6 +492,7 @@ class IpcServer:
 
         return _ok(request_id, {
             "worktree_path": worktree_path,
+            "agent_id": agent_id,
             "lines": collected,
             "total_lines": total_lines,
         })
@@ -474,7 +500,8 @@ class IpcServer:
     async def handle_send_agent_input(
         self, request_id: str, params: dict
     ) -> dict:
-        """Send text input to a running agent's terminal. Params: worktree_path, text."""
+        """Send text input to a running agent's terminal. Params: worktree_path,
+        text, agent_id (optional)."""
         worktree_path = params.get("worktree_path", "")
         text = params.get("text", "")
         if not worktree_path:
@@ -486,10 +513,11 @@ class IpcServer:
 
         center = self._app.query_one(CenterPanel)
         panel = center.get_panel(worktree_path)
-        if panel is None or not panel.has_agent:
+        if panel is None or not panel.agent_ids:
             raise ValueError("No running agent in this worktree")
 
-        terminal = panel.agent_terminal
+        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
+        terminal = panel.get_agent(agent_id)
         if terminal is None or terminal.send_queue is None:
             raise ValueError("Agent terminal is not ready")
 
@@ -498,7 +526,28 @@ class IpcServer:
         # handler; LF would be interpreted as Shift+Enter (newline within
         # the prompt) by Claude Code and most line-editing TUIs.
         await terminal.send_queue.put(["stdin", text + "\r"])
-        return _ok(request_id, {"worktree_path": worktree_path, "status": "sent"})
+        return _ok(
+            request_id,
+            {"worktree_path": worktree_path, "agent_id": agent_id, "status": "sent"},
+        )
+
+    async def handle_list_agents(
+        self, request_id: str, params: dict
+    ) -> dict:
+        """List the agents in a worktree. Params: worktree_path.
+
+        Returns ``{worktree_path, agents: [{agent_id, label, status,
+        confidence, detail}]}``.
+        """
+        worktree_path = params.get("worktree_path", "")
+        if not worktree_path:
+            raise ValueError("worktree_path is required")
+
+        bucket = self._agent_bucket(worktree_path)
+        return _ok(request_id, {
+            "worktree_path": worktree_path,
+            "agents": self._agents_payload(bucket),
+        })
 
     # ------------------------------------------------------------------
     # Helpers
@@ -510,6 +559,50 @@ class IpcServer:
             if wt.path == path:
                 return wt
         return None
+
+    def _agent_bucket(self, worktree_path: str) -> dict[str, AgentState]:
+        """Agent-state map for a worktree (may be empty)."""
+        return self._app._agent_states.get(worktree_path, {})
+
+    @staticmethod
+    def _resolve_agent_id(
+        available: list[str], agent_id: str | None, *, what: str = "agent"
+    ) -> str:
+        """Resolve an optional agent id against the available ids.
+
+        Back-compatible rule: an explicit id must exist; if omitted and there
+        is exactly one agent, address it; otherwise fail with a list so the
+        caller disambiguates.
+        """
+        if agent_id:
+            if agent_id not in available:
+                raise ValueError(
+                    f"No {what} {agent_id!r} in this worktree. "
+                    f"Available: {available}"
+                )
+            return agent_id
+        if len(available) == 1:
+            return available[0]
+        if not available:
+            raise ValueError(f"No running {what} in this worktree")
+        raise ValueError(
+            f"Multiple agents in this worktree; specify agent_id. "
+            f"Available: {available}"
+        )
+
+    @staticmethod
+    def _agents_payload(bucket: dict[str, AgentState]) -> list[dict]:
+        """Serialise a worktree's agent states for IPC responses."""
+        return [
+            {
+                "agent_id": aid,
+                "label": st.label,
+                "status": st.status.value,
+                "confidence": st.confidence.value,
+                "detail": st.detail,
+            }
+            for aid, st in bucket.items()
+        ]
 
 
 async def start_ipc_server(app: LazyAgent) -> tuple[IpcServer, str]:
