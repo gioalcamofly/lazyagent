@@ -96,6 +96,29 @@ class PtyEmulator:
             os.execvpe(argv[0], argv, env)
         return fd
 
+    async def _write_all(self, data: bytes) -> None:
+        """Write every byte of ``data`` to the PTY master.
+
+        ``p_out`` is opened with ``buffering=0``, so ``write`` is a single
+        ``write(2)`` and is allowed to report a short count. Taking that
+        count for granted silently truncates the payload — for stdin that
+        means half an instruction, or a dropped submit key.
+        """
+        view = memoryview(data)
+        while view:
+            try:
+                written = self.p_out.write(view)
+            except BlockingIOError:
+                written = None
+            if written is None:
+                # Would block: yield and retry rather than drop the tail.
+                await asyncio.sleep(0.005)
+                continue
+            if written <= 0:
+                log.warning("PTY write made no progress; %d bytes dropped", len(view))
+                return
+            view = view[written:]
+
     async def _run(self) -> None:
         """Main I/O loop with incremental UTF-8 decoding."""
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -143,7 +166,7 @@ class PtyEmulator:
             while True:
                 msg = await self.recv_queue.get()
                 if msg[0] == "stdin":
-                    self.p_out.write(msg[1].encode())
+                    await self._write_all(msg[1].encode())
                 elif msg[0] == "set_size":
                     winsize = struct.pack("HH", msg[1], msg[2])
                     fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsize)
@@ -152,15 +175,15 @@ class PtyEmulator:
                     y = msg[2] + 1
                     button = msg[3]
                     if button == 1:
-                        self.p_out.write(f"\x1b[<0;{x};{y}M".encode())
-                        self.p_out.write(f"\x1b[<0;{x};{y}m".encode())
+                        await self._write_all(f"\x1b[<0;{x};{y}M".encode())
+                        await self._write_all(f"\x1b[<0;{x};{y}m".encode())
                 elif msg[0] == "scroll":
                     x = msg[2] + 1
                     y = msg[3] + 1
                     if msg[1] == "up":
-                        self.p_out.write(f"\x1b[<64;{x};{y}M".encode())
+                        await self._write_all(f"\x1b[<64;{x};{y}M".encode())
                     if msg[1] == "down":
-                        self.p_out.write(f"\x1b[<65;{x};{y}M".encode())
+                        await self._write_all(f"\x1b[<65;{x};{y}M".encode())
         except asyncio.CancelledError:
             pass
         finally:

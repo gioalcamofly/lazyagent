@@ -1,6 +1,7 @@
 """Tests for ScrollbackScreen and ScrollableTerminal."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pyte
@@ -91,6 +92,8 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.ncol = 80
     terminal.nrow = 5
     terminal.mouse_tracking = False
+    terminal.bracketed_paste = False
+    terminal._output_event = asyncio.Event()
     terminal.emulator = None
     terminal.send_queue = None
     terminal.recv_queue = None

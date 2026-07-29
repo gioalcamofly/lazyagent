@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -395,6 +395,65 @@ class TestReadAgentOutput:
 
         result = await server._dispatch("req-1", "read_agent_output", {"worktree_path": "/tmp/repo"})
         assert "error" in result
+
+
+class TestSendAgentInput:
+    """The handler must go through send_input, which separates the payload
+    from the Enter that submits it — a raw ``text + "\\r"`` write leaves the
+    instruction sitting unsent in the agent's prompt."""
+
+    @staticmethod
+    def _app_with_terminal():
+        app = _make_app(worktrees=[_make_worktree()])
+        terminal = MagicMock()
+        terminal.send_input = AsyncMock()
+        panel = MagicMock()
+        panel.agent_ids = ["a1"]
+        panel.get_agent.return_value = terminal
+        center = MagicMock()
+        center.get_panel.return_value = panel
+        app.query_one.return_value = center
+        return app, terminal
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_send_input_with_submit(self):
+        app, terminal = self._app_with_terminal()
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1",
+            "send_agent_input",
+            {"worktree_path": "/tmp/repo", "text": "run the tests"},
+        )
+
+        assert result["result"]["status"] == "sent"
+        terminal.send_input.assert_awaited_once_with("run the tests", submit=True)
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_text(self):
+        app, terminal = self._app_with_terminal()
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": ""}
+        )
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        terminal.send_input.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_stopped_terminal(self):
+        """stop() clears the emulator but leaves send_queue pointing at it."""
+        app, terminal = self._app_with_terminal()
+        terminal.emulator = None
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "hi"}
+        )
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        terminal.send_input.assert_not_awaited()
 
 
 class TestDispatch:

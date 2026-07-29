@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `send_agent_input` no longer leaves the text sitting unsent in the agent's
+  prompt. The text and the Enter that submits it went out as one PTY write, so
+  the agent CLI read them as a single chunk and — past ~64 characters — parsed
+  the trailing CR as a character inside the message instead of a keypress.
+  Short messages submitted, longer ones didn't, which is why it looked random.
+  The text is now framed as a bracketed paste (when the agent has asked for
+  DECSET 2004) and the submit key is written separately, once the agent has
+  shown it read the text. `LAZYAGENT_SUBMIT_ACK_TIMEOUT` and
+  `LAZYAGENT_SUBMIT_SETTLE_DELAY` tune that handshake
+- Terminal modes (mouse tracking, bracketed paste) are now tracked for hidden
+  terminals too — MCP input usually targets an agent the user isn't looking at
+- Pasting into a terminal pane forwards the text as a real paste, so embedded
+  newlines are content rather than keypresses
+- PTY writes are resumed on a short write instead of silently dropping the tail
+
 ## [0.6.0] - 2026-07-14
 
 ### Added
