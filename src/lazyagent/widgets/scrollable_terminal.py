@@ -9,6 +9,7 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
 import re
 import shutil
@@ -43,6 +44,54 @@ _DEFAULT_MAX_SCROLLBACK = 5000
 # observer's lifecycle scan can read a slightly-stale state. Burning CPU on
 # every stdout chunk for off-screen agents was the dominant idle cost.
 _HIDDEN_FEED_INTERVAL = 0.25
+
+# ---------------------------------------------------------------------------
+# Programmatic input framing
+# ---------------------------------------------------------------------------
+#
+# Bracketed paste (DECSET 2004). A real terminal wraps pasted text in these
+# markers so the app can tell "content the user pasted" apart from "keys the
+# user pressed". That distinction is exactly what programmatic input needs:
+# without it, agent CLIs built on Ink (Claude Code, Codex, Gemini) run their
+# stdin chunk through a tokeniser that only splits control characters out as
+# their own key when the whole chunk is short (< 64 chars). A longer chunk
+# ending in CR is absorbed into one text run, so the text lands in the prompt
+# and Enter never fires — the user has to press it by hand. Framing the text
+# as a paste makes the trailing CR a token in its own right no matter how the
+# kernel batches our writes.
+BRACKETED_PASTE_START = "\x1b[200~"
+BRACKETED_PASTE_END = "\x1b[201~"
+
+# Submit key. Enter is CR; LF is Shift+Enter (newline inside the prompt) for
+# Claude Code and most line-editing TUIs.
+SUBMIT_KEY = "\r"
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """Read a non-negative float from the environment, else ``default``."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# How long ``send_input`` waits for the child to show any sign of having read
+# what we just wrote before it writes the submit key. Any PTY output is the
+# acknowledgement: it means the child's input loop has run since our write, so
+# the submit key will arrive in a later read() instead of being appended to the
+# same chunk. Bounded, because a busy or silent agent must not stall the submit.
+SUBMIT_ACK_TIMEOUT = _env_seconds("LAZYAGENT_SUBMIT_ACK_TIMEOUT", 2.0)
+
+# Small floor applied after the acknowledgement. The child redraws as soon as
+# it has *parsed* the paste, which can be a beat before its input state has
+# committed; a submit key racing into the same dispatch batch would submit the
+# prompt as it was before the paste. There is no observable signal for that
+# commit, so this one is a delay by necessity — kept tiny and overridable.
+SUBMIT_SETTLE_DELAY = _env_seconds("LAZYAGENT_SUBMIT_SETTLE_DELAY", 0.05)
 
 
 class ScrollbackScreen(pyte.Screen):
@@ -122,6 +171,13 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.ncol = 80
         self.nrow = 24
         self.mouse_tracking = False
+        # DECSET 2004 — set once the child asks for bracketed paste. Until
+        # then we must not send paste markers; a child that never requested
+        # them would take the escape sequence for literal input.
+        self.bracketed_paste = False
+        # Set on every PTY stdout chunk; send_input waits on it to know the
+        # child has read what we wrote. See SUBMIT_ACK_TIMEOUT.
+        self._output_event = asyncio.Event()
 
         # PTY emulator (created in start())
         self.emulator: PtyEmulator | None = None
@@ -253,20 +309,17 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                     # promptly even while we're hidden.
                     self._on_stdout(chars)
 
+                    # Terminal modes and the output signal are tracked for
+                    # hidden terminals too: MCP input usually targets an agent
+                    # in a worktree the user isn't looking at, and it needs
+                    # both to frame and submit that input correctly.
+                    self._scan_terminal_modes(chars)
+                    self._output_event.set()
+
                     if self.size.height > 0:
                         # Visible: process immediately so the screen and any
                         # observer scan reflect the latest output.
-                        for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
-                            sequence = sep_match.group(0)
-                            if sequence.startswith(DECSET_PREFIX):
-                                parameters = sequence.removeprefix(
-                                    DECSET_PREFIX
-                                ).split(";")
-                                if "1000h" in parameters:
-                                    self.mouse_tracking = True
-                                if "1000l" in parameters:
-                                    self.mouse_tracking = False
-
+                        #
                         # Use the flag instead of is_vertical_scroll_end
                         # which returns unreliable values when the widget is
                         # hidden (e.g. after a ContentSwitcher worktree
@@ -313,6 +366,29 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
         except asyncio.CancelledError:
             pass
+
+    def _scan_terminal_modes(self, chars: str) -> None:
+        """Track the DECSET private modes we care about in a stdout chunk.
+
+        Mouse tracking (1000) decides whether clicks/scroll go to the child;
+        bracketed paste (2004) decides how ``send_input`` frames text.
+        """
+        for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
+            sequence = sep_match.group(0)
+            if not sequence.startswith(DECSET_PREFIX):
+                continue
+            body = sequence.removeprefix(DECSET_PREFIX)
+            action = body[-1:]
+            if action not in ("h", "l"):
+                continue
+            enabled = action == "h"
+            # Only the last parameter carries the final byte: "1000;1006h"
+            # → ["1000", "1006"].
+            modes = body[:-1].split(";")
+            if "1000" in modes:
+                self.mouse_tracking = enabled
+            if "2004" in modes:
+                self.bracketed_paste = enabled
 
     # ------------------------------------------------------------------
     # Hooks for subclasses
@@ -553,6 +629,61 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         return self._detect_color(color)
 
     # ------------------------------------------------------------------
+    # Programmatic input
+    # ------------------------------------------------------------------
+
+    def frame_input(self, text: str) -> str:
+        """Frame ``text`` the way a terminal delivers content, not keystrokes.
+
+        Wrapped in bracketed-paste markers when the child has enabled DECSET
+        2004, which is what stops an embedded control character (in practice
+        the submit CR that follows) from being swallowed into the same text
+        run. Exposed for tests.
+        """
+        # Content newlines are LF. A CR left in the body reads as Enter to any
+        # child that does parse it as a key, which would submit half a message.
+        body = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not self.bracketed_paste:
+            return body
+        # A literal end marker inside the payload would close the paste early
+        # and let the remainder be parsed as keypresses.
+        body = body.replace(BRACKETED_PASTE_END, "")
+        return BRACKETED_PASTE_START + body + BRACKETED_PASTE_END
+
+    async def send_input(self, text: str, *, submit: bool = False) -> None:
+        """Write ``text`` into the child, optionally pressing Enter after it.
+
+        The payload and the submit key are always separate writes, and the
+        submit key is held back until the child has acknowledged the payload
+        (see ``_await_child_ack``). Two writes alone would not be enough — the
+        tty input buffer coalesces back-to-back writes into a single read on
+        the child side.
+        """
+        if self.emulator is None or self.send_queue is None:
+            raise RuntimeError("terminal is not running")
+
+        # Cleared before the write so only output produced *after* it counts
+        # as an acknowledgement.
+        self._output_event.clear()
+        await self.send_queue.put(["stdin", self.frame_input(text)])
+
+        if not submit:
+            return
+
+        await self._await_child_ack()
+        await self.send_queue.put(["stdin", SUBMIT_KEY])
+
+    async def _await_child_ack(self) -> None:
+        """Wait (briefly, and bounded) for the child to react to our write."""
+        try:
+            await asyncio.wait_for(self._output_event.wait(), SUBMIT_ACK_TIMEOUT)
+        except asyncio.TimeoutError:
+            # Silent child — submit anyway rather than drop the instruction.
+            pass
+        if SUBMIT_SETTLE_DELAY > 0:
+            await asyncio.sleep(SUBMIT_SETTLE_DELAY)
+
+    # ------------------------------------------------------------------
     # Input handling
     # ------------------------------------------------------------------
 
@@ -589,7 +720,9 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if self.emulator is None:
             return
         if event.text:
-            await self.send_queue.put(["stdin", event.text])
+            # Re-frame as a paste for the child; it asked for the markers, and
+            # forwarding raw text lets embedded newlines act as keypresses.
+            await self.send_queue.put(["stdin", self.frame_input(event.text)])
         event.stop()
 
     async def on_click(self, event: events.Click) -> None:

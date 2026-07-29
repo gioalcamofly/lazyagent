@@ -518,14 +518,18 @@ class IpcServer:
 
         agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
         terminal = panel.get_agent(agent_id)
-        if terminal is None or terminal.send_queue is None:
+        if (
+            terminal is None
+            or terminal.emulator is None
+            or terminal.send_queue is None
+        ):
             raise ValueError("Agent terminal is not ready")
 
-        # Append CR (\r) so the agent's TUI treats this as Enter/submit.
-        # Textual delivers Enter as event.character == "\r" in the UI key
-        # handler; LF would be interpreted as Shift+Enter (newline within
-        # the prompt) by Claude Code and most line-editing TUIs.
-        await terminal.send_queue.put(["stdin", text + "\r"])
+        # send_input, not a raw queue put: the text and the Enter that
+        # submits it have to reach the agent CLI as separate reads, or the
+        # CLI parses the trailing CR as a character inside the message and
+        # the prompt just sits there unsent.
+        await terminal.send_input(text, submit=True)
         return _ok(
             request_id,
             {"worktree_path": worktree_path, "agent_id": agent_id, "status": "sent"},
