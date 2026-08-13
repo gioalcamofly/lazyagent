@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Performance
+- Terminal panes render roughly 7x cheaper per frame: rows are run-length
+  encoded into styled segments instead of being built a character at a time,
+  and resolved styles are cached per pane
+- Scrollback now costs ~2.8 MB per terminal instead of ~91 MB at the 5000-line
+  default, and no longer holds GC-tracked objects. Full garbage collections
+  with six worktrees' worth of history drop from ~800 ms — a visible freeze of
+  the whole UI — to under 20 ms, and no longer grow with the number of
+  worktrees that have scrollback, idle or not
+- Terminal output parsing is ~3x faster for plain ASCII, which is most of it.
+  Each additional streaming agent now costs about a fifth of what it did, so
+  several busy worktrees no longer saturate a core
+
+### Fixed
+- A styled cell in the rightmost column of a terminal is no longer painted with
+  its left neighbour's style (visible as a box border or right-aligned badge
+  losing its colour)
+
 ## [0.6.0] - 2026-07-14
 
 ### Added
