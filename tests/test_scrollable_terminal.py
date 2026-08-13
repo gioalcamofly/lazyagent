@@ -106,6 +106,7 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
     terminal._cached_default_colors = None
+    terminal._style_cache = {}
     return terminal
 
 
@@ -142,6 +143,11 @@ class TestAfterStdoutProcessedHook:
         t._after_stdout_processed()  # Should not raise
 
 
+def _cells(strip) -> list[tuple[str, Style]]:
+    """Flatten a Strip into one (character, style) pair per rendered cell."""
+    return [(ch, segment.style) for segment in strip for ch in segment.text]
+
+
 class TestRowToStrip:
     def test_render_default_char_row(self):
         """Rendering a row of default chars produces a strip."""
@@ -157,6 +163,137 @@ class TestRowToStrip:
             strip = t._row_to_strip(row, 80)
             assert strip is not None
             assert strip.cell_length > 0
+
+    def test_row_is_run_length_encoded(self):
+        """Cells sharing a style collapse into a single segment."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[31mred\x1b[0mplain")
+
+        strip = t._row_to_strip(t._screen.buffer[0], 80)
+        segments = list(strip)
+
+        assert segments[0].text == "red"
+        assert segments[0].style.color.name == "red"
+        # "plain" plus the default-styled remainder of the row
+        assert segments[1].text.startswith("plain")
+        assert len(segments) == 2
+
+    def test_styles_match_source_chars(self):
+        """Every rendered cell carries the style of its own pyte Char."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[1;31ma\x1b[0m\x1b[4;32mb\x1b[0mc")
+
+        cells = _cells(t._row_to_strip(t._screen.buffer[0], 80))
+
+        assert cells[0][0] == "a"
+        assert cells[0][1].color.name == "red"
+        assert cells[0][1].bold is True
+        assert cells[1][0] == "b"
+        assert cells[1][1].color.name == "green"
+        assert cells[1][1].underline is True
+        assert cells[2][0] == "c"
+        assert cells[2][1].bold is not True
+
+    def test_cursor_style_overrides_char_style(self):
+        """The cursor cell keeps its char attributes but swaps fg/bg."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[1;31;44mabc")
+        t._screen.cursor.x = 1
+        t._screen.cursor.y = 0
+
+        cells = _cells(t._row_to_strip(t._screen.buffer[0], 80, show_cursor=True))
+
+        # Cursor is applied after character styles: fg/bg swapped, bold kept.
+        assert cells[1][0] == "b"
+        assert cells[1][1].color.name == "blue"
+        assert cells[1][1].bgcolor.name == "red"
+        assert cells[1][1].bold is True
+        # Neighbours are untouched
+        assert cells[0][1].color.name == "red"
+        assert cells[2][1].color.name == "red"
+
+    def test_cursor_at_last_column(self):
+        """A cursor on the final column still renders swapped."""
+        t = _make_scrollable_terminal()
+        t._screen.cursor.x = 79
+        t._screen.cursor.y = 0
+        t._cached_default_colors = ("white", "black")
+
+        cells = _cells(t._row_to_strip(t._screen.buffer[0], 80, show_cursor=True))
+
+        assert cells[79][1].color.name == "black"
+        assert cells[79][1].bgcolor.name == "white"
+
+    def test_selection_style_applied_over_char_style(self):
+        """Selected cells combine the selection style on top of char style."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[31mhello world")
+        t._cached_selection_style = Style(bgcolor="blue")
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(5, 0)
+        t._update_cached_selection()
+
+        cells = _cells(t._row_to_strip(t._screen.buffer[0], 80, virtual_y=0))
+
+        # Inside the selection: char fg preserved, selection bg applied
+        assert cells[0][1].color.name == "red"
+        assert cells[0][1].bgcolor.name == "blue"
+        assert cells[4][1].bgcolor.name == "blue"
+        # Outside the selection: untouched
+        assert cells[5][1].bgcolor.name == "default"
+
+    def test_selection_and_cursor_on_same_row(self):
+        """Selection wins over the cursor where they overlap, as before."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("hello")
+        t._cached_default_colors = ("white", "black")
+        t._cached_selection_style = Style(bgcolor="blue")
+        t._screen.cursor.x = 1
+        t._screen.cursor.y = 0
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(3, 0)
+        t._update_cached_selection()
+
+        cells = _cells(
+            t._row_to_strip(t._screen.buffer[0], 80, show_cursor=True, virtual_y=0)
+        )
+
+        # Cursor cell is inside the selection — selection bg is applied last
+        assert cells[1][1].bgcolor.name == "blue"
+        # ...but the cursor's fg swap survives (selection only sets bgcolor)
+        assert cells[1][1].color.name == "black"
+
+
+class TestStyleCache:
+    def test_style_is_memoized_per_key(self):
+        """The same style key resolves to the identical Style object."""
+        t = _make_scrollable_terminal()
+        c1 = Char("a", "red", "default", True, False, False, False, False, False)
+        c2 = Char("z", "red", "default", True, False, False, False, False, False)
+
+        assert t._char_rich_style(c1) is t._char_rich_style(c2)
+        assert len(t._style_cache) == 1
+
+    def test_notify_style_update_clears_style_cache(self):
+        """Theme changes drop cached styles alongside the other style state."""
+        t = _make_scrollable_terminal()
+        t._char_rich_style(Char("a", "red"))
+        assert t._style_cache
+
+        with patch.object(type(t).__mro__[1], "notify_style_update", lambda self: None):
+            t.notify_style_update()
+
+        assert t._style_cache == {}
+
+    def test_bad_color_falls_back_to_empty_style(self):
+        """A colour rich cannot parse degrades to a blank style, not a crash."""
+        t = _make_scrollable_terminal()
+        style = t._char_rich_style(Char("a", "not-a-color"))
+        assert style == Style()
 
 
 class TestStyleHelpers:
