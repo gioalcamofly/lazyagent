@@ -7,6 +7,7 @@ import sys
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual import work
 
@@ -24,6 +25,12 @@ from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
 from lazyagent.widgets.worktree_list import OrchestratorListItem, WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
+
+
+# How long the selection has to settle before we fetch its git status.
+# Scrolling the sidebar with j/k should not spawn a `git status` per worktree
+# passed through — only the one actually landed on.
+_GIT_STATUS_DEBOUNCE = 0.4
 
 
 class LazyAgent(App):
@@ -93,6 +100,7 @@ class LazyAgent(App):
         self._gh_available: bool | None = None
         self._ipc_server: IpcServer | None = None
         self._ipc_socket_path: str | None = None
+        self._git_status_debounce: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -219,6 +227,26 @@ class LazyAgent(App):
             return
         self.call_from_thread(self._apply_git_statuses, statuses)
 
+    def _cancel_git_status_debounce(self) -> None:
+        """Drop a pending selection-triggered git status fetch."""
+        if self._git_status_debounce is not None:
+            self._git_status_debounce.stop()
+            self._git_status_debounce = None
+
+    def _schedule_selected_git_status(self) -> None:
+        """Fetch the selected worktree's git status once the selection settles.
+
+        Debounced rather than immediate: scrolling the sidebar with j/k would
+        otherwise spawn a ``git status`` for every worktree passed through, and
+        those subprocesses are the expensive part. ``exclusive=True`` on the
+        worker cancels *waiting* on a superseded fetch but cannot stop a
+        subprocess already running, so the throttle has to happen here.
+        """
+        self._cancel_git_status_debounce()
+        self._git_status_debounce = self.set_timer(
+            _GIT_STATUS_DEBOUNCE, self._refresh_selected_git_status
+        )
+
     @work(thread=True, exclusive=True, group="git_status_selected")
     def _refresh_selected_git_status(self) -> None:
         """Fetch git status for the selected worktree only (runs in a thread).
@@ -314,6 +342,8 @@ class LazyAgent(App):
 
     async def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
         center = self.query_one(CenterPanel)
+        # Any move invalidates a fetch queued for the worktree we just left.
+        self._cancel_git_status_debounce()
         if event.item is not None and isinstance(event.item, OrchestratorListItem):
             self._orchestrator_selected = True
             self._selected_worktree = None
@@ -323,10 +353,11 @@ class LazyAgent(App):
             self._selected_worktree = event.item.worktree
             await center.switch_to(event.item.worktree.path)
             self._push_git_status_to_selected_panel()
-            # Show the cached badge immediately, then refresh it: the periodic
-            # poll only covers whichever worktree was selected at the time, so
-            # the one we just moved to may be holding a stale status.
-            self._refresh_selected_git_status()
+            # Show the cached badge immediately, then refresh it once the
+            # selection settles: the periodic poll only covers whichever
+            # worktree was selected at the time, so the one we just moved to
+            # may be holding a stale status.
+            self._schedule_selected_git_status()
             self._refresh_selected_diff()
             self._refresh_pr_status()
         else:
@@ -562,6 +593,8 @@ class LazyAgent(App):
         """Refresh git status for the selected worktree, nothing else."""
         if self._selected_worktree is None:
             return
+        # Explicit request — fire now, and drop any debounced fetch it obsoletes.
+        self._cancel_git_status_debounce()
         self._refresh_selected_git_status()
         self.notify("Refreshing git status…", timeout=2)
 

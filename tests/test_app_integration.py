@@ -16,7 +16,11 @@ from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeResult
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeResult
-from lazyagent.widgets.worktree_list import WorktreeList, WorktreeListItem
+from lazyagent.widgets.worktree_list import (
+    OrchestratorListItem,
+    WorktreeList,
+    WorktreeListItem,
+)
 
 
 MAIN_WORKTREE = WorktreeInfo(
@@ -508,3 +512,110 @@ class TestGitStatusRefresh:
             b for b in LazyAgent.BINDINGS
             if isinstance(b, Binding) and b.key == "alt+g"
         ).priority is True
+
+
+class TestGitStatusDebounce:
+    """Moving through the sidebar must not fetch status for every worktree."""
+
+    @pytest.mark.asyncio
+    async def test_passing_through_worktrees_only_polls_the_final_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        # Long window so it cannot fire mid-test: what matters is that passing
+        # through *queues* nothing, not how long the window happens to be.
+        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+
+        async with app.run_test():
+            await _drain_workers(app)
+            DummyWorktreeManager.calls.clear()
+
+            # Scroll past the first worktree and land on the second.
+            await _select_worktree(app, 0)
+            passed_through = app._git_status_debounce
+            final = await _select_worktree(app, 1)
+
+            # Neither worktree has been fetched yet...
+            assert _status_paths() == set()
+            # ...and the worktree we passed through had its pending fetch
+            # replaced rather than a second one queued alongside it.
+            assert passed_through is not None
+            assert app._git_status_debounce is not passed_through
+
+            # Firing what the timer would call fetches only where we landed.
+            app._refresh_selected_git_status()
+            await _drain_workers(app)
+
+        assert _status_paths() == {final.path}
+
+    @pytest.mark.asyncio
+    async def test_staying_on_a_worktree_polls_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The timer really does fire once the selection settles."""
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 0.05)
+        app = LazyAgent(repo_path="/repo")
+
+        async with app.run_test():
+            await _drain_workers(app)
+            DummyWorktreeManager.calls.clear()
+
+            wt = await _select_worktree(app, 1)
+            await asyncio.sleep(0.4)
+            await _drain_workers(app)
+
+        assert _status_paths() == {wt.path}
+
+    @pytest.mark.asyncio
+    async def test_leaving_for_the_orchestrator_cancels_the_pending_poll(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+
+        async with app.run_test():
+            await _drain_workers(app)
+            DummyWorktreeManager.calls.clear()
+
+            await _select_worktree(app, 1)
+            assert app._git_status_debounce is not None
+
+            worktree_list = app.query_one(WorktreeList)
+            orchestrator = next(
+                child for child in worktree_list.children
+                if isinstance(child, OrchestratorListItem)
+            )
+            await app.on_list_view_highlighted(
+                WorktreeList.Highlighted(worktree_list, orchestrator)
+            )
+
+            assert app._git_status_debounce is None
+            await _drain_workers(app)
+
+        assert _status_paths() == set()
+
+    @pytest.mark.asyncio
+    async def test_on_demand_refresh_is_not_debounced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Alt+G is an explicit request — it fires immediately."""
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+
+        async with app.run_test():
+            wt = await _select_worktree(app, 1)
+            await _drain_workers(app)
+            DummyWorktreeManager.calls.clear()
+            app.notify = MagicMock()
+
+            app.action_refresh_git_status()
+            await _drain_workers(app)
+
+            # Fired without waiting out the window...
+            assert _status_paths() == {wt.path}
+            # ...and dropped the pending selection-triggered fetch.
+            assert app._git_status_debounce is None

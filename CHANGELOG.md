@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now runs in a worker thread, polls only the selected worktree, and does so
   once a minute instead of twice. Every worktree still refreshes on `r`, on
   create/remove, and on MCP worktree changes
+- Scrolling the sidebar no longer fires a `git status` for every worktree
+  passed through — the selection-triggered refresh waits for the selection to
+  settle first
 
 ## [0.6.0] - 2026-07-14
 
