@@ -7,6 +7,7 @@ import sys
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual import work
 
@@ -24,6 +25,12 @@ from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
 from lazyagent.widgets.worktree_list import OrchestratorListItem, WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
+
+
+# How long the selection has to settle before we fetch its git status.
+# Scrolling the sidebar with j/k should not spawn a `git status` per worktree
+# passed through — only the one actually landed on.
+_GIT_STATUS_DEBOUNCE = 0.4
 
 
 class LazyAgent(App):
@@ -70,6 +77,10 @@ class LazyAgent(App):
         # bound as universal fallbacks that keep the modifier everywhere.
         Binding("alt+right_square_bracket,alt+n", "next_agent", "Next agent", priority=True),
         Binding("alt+left_square_bracket,alt+p", "prev_agent", "Prev agent", priority=True),
+        # Git status only — no worktree re-list. priority=True so it works
+        # while a terminal pane has focus, which is exactly when you want it
+        # (you just committed and want the badge to catch up).
+        Binding("alt+g", "refresh_git_status", "Git status", priority=True),
         Binding("question_mark", "help", "Help"),
     ]
 
@@ -89,6 +100,7 @@ class LazyAgent(App):
         self._gh_available: bool | None = None
         self._ipc_server: IpcServer | None = None
         self._ipc_socket_path: str | None = None
+        self._git_status_debounce: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -103,7 +115,12 @@ class LazyAgent(App):
         self._load_config()
         await self._start_ipc_server()
         self.set_interval(60, self._check_hangs)
-        self.set_interval(30, self._refresh_git_statuses)
+        # Only the selected worktree is polled, and only once a minute:
+        # `git status` walks the whole working tree, so sweeping every
+        # worktree on a timer costs seconds on a repo with many of them.
+        # The other worktrees refresh on the full rescan (`r`, create,
+        # remove, MCP), and Alt+G refreshes the selected one on demand.
+        self.set_interval(60, self._refresh_selected_git_status)
         self.set_interval(30, self._refresh_selected_diff)
         self.set_interval(60, self._refresh_pr_status)
 
@@ -190,17 +207,73 @@ class LazyAgent(App):
             return center.get_orchestrator_panel()
         return center.get_panel(key)
 
+    @work(thread=True, exclusive=True, group="git_status_all")
     def _refresh_git_statuses(self) -> None:
-        """Fetch git statuses for all worktrees and push to UI."""
-        if not self._repo_root or not self.worktrees:
+        """Fetch git status for every worktree (runs in a thread).
+
+        ``git status`` walks the whole working tree — on a repo with a couple
+        of dozen worktrees this sweep takes seconds, so it must never run on
+        the message pump. Only the full-rescan paths need it; the periodic
+        poll refreshes just the selected worktree.
+        """
+        repo_root = self._repo_root
+        worktrees = list(self.worktrees)
+        if not repo_root or not worktrees:
             return
         try:
-            manager = WorktreeManager(self._repo_root)
-            self._git_statuses = manager.get_all_git_statuses(self.worktrees)
+            manager = WorktreeManager(repo_root)
+            statuses = manager.get_all_git_statuses(worktrees)
         except WorktreeManagerError:
             return
+        self.call_from_thread(self._apply_git_statuses, statuses)
 
-        self.query_one(WorktreeList).update_all_git_statuses(self._git_statuses)
+    def _cancel_git_status_debounce(self) -> None:
+        """Drop a pending selection-triggered git status fetch."""
+        if self._git_status_debounce is not None:
+            self._git_status_debounce.stop()
+            self._git_status_debounce = None
+
+    def _schedule_selected_git_status(self) -> None:
+        """Fetch the selected worktree's git status once the selection settles.
+
+        Debounced rather than immediate: scrolling the sidebar with j/k would
+        otherwise spawn a ``git status`` for every worktree passed through, and
+        those subprocesses are the expensive part. ``exclusive=True`` on the
+        worker cancels *waiting* on a superseded fetch but cannot stop a
+        subprocess already running, so the throttle has to happen here.
+        """
+        self._cancel_git_status_debounce()
+        self._git_status_debounce = self.set_timer(
+            _GIT_STATUS_DEBOUNCE, self._refresh_selected_git_status
+        )
+
+    @work(thread=True, exclusive=True, group="git_status_selected")
+    def _refresh_selected_git_status(self) -> None:
+        """Fetch git status for the selected worktree only (runs in a thread).
+
+        ``exclusive=True`` drops an in-flight fetch when the selection moves
+        or the user asks again — only the current worktree's answer matters.
+        """
+        repo_root = self._repo_root
+        wt = self._selected_worktree
+        if not repo_root or wt is None or wt.is_bare:
+            return
+        try:
+            manager = WorktreeManager(repo_root)
+            status = manager.get_git_status(wt.path)
+            status.last_commit_subject = manager.get_last_commit_subject(wt.path)
+        except WorktreeManagerError:
+            return
+        self.call_from_thread(self._apply_git_statuses, {wt.path: status})
+
+    def _apply_git_statuses(self, statuses: dict[str, GitStatus]) -> None:
+        """Merge fetched statuses into the cache and UI — runs on the main thread.
+
+        Merges rather than replaces: a selected-worktree refresh must not drop
+        the statuses the last full sweep collected for the others.
+        """
+        self._git_statuses.update(statuses)
+        self.query_one(WorktreeList).update_all_git_statuses(statuses)
         self._push_git_status_to_selected_panel()
 
     def _push_git_status_to_selected_panel(self) -> None:
@@ -269,6 +342,8 @@ class LazyAgent(App):
 
     async def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
         center = self.query_one(CenterPanel)
+        # Any move invalidates a fetch queued for the worktree we just left.
+        self._cancel_git_status_debounce()
         if event.item is not None and isinstance(event.item, OrchestratorListItem):
             self._orchestrator_selected = True
             self._selected_worktree = None
@@ -278,6 +353,11 @@ class LazyAgent(App):
             self._selected_worktree = event.item.worktree
             await center.switch_to(event.item.worktree.path)
             self._push_git_status_to_selected_panel()
+            # Show the cached badge immediately, then refresh it once the
+            # selection settles: the periodic poll only covers whichever
+            # worktree was selected at the time, so the one we just moved to
+            # may be holding a stale status.
+            self._schedule_selected_git_status()
             self._refresh_selected_diff()
             self._refresh_pr_status()
         else:
@@ -508,6 +588,15 @@ class LazyAgent(App):
     def action_refresh(self) -> None:
         self._load_worktrees()
         self.notify("Refreshed worktrees")
+
+    def action_refresh_git_status(self) -> None:
+        """Refresh git status for the selected worktree, nothing else."""
+        if self._selected_worktree is None:
+            return
+        # Explicit request — fire now, and drop any debounced fetch it obsoletes.
+        self._cancel_git_status_debounce()
+        self._refresh_selected_git_status()
+        self.notify("Refreshing git status…", timeout=2)
 
     def action_create_worktree(self) -> None:
         def on_modal_dismiss(result: CreateWorktreeResult | None) -> None:
