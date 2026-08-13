@@ -396,6 +396,39 @@ class TestReadAgentOutput:
         result = await server._dispatch("req-1", "read_agent_output", {"worktree_path": "/tmp/repo"})
         assert "error" in result
 
+    @pytest.mark.asyncio
+    async def test_returns_scrollback_and_live_lines(self):
+        """Output spans scrollback history and the live screen, oldest first."""
+        import pyte
+        from lazyagent.widgets.scrollable_terminal import ScrollbackScreen
+
+        screen = ScrollbackScreen(40, 4)
+        stream = pyte.Stream(screen)
+        for i in range(12):
+            stream.feed(f"line {i}\r\n")
+        assert len(screen.scrollback) > 0  # some lines scrolled off
+
+        terminal = MagicMock()
+        terminal._screen = screen
+        panel = MagicMock()
+        panel.agent_ids = ["a1"]
+        panel.get_agent.return_value = terminal
+
+        app = _make_app()
+        mock_center = MagicMock()
+        mock_center.get_panel.return_value = panel
+        app.query_one.return_value = mock_center
+
+        server = IpcServer(app, "/tmp/test.sock")
+        result = await server._dispatch(
+            "req-1", "read_agent_output", {"worktree_path": "/tmp/repo", "lines": 6}
+        )
+
+        lines = result["result"]["lines"]
+        # The trailing "\r\n" leaves the cursor on a blank final row.
+        assert lines == ["line 7", "line 8", "line 9", "line 10", "line 11", ""]
+        assert result["result"]["total_lines"] == len(screen.scrollback) + 4
+
 
 class TestDispatch:
     @pytest.mark.asyncio

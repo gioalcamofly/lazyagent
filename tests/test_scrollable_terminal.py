@@ -1,6 +1,7 @@
 """Tests for ScrollbackScreen and ScrollableTerminal."""
 from __future__ import annotations
 
+import gc
 from unittest.mock import MagicMock, patch
 
 import pyte
@@ -27,11 +28,7 @@ class TestScrollbackScreen:
 
         # First line ("line 0") should be in scrollback
         assert len(screen.scrollback) >= 1
-        first_line = "".join(
-            screen.scrollback[0].get(x, screen.default_char).data
-            for x in range(80)
-        ).rstrip()
-        assert first_line.startswith("line 0")
+        assert screen.scrollback_text(0).startswith("line 0")
 
     def test_index_no_capture_when_not_at_bottom(self):
         """No scrollback capture when cursor isn't at the bottom margin."""
@@ -76,6 +73,114 @@ class TestScrollbackScreen:
         screen = ScrollbackScreen(80, 24)
         # Should not raise
         screen.set_margins(0, 23, private=True)
+
+    def test_oldest_line_is_evicted_first(self):
+        """Eviction is FIFO — the surviving lines are the most recent ones."""
+        screen = ScrollbackScreen(80, 2, max_scrollback=3)
+        stream = pyte.Stream(screen)
+
+        for i in range(8):
+            stream.feed(f"line {i}\r\n")
+
+        texts = [screen.scrollback_text(i) for i in range(len(screen.scrollback))]
+        assert texts == ["line 4", "line 5", "line 6"]
+
+
+class TestScrollbackEncoding:
+    """The compact ``(text, runs)`` representation of scrolled-off lines."""
+
+    @staticmethod
+    def _screen_with(*feeds: str, columns: int = 20) -> ScrollbackScreen:
+        """Feed lines through a 2-row screen so the first one scrolls off."""
+        screen = ScrollbackScreen(columns, 2)
+        stream = pyte.Stream(screen)
+        for chunk in feeds:
+            stream.feed(chunk)
+        return screen
+
+    def test_round_trip_text_and_styles(self):
+        """Text and per-run styles survive the trip into scrollback."""
+        screen = self._screen_with("\x1b[31mred\x1b[0m plain\r\n", "second\r\n")
+
+        text, runs = screen.scrollback[0]
+        assert text == "red plain"
+        assert [(start, end) for start, end, _ in runs] == [(0, 3), (3, 9)]
+        assert runs[0][2][0] == "red"  # fg of the styled run
+        assert runs[1][2][0] == "default"
+
+    def test_attributes_round_trip(self):
+        """Bold/underline/reverse and background survive too."""
+        screen = self._screen_with("\x1b[1;4;7;44mx\r\n", "second\r\n")
+
+        _, runs = screen.scrollback[0]
+        fg, bg, bold, italics, underscore, _strike, reverse, _blink = runs[0][2][:8]
+        assert (bg, bold, underscore, reverse) == ("blue", True, True, True)
+
+    def test_trailing_blanks_are_dropped(self):
+        """Unwritten/blank tail cells are not stored — the renderer re-pads."""
+        screen = self._screen_with("hi\r\n", "second\r\n")
+
+        text, runs = screen.scrollback[0]
+        assert text == "hi"
+        assert len(runs) == 1
+
+    def test_gaps_are_filled_with_default_cells(self):
+        """A cursor jump leaves unwritten cells; they encode as default blanks."""
+        screen = self._screen_with("a\x1b[1;5Hb\r\n", "second\r\n")
+
+        text, _ = screen.scrollback[0]
+        assert text == "a   b"
+
+    def test_blank_line_encodes_empty(self):
+        """A line with nothing on it costs a bare empty entry."""
+        screen = self._screen_with("\r\n", "second\r\n")
+        assert screen.scrollback[0] == ("", ())
+
+    def test_scrollback_entries_are_gc_untracked(self):
+        """Scrollback must never hold GC-tracked containers.
+
+        pyte's ``Char`` is a NamedTuple *subclass*, and CPython only untracks
+        tuples that pass ``PyTuple_CheckExact`` — so storing Chars keeps every
+        cell in scrollback tracked forever, and each gen2 collection walks all
+        of them (measured: ~560 ms pauses with six full terminals).  Plain
+        tuples of primitives get untracked and cost nothing.
+
+        This asserts the property, not the implementation: swapping the tuples
+        for a NamedTuple or dataclass "for readability" would reintroduce the
+        pauses silently, and this test is what catches it.
+        """
+        screen = ScrollbackScreen(40, 2)
+        stream = pyte.Stream(screen)
+        for i in range(30):
+            stream.feed(f"\x1b[3{i % 8}mline {i}\x1b[0m\r\n")
+        assert len(screen.scrollback) > 10
+
+        # Untracking cascades one nesting level per collection (a tuple is
+        # only untracked once its items already are), so collect a few times.
+        for _ in range(4):
+            gc.collect()
+
+        for entry in screen.scrollback:
+            assert not gc.is_tracked(entry)
+            text, runs = entry
+            assert not gc.is_tracked(runs)
+            for run in runs:
+                assert not gc.is_tracked(run)
+                assert not gc.is_tracked(run[2])
+                # Exact tuples only — a subclass would never untrack.
+                assert type(run) is tuple
+                assert type(run[2]) is tuple
+
+    def test_style_keys_are_interned(self):
+        """Lines sharing a style share one key tuple, not one per line."""
+        screen = ScrollbackScreen(40, 2)
+        stream = pyte.Stream(screen)
+        for i in range(20):
+            stream.feed(f"\x1b[31mline {i}\x1b[0m\r\n")
+
+        keys = {id(run[2]) for _, runs in screen.scrollback for run in runs}
+        assert len(keys) == len(screen._style_key_intern)
+        assert len(keys) <= 2  # "red" and the default trailing style
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +371,55 @@ class TestRowToStrip:
         assert cells[1][1].bgcolor.name == "blue"
         # ...but the cursor's fg swap survives (selection only sets bgcolor)
         assert cells[1][1].color.name == "black"
+
+
+class TestRenderScrollbackLine:
+    def test_matches_live_screen_rendering(self):
+        """A line renders the same before and after it scrolls off."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[1;31mred\x1b[0m \x1b[4;32mgreen\x1b[0m tail")
+
+        live = _cells(t._row_to_strip(t._screen.buffer[0], 80))
+
+        # Push the line into scrollback
+        for _ in range(6):
+            t.stream.feed("\r\n")
+        assert t._screen.scrollback_text(0) == "red green tail"
+
+        scrolled = _cells(t._render_scrollback_line(0, 80, -1))
+        assert scrolled == live
+
+    def test_short_line_is_padded_to_full_width(self):
+        """Dropped trailing blanks come back as default-styled padding."""
+        t = _make_scrollable_terminal()
+        t.stream.feed("hi")
+        for _ in range(6):
+            t.stream.feed("\r\n")
+
+        cells = _cells(t._render_scrollback_line(0, 80, -1))
+        assert len(cells) == 80
+        assert "".join(ch for ch, _ in cells).rstrip() == "hi"
+        assert cells[40][1] == t._char_rich_style(t._screen.default_char)
+
+    def test_selection_highlights_scrollback_line(self):
+        """Selection spans apply to scrollback rows as well as live ones."""
+        from textual.geometry import Offset
+
+        t = _make_scrollable_terminal()
+        t.stream.feed("\x1b[31mhello world")
+        for _ in range(6):
+            t.stream.feed("\r\n")
+        t._cached_selection_style = Style(bgcolor="blue")
+        t._sel_start = Offset(0, 0)
+        t._sel_end = Offset(5, 0)
+        t._update_cached_selection()
+
+        cells = _cells(t._render_scrollback_line(0, 80, 0))
+
+        assert cells[0][1].color.name == "red"
+        assert cells[0][1].bgcolor.name == "blue"
+        assert cells[4][1].bgcolor.name == "blue"
+        assert cells[5][1].bgcolor.name != "blue"
 
 
 class TestStyleCache:
@@ -557,43 +711,40 @@ class TestResolvedDefaultColors:
 
 
 # ---------------------------------------------------------------------------
-# _get_row_at tests
+# line_text tests
 # ---------------------------------------------------------------------------
 
 
-class TestGetRowAt:
+class TestLineText:
     def test_returns_screen_buffer_row(self):
-        """_get_row_at returns a screen buffer row when no scrollback."""
+        """line_text returns a screen buffer row when no scrollback."""
         t = _make_scrollable_terminal()
         t.stream.feed("hello")
-        row = t._get_row_at(0)
-        text = "".join(
-            row.get(x, t._screen.default_char).data for x in range(5)
-        )
-        assert text == "hello"
+        assert t._screen.line_text(0) == "hello"
 
     def test_returns_scrollback_row(self):
-        """_get_row_at returns a scrollback row for indices within scrollback."""
+        """line_text returns a scrollback row for indices within scrollback."""
         t = _make_scrollable_terminal()
         for i in range(10):
             t.stream.feed(f"line {i}\n")
-        scrollback_len = len(t._screen.scrollback)
-        assert scrollback_len > 0
-        row = t._get_row_at(0)
-        text = "".join(
-            row.get(x, t._screen.default_char).data for x in range(6)
-        ).rstrip()
-        assert text.startswith("line")
+        assert len(t._screen.scrollback) > 0
+        assert t._screen.line_text(0) == "line 0"
 
     def test_returns_screen_row_after_scrollback(self):
-        """_get_row_at returns screen row for indices past scrollback."""
+        """line_text returns a screen row for indices past scrollback."""
         t = _make_scrollable_terminal()
         for i in range(10):
             t.stream.feed(f"line {i}\n")
         scrollback_len = len(t._screen.scrollback)
         # First screen row is at virtual_y == scrollback_len
-        row = t._get_row_at(scrollback_len)
-        assert row is t._screen.buffer[0]
+        assert t._screen.line_text(scrollback_len) == t._screen.screen_text(0)
+
+    def test_trailing_whitespace_is_stripped(self):
+        """Both halves strip trailing blanks, as the old row→text did."""
+        t = _make_scrollable_terminal()
+        for i in range(10):
+            t.stream.feed(f"line {i}   \n")
+        assert t._screen.line_text(0) == "line 0"
 
 
 # ---------------------------------------------------------------------------
