@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `Alt+G` refreshes the git status of the selected worktree on demand, without
+  re-listing worktrees the way `r` does
+
+### Fixed
+- The periodic git-status refresh no longer freezes the UI. It ran `git status`
+  for *every* worktree, serially, on the message pump — about three seconds of
+  a completely unresponsive app twice a minute on a repo with 22 worktrees. It
+  now runs in a worker thread, polls only the selected worktree, and does so
+  once a minute instead of twice. Every worktree still refreshes on `r`, on
+  create/remove, and on MCP worktree changes
+
 ## [0.6.0] - 2026-07-14
 
 ### Added
