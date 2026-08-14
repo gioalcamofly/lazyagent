@@ -204,6 +204,39 @@ uv sync --group dev
 uv run pytest
 ```
 
+### Diagnostic logging
+
+Off by default. To capture a trace of a freeze or of general lag:
+
+```bash
+LAZYAGENT_LOG=1 lazyagent              # lifecycle, timers, workers,
+                                       # subprocesses, spawn path, watchdog
+LAZYAGENT_LOG_LEVEL=debug lazyagent    # ...plus per-chunk terminal traces
+```
+
+The log is JSON lines — one object per event, each with a millisecond
+timestamp, level, logger, thread, and a `duration_ms` where something was
+timed. It goes to `$XDG_STATE_HOME/lazyagent/lazyagent.log`
+(`~/.local/state/lazyagent/` by default), rotated at 5 MB with 3 backups.
+
+| Variable | Effect |
+|---|---|
+| `LAZYAGENT_LOG` | `1` to enable, or a level name (`debug`, `info`, …) |
+| `LAZYAGENT_LOG_LEVEL` | Level, overriding the above |
+| `LAZYAGENT_LOG_FILE` | Write somewhere else (also enables logging) |
+| `LAZYAGENT_LOG_WATCHDOG_MS` | Event-loop stall threshold, default `100` |
+
+The watchdog is the useful part when the UI freezes: a thread outside the event
+loop notices when the loop stops responding and records `loop.blocked` with a
+stack snapshot of what the main thread was doing *while it was still stuck*.
+
+Aggregating afterwards, e.g. the slowest subprocesses:
+
+```bash
+jq -r 'select(.event=="subprocess") | [.duration_ms, .cmd] | @tsv' \
+  ~/.local/state/lazyagent/lazyagent.log | sort -rn | head
+```
+
 ## Acknowledgements
 
 - [lazygit](https://github.com/jesseduffield/lazygit) — the inspiration for the UX and workflow

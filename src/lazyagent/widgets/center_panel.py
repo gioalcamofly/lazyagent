@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shlex
 
 from rich.text import Text
 from textual.containers import Container, VerticalScroll
 from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
+from lazyagent import diagnostics as diag
 from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
     ResumeMode,
@@ -18,6 +20,8 @@ from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY, OrchestratorPanel
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
+
+log = logging.getLogger(__name__)
 
 
 def _panel_id(worktree_path: str) -> str:
@@ -175,23 +179,26 @@ class WorktreePanel(Container):
 
     def _try_start_terminal(self) -> None:
         """Try to mount a real terminal widget."""
-        try:
-            placeholder = self.query_one("#terminal-placeholder", Static)
-            pane = self.query_one("#terminal-pane", Container)
-            placeholder.remove()
-            script = (
-                f"{env_exports()}"
-                f" && cd {shlex.quote(self.worktree_path)}"
-                f" && exec bash -l"
-            )
-            terminal = ScrollableTerminal(
-                command=f"bash -c {shlex.quote(script)}",
-                id="terminal-widget",
-            )
-            pane.mount(terminal)
-            terminal.start()
-        except Exception:
-            pass
+        # Every worktree ever visited leaves one of these shells alive, so this
+        # is traced per worktree to make that population visible in the log.
+        with diag.timed(log, "panel.start_shell", worktree=self.worktree_path):
+            try:
+                placeholder = self.query_one("#terminal-placeholder", Static)
+                pane = self.query_one("#terminal-pane", Container)
+                placeholder.remove()
+                script = (
+                    f"{env_exports()}"
+                    f" && cd {shlex.quote(self.worktree_path)}"
+                    f" && exec bash -l"
+                )
+                terminal = ScrollableTerminal(
+                    command=f"bash -c {shlex.quote(script)}",
+                    id="terminal-widget",
+                )
+                pane.mount(terminal)
+                terminal.start()
+            except Exception:
+                pass
 
     def update_git_status(self, git_status: GitStatus, branch: str) -> None:
         """Update the git info bar for this panel."""
@@ -321,8 +328,14 @@ class WorktreePanel(Container):
         socket_path: str | None = None,
         instruction: str | None = None,
         label: str | None = None,
+        _diag_spawn_id: str = "",
     ) -> str:
-        """Spawn a new coding agent in its own tab. Returns the new agent id."""
+        """Spawn a new coding agent in its own tab. Returns the new agent id.
+
+        ``_diag_spawn_id`` is diagnostics-only: it carries the correlation id
+        from the keypress that started this spawn, and has no effect on what
+        gets spawned.
+        """
         tabs = self.query_one("#agent-tabs", TabbedContent)
 
         # First agent: drop the "press s to spawn" placeholder tab.
@@ -336,9 +349,18 @@ class WorktreePanel(Container):
         self._labels[agent_id] = tab_label
 
         provider = get_agent_provider(agent_provider)
-        runtime_context = provider.build_runtime_context(
-            self.worktree_path, socket_path=socket_path
-        )
+        # build_runtime_context touches the filesystem for some providers
+        # (hook scripts, settings files), so it is timed separately.
+        with diag.timed(
+            log,
+            "spawn.build_runtime_context",
+            spawn_id=_diag_spawn_id,
+            provider=agent_provider,
+            worktree=self.worktree_path,
+        ):
+            runtime_context = provider.build_runtime_context(
+                self.worktree_path, socket_path=socket_path
+            )
         command = provider.build_command(
             self.worktree_path,
             skip_permissions=skip_permissions,
@@ -347,21 +369,28 @@ class WorktreePanel(Container):
             instruction=instruction,
         )
 
-        terminal = MonitoredTerminal(
-            command=command,
-            worktree_path=self.worktree_path,
-            observer=provider.create_observer_from_context(runtime_context),
-            agent_id=agent_id,
-            id=_agent_terminal_id(agent_id),
-        )
-        self._agents[agent_id] = terminal
-        pane = TabPane(tab_label, terminal, id=_agent_tab_id(agent_id))
-        await tabs.add_pane(pane, before=_DIFF_TAB_ID)
+        with diag.timed(
+            log, "spawn.mount_pane", spawn_id=_diag_spawn_id, agent_id=agent_id
+        ):
+            terminal = MonitoredTerminal(
+                command=command,
+                worktree_path=self.worktree_path,
+                observer=provider.create_observer_from_context(runtime_context),
+                agent_id=agent_id,
+                id=_agent_terminal_id(agent_id),
+            )
+            terminal._diag_spawn_id = _diag_spawn_id
+            self._agents[agent_id] = terminal
+            pane = TabPane(tab_label, terminal, id=_agent_tab_id(agent_id))
+            await tabs.add_pane(pane, before=_DIFF_TAB_ID)
         terminal.start()
 
         # Make the new agent's tab active and focus its terminal.
-        tabs.active = _agent_tab_id(agent_id)
-        terminal.focus()
+        with diag.timed(
+            log, "spawn.activate_tab", spawn_id=_diag_spawn_id, agent_id=agent_id
+        ):
+            tabs.active = _agent_tab_id(agent_id)
+            terminal.focus()
         return agent_id
 
 
@@ -417,17 +446,29 @@ class CenterPanel(Container):
         if existing is not None:
             return existing  # type: ignore[return-value]
 
-        panel_id = _panel_id(worktree_path)
-        panel = WorktreePanel(worktree_path, id=panel_id)
-        self._panels[worktree_path] = panel
-        switcher = self.query_one("#panel-switcher", ContentSwitcher)
-        await switcher.add_content(panel, id=panel_id)
+        # First visit to this worktree: mounting the panel also starts its
+        # shell. `panels` says how many are alive by now.
+        with diag.timed(log, "panel.create", worktree=worktree_path) as span:
+            panel_id = _panel_id(worktree_path)
+            panel = WorktreePanel(worktree_path, id=panel_id)
+            self._panels[worktree_path] = panel
+            switcher = self.query_one("#panel-switcher", ContentSwitcher)
+            await switcher.add_content(panel, id=panel_id)
+            span["panels"] = len(self._panels)
         return panel
 
     async def switch_to(self, worktree_path: str) -> WorktreePanel:
         """Switch the visible panel to the given worktree (creating if needed)."""
         panel = await self.ensure_panel(worktree_path)
-        self._activate_panel(worktree_path)
+        # Flipping the ContentSwitcher re-lays-out the center pane; `panels` is
+        # here to show whether that cost grows with the number of live panels.
+        with diag.timed(
+            log,
+            "panel.activate",
+            worktree=worktree_path,
+            panels=len(self._panels),
+        ):
+            self._activate_panel(worktree_path)
         return panel
 
     def get_panel(self, worktree_path: str) -> WorktreePanel | None:
