@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   git/`gh` subprocess with its duration, sidebar selection changes, panel and
   shell creation, the whole spawn path from `Ctrl+J` to the agent's first byte
   of output, and PTY start/stop. `LAZYAGENT_LOG_LEVEL=debug` adds the per-chunk
-  terminal traces (feed, render, and screen-scan durations). A watchdog logs a
+  terminal traces: feed, render and screen-scan durations, plus which repaint
+  path each chunk took and over how many rows. A watchdog logs a
   warning with a stack snapshot whenever the event loop stops responding for
   more than 100 ms, which is the trace that names whatever froze the UI.
   Output is JSON lines at `$XDG_STATE_HOME/lazyagent/lazyagent.log`, rotated at

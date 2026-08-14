@@ -286,6 +286,8 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._diag_chars: int = 0
         self._diag_render_s: float = 0.0
         self._diag_render_lines: int = 0
+        self._diag_repaint: str = ""
+        self._diag_dirty_rows: int = 0
 
         # Widget-local text selection (replaces Textual's cross-widget system)
         self._sel_start: Offset | None = None
@@ -499,7 +501,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                         if diag.HOT:
                             # `render_*` is whatever render_line() cost since
                             # the last chunk — the actual painting happens on
-                            # Textual's frame, not inside this handler.
+                            # Textual's frame, not inside this handler, so it
+                            # is attributed to the chunk that dirtied the rows.
+                            # `repaint`/`dirty_rows` say which repaint path
+                            # this chunk took and over how many rows.
                             diag.debug_event(
                                 _log,
                                 "term.chunk",
@@ -511,6 +516,8 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                                 ),
                                 render_ms=round(self._diag_render_s * 1000, 3),
                                 render_lines=self._diag_render_lines,
+                                repaint=self._diag_repaint,
+                                dirty_rows=self._diag_dirty_rows,
                             )
                             self._diag_render_s = 0.0
                             self._diag_render_lines = 0
@@ -620,6 +627,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._last_scrollback_len = scrollback_len
             self._last_cursor = cursor_state
             dirty.clear()
+            self._diag_repaint = "full:scrolled"
             self.refresh()
             return
 
@@ -630,13 +638,21 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             dirty.add(cursor_state[0])
             self._last_cursor = cursor_state
 
+        # Which branch this took, and over how many rows, is the interesting
+        # part of the trace — recorded unconditionally because it is two
+        # attribute stores and no formatting. Emitting it is still gated on
+        # diag.HOT, in recv().
+        self._diag_dirty_rows = len(dirty)
+
         if not dirty:
+            self._diag_repaint = "none"
             return
 
         # Past a certain fraction, one whole-widget repaint beats a pile of
         # single-line regions.
         if len(dirty) * 2 >= screen.lines:
             dirty.clear()
+            self._diag_repaint = "full:threshold"
             self.refresh()
             return
 
@@ -644,12 +660,16 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         # off-viewport row still schedules a repaint pass for nothing.
         top = self.scroll_offset.y
         bottom = top + self.scrollable_content_region.height
+        onscreen = 0
         for screen_y in dirty:
             virtual_y = scrollback_len + screen_y
             if top <= virtual_y < bottom:
                 # refresh_line takes a virtual row and subtracts scroll itself.
                 self.refresh_line(virtual_y)
+                onscreen += 1
         dirty.clear()
+        self._diag_repaint = "partial"
+        self._diag_dirty_rows = onscreen
 
     def _sync_dirty_state(self) -> None:
         """Re-baseline partial-repaint bookkeeping after a full repaint."""
