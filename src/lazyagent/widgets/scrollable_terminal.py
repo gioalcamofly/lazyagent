@@ -24,7 +24,7 @@ from rich.segment import Segment
 from rich.style import Style
 
 from textual import events, log
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
@@ -286,6 +286,15 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         # style key (see _style_key) → rich.Style, invalidated on theme change
         self._style_cache: dict[tuple, Style] = {}
 
+        # Partial-repaint bookkeeping (see _refresh_dirty_rows). pyte does not
+        # track the cursor in Screen.dirty, and a scroll invalidates every row.
+        self._last_cursor: tuple[int, int, bool] = (0, 0, False)
+        self._last_scrollback_len: int = 0
+
+        # Per-render-pass hoists (see render_lines). None/-1 when not rendering.
+        self._frame_style: Style | None = None
+        self._frame_width: int = -1
+
         # Key translation table (same as textual-terminal)
         self.ctrl_keys = {
             "up": "\x1bOA",
@@ -418,7 +427,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                             log.warning("could not feed:", error)
 
                         self._update_virtual_size()
-                        self.refresh()
+                        self._refresh_dirty_rows()
                         if was_at_bottom:
                             self.scroll_end(
                                 animate=False, immediate=True, x_axis=False
@@ -486,6 +495,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         def _restore() -> None:
             self._update_virtual_size()
             self.refresh()
+            self._sync_dirty_state()
             if self._follow_output:
                 self.scroll_end(animate=False, immediate=True, x_axis=False)
 
@@ -502,9 +512,90 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         total_lines = len(self._screen.scrollback) + self._screen.lines
         self.virtual_size = Size(self.ncol, total_lines)
 
+    def _refresh_dirty_rows(self) -> None:
+        """Repaint only the screen rows the last feed actually changed.
+
+        A bare ``refresh()`` clears Textual's per-line strip cache, so every
+        visible row is re-rendered. Agents overwhelmingly emit tiny chunks — a
+        spinner tick, a few streamed tokens — and a real session measured 95%
+        of chunks at under 100 characters, each triggering a full repaint of
+        36 rows. Rendering was 43s against 1.2s of parsing.
+
+        pyte already records which rows changed in ``Screen.dirty``; it is the
+        consumer's job to read and clear it.
+        """
+        screen = self._screen
+        dirty = screen.dirty
+        cursor = screen.cursor
+        # x matters as much as y: the cursor is drawn as a block on one cell,
+        # so sliding it along a row leaves the old cell painted unless that row
+        # is redrawn.
+        cursor_state = (cursor.y, cursor.x, cursor.hidden)
+        scrollback_len = len(screen.scrollback)
+
+        # A scroll shifts every virtual row, so nothing cached is reusable.
+        if scrollback_len != self._last_scrollback_len:
+            self._last_scrollback_len = scrollback_len
+            self._last_cursor = cursor_state
+            dirty.clear()
+            self.refresh()
+            return
+
+        # pyte does not mark a row dirty when only the cursor moved, so both
+        # the row it left and the row it arrived on have to be redrawn.
+        if cursor_state != self._last_cursor:
+            dirty.add(self._last_cursor[0])
+            dirty.add(cursor_state[0])
+            self._last_cursor = cursor_state
+
+        if not dirty:
+            return
+
+        # Past a certain fraction, one whole-widget repaint beats a pile of
+        # single-line regions.
+        if len(dirty) * 2 >= screen.lines:
+            dirty.clear()
+            self.refresh()
+            return
+
+        # Only rows actually on screen are worth a region; refreshing an
+        # off-viewport row still schedules a repaint pass for nothing.
+        top = self.scroll_offset.y
+        bottom = top + self.scrollable_content_region.height
+        for screen_y in dirty:
+            virtual_y = scrollback_len + screen_y
+            if top <= virtual_y < bottom:
+                # refresh_line takes a virtual row and subtracts scroll itself.
+                self.refresh_line(virtual_y)
+        dirty.clear()
+
+    def _sync_dirty_state(self) -> None:
+        """Re-baseline partial-repaint bookkeeping after a full repaint."""
+        screen = self._screen
+        screen.dirty.clear()
+        self._last_cursor = (screen.cursor.y, screen.cursor.x, screen.cursor.hidden)
+        self._last_scrollback_len = len(screen.scrollback)
+
     # ------------------------------------------------------------------
     # Line API rendering
     # ------------------------------------------------------------------
+
+    def render_lines(self, crop: Region) -> list[Strip]:
+        """Render a block of lines, hoisting what is constant for the pass.
+
+        ``rich_style`` walks the DOM ancestor chain and combines styles on
+        every access — measured at ~50µs, against ~35µs for encoding a whole
+        row — and ``scrollable_content_region`` recomputes region arithmetic.
+        Both are fixed for the duration of one render pass but were being
+        recomputed for every line of it.
+        """
+        self._frame_style = self.rich_style
+        self._frame_width = self.scrollable_content_region.width
+        try:
+            return super().render_lines(crop)
+        finally:
+            self._frame_style = None
+            self._frame_width = -1
 
     def render_line(self, y: int) -> Strip:
         """Render a single line.
@@ -513,10 +604,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         We add ``scroll_offset.y`` to map into virtual space, then
         dispatch to scrollback or live screen rendering.
         """
+        # Populated by render_lines; fall back for direct calls (tests, and
+        # anything that renders a line outside a full pass).
+        style = self._frame_style
+        if style is None:
+            style = self.rich_style
+        width = self._frame_width
+        if width < 0:
+            width = self.scrollable_content_region.width
+
         scroll_x, scroll_y = self.scroll_offset
         virtual_y = scroll_y + y
         scrollback_len = len(self._screen.scrollback)
-        width = self.scrollable_content_region.width
 
         if virtual_y < scrollback_len:
             strip = self._render_scrollback_line(virtual_y, width, virtual_y)
@@ -524,7 +623,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             screen_y = virtual_y - scrollback_len
             strip = self._render_screen_line(screen_y, width, virtual_y)
 
-        return strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
+        return strip.crop_extend(scroll_x, scroll_x + width, style)
 
     def _render_scrollback_line(self, index: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the scrollback buffer.

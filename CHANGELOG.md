@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   re-listing worktrees the way `r` does
 
 ### Performance
+- A pane now repaints only the rows that changed instead of all of them. An
+  agent's output arrives in small pieces — a spinner tick, a few streamed
+  tokens — and each one used to repaint every visible row: a traced session
+  spent 43 seconds rendering against 1.2 seconds parsing, with 95% of those
+  repaints caused by chunks under 100 characters. Measured at 9.25 ms to
+  1.76 ms per chunk, and 42 rendered rows down to 1.7
 - Terminal panes render roughly 7x cheaper per frame: rows are run-length
   encoded into styled segments instead of being built a character at a time,
   and resolved styles are cached per pane

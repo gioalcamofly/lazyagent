@@ -212,6 +212,10 @@ def _make_scrollable_terminal() -> ScrollableTerminal:
     terminal.ctrl_keys = {}
     terminal._cached_default_colors = None
     terminal._style_cache = {}
+    terminal._last_cursor = (0, 0, False)
+    terminal._last_scrollback_len = 0
+    terminal._frame_style = None
+    terminal._frame_width = -1
     return terminal
 
 
@@ -870,3 +874,174 @@ class TestSelectLine:
         assert t._sel_start == Offset(0, 0)
         assert t._sel_end is not None
         assert t._sel_end.x > 0  # line has content
+
+
+class TestPartialRepaint:
+    """Only the rows a chunk actually changed should be repainted.
+
+    A bare refresh() clears Textual's per-line strip cache, so every visible
+    row re-renders. Agents mostly emit tiny chunks — a real session logged 95%
+    under 100 characters, each repainting 36 rows — so this is the difference
+    between ~42 and ~2 rendered lines per chunk.
+    """
+
+    @staticmethod
+    def _prepare(t, height=10, scroll_y=0):
+        """Wire up the geometry _refresh_dirty_rows needs, and record calls."""
+        from textual.geometry import Offset, Region, Size
+
+        t.refresh = MagicMock()
+        t.refresh_line = MagicMock()
+        patchers = [
+            patch.object(
+                type(t), "scroll_offset",
+                new_callable=lambda: property(lambda self: Offset(0, scroll_y)),
+            ),
+            patch.object(
+                type(t), "scrollable_content_region",
+                new_callable=lambda: property(
+                    lambda self: Region(0, 0, 80, height)
+                ),
+            ),
+        ]
+        for p in patchers:
+            p.start()
+        return patchers
+
+    @staticmethod
+    def _stop(patchers):
+        for p in patchers:
+            p.stop()
+
+    def test_only_changed_rows_are_refreshed(self):
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t.stream.feed("\x1b[3;1H")        # park the cursor on row 2 first
+            t._sync_dirty_state()
+            t.stream.feed("hello")            # touches row 2 only
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        t.refresh.assert_not_called()
+        refreshed = {call.args[0] for call in t.refresh_line.call_args_list}
+        assert refreshed == {2}
+
+    def test_cursor_move_within_a_row_repaints_it(self):
+        """The cursor is a block on one cell; pyte does not mark that dirty."""
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t.stream.feed("\x1b[5;5H")
+            t._sync_dirty_state()
+            t.stream.feed("\x1b[5;40H")       # same row, different column
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        refreshed = {call.args[0] for call in t.refresh_line.call_args_list}
+        assert refreshed == {4}
+
+    def test_cursor_move_between_rows_repaints_both(self):
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t.stream.feed("\x1b[2;1H")
+            t._sync_dirty_state()
+            t.stream.feed("\x1b[7;1H")
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        refreshed = {call.args[0] for call in t.refresh_line.call_args_list}
+        assert refreshed == {1, 6}
+
+    def test_cursor_visibility_toggle_repaints_the_row(self):
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t.stream.feed("\x1b[4;1H")
+            t._sync_dirty_state()
+            t.stream.feed("\x1b[?25l")
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        refreshed = {call.args[0] for call in t.refresh_line.call_args_list}
+        assert 3 in refreshed
+
+    def test_scrolling_falls_back_to_a_full_repaint(self):
+        """Scrollback growth shifts every virtual row — nothing is reusable."""
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 3)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t._sync_dirty_state()
+            for i in range(6):
+                t.stream.feed(f"line {i}\r\n")
+            assert len(t._screen.scrollback) > 0
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        t.refresh.assert_called_once()
+        t.refresh_line.assert_not_called()
+
+    def test_widespread_changes_fall_back_to_a_full_repaint(self):
+        """Past half the screen, one repaint beats a pile of line regions."""
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t._sync_dirty_state()
+            for row in range(1, 9):
+                t.stream.feed(f"\x1b[{row};1Hrow {row}")
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        t.refresh.assert_called_once()
+        t.refresh_line.assert_not_called()
+
+    def test_offscreen_rows_are_not_refreshed(self):
+        """A row scrolled out of view needs no repaint pass scheduled."""
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 20)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t, height=5, scroll_y=0)
+        try:
+            t.stream.feed("\x1b[18;1H")   # cursor already below the fold
+            t._sync_dirty_state()
+            t.stream.feed("way below the fold")
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        t.refresh_line.assert_not_called()
+
+    def test_dirty_set_is_consumed(self):
+        """pyte expects the consumer to clear Screen.dirty."""
+        t = _make_scrollable_terminal()
+        t._screen = ScrollbackScreen(80, 10)
+        t.stream = pyte.Stream(t._screen)
+        patchers = self._prepare(t)
+        try:
+            t._sync_dirty_state()
+            t.stream.feed("\x1b[2;1Hx")
+            assert t._screen.dirty
+            t._refresh_dirty_rows()
+        finally:
+            self._stop(patchers)
+
+        assert not t._screen.dirty
