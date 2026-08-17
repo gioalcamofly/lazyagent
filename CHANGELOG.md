@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   re-listing worktrees the way `r` does
 
 ### Performance
+- The Diff tab no longer inlines whole untracked files without limit. A
+  worktree holding a few large eval dumps produced 287 MB of "diff", and
+  Textual re-measures a Static's content by word-wrapping all of it on every
+  layout pass — which is what made opening an agent take over a second, and
+  got worse the longer the session ran. Untracked files over 32 KB are now
+  listed by name and size, the whole diff is capped at 64 KB, and long lines
+  are trimmed. On the affected repo: 287 MB to 65 KB, and the main-thread
+  cost of showing it from about a minute to 40 ms
+- Moving through the sidebar no longer runs a `git diff` for every worktree
+  passed through; like the git status refresh, it waits for the selection to
+  settle first
 - A pane now repaints only the rows that changed instead of all of them. An
   agent's output arrives in small pieces — a spinner tick, a few streamed
   tokens — and each one used to repaint every visible row: a traced session
