@@ -1,0 +1,5 @@
+# Store every text file with LF in the repository, and check it out with LF
+# on every platform. Without this, a file committed with CRLF that two
+# branches independently convert to LF conflicts on *every* line against the
+# CRLF merge base — a whole-file conflict for what may be a one-line change.
+* text=auto eol=lf
