@@ -330,6 +330,13 @@ class TestGetLastCommitSubject:
         assert result == ""
 
 
+class _FakeStat:
+    """Minimal os.stat_result stand-in: get_diff only reads st_size."""
+
+    def __init__(self, st_size: int) -> None:
+        self.st_size = st_size
+
+
 class TestGetDiff:
     def test_subprocess_args(self):
         with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
@@ -370,6 +377,7 @@ class TestGetDiff:
 
         with (
             patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect),
+            patch("pathlib.Path.stat", return_value=_FakeStat(11)),
             patch("pathlib.Path.read_bytes", return_value=b"new content"),
             patch("pathlib.Path.read_text", return_value="new content"),
         ):
@@ -392,6 +400,7 @@ class TestGetDiff:
 
         with (
             patch("lazyagent.worktree_manager.subprocess.run", side_effect=_side_effect),
+            patch("pathlib.Path.stat", return_value=_FakeStat(17)),
             patch("pathlib.Path.read_bytes", return_value=b"untracked content"),
             patch("pathlib.Path.read_text", return_value="untracked content"),
         ):
@@ -594,3 +603,104 @@ class TestIsGhAvailable:
         with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 1
             assert WorktreeManager.is_gh_available() is False
+
+
+class TestGetDiffCaps:
+    """get_diff must stay bounded.
+
+    A worktree holding untracked eval dumps produced 287 MB of "diff" on a
+    real repo. The Diff tab re-wraps whatever it is given to measure its
+    height on every layout pass, so an unbounded diff is a UI freeze.
+    """
+
+    @staticmethod
+    def _side_effect(untracked=b"", tracked=b""):
+        def _run(*args, **kwargs):
+            cmd = args[0]
+            r = type("R", (), {"returncode": 0, "stdout": b""})()
+            if cmd == ["git", "diff"]:
+                r.stdout = tracked
+            elif cmd == ["git", "ls-files", "--others", "--exclude-standard", "-z"]:
+                r.stdout = untracked
+            return r
+        return _run
+
+    def test_large_untracked_file_is_described_not_inlined(self):
+        from lazyagent.worktree_manager import _MAX_UNTRACKED_FILE_BYTES
+
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=self._side_effect(untracked=b"huge.json\0"),
+            ),
+            patch(
+                "pathlib.Path.stat",
+                return_value=_FakeStat(30 * 1024 * 1024),
+            ),
+            patch("pathlib.Path.read_bytes") as read_bytes,
+        ):
+            result = WorktreeManager.get_diff("/wt")
+
+        assert "huge.json" in result
+        assert "30.0 MB" in result
+        assert "too large to show" in result
+        # The whole point: the file is never read.
+        read_bytes.assert_not_called()
+        assert len(result) < _MAX_UNTRACKED_FILE_BYTES
+
+    def test_small_untracked_file_is_still_inlined(self):
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=self._side_effect(untracked=b"small.txt\0"),
+            ),
+            patch("pathlib.Path.stat", return_value=_FakeStat(11)),
+            patch("pathlib.Path.read_bytes", return_value=b"new content"),
+        ):
+            result = WorktreeManager.get_diff("/wt")
+
+        assert "small.txt" in result
+        assert "new content" in result
+
+    def test_total_output_is_capped(self):
+        from lazyagent.worktree_manager import _MAX_DIFF_BYTES
+
+        huge_tracked = b"+" + b"x" * (_MAX_DIFF_BYTES * 3)
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=self._side_effect(tracked=huge_tracked),
+        ):
+            result = WorktreeManager.get_diff("/wt")
+
+        assert len(result) <= _MAX_DIFF_BYTES + 200  # cap plus the notice
+        assert "truncated" in result
+
+    def test_many_small_files_stop_at_the_budget(self):
+        from lazyagent.worktree_manager import _MAX_DIFF_BYTES
+
+        names = b"\0".join(f"f{i}.txt".encode() for i in range(5000)) + b"\0"
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=self._side_effect(untracked=names),
+            ),
+            patch("pathlib.Path.stat", return_value=_FakeStat(1024)),
+            patch("pathlib.Path.read_bytes", return_value=b"y" * 1024),
+        ):
+            result = WorktreeManager.get_diff("/wt")
+
+        assert len(result) <= _MAX_DIFF_BYTES + 200
+
+    def test_binary_untracked_file_still_flagged(self):
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=self._side_effect(untracked=b"blob.bin\0"),
+            ),
+            patch("pathlib.Path.stat", return_value=_FakeStat(64)),
+            patch("pathlib.Path.read_bytes", return_value=b"ab\x00cd"),
+        ):
+            result = WorktreeManager.get_diff("/wt")
+
+        assert "blob.bin" in result
+        assert "Binary file" in result
