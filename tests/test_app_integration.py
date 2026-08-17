@@ -524,7 +524,7 @@ class TestGitStatusDebounce:
         _patch_app_dependencies(monkeypatch)
         # Long window so it cannot fire mid-test: what matters is that passing
         # through *queues* nothing, not how long the window happens to be.
-        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
         app = LazyAgent(repo_path="/repo")
 
         async with app.run_test():
@@ -533,7 +533,7 @@ class TestGitStatusDebounce:
 
             # Scroll past the first worktree and land on the second.
             await _select_worktree(app, 0)
-            passed_through = app._git_status_debounce
+            passed_through = app._selection_debounce
             final = await _select_worktree(app, 1)
 
             # Neither worktree has been fetched yet...
@@ -541,7 +541,7 @@ class TestGitStatusDebounce:
             # ...and the worktree we passed through had its pending fetch
             # replaced rather than a second one queued alongside it.
             assert passed_through is not None
-            assert app._git_status_debounce is not passed_through
+            assert app._selection_debounce is not passed_through
 
             # Firing what the timer would call fetches only where we landed.
             app._refresh_selected_git_status()
@@ -555,7 +555,7 @@ class TestGitStatusDebounce:
     ) -> None:
         """The timer really does fire once the selection settles."""
         _patch_app_dependencies(monkeypatch)
-        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 0.05)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 0.05)
         app = LazyAgent(repo_path="/repo")
 
         async with app.run_test():
@@ -573,7 +573,7 @@ class TestGitStatusDebounce:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_app_dependencies(monkeypatch)
-        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
         app = LazyAgent(repo_path="/repo")
 
         async with app.run_test():
@@ -581,7 +581,7 @@ class TestGitStatusDebounce:
             DummyWorktreeManager.calls.clear()
 
             await _select_worktree(app, 1)
-            assert app._git_status_debounce is not None
+            assert app._selection_debounce is not None
 
             worktree_list = app.query_one(WorktreeList)
             orchestrator = next(
@@ -592,7 +592,7 @@ class TestGitStatusDebounce:
                 WorktreeList.Highlighted(worktree_list, orchestrator)
             )
 
-            assert app._git_status_debounce is None
+            assert app._selection_debounce is None
             await _drain_workers(app)
 
         assert _status_paths() == set()
@@ -603,7 +603,7 @@ class TestGitStatusDebounce:
     ) -> None:
         """Alt+G is an explicit request — it fires immediately."""
         _patch_app_dependencies(monkeypatch)
-        monkeypatch.setattr("lazyagent.app._GIT_STATUS_DEBOUNCE", 30.0)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
         app = LazyAgent(repo_path="/repo")
 
         async with app.run_test():
@@ -615,7 +615,67 @@ class TestGitStatusDebounce:
             app.action_refresh_git_status()
             await _drain_workers(app)
 
-            # Fired without waiting out the window...
+            # Fired without waiting out the window.
             assert _status_paths() == {wt.path}
-            # ...and dropped the pending selection-triggered fetch.
-            assert app._git_status_debounce is None
+            # The pending selection refresh is left alone: it also refreshes
+            # the diff, which this shortcut deliberately does not.
+            assert app._selection_debounce is not None
+
+
+class TestDiffRefreshDebounce:
+    """The diff refresh is throttled like git status.
+
+    It costs three git subprocesses, and its result is parsed and measured on
+    the main thread, so firing one per worktree scrolled past is expensive at
+    both ends.
+    """
+
+    @pytest.mark.asyncio
+    async def test_diff_is_not_fetched_while_scrolling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+        diffs: list[str] = []
+        monkeypatch.setattr(
+            DummyWorktreeManager, "get_diff",
+            staticmethod(lambda path: diffs.append(path) or ""),
+        )
+
+        async with app.run_test():
+            await _drain_workers(app)
+            diffs.clear()
+
+            await _select_worktree(app, 0)
+            await _select_worktree(app, 1)
+            await _drain_workers(app)
+
+        assert diffs == []
+
+    @pytest.mark.asyncio
+    async def test_diff_is_fetched_once_the_selection_settles(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 0.05)
+        app = LazyAgent(repo_path="/repo")
+        diffs: list[str] = []
+        monkeypatch.setattr(
+            DummyWorktreeManager, "get_diff",
+            staticmethod(lambda path: diffs.append(path) or ""),
+        )
+
+        async with app.run_test():
+            await _drain_workers(app)
+            diffs.clear()
+
+            wt = await _select_worktree(app, 1)
+            await asyncio.sleep(0.4)
+            await _drain_workers(app)
+
+        # A set, not a list: _select_worktree both awaits the handler directly
+        # and lets Textual deliver the posted Highlighted message, so the
+        # harness itself selects twice. What matters is that the settled
+        # worktree — and only it — was fetched.
+        assert diffs and set(diffs) == {wt.path}

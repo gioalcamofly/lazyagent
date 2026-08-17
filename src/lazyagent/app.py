@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 # How long the selection has to settle before we fetch its git status.
 # Scrolling the sidebar with j/k should not spawn a `git status` per worktree
 # passed through — only the one actually landed on.
-_GIT_STATUS_DEBOUNCE = 0.4
+_SELECTION_DEBOUNCE = 0.4
 
 # Concurrency gauge for the PR-status worker (diagnostics only).
 _PR_STATUS_GAUGE = diag.Gauge()
@@ -109,7 +109,7 @@ class LazyAgent(App):
         self._gh_available: bool | None = None
         self._ipc_server: IpcServer | None = None
         self._ipc_socket_path: str | None = None
-        self._git_status_debounce: Timer | None = None
+        self._selection_debounce: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -260,28 +260,33 @@ class LazyAgent(App):
                 return
         self.call_from_thread(self._apply_git_statuses, statuses)
 
-    def _cancel_git_status_debounce(self) -> None:
-        """Drop a pending selection-triggered git status fetch."""
-        if self._git_status_debounce is not None:
-            self._git_status_debounce.stop()
-            self._git_status_debounce = None
+    def _cancel_selection_debounce(self) -> None:
+        """Drop refreshes queued for a worktree we have since moved off."""
+        if self._selection_debounce is not None:
+            self._selection_debounce.stop()
+            self._selection_debounce = None
 
-    def _schedule_selected_git_status(self) -> None:
-        """Fetch the selected worktree's git status once the selection settles.
+    def _schedule_selection_refresh(self) -> None:
+        """Refresh git status and the diff once the selection settles.
 
         Debounced rather than immediate: scrolling the sidebar with j/k would
-        otherwise spawn a ``git status`` for every worktree passed through, and
-        those subprocesses are the expensive part. ``exclusive=True`` on the
-        worker cancels *waiting* on a superseded fetch but cannot stop a
-        subprocess already running, so the throttle has to happen here.
+        otherwise launch a ``git status`` *and* a ``git diff`` for every
+        worktree passed through, and those subprocesses are the expensive
+        part. ``exclusive=True`` on the workers cancels *waiting* on a
+        superseded fetch but cannot stop a subprocess already running, so the
+        throttle has to happen before they are spawned.
         """
-        self._cancel_git_status_debounce()
-        self._git_status_debounce = self.set_timer(
-            _GIT_STATUS_DEBOUNCE,
-            diag.wrap_timer(
-                "timer.git_status_debounced", self._refresh_selected_git_status
-            ),
+        self._cancel_selection_debounce()
+        self._selection_debounce = self.set_timer(
+            _SELECTION_DEBOUNCE,
+            diag.wrap_timer("timer.selection_refresh", self._run_selection_refresh),
         )
+
+    def _run_selection_refresh(self) -> None:
+        """Fire the settled-selection refreshes."""
+        self._selection_debounce = None
+        self._refresh_selected_git_status()
+        self._refresh_selected_diff()
 
     @work(thread=True, exclusive=True, group="git_status_selected")
     def _refresh_selected_git_status(self) -> None:
@@ -391,7 +396,7 @@ class LazyAgent(App):
     async def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
         center = self.query_one(CenterPanel)
         # Any move invalidates a fetch queued for the worktree we just left.
-        self._cancel_git_status_debounce()
+        self._cancel_selection_debounce()
         with diag.timed(log, "sidebar.highlighted") as span:
             if event.item is not None and isinstance(event.item, OrchestratorListItem):
                 span["target"] = "orchestrator"
@@ -411,14 +416,13 @@ class LazyAgent(App):
                 ):
                     await center.switch_to(event.item.worktree.path)
                 self._push_git_status_to_selected_panel()
-                # Show the cached badge immediately, then refresh it once the
-                # selection settles: the periodic poll only covers whichever
-                # worktree was selected at the time, so the one we just moved to
-                # may be holding a stale status.
-                self._schedule_selected_git_status()
-                self._refresh_selected_diff()
+                # Show the cached badge immediately, then refresh the status and
+                # the diff once the selection settles: the periodic poll only
+                # covers whichever worktree was selected at the time, so the one
+                # we just moved to may be holding stale content.
+                self._schedule_selection_refresh()
                 self._refresh_pr_status()
-                span["triggered"] = "git_status(debounced),diff,pr_status"
+                span["triggered"] = "selection_refresh(debounced),pr_status"
             else:
                 span["target"] = None
                 self._orchestrator_selected = False
@@ -690,8 +694,8 @@ class LazyAgent(App):
         """Refresh git status for the selected worktree, nothing else."""
         if self._selected_worktree is None:
             return
-        # Explicit request — fire now, and drop any debounced fetch it obsoletes.
-        self._cancel_git_status_debounce()
+        # Explicit request — fire now. Any pending selection refresh is left
+        # alone: it also refreshes the diff, which this shortcut does not.
         self._refresh_selected_git_status()
         self.notify("Refreshing git status…", timeout=2)
 
