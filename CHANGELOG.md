@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-09-29
 
 ### Added
 - Opt-in diagnostic logging for chasing UI freezes and lag. `LAZYAGENT_LOG=1`
