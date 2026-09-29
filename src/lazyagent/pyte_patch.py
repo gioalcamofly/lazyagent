@@ -13,7 +13,11 @@ Import this module before any pyte usage. It:
 3. Overrides ``pyte.Screen.select_graphic_rendition`` so that SGR 22 resets
    **both** bold and dim (per ANSI spec, SGR 22 = "normal intensity").
 
-4. Wraps ``pyte.streams.Stream.feed`` with a state-machine pre-filter that:
+4. Adds a fast path to ``pyte.Screen.draw`` for plain ASCII runs that fit on
+   the current line — the overwhelmingly common case, and the single most
+   expensive thing lazyagent does with a streaming agent.
+
+5. Wraps ``pyte.streams.Stream.feed`` with a state-machine pre-filter that:
    - Drops DCS sequences (``\\eP...\\e\\``). Claude Code v2.1.x uses these for
      tmux passthrough of OSC 9 notifications; without filtering, the literal
      content (``tmux;]9;Claude is waiting for your input``) leaks into the
@@ -29,7 +33,9 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import pyte.charsets
 import pyte.graphics
+import pyte.modes
 import pyte.screens
 import pyte.streams
 
@@ -81,7 +87,72 @@ def _patched_sgr(self: pyte.screens.Screen, *attrs: int) -> None:
 pyte.screens.Screen.select_graphic_rendition = _patched_sgr
 
 # ---------------------------------------------------------------------------
-# 4. Stream-level pre-filter for DCS and CSI sub-parameters
+# 4. Fast path for Screen.draw
+# ---------------------------------------------------------------------------
+
+_orig_draw = pyte.screens.Screen.draw
+
+
+def _patched_draw(self: pyte.screens.Screen, data: str) -> None:
+    """Draw a run of plain ASCII that fits on the current line.
+
+    pyte's ``draw`` is the single hottest thing in lazyagent under a
+    streaming agent: for every character it calls ``wcwidth``, tests two
+    modes, re-reads ``self.cursor``/``self.buffer``, and builds the cell with
+    ``Char._replace`` — a NamedTuple ``_replace`` is roughly ten times the
+    cost of the tuple construction it wraps.
+
+    Everything the general path exists for is excluded up front and delegated
+    to the original:
+
+    * a run that would reach the right margin (wrapping, DECAWM, the
+      pending-wrap state where ``cursor.x == columns``),
+    * insert mode (IRM), where drawing shifts existing cells right,
+    * an active charset other than Latin-1 — ``\\e(0`` remaps ASCII to VT100
+      box drawing, so the translate pass is *not* optional,
+    * anything that is not printable ASCII: wide characters need a stub
+      cell, combining characters merge into the previous cell, and
+      unprintables stop the loop.
+
+    Printable ASCII is exactly the set of characters that are unconditionally
+    one cell wide, so the fast path needs no ``wcwidth`` call at all.
+    """
+    cursor = self.cursor
+    x = cursor.x
+    if (
+        x + len(data) > self.columns
+        or pyte.modes.IRM in self.mode
+        or (self.g1_charset if self.charset else self.g0_charset)
+        is not pyte.charsets.LAT1_MAP
+        or not data.isascii()
+        or not data.isprintable()
+    ):
+        _orig_draw(self, data)
+        return
+
+    line = self.buffer[cursor.y]
+    attrs = cursor.attrs
+    # attrs cannot change inside one draw() call, so every cell differs only
+    # in `data`. Build each distinct character once and share the Char — it
+    # is immutable, and sharing cuts allocation in the live buffer too.
+    tail = attrs[1:]
+    make = attrs._make
+    cache: dict[str, Char] = {}
+    for char in data:
+        cell = cache.get(char)
+        if cell is None:
+            cell = cache[char] = make((char,) + tail)
+        line[x] = cell
+        x += 1
+
+    cursor.x = x
+    self.dirty.add(cursor.y)
+
+
+pyte.screens.Screen.draw = _patched_draw
+
+# ---------------------------------------------------------------------------
+# 5. Stream-level pre-filter for DCS and CSI sub-parameters
 # ---------------------------------------------------------------------------
 
 

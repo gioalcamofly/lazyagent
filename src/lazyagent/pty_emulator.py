@@ -20,7 +20,10 @@ import shlex
 import signal
 import struct
 import termios
+import time
 from pathlib import Path
+
+from lazyagent import diagnostics as diag
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ class PtyEmulator:
     """Manages a PTY subprocess with async I/O queues."""
 
     def __init__(self, command: str) -> None:
+        self._command = command
         self.ncol = 80
         self.nrow = 24
         self.data_or_disconnect: str | None = None
@@ -48,11 +52,14 @@ class PtyEmulator:
 
     def start(self) -> None:
         """Create the async I/O tasks."""
+        diag.event(log, "pty.start", pid=self.pid, command=self._command)
         self.run_task = asyncio.create_task(self._run())
         self.send_task = asyncio.create_task(self._send_data())
 
     def stop(self) -> None:
         """Cancel tasks, kill the process group, close the fd."""
+        # Timed because this runs on the message pump and blocks on waitpid().
+        started = time.perf_counter()
         # Cancel async tasks
         if self.run_task is not None:
             self.run_task.cancel()
@@ -87,13 +94,28 @@ class PtyEmulator:
         except OSError:
             pass
 
+        diag.event(
+            log,
+            "pty.stop",
+            pid=self.pid,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+
     def _open_terminal(self, command: str) -> int:
         """Fork a PTY and exec the command in the child."""
+        forked = time.perf_counter()
         self.pid, fd = pty.fork()
         if self.pid == 0:
             argv = shlex.split(command)
             env = dict(TERM="xterm", LC_ALL="en_US.UTF-8", HOME=str(Path.home()))
             os.execvpe(argv[0], argv, env)
+        diag.event(
+            log,
+            "pty.fork",
+            pid=self.pid,
+            command=command,
+            duration_ms=round((time.perf_counter() - forked) * 1000, 2),
+        )
         return fd
 
     async def _run(self) -> None:

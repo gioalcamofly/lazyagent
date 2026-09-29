@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
+import time
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.timer import Timer
 from textual.widgets import Footer, Header
 from textual import work
 
+from lazyagent import diagnostics as diag
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
 from lazyagent.ipc import IpcServer, start_ipc_server
@@ -24,6 +28,18 @@ from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
 from lazyagent.widgets.worktree_list import OrchestratorListItem, WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
+
+
+log = logging.getLogger(__name__)
+
+
+# How long the selection has to settle before we fetch its git status.
+# Scrolling the sidebar with j/k should not spawn a `git status` per worktree
+# passed through — only the one actually landed on.
+_SELECTION_DEBOUNCE = 0.4
+
+# Concurrency gauge for the PR-status worker (diagnostics only).
+_PR_STATUS_GAUGE = diag.Gauge()
 
 
 class LazyAgent(App):
@@ -70,6 +86,10 @@ class LazyAgent(App):
         # bound as universal fallbacks that keep the modifier everywhere.
         Binding("alt+right_square_bracket,alt+n", "next_agent", "Next agent", priority=True),
         Binding("alt+left_square_bracket,alt+p", "prev_agent", "Prev agent", priority=True),
+        # Git status only — no worktree re-list. priority=True so it works
+        # while a terminal pane has focus, which is exactly when you want it
+        # (you just committed and want the badge to catch up).
+        Binding("alt+g", "refresh_git_status", "Git status", priority=True),
         Binding("question_mark", "help", "Help"),
     ]
 
@@ -89,6 +109,7 @@ class LazyAgent(App):
         self._gh_available: bool | None = None
         self._ipc_server: IpcServer | None = None
         self._ipc_socket_path: str | None = None
+        self._selection_debounce: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -99,13 +120,41 @@ class LazyAgent(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self._load_worktrees()
-        self._load_config()
-        await self._start_ipc_server()
-        self.set_interval(60, self._check_hangs)
-        self.set_interval(30, self._refresh_git_statuses)
-        self.set_interval(30, self._refresh_selected_diff)
-        self.set_interval(60, self._refresh_pr_status)
+        diag.setup()
+        with diag.timed(log, "app.on_mount") as span:
+            with diag.timed(log, "app.load_worktrees"):
+                self._load_worktrees()
+            self._load_config()
+            with diag.timed(log, "app.start_ipc"):
+                await self._start_ipc_server()
+            span["worktrees"] = len(self.worktrees)
+            span["repo_root"] = self._repo_root
+        # Started last so the loop is already doing real work when it begins
+        # sampling, and stopped in action_quit.
+        diag.start_watchdog()
+        self.set_interval(60, diag.wrap_timer("timer.check_hangs", self._check_hangs))
+        # Only the selected worktree is polled, and only once a minute:
+        # `git status` walks the whole working tree, so sweeping every
+        # worktree on a timer costs seconds on a repo with many of them.
+        # The other worktrees refresh on the full rescan (`r`, create,
+        # remove, MCP), and Alt+G refreshes the selected one on demand.
+        self.set_interval(
+            60,
+            diag.wrap_timer("timer.git_status", self._refresh_selected_git_status),
+        )
+        self.set_interval(
+            30, diag.wrap_timer("timer.diff", self._refresh_selected_diff)
+        )
+        self.set_interval(
+            60, diag.wrap_timer("timer.pr_status", self._refresh_pr_status)
+        )
+
+    def on_unmount(self) -> None:
+        # Also stopped in action_quit; this covers every other way out so the
+        # watchdog thread doesn't outlive the loop it is watching and report a
+        # dead loop as a stall.
+        diag.event(log, "app.unmount")
+        diag.stop_watchdog()
 
     async def _start_ipc_server(self) -> None:
         """Start the IPC server for MCP communication."""
@@ -190,17 +239,83 @@ class LazyAgent(App):
             return center.get_orchestrator_panel()
         return center.get_panel(key)
 
+    @work(thread=True, exclusive=True, group="git_status_all")
     def _refresh_git_statuses(self) -> None:
-        """Fetch git statuses for all worktrees and push to UI."""
-        if not self._repo_root or not self.worktrees:
-            return
-        try:
-            manager = WorktreeManager(self._repo_root)
-            self._git_statuses = manager.get_all_git_statuses(self.worktrees)
-        except WorktreeManagerError:
-            return
+        """Fetch git status for every worktree (runs in a thread).
 
-        self.query_one(WorktreeList).update_all_git_statuses(self._git_statuses)
+        ``git status`` walks the whole working tree — on a repo with a couple
+        of dozen worktrees this sweep takes seconds, so it must never run on
+        the message pump. Only the full-rescan paths need it; the periodic
+        poll refreshes just the selected worktree.
+        """
+        repo_root = self._repo_root
+        worktrees = list(self.worktrees)
+        if not repo_root or not worktrees:
+            return
+        with diag.timed(log, "worker.git_status_all", worktrees=len(worktrees)):
+            try:
+                manager = WorktreeManager(repo_root)
+                statuses = manager.get_all_git_statuses(worktrees)
+            except WorktreeManagerError:
+                return
+        self.call_from_thread(self._apply_git_statuses, statuses)
+
+    def _cancel_selection_debounce(self) -> None:
+        """Drop refreshes queued for a worktree we have since moved off."""
+        if self._selection_debounce is not None:
+            self._selection_debounce.stop()
+            self._selection_debounce = None
+
+    def _schedule_selection_refresh(self) -> None:
+        """Refresh git status and the diff once the selection settles.
+
+        Debounced rather than immediate: scrolling the sidebar with j/k would
+        otherwise launch a ``git status`` *and* a ``git diff`` for every
+        worktree passed through, and those subprocesses are the expensive
+        part. ``exclusive=True`` on the workers cancels *waiting* on a
+        superseded fetch but cannot stop a subprocess already running, so the
+        throttle has to happen before they are spawned.
+        """
+        self._cancel_selection_debounce()
+        self._selection_debounce = self.set_timer(
+            _SELECTION_DEBOUNCE,
+            diag.wrap_timer("timer.selection_refresh", self._run_selection_refresh),
+        )
+
+    def _run_selection_refresh(self) -> None:
+        """Fire the settled-selection refreshes."""
+        self._selection_debounce = None
+        self._refresh_selected_git_status()
+        self._refresh_selected_diff()
+
+    @work(thread=True, exclusive=True, group="git_status_selected")
+    def _refresh_selected_git_status(self) -> None:
+        """Fetch git status for the selected worktree only (runs in a thread).
+
+        ``exclusive=True`` drops an in-flight fetch when the selection moves
+        or the user asks again — only the current worktree's answer matters.
+        """
+        repo_root = self._repo_root
+        wt = self._selected_worktree
+        if not repo_root or wt is None or wt.is_bare:
+            return
+        with diag.timed(log, "worker.git_status_selected", worktree=wt.path):
+            try:
+                manager = WorktreeManager(repo_root)
+                status = manager.get_git_status(wt.path)
+                status.last_commit_subject = manager.get_last_commit_subject(wt.path)
+            except WorktreeManagerError:
+                return
+        self.call_from_thread(self._apply_git_statuses, {wt.path: status})
+
+    def _apply_git_statuses(self, statuses: dict[str, GitStatus]) -> None:
+        """Merge fetched statuses into the cache and UI — runs on the main thread.
+
+        Merges rather than replaces: a selected-worktree refresh must not drop
+        the statuses the last full sweep collected for the others.
+        """
+        self._git_statuses.update(statuses)
+        self.query_one(WorktreeList).update_all_git_statuses(statuses)
         self._push_git_status_to_selected_panel()
 
     def _push_git_status_to_selected_panel(self) -> None:
@@ -228,7 +343,9 @@ class LazyAgent(App):
         wt = self._selected_worktree
         if wt is None:
             return
-        diff_text = WorktreeManager.get_diff(wt.path)
+        with diag.timed(log, "worker.diff", worktree=wt.path) as span:
+            diff_text = WorktreeManager.get_diff(wt.path)
+            span["bytes"] = len(diff_text)
         self.call_from_thread(self._apply_diff, wt.path, diff_text)
 
     def _apply_diff(self, worktree_path: str, diff_text: str) -> None:
@@ -250,11 +367,20 @@ class LazyAgent(App):
             return
 
         if self._gh_available is None:
-            self._gh_available = WorktreeManager.is_gh_available()
+            with diag.timed(log, "worker.gh_auth_status"):
+                self._gh_available = WorktreeManager.is_gh_available()
         if not self._gh_available:
             return
 
-        pr_info = WorktreeManager.get_pr_info(wt.path)
+        # This worker is neither debounced nor exclusive, so `in_flight` says
+        # how many `gh pr view` network calls the sidebar has in the air at
+        # once — the number we came here to measure.
+        with diag.timed(log, "worker.pr_status", worktree=wt.path) as span:
+            with _PR_STATUS_GAUGE as in_flight:
+                span["in_flight"] = in_flight
+                span["peak_in_flight"] = _PR_STATUS_GAUGE.peak
+                pr_info = WorktreeManager.get_pr_info(wt.path)
+            span["found"] = pr_info is not None
         self.call_from_thread(self._apply_pr_info, pr_info)
 
     def _apply_pr_info(self, pr_info) -> None:
@@ -269,20 +395,38 @@ class LazyAgent(App):
 
     async def on_list_view_highlighted(self, event: WorktreeList.Highlighted) -> None:
         center = self.query_one(CenterPanel)
-        if event.item is not None and isinstance(event.item, OrchestratorListItem):
-            self._orchestrator_selected = True
-            self._selected_worktree = None
-            await center.switch_to_orchestrator(self._repo_root)
-        elif event.item is not None and isinstance(event.item, WorktreeListItem):
-            self._orchestrator_selected = False
-            self._selected_worktree = event.item.worktree
-            await center.switch_to(event.item.worktree.path)
-            self._push_git_status_to_selected_panel()
-            self._refresh_selected_diff()
-            self._refresh_pr_status()
-        else:
-            self._orchestrator_selected = False
-            self._selected_worktree = None
+        # Any move invalidates a fetch queued for the worktree we just left.
+        self._cancel_selection_debounce()
+        with diag.timed(log, "sidebar.highlighted") as span:
+            if event.item is not None and isinstance(event.item, OrchestratorListItem):
+                span["target"] = "orchestrator"
+                self._orchestrator_selected = True
+                self._selected_worktree = None
+                with diag.timed(log, "sidebar.switch_to_orchestrator"):
+                    await center.switch_to_orchestrator(self._repo_root)
+            elif event.item is not None and isinstance(event.item, WorktreeListItem):
+                span["target"] = event.item.worktree.path
+                self._orchestrator_selected = False
+                self._selected_worktree = event.item.worktree
+                # Mounting the panel for a worktree visited for the first time
+                # also starts its `bash -l` shell, so this is where a "browsing
+                # is getting slower" cost would show up.
+                with diag.timed(
+                    log, "sidebar.switch_to", worktree=event.item.worktree.path
+                ):
+                    await center.switch_to(event.item.worktree.path)
+                self._push_git_status_to_selected_panel()
+                # Show the cached badge immediately, then refresh the status and
+                # the diff once the selection settles: the periodic poll only
+                # covers whichever worktree was selected at the time, so the one
+                # we just moved to may be holding stale content.
+                self._schedule_selection_refresh()
+                self._refresh_pr_status()
+                span["triggered"] = "selection_refresh(debounced),pr_status"
+            else:
+                span["target"] = None
+                self._orchestrator_selected = False
+                self._selected_worktree = None
 
     # --- Agent message handlers ---
 
@@ -346,23 +490,43 @@ class LazyAgent(App):
             self.notify("No worktree selected", severity="warning")
             return
 
-        async def on_spawn_dismiss(result: SpawnResult | None) -> None:
-            if result is not None and worktree is not None:
-                center = self.query_one(CenterPanel)
-                # switch_to (not just ensure_panel) so the panel is visible
-                panel = await center.switch_to(worktree.path)
-                agent_id = await panel.spawn_agent(
-                    skip_permissions=result.skip_permissions,
-                    agent_provider=self._config.agent.provider,
-                    resume_mode=result.resume_mode,
-                    socket_path=self._ipc_socket_path,
-                    instruction=result.instruction,
-                )
-                state = self._get_agent_state(worktree.path, agent_id)
-                state.label = panel.agent_label(agent_id)
-                self._refresh_sidebar_agents(worktree.path)
+        # Correlates every step from this keypress to the agent's first output.
+        spawn_id = diag.next_id("spawn") if diag.ENABLED else ""
+        modal_opened = time.perf_counter()
 
-        self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
+        async def on_spawn_dismiss(result: SpawnResult | None) -> None:
+            diag.event(
+                log,
+                "spawn.modal_dismissed",
+                spawn_id=spawn_id,
+                accepted=result is not None,
+                open_ms=round((time.perf_counter() - modal_opened) * 1000, 2),
+            )
+            if result is not None and worktree is not None:
+                with diag.timed(
+                    log, "spawn.total", spawn_id=spawn_id, worktree=worktree.path
+                ) as span:
+                    center = self.query_one(CenterPanel)
+                    # switch_to (not just ensure_panel) so the panel is visible
+                    with diag.timed(log, "spawn.switch_to", spawn_id=spawn_id):
+                        panel = await center.switch_to(worktree.path)
+                    agent_id = await panel.spawn_agent(
+                        skip_permissions=result.skip_permissions,
+                        agent_provider=self._config.agent.provider,
+                        resume_mode=result.resume_mode,
+                        socket_path=self._ipc_socket_path,
+                        instruction=result.instruction,
+                        _diag_spawn_id=spawn_id,
+                    )
+                    state = self._get_agent_state(worktree.path, agent_id)
+                    state.label = panel.agent_label(agent_id)
+                    self._refresh_sidebar_agents(worktree.path)
+                    span["agent_id"] = agent_id
+
+        with diag.timed(
+            log, "spawn.push_modal", spawn_id=spawn_id, worktree=worktree.path
+        ):
+            self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
 
     def _spawn_orchestrator_agent(self) -> None:
         """Spawn agent in the orchestrator panel."""
@@ -427,27 +591,42 @@ class LazyAgent(App):
         self.query_one(WorktreeList).focus()
 
     def action_focus_agent(self) -> None:
-        if self._orchestrator_selected:
-            panel = self.query_one(CenterPanel).get_orchestrator_panel()
-            if panel and panel.agent_terminal:
-                panel.agent_terminal.focus()
-            else:
-                self.action_spawn_agent()
-            return
+        # Ctrl+J. Everything here runs on the message pump, so any duration
+        # logged below is time the whole UI was unresponsive.
+        with diag.timed(log, "ctrlj.focus_agent") as span:
+            if self._orchestrator_selected:
+                span["target"] = "orchestrator"
+                panel = self.query_one(CenterPanel).get_orchestrator_panel()
+                if panel and panel.agent_terminal:
+                    span["outcome"] = "focus"
+                    panel.agent_terminal.focus()
+                else:
+                    span["outcome"] = "spawn"
+                    self.action_spawn_agent()
+                return
 
-        wt = self._get_selected_worktree()
-        if not wt:
-            return
-        panel = self.query_one(CenterPanel).get_panel(wt.path)
-        if panel:
-            agent_id = panel.active_agent_id or (panel.agent_ids[-1] if panel.agent_ids else None)
-            if agent_id is not None:
-                panel.switch_to_tab(f"agent-tab-{agent_id}")
-                terminal = panel.get_agent(agent_id)
-                if terminal:
-                    terminal.focus()
+            wt = self._get_selected_worktree()
+            if not wt:
+                span["outcome"] = "no_worktree"
+                return
+            span["worktree"] = wt.path
+            panel = self.query_one(CenterPanel).get_panel(wt.path)
+            if panel:
+                agent_id = panel.active_agent_id or (panel.agent_ids[-1] if panel.agent_ids else None)
+                if agent_id is not None:
+                    span["outcome"] = "focus"
+                    span["agent_id"] = agent_id
+                    with diag.timed(log, "ctrlj.switch_to_tab", agent_id=agent_id):
+                        panel.switch_to_tab(f"agent-tab-{agent_id}")
+                    terminal = panel.get_agent(agent_id)
+                    if terminal:
+                        with diag.timed(log, "ctrlj.focus_terminal"):
+                            terminal.focus()
+                else:
+                    span["outcome"] = "spawn"
+                    self.action_spawn_agent()
             else:
-                self.action_spawn_agent()
+                span["outcome"] = "no_panel"
 
     def action_next_agent(self) -> None:
         self._cycle_agent(1)
@@ -500,6 +679,8 @@ class LazyAgent(App):
                 pass
 
     async def action_quit(self) -> None:
+        diag.event(log, "app.quit", worktrees=len(self.worktrees))
+        diag.stop_watchdog()
         if self._ipc_server is not None:
             await self._ipc_server.stop()
             self._ipc_server = None
@@ -508,6 +689,15 @@ class LazyAgent(App):
     def action_refresh(self) -> None:
         self._load_worktrees()
         self.notify("Refreshed worktrees")
+
+    def action_refresh_git_status(self) -> None:
+        """Refresh git status for the selected worktree, nothing else."""
+        if self._selected_worktree is None:
+            return
+        # Explicit request — fire now. Any pending selection refresh is left
+        # alone: it also refreshes the diff, which this shortcut does not.
+        self._refresh_selected_git_status()
+        self.notify("Refreshing git status…", timeout=2)
 
     def action_create_worktree(self) -> None:
         def on_modal_dismiss(result: CreateWorktreeResult | None) -> None:
@@ -647,6 +837,10 @@ def main() -> None:
         help="Path to git repository (default: auto-detect from cwd)",
     )
     args = parser.parse_args()
+
+    log_file = diag.setup()
+    if log_file is not None:
+        print(f"lazyagent: diagnostic log -> {log_file}", file=sys.stderr)
 
     try:
         app = LazyAgent(repo_path=args.repo)
