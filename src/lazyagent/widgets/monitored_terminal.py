@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
+from lazyagent import diagnostics as diag
 from lazyagent.agent_observers import AgentObserver
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
+
+log = logging.getLogger(__name__)
 
 _HANG_SECONDS = 600  # 10 minutes
 _SCAN_DEBOUNCE_SECONDS = 0.15
@@ -59,6 +63,15 @@ class MonitoredTerminal(ScrollableTerminal):
         detail: str = "",
     ) -> None:
         if new_status != self._status or detail != self._detail:
+            diag.event(
+                log,
+                "agent.status",
+                agent_id=self.agent_id,
+                worktree=self.worktree_path,
+                status=new_status.value,
+                previous=self._status.value,
+                confidence=confidence.value,
+            )
             self._status = new_status
             self._detail = detail
             if not self._stopped:
@@ -104,6 +117,24 @@ class MonitoredTerminal(ScrollableTerminal):
         Uses the already-parsed screen content so ANSI codes don't interfere.
         Also polls the observer for any file-based events.
         """
+        # Runs on the event loop, once per agent, up to ~2 Hz — so with several
+        # agents its cost lands squarely on the main thread.
+        if not diag.HOT:
+            self._do_scan_screen()
+            return
+        start = time.perf_counter()
+        try:
+            self._do_scan_screen()
+        finally:
+            diag.debug_event(
+                log,
+                "agent.scan_screen",
+                agent_id=self.agent_id,
+                worktree=self.worktree_path,
+                duration_ms=round((time.perf_counter() - start) * 1000, 3),
+            )
+
+    def _do_scan_screen(self) -> None:
         screen_text = self._rendered_screen_text()
         self._apply_events(
             self._observer.on_screen_update(

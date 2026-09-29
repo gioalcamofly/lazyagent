@@ -1,10 +1,63 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
+import time
 from pathlib import Path
 
+from lazyagent import diagnostics as diag
 from lazyagent.models import CiCheck, GitStatus, PrInfo, WorktreeInfo
+
+log = logging.getLogger(__name__)
+
+
+def _run(cmd, **kwargs):
+    """``subprocess.run`` with a diagnostic trace of what ran and for how long.
+
+    Every git/gh call in this module goes through here, so the log answers
+    "which subprocess, in which worktree, how long" without any call site
+    having to care.
+    """
+    if not diag.ENABLED:
+        return subprocess.run(cmd, **kwargs)
+    start = time.perf_counter()
+    outcome = "ok"
+    try:
+        result = subprocess.run(cmd, **kwargs)
+        return result
+    except BaseException as exc:
+        outcome = type(exc).__name__
+        raise
+    finally:
+        diag.event(
+            log,
+            "subprocess",
+            cmd=" ".join(str(c) for c in cmd),
+            cwd=str(kwargs.get("cwd") or ""),
+            outcome=outcome,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        )
+
+
+# Caps on what get_diff() will produce. The Diff tab re-wraps its whole
+# content to measure height on every layout pass — measured at roughly 1 ms
+# per KB of real diff — so an unbounded diff is a UI freeze rather than merely
+# a large string. 64 KB is ~800 lines of diff, more than anyone reads in a
+# tab, and keeps that measurement near 50 ms.
+_MAX_DIFF_BYTES = 64 * 1024
+_MAX_UNTRACKED_FILE_BYTES = 32 * 1024
+_DIFF_TRUNCATED = "… diff truncated (too large to display)"
+
+
+def _format_size(num_bytes: int) -> str:
+    """Human-readable byte count for files we decline to inline."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 class WorktreeManagerError(Exception):
@@ -29,7 +82,7 @@ class WorktreeManager:
         repo_name = self.repo_path.name
         worktree_path = self.repo_path.parent / f"{repo_name}-{branch}"
         try:
-            subprocess.run(
+            _run(
                 [
                     "git", "worktree", "add",
                     "-b", branch,
@@ -54,7 +107,7 @@ class WorktreeManager:
             cmd.append("--force")
         cmd.append(str(worktree_path))
         try:
-            subprocess.run(
+            _run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -68,7 +121,7 @@ class WorktreeManager:
 
     def list(self) -> list[WorktreeInfo]:
         """List all worktrees by running `git worktree list --porcelain`."""
-        result = subprocess.run(
+        result = _run(
             ["git", "worktree", "list", "--porcelain"],
             capture_output=True,
             text=True,
@@ -155,7 +208,7 @@ class WorktreeManager:
     def get_git_status(self, worktree_path: str | Path) -> GitStatus:
         """Get git status for a worktree directory."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "status", "--porcelain=v1", "--branch"],
                 capture_output=True,
                 text=True,
@@ -169,7 +222,7 @@ class WorktreeManager:
     def get_last_commit_subject(self, worktree_path: str | Path) -> str:
         """Get the subject line of the last commit."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "log", "-1", "--format=%s"],
                 capture_output=True,
                 text=True,
@@ -198,23 +251,47 @@ class WorktreeManager:
     def get_diff(worktree_path: str | Path) -> str:
         """Get diff showing all working tree changes including untracked files.
 
-        Uses ``git diff HEAD`` for tracked changes. For untracked files,
-        shows file contents directly (or a binary marker if not text).
+        Uses ``git diff`` for tracked changes. Untracked files are inlined,
+        but only up to :data:`_MAX_UNTRACKED_FILE_BYTES` each and
+        :data:`_MAX_DIFF_BYTES` overall.
+
+        The caps are not cosmetic. A worktree holding a few 30 MB eval dumps
+        produced 287 MB of "diff" here, and the Diff tab re-measures whatever
+        it is handed on every layout pass — which is what made opening an
+        agent take over a second. Nobody reads a megabyte of diff in a tab
+        either, so the cap costs nothing real.
         """
         cwd = str(worktree_path)
         parts: list[str] = []
+        budget = _MAX_DIFF_BYTES
+
+        def add(entry: str) -> bool:
+            """Append an entry within budget. Returns False once full."""
+            nonlocal budget
+            if budget <= 0:
+                return False
+            cost = len(entry) + 2  # entries are joined with "\n\n"
+            if cost > budget:
+                parts.append(entry[: max(budget - 2, 0)])
+                parts.append(_DIFF_TRUNCATED)
+                budget = 0
+                return False
+            parts.append(entry)
+            budget -= cost
+            return True
+
         try:
             # Tracked changes (staged + unstaged)
-            result = subprocess.run(
+            result = _run(
                 ["git", "diff"],
                 capture_output=True,
                 cwd=cwd,
             )
             if result.returncode == 0 and result.stdout.strip():
-                parts.append(result.stdout.decode("utf-8", errors="replace").strip())
+                add(result.stdout.decode("utf-8", errors="replace").strip())
 
             # Staged binary files — git diff skips these, show a marker
-            result = subprocess.run(
+            result = _run(
                 ["git", "diff", "--cached", "--numstat", "-z"],
                 capture_output=True,
                 cwd=cwd,
@@ -223,10 +300,10 @@ class WorktreeManager:
                 for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
                     if entry.startswith("-\t-\t"):
                         f = entry[len("-\t-\t"):]
-                        parts.append(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
+                        add(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
 
             # Untracked files — show contents or binary marker
-            result = subprocess.run(
+            result = _run(
                 ["git", "ls-files", "--others", "--exclude-standard", "-z"],
                 capture_output=True,
                 cwd=cwd,
@@ -234,17 +311,25 @@ class WorktreeManager:
             if result.returncode == 0 and result.stdout.strip():
                 files = [f for f in result.stdout.decode("utf-8", errors="replace").split("\0") if f]
                 for f in files:
+                    if budget <= 0:
+                        break
                     filepath = Path(cwd) / f
                     header = f"diff --git a/{f} b/{f}\nnew file"
                     try:
-                        chunk = filepath.read_bytes()[:8000]
-                        if b"\x00" in chunk or chunk.startswith(b"%PDF"):
-                            parts.append(f"{header}\nBinary file")
-                        else:
-                            content = filepath.read_text(encoding="utf-8", errors="replace")
-                            parts.append(f"{header}\n{content}")
+                        # Size first: the old code sniffed 8 KB for binary and
+                        # then read the *whole* file, so a 30 MB dump was
+                        # inlined in full.
+                        size = filepath.stat().st_size
+                        if size > _MAX_UNTRACKED_FILE_BYTES:
+                            add(f"{header}\n{_format_size(size)} — too large to show")
+                            continue
+                        chunk = filepath.read_bytes()
                     except OSError:
                         continue
+                    if b"\x00" in chunk[:8000] or chunk.startswith(b"%PDF"):
+                        add(f"{header}\nBinary file")
+                    else:
+                        add(f"{header}\n{chunk.decode('utf-8', errors='replace')}")
 
             return "\n\n".join(parts)
         except OSError:
@@ -281,7 +366,7 @@ class WorktreeManager:
     def get_pr_info(worktree_path: str | Path) -> PrInfo | None:
         """Get PR info for a worktree via ``gh pr view``."""
         try:
-            result = subprocess.run(
+            result = _run(
                 [
                     "gh", "pr", "view",
                     "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable",
@@ -301,7 +386,7 @@ class WorktreeManager:
     def is_gh_available() -> bool:
         """Check if ``gh`` CLI is installed and authenticated."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["gh", "auth", "status"],
                 capture_output=True,
                 text=True,
@@ -319,7 +404,7 @@ def find_repo_root(start_path: str | Path | None = None) -> Path:
     """
     cwd = str(Path(start_path).resolve()) if start_path else None
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,

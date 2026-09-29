@@ -462,12 +462,6 @@ class IpcServer:
         screen = terminal._screen
         total_lines = len(screen.scrollback) + screen.lines
 
-        def _row_text(row_data: dict) -> str:
-            return "".join(
-                row_data.get(x, screen.default_char).data
-                for x in range(screen.columns)
-            ).rstrip()
-
         # Collect only the last num_lines by iterating from the end:
         # first the live screen buffer (bottom), then scrollback (top).
         collected: list[str] = []
@@ -477,15 +471,15 @@ class IpcServer:
         for row in range(screen.lines - 1, -1, -1):
             if remaining <= 0:
                 break
-            collected.append(_row_text(screen.buffer[row]))
+            collected.append(screen.screen_text(row))
             remaining -= 1
 
         # Scrollback lines (bottom-up)
         if remaining > 0:
-            for row_data in reversed(screen.scrollback):
+            for index in range(len(screen.scrollback) - 1, -1, -1):
                 if remaining <= 0:
                     break
-                collected.append(_row_text(row_data))
+                collected.append(screen.scrollback_text(index))
                 remaining -= 1
 
         collected.reverse()

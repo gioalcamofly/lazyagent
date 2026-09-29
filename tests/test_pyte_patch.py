@@ -384,3 +384,130 @@ class TestRunawayBuffers:
         out = flt.filter("\x1bPpayload\x1b\\after")
         assert "after" in out
         assert flt.state == flt.NORMAL
+
+
+class TestDrawFastPath:
+    """The draw() fast path must be indistinguishable from stock pyte.
+
+    Each case feeds identical input to two screens — one running the patched
+    draw, one running the original — and compares the entire resulting state.
+    The cases deliberately cover everything the fast path bails out of.
+    """
+
+    @staticmethod
+    def _state(screen):
+        return (
+            {y: dict(screen.buffer[y]) for y in range(screen.lines)},
+            screen.cursor.x,
+            screen.cursor.y,
+            sorted(screen.dirty),
+        )
+
+    def _compare(self, feeds, columns=20, lines=4, use_utf8=True):
+        import lazyagent.pyte_patch as pp
+
+        patched = pyte.Screen(columns, lines)
+        stock = pyte.Screen(columns, lines)
+
+        patched_stream = pyte.Stream(patched)
+        patched_stream.use_utf8 = use_utf8
+        for chunk in feeds:
+            patched_stream.feed(chunk)
+
+        original = pyte.screens.Screen.draw
+        pyte.screens.Screen.draw = pp._orig_draw
+        try:
+            stock_stream = pyte.Stream(stock)
+            stock_stream.use_utf8 = use_utf8
+            for chunk in feeds:
+                stock_stream.feed(chunk)
+        finally:
+            pyte.screens.Screen.draw = original
+
+        assert self._state(patched) == self._state(stock)
+        return patched
+
+    def test_plain_ascii(self):
+        self._compare(["hello world"])
+
+    def test_empty_draw(self):
+        self._compare(["\x1b[0m"])
+
+    def test_styled_runs(self):
+        self._compare(["\x1b[1;31mred\x1b[0m \x1b[4;42mgreen\x1b[0m tail"])
+
+    def test_run_exactly_fills_the_line(self):
+        self._compare(["x" * 20])
+
+    def test_run_overflows_the_line(self):
+        """Wrapping is delegated to the original implementation."""
+        self._compare(["y" * 55])
+
+    def test_draw_at_the_right_margin(self):
+        """The pending-wrap state (cursor.x == columns) must still wrap."""
+        self._compare(["\x1b[1;20Hab"])
+
+    def test_autowrap_disabled(self):
+        self._compare(["\x1b[?7l", "z" * 40])
+
+    def test_insert_mode(self):
+        """IRM shifts existing cells right — never the fast path."""
+        self._compare(["abcdef", "\x1b[1;3H", "\x1b[4h", "XY"])
+
+    def test_vt100_box_drawing_charset(self):
+        r"""\e(0 remaps ASCII to box drawing; the translate pass is required.
+
+        pyte ignores charset selection while ``use_utf8`` is set (the default
+        for ``pyte.Stream``), so this drives it with ``use_utf8=False`` to
+        actually reach the branch the fast path bails out of.
+        """
+        screen = self._compare(["\x1b(0qqlkmj\x1b(B"], use_utf8=False)
+        # Sanity: the mapping really did happen (not just "both are wrong")
+        assert screen.buffer[0][0].data == "─"
+
+    def test_g1_charset_via_shift_out(self):
+        screen = self._compare(["\x1b)0\x0eqqq\x0f"], use_utf8=False)
+        assert screen.buffer[0][0].data == "─"
+
+    def test_charset_selection_ignored_under_utf8(self):
+        """Documents why the charset guard rarely fires in lazyagent.
+
+        ``pyte.Stream`` defaults to ``use_utf8=True``, under which both SCS
+        (``\\e(0``) and SO/SI are dropped — the active map stays Latin-1. The
+        guard stays in place because the fast path must not depend on a flag
+        set somewhere else.
+        """
+        screen = self._compare(["\x1b(0qqq"])
+        assert screen.buffer[0][0].data == "q"
+
+    def test_wide_characters(self):
+        """CJK is two cells wide and leaves a stub — not the fast path."""
+        self._compare(["你好 ok"])
+
+    def test_combining_characters(self):
+        """Combining marks merge into the preceding cell."""
+        self._compare(["éclair"])
+
+    def test_non_ascii_latin1(self):
+        self._compare(["heló wörld"])
+
+    def test_del_character_is_not_printable(self):
+        self._compare(["ab\x7fcd"])
+
+    def test_mixed_stream(self):
+        self._compare([
+            "\x1b[2J\x1b[H",
+            "\x1b[1;36mplain ascii line\x1b[0m\r\n",
+            "你好 wide\r\n",
+            "\x1b(0qqqq\x1b(B\r\n",
+            "tail" * 12,
+        ])
+
+    def test_repeated_characters_share_one_char_object(self):
+        """The per-call cache shares cells; Char is immutable so this is safe."""
+        screen = pyte.Screen(20, 2)
+        pyte.Stream(screen).feed("aaab")
+        assert screen.buffer[0][0] is screen.buffer[0][1]
+        assert screen.buffer[0][0] is not screen.buffer[0][3]
+        assert screen.buffer[0][0].data == "a"
+        assert screen.buffer[0][3].data == "b"
