@@ -44,6 +44,12 @@ class DummyWorktreeManager:
     def get_all_git_statuses(self, worktrees):
         return {wt.path: GitStatus() for wt in worktrees}
 
+    def get_git_status(self, worktree_path):
+        return GitStatus()
+
+    def get_last_commit_subject(self, worktree_path):
+        return ""
+
     @staticmethod
     def get_diff(worktree_path):
         return ""

@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `Alt+G` refreshes the git status of the selected worktree on demand, without
+  re-listing worktrees the way `r` does
+
+### Performance
+- The Diff tab no longer inlines whole untracked files without limit. A
+  worktree holding a few large eval dumps produced 287 MB of "diff", and
+  Textual re-measures a Static's content by word-wrapping all of it on every
+  layout pass — which is what made opening an agent take over a second, and
+  got worse the longer the session ran. Untracked files over 32 KB are now
+  listed by name and size, the whole diff is capped at 64 KB, and long lines
+  are trimmed. On the affected repo: 287 MB to 65 KB, and the main-thread
+  cost of showing it from about a minute to 40 ms
+- Moving through the sidebar no longer runs a `git diff` for every worktree
+  passed through; like the git status refresh, it waits for the selection to
+  settle first
+- A pane now repaints only the rows that changed instead of all of them. An
+  agent's output arrives in small pieces — a spinner tick, a few streamed
+  tokens — and each one used to repaint every visible row: a traced session
+  spent 43 seconds rendering against 1.2 seconds parsing, with 95% of those
+  repaints caused by chunks under 100 characters. Measured at 9.25 ms to
+  1.76 ms per chunk, and 42 rendered rows down to 1.7
+- Terminal panes render roughly 7x cheaper per frame: rows are run-length
+  encoded into styled segments instead of being built a character at a time,
+  and resolved styles are cached per pane
+- Scrollback now costs ~2.8 MB per terminal instead of ~91 MB at the 5000-line
+  default, and no longer holds GC-tracked objects. Full garbage collections
+  with six worktrees' worth of history drop from ~800 ms — a visible freeze of
+  the whole UI — to under 20 ms, and no longer grow with the number of
+  worktrees that have scrollback, idle or not
+- Terminal output parsing is ~3x faster for plain ASCII, which is most of it.
+  Each additional streaming agent now costs about a fifth of what it did, so
+  several busy worktrees no longer saturate a core
+
+### Fixed
+- The periodic git-status refresh no longer freezes the UI. It ran `git status`
+  for *every* worktree, serially, on the message pump — about three seconds of
+  a completely unresponsive app twice a minute on a repo with 22 worktrees. It
+  now runs in a worker thread, polls only the selected worktree, and does so
+  once a minute instead of twice. Every worktree still refreshes on `r`, on
+  create/remove, and on MCP worktree changes
+- Scrolling the sidebar no longer fires a `git status` for every worktree
+  passed through — the selection-triggered refresh waits for the selection to
+  settle first
+- A styled cell in the rightmost column of a terminal is no longer painted with
+  its left neighbour's style (visible as a box border or right-aligned badge
+  losing its colour)
+
 ## [0.6.0] - 2026-07-14
 
 ### Added

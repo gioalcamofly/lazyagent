@@ -19,12 +19,12 @@ import pyte
 from pyte.screens import Char, Margins
 
 from rich.color import ColorParseError
+from rich.control import strip_control_codes
 from rich.segment import Segment
 from rich.style import Style
-from rich.text import Text
 
 from textual import events, log
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
@@ -44,14 +44,116 @@ _DEFAULT_MAX_SCROLLBACK = 5000
 # every stdout chunk for off-screen agents was the dominant idle cost.
 _HIDDEN_FEED_INTERVAL = 0.25
 
+# Upper bound on the per-widget style cache. A real screen has a few dozen
+# distinct styles, but a truecolor-heavy app (image renderer, gradient) can
+# generate one per cell — cap the cache so it cannot grow without bound.
+_MAX_STYLE_CACHE = 4096
+
+
+def _style_key(char: Char) -> tuple:
+    """Return every field of a pyte ``Char`` except ``data`` as a plain tuple.
+
+    Used both as the key of the rendered-``Style`` cache and as the style
+    element of the compact scrollback rows.
+
+    Slicing a ``Char`` is deliberate on two counts. It is a single C-level
+    operation instead of eight attribute loads, which matters because this
+    runs once per cell per repaint. And slicing a tuple subclass yields an
+    *exact* ``tuple``, which is what lets the GC untrack it (see
+    :class:`ScrollbackScreen`) — do not "clean this up" into a NamedTuple.
+
+    The first eight fields are the ones the renderer honours;
+    :meth:`ScrollableTerminal._cached_style` ignores any extra (today just
+    ``dim``, which pyte_patch tracks but the renderer has never applied).
+    """
+    return char[1:]
+
+
+def _encode_scrollback_row(
+    row: dict[int, Char],
+    columns: int,
+    default_char: Char,
+    intern: dict[tuple, tuple],
+) -> tuple[str, tuple]:
+    """Encode a pyte row into the compact scrollback representation.
+
+    Returns ``(text, runs)`` where ``runs`` is a tuple of
+    ``(start, end, style_key)`` with offsets into ``text``.
+
+    Trailing cells that are blank *and* default-styled are dropped — the
+    renderer pads short rows back out with exactly those cells, so this is
+    lossless — and style keys are interned, so a screenful of scrolled-off
+    lines shares a handful of key tuples.
+    """
+    if not row:
+        return "", ()
+
+    default_key = _style_key(default_char)
+    get = row.get
+
+    last = -1
+    for x in row:
+        if last < x < columns:
+            last = x
+    while last >= 0:
+        char = get(last)
+        if char is not None and (char[0] != " " or char[1:] != default_key):
+            break
+        last -= 1
+    if last < 0:
+        return "", ()
+
+    parts: list[str] = []
+    runs: list[tuple[int, int, tuple]] = []
+    buf: list[str] = []
+    cur_key: tuple | None = None
+    start = 0
+
+    for x in range(last + 1):
+        char = get(x, default_char)
+        key = char[1:]
+        if key != cur_key:
+            if buf:
+                run = "".join(buf)
+                parts.append(run)
+                end = start + len(run)
+                runs.append((start, end, cur_key))
+                start = end
+                buf.clear()
+            # Interning keeps one key tuple per distinct style instead of one
+            # per run per line. Capped so a truecolor-heavy app cannot grow
+            # the table without bound.
+            cur_key = intern.setdefault(key, key) if len(intern) < _MAX_STYLE_CACHE else key
+        buf.append(char[0])
+
+    if buf:
+        run = "".join(buf)
+        parts.append(run)
+        runs.append((start, start + len(run), cur_key))
+
+    return "".join(parts), tuple(runs)
+
 
 class ScrollbackScreen(pyte.Screen):
     """pyte Screen that captures lines scrolled off the top into a deque.
 
     Only overrides ``index()`` (the method called when the cursor is at the
     bottom margin and a new line is needed).  No ``__getattribute__`` wrapper,
-    no ``before_event``/``after_event``.  Cost: one ``dict()`` copy per line
-    scrolled off.
+    no ``before_event``/``after_event``.
+
+    Scrolled-off lines are stored in the compact form produced by
+    :func:`_encode_scrollback_row` — a ``str`` plus plain tuples of
+    primitives — rather than as a ``dict[int, Char]``.
+
+    **The tuples must stay plain tuples.**  CPython untracks a tuple whose
+    items are all untracked (``_PyTuple_MaybeUntrack``), but it gates that on
+    ``PyTuple_CheckExact``, so a NamedTuple subclass such as pyte's ``Char``
+    is *never* untracked.  Every cell kept as a ``Char`` is therefore
+    traversed by every gen2 collection for as long as it is in scrollback:
+    six terminals with full scrollback measured 583 MB RSS and ~560 ms
+    collection pauses, which the user sees as a freeze.  Swapping these
+    tuples for a NamedTuple or a dataclass would silently bring that back —
+    ``test_scrollback_entries_are_gc_untracked`` guards it.
     """
 
     def __init__(
@@ -61,7 +163,8 @@ class ScrollbackScreen(pyte.Screen):
         max_scrollback: int = _DEFAULT_MAX_SCROLLBACK,
     ) -> None:
         super().__init__(columns, lines)
-        self.scrollback: deque[dict[int, Char]] = deque(maxlen=max_scrollback)
+        self.scrollback: deque[tuple[str, tuple]] = deque(maxlen=max_scrollback)
+        self._style_key_intern: dict[tuple, tuple] = {}
 
     def set_margins(self, *args, **kwargs):
         """TERM=linux compat — strip the ``private`` kwarg that pyte passes."""
@@ -75,8 +178,39 @@ class ScrollbackScreen(pyte.Screen):
             # row 0 (full-screen scroll).  When an app sets custom margins
             # (DECSTBM), lines scrolling within a sub-region should not be
             # saved — matching the behaviour of kitty, xterm, etc.
-            self.scrollback.append(dict(self.buffer[0]))
+            self.scrollback.append(
+                _encode_scrollback_row(
+                    self.buffer[0],
+                    self.columns,
+                    self.default_char,
+                    self._style_key_intern,
+                )
+            )
         super().index()
+
+    # ------------------------------------------------------------------
+    # Text access — used by selection, double/triple click and the IPC
+    # read_agent_output tool, so row→text lives in one place.
+    # ------------------------------------------------------------------
+
+    def scrollback_text(self, index: int) -> str:
+        """Return the text of a scrollback line, trailing blanks stripped."""
+        return self.scrollback[index][0].rstrip()
+
+    def screen_text(self, y: int) -> str:
+        """Return the text of a live screen row, trailing blanks stripped."""
+        row = self.buffer[y]
+        default_char = self.default_char
+        return "".join(
+            row.get(x, default_char).data for x in range(self.columns)
+        ).rstrip()
+
+    def line_text(self, virtual_y: int) -> str:
+        """Return the text of a virtual line (scrollback first, then screen)."""
+        scrollback_len = len(self.scrollback)
+        if virtual_y < scrollback_len:
+            return self.scrollback_text(virtual_y)
+        return self.screen_text(virtual_y - scrollback_len)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +282,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
         # Cached resolved default colors (invalidated on theme change)
         self._cached_default_colors: tuple[str, str] | None = None
+
+        # style key (see _style_key) → rich.Style, invalidated on theme change
+        self._style_cache: dict[tuple, Style] = {}
+
+        # Partial-repaint bookkeeping (see _refresh_dirty_rows). pyte does not
+        # track the cursor in Screen.dirty, and a scroll invalidates every row.
+        self._last_cursor: tuple[int, int, bool] = (0, 0, False)
+        self._last_scrollback_len: int = 0
+
+        # Per-render-pass hoists (see render_lines). None/-1 when not rendering.
+        self._frame_style: Style | None = None
+        self._frame_width: int = -1
 
         # Key translation table (same as textual-terminal)
         self.ctrl_keys = {
@@ -281,7 +427,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                             log.warning("could not feed:", error)
 
                         self._update_virtual_size()
-                        self.refresh()
+                        self._refresh_dirty_rows()
                         if was_at_bottom:
                             self.scroll_end(
                                 animate=False, immediate=True, x_axis=False
@@ -349,6 +495,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         def _restore() -> None:
             self._update_virtual_size()
             self.refresh()
+            self._sync_dirty_state()
             if self._follow_output:
                 self.scroll_end(animate=False, immediate=True, x_axis=False)
 
@@ -365,9 +512,90 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         total_lines = len(self._screen.scrollback) + self._screen.lines
         self.virtual_size = Size(self.ncol, total_lines)
 
+    def _refresh_dirty_rows(self) -> None:
+        """Repaint only the screen rows the last feed actually changed.
+
+        A bare ``refresh()`` clears Textual's per-line strip cache, so every
+        visible row is re-rendered. Agents overwhelmingly emit tiny chunks — a
+        spinner tick, a few streamed tokens — and a real session measured 95%
+        of chunks at under 100 characters, each triggering a full repaint of
+        36 rows. Rendering was 43s against 1.2s of parsing.
+
+        pyte already records which rows changed in ``Screen.dirty``; it is the
+        consumer's job to read and clear it.
+        """
+        screen = self._screen
+        dirty = screen.dirty
+        cursor = screen.cursor
+        # x matters as much as y: the cursor is drawn as a block on one cell,
+        # so sliding it along a row leaves the old cell painted unless that row
+        # is redrawn.
+        cursor_state = (cursor.y, cursor.x, cursor.hidden)
+        scrollback_len = len(screen.scrollback)
+
+        # A scroll shifts every virtual row, so nothing cached is reusable.
+        if scrollback_len != self._last_scrollback_len:
+            self._last_scrollback_len = scrollback_len
+            self._last_cursor = cursor_state
+            dirty.clear()
+            self.refresh()
+            return
+
+        # pyte does not mark a row dirty when only the cursor moved, so both
+        # the row it left and the row it arrived on have to be redrawn.
+        if cursor_state != self._last_cursor:
+            dirty.add(self._last_cursor[0])
+            dirty.add(cursor_state[0])
+            self._last_cursor = cursor_state
+
+        if not dirty:
+            return
+
+        # Past a certain fraction, one whole-widget repaint beats a pile of
+        # single-line regions.
+        if len(dirty) * 2 >= screen.lines:
+            dirty.clear()
+            self.refresh()
+            return
+
+        # Only rows actually on screen are worth a region; refreshing an
+        # off-viewport row still schedules a repaint pass for nothing.
+        top = self.scroll_offset.y
+        bottom = top + self.scrollable_content_region.height
+        for screen_y in dirty:
+            virtual_y = scrollback_len + screen_y
+            if top <= virtual_y < bottom:
+                # refresh_line takes a virtual row and subtracts scroll itself.
+                self.refresh_line(virtual_y)
+        dirty.clear()
+
+    def _sync_dirty_state(self) -> None:
+        """Re-baseline partial-repaint bookkeeping after a full repaint."""
+        screen = self._screen
+        screen.dirty.clear()
+        self._last_cursor = (screen.cursor.y, screen.cursor.x, screen.cursor.hidden)
+        self._last_scrollback_len = len(screen.scrollback)
+
     # ------------------------------------------------------------------
     # Line API rendering
     # ------------------------------------------------------------------
+
+    def render_lines(self, crop: Region) -> list[Strip]:
+        """Render a block of lines, hoisting what is constant for the pass.
+
+        ``rich_style`` walks the DOM ancestor chain and combines styles on
+        every access — measured at ~50µs, against ~35µs for encoding a whole
+        row — and ``scrollable_content_region`` recomputes region arithmetic.
+        Both are fixed for the duration of one render pass but were being
+        recomputed for every line of it.
+        """
+        self._frame_style = self.rich_style
+        self._frame_width = self.scrollable_content_region.width
+        try:
+            return super().render_lines(crop)
+        finally:
+            self._frame_style = None
+            self._frame_width = -1
 
     def render_line(self, y: int) -> Strip:
         """Render a single line.
@@ -376,10 +604,18 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         We add ``scroll_offset.y`` to map into virtual space, then
         dispatch to scrollback or live screen rendering.
         """
+        # Populated by render_lines; fall back for direct calls (tests, and
+        # anything that renders a line outside a full pass).
+        style = self._frame_style
+        if style is None:
+            style = self.rich_style
+        width = self._frame_width
+        if width < 0:
+            width = self.scrollable_content_region.width
+
         scroll_x, scroll_y = self.scroll_offset
         virtual_y = scroll_y + y
         scrollback_len = len(self._screen.scrollback)
-        width = self.scrollable_content_region.width
 
         if virtual_y < scrollback_len:
             strip = self._render_scrollback_line(virtual_y, width, virtual_y)
@@ -387,12 +623,17 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             screen_y = virtual_y - scrollback_len
             strip = self._render_screen_line(screen_y, width, virtual_y)
 
-        return strip.crop_extend(scroll_x, scroll_x + width, self.rich_style)
+        return strip.crop_extend(scroll_x, scroll_x + width, style)
 
     def _render_scrollback_line(self, index: int, width: int, virtual_y: int) -> Strip:
-        """Render a line from the scrollback buffer."""
-        row = self._screen.scrollback[index]
-        return self._row_to_strip(row, width, show_cursor=False, virtual_y=virtual_y)
+        """Render a line from the scrollback buffer.
+
+        Scrollback is already run-length encoded, so this skips the per-cell
+        pass the live screen needs.
+        """
+        text, runs = self._screen.scrollback[index]
+        ncols = max(width, self._screen.columns)
+        return self._runs_to_strip(text, runs, ncols, virtual_y=virtual_y)
 
     def _render_screen_line(self, screen_y: int, width: int, virtual_y: int) -> Strip:
         """Render a line from the live pyte screen buffer."""
@@ -414,30 +655,103 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         virtual_y: int = -1,
     ) -> Strip:
         """Convert a pyte row (dict of column→Char) to a textual Strip."""
-        text = Text()
         ncols = max(width, self._screen.columns)
-        style_change_pos: int = 0
+        text, runs = self._encode_row(row, ncols)
+
+        cursor_x = -1
+        cursor_style: Style | None = None
+        if show_cursor and 0 <= self._screen.cursor.x < ncols:
+            cursor_x = self._screen.cursor.x
+            cursor_style = self._cursor_style(
+                row.get(cursor_x, self._screen.default_char)
+            )
+
+        return self._runs_to_strip(
+            text,
+            runs,
+            ncols,
+            cursor_x=cursor_x,
+            cursor_style=cursor_style,
+            virtual_y=virtual_y,
+        )
+
+    def _encode_row(
+        self, row: dict[int, Char], ncols: int
+    ) -> tuple[str, list[tuple[int, int, tuple]]]:
+        """Run-length encode a live pyte row into ``(text, runs)``.
+
+        ``runs`` is a list of ``(start, end, style_key)`` with offsets into
+        ``text``. One pass, one tuple per cell, and no ``rich`` objects — the
+        old per-cell ``Text.append`` + ``stylize`` version was 53% of the
+        widget's CPU under a streaming agent.
+        """
+        default_char = self._screen.default_char
+        get = row.get
+        parts: list[str] = []
+        runs: list[tuple[int, int, tuple]] = []
+        buf: list[str] = []
+        cur_key: tuple | None = None
+        start = 0
 
         for x in range(ncols):
-            char: Char = row.get(x, self._screen.default_char)
-            text.append(char.data)
+            char = get(x, default_char)
+            # Index instead of attribute access, and _style_key inlined: this
+            # runs once per cell per repaint, so descriptor lookups show up.
+            key = char[1:]
+            if key != cur_key:
+                if buf:
+                    run = "".join(buf)
+                    parts.append(run)
+                    end = start + len(run)
+                    runs.append((start, end, cur_key))
+                    start = end
+                    buf.clear()
+                cur_key = key
+            buf.append(char[0])
 
-            if x > 0:
-                last_char: Char = row.get(x - 1, self._screen.default_char)
-                if (
-                    not self._char_style_cmp(char, last_char)
-                    or x == ncols - 1
-                ):
-                    last_style = self._char_rich_style(last_char)
-                    text.stylize(last_style, style_change_pos, x + 1)
-                    style_change_pos = x
+        if buf:
+            run = "".join(buf)
+            parts.append(run)
+            runs.append((start, start + len(run), cur_key))
 
-        # Apply cursor style AFTER all character styles so it is never
-        # overwritten by a later stylize() call that covers the same range.
-        if show_cursor and 0 <= self._screen.cursor.x < ncols:
-            cx = self._screen.cursor.x
-            cursor_char: Char = row.get(cx, self._screen.default_char)
-            text.stylize(self._cursor_style(cursor_char), cx, cx + 1)
+        return "".join(parts), runs
+
+    def _runs_to_strip(
+        self,
+        text: str,
+        runs: list[tuple[int, int, tuple]] | tuple[tuple[int, int, tuple], ...],
+        ncols: int,
+        *,
+        cursor_x: int = -1,
+        cursor_style: Style | None = None,
+        virtual_y: int = -1,
+    ) -> Strip:
+        """Build a Strip from run-length encoded style runs.
+
+        Shared by the live-screen and scrollback paths. ``text`` may be
+        shorter than ``ncols`` (scrollback rows drop trailing blanks); the
+        remainder is padded with default-styled spaces, which is what the
+        live path produces for unwritten cells.
+        """
+        pad = ncols - len(text)
+        if pad > 0:
+            default_key = _style_key(self._screen.default_char)
+            if runs and runs[-1][2] == default_key:
+                # The stored row already ends in default-styled cells — extend
+                # that run rather than emitting a second identical segment.
+                runs = [*runs[:-1], (runs[-1][0], ncols, default_key)]
+            else:
+                runs = [*runs, (len(text), ncols, default_key)]
+            text = text + " " * pad
+
+        # Overlays are applied in insertion order, mirroring the order the
+        # old implementation called Text.stylize() in: character styles
+        # first, then the cursor, then the selection. Later overlays win on
+        # the attributes they set, so the cursor's fg/bg swap is never
+        # overwritten by a character style.
+        overlays: list[tuple[int, int, Style]] = []
+        if cursor_style is not None:
+            overlays.append((cursor_x, cursor_x + 1, cursor_style))
 
         selection = self._cached_selection
         if selection is not None and virtual_y >= 0:
@@ -450,9 +764,36 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                     self._cached_selection_style = (
                         self.screen.get_component_rich_style("screen--selection")
                     )
-                text.stylize(self._cached_selection_style, start, end)
+                overlays.append((start, end, self._cached_selection_style))
 
-        segments = list(text.render(self.app.console))
+        cached_style = self._cached_style
+        if not overlays:
+            return Strip(
+                [
+                    Segment(strip_control_codes(text[start:end]), cached_style(key))
+                    for start, end, key in runs
+                ]
+            )
+
+        segments: list[Segment] = []
+        for start, end, key in runs:
+            base = cached_style(key)
+            cuts = {start, end}
+            for over_start, over_end, _ in overlays:
+                if start < over_start < end:
+                    cuts.add(over_start)
+                if start < over_end < end:
+                    cuts.add(over_end)
+            bounds = sorted(cuts)
+            for piece_start, piece_end in zip(bounds, bounds[1:]):
+                style = base
+                for over_start, over_end, over_style in overlays:
+                    if over_start <= piece_start and piece_end <= over_end:
+                        style = style + over_style
+                segments.append(
+                    Segment(strip_control_codes(text[piece_start:piece_end]), style)
+                )
+
         return Strip(segments)
 
     # ------------------------------------------------------------------
@@ -462,7 +803,39 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     def notify_style_update(self) -> None:
         self._cached_default_colors = None
         self._cached_selection_style = None
+        self._style_cache.clear()
         super().notify_style_update()
+
+    def _cached_style(self, key: tuple) -> Style:
+        """Return the ``rich.Style`` for a style key, memoized.
+
+        A screenful of a real TUI resolves to a few dozen distinct keys, so a
+        plain dict removes essentially every ``Style`` construction from the
+        render path.
+        """
+        style = self._style_cache.get(key)
+        if style is None:
+            # key[:8] rather than a full unpack: _style_key carries every
+            # non-data Char field, and pyte_patch's `dim` is not rendered.
+            fg, bg, bold, italics, underscore, strikethrough, reverse, blink = key[:8]
+            try:
+                style = Style(
+                    color=self._detect_color(fg),
+                    bgcolor=self._detect_color(bg),
+                    bold=bold,
+                    italic=italics,
+                    underline=underscore,
+                    strike=strikethrough,
+                    reverse=reverse,
+                    blink=blink,
+                )
+            except ColorParseError as error:
+                log.warning("color parse error:", error)
+                style = Style()
+            if len(self._style_cache) >= _MAX_STYLE_CACHE:
+                self._style_cache.clear()
+            self._style_cache[key] = style
+        return style
 
     def _resolved_default_colors(self) -> tuple[str, str]:
         """Return resolved (fg, bg) for default/inherited colors, cached."""
@@ -521,25 +894,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
     def _char_rich_style(self, char: Char) -> Style:
         """Convert a pyte Char's attributes to a ``rich.Style``."""
-        foreground = self._detect_color(char.fg)
-        background = self._detect_color(char.bg)
-
-        try:
-            style = Style(
-                color=foreground,
-                bgcolor=background,
-                bold=char.bold,
-                italic=char.italics,
-                underline=char.underscore,
-                strike=char.strikethrough,
-                reverse=char.reverse,
-                blink=char.blink,
-            )
-        except ColorParseError as error:
-            log.warning("color parse error:", error)
-            style = Style()
-
-        return style
+        return self._cached_style(_style_key(char))
 
     # Keep these as instance methods for MonitoredTerminal compatibility
     # (MonitoredTerminal.recv references self.char_rich_style etc.)
@@ -697,18 +1052,14 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         text, _ = result
         return text if text else None
 
-    def _row_to_text(self, row_data: dict[int, Char]) -> str:
-        """Convert a pyte row dict to a stripped text line."""
-        return "".join(
-            row_data.get(x, self._screen.default_char).data
-            for x in range(self._screen.columns)
-        ).rstrip()
-
     def _extract_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Extract text from scrollback + screen buffer for a selection."""
-        lines = [self._row_to_text(row) for row in self._screen.scrollback]
-        for y in range(self._screen.lines):
-            lines.append(self._row_to_text(self._screen.buffer[y]))
+        screen = self._screen
+        lines = [
+            screen.scrollback_text(index) for index in range(len(screen.scrollback))
+        ]
+        for y in range(screen.lines):
+            lines.append(screen.screen_text(y))
         full_text = "\n".join(lines)
         return selection.extract(full_text), "\n"
 
@@ -797,18 +1148,10 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # Double-click / triple-click selection helpers
     # ------------------------------------------------------------------
 
-    def _get_row_at(self, virtual_y: int) -> dict[int, Char]:
-        """Return the row dict for a given virtual y coordinate."""
-        scrollback_len = len(self._screen.scrollback)
-        if virtual_y < scrollback_len:
-            return self._screen.scrollback[virtual_y]
-        return self._screen.buffer[virtual_y - scrollback_len]
-
     def _select_word(self, event: events.Click) -> None:
         """Select the word under the cursor (double-click)."""
         pos = self._mouse_to_virtual(event)
-        row = self._get_row_at(pos.y)
-        line = self._row_to_text(row)
+        line = self._screen.line_text(pos.y)
         x = pos.x
         if x >= len(line) or not line[x].strip():
             return
@@ -824,8 +1167,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     def _select_line(self, event: events.Click) -> None:
         """Select the entire line (triple-click)."""
         pos = self._mouse_to_virtual(event)
-        row = self._get_row_at(pos.y)
-        line = self._row_to_text(row)
+        line = self._screen.line_text(pos.y)
         self._sel_start = Offset(0, pos.y)
         self._sel_end = Offset(len(line), pos.y)
         self._update_cached_selection()

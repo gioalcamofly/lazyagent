@@ -25,7 +25,8 @@ _HELP_TEXT = """\
 [bold cyan]Worktrees[/bold cyan]
   [bold]c[/bold]               Create new worktree
   [bold]d[/bold]               Remove selected worktree
-  [bold]r[/bold]               Refresh worktree list
+  [bold]r[/bold]               Refresh worktree list (and every git status)
+  [bold]Alt+G[/bold]           Refresh git status of the selected worktree
 
 [bold cyan]Terminal scrollback[/bold cyan]
   [bold]PageUp / PageDown[/bold]  Scroll terminal history

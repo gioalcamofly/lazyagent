@@ -29,6 +29,32 @@ _SPAWN_HINT = "Press [bold]s[/bold] or [bold]Ctrl+J[/bold] to spawn agent"
 _PLACEHOLDER_TAB_ID = "agent-placeholder-tab"
 _DIFF_TAB_ID = "diff-tab"
 
+# Hard ceiling on what the diff Static holds. See update_diff.
+_MAX_DIFF_CHARS = 64 * 1024
+_MAX_DIFF_LINES = 2000
+# A single enormous line (a minified file, a one-line JSON) wraps into
+# thousands of visual rows, and it is the wrapped count that costs.
+_MAX_DIFF_LINE_CHARS = 1000
+
+
+def _cap_diff(diff_text: str) -> str:
+    """Trim a diff to something a Static can measure cheaply."""
+    truncated = len(diff_text) > _MAX_DIFF_CHARS
+    lines = diff_text[:_MAX_DIFF_CHARS].split("\n")
+    if len(lines) > _MAX_DIFF_LINES:
+        lines = lines[:_MAX_DIFF_LINES]
+        truncated = True
+    capped = []
+    for line in lines:
+        if len(line) > _MAX_DIFF_LINE_CHARS:
+            capped.append(line[:_MAX_DIFF_LINE_CHARS] + " …")
+            truncated = True
+        else:
+            capped.append(line)
+    if truncated:
+        capped.append("… diff truncated (too large to display)")
+    return "\n".join(capped)
+
 
 def _agent_tab_id(agent_id: str) -> str:
     return f"agent-tab-{agent_id}"
@@ -202,11 +228,19 @@ class WorktreePanel(Container):
             pass
 
     def update_diff(self, diff_text: str) -> None:
-        """Update the diff tab content."""
+        """Update the diff tab content.
+
+        The text is capped before it reaches the ``Static``. Textual measures
+        a Static's content height by word-wrapping all of it, on every layout
+        pass — around 220 ms per megabyte — so an oversized diff does not just
+        render slowly, it makes every later mount and resize slow too.
+        ``WorktreeManager.get_diff`` already caps its output; this is the
+        backstop for anything that reaches the widget by another route.
+        """
         try:
             diff_widget = self.query_one("#diff-content", Static)
             if diff_text:
-                diff_widget.update(Text(diff_text))
+                diff_widget.update(Text(_cap_diff(diff_text)))
             else:
                 diff_widget.update(Text("No changes"))
         except Exception:
