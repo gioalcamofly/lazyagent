@@ -1,10 +1,43 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
+import time
 from pathlib import Path
 
+from lazyagent import diagnostics as diag
 from lazyagent.models import CiCheck, GitStatus, PrInfo, WorktreeInfo
+
+log = logging.getLogger(__name__)
+
+
+def _run(cmd, **kwargs):
+    """``subprocess.run`` with a diagnostic trace of what ran and for how long.
+
+    Every git/gh call in this module goes through here, so the log answers
+    "which subprocess, in which worktree, how long" without any call site
+    having to care.
+    """
+    if not diag.ENABLED:
+        return subprocess.run(cmd, **kwargs)
+    start = time.perf_counter()
+    outcome = "ok"
+    try:
+        result = subprocess.run(cmd, **kwargs)
+        return result
+    except BaseException as exc:
+        outcome = type(exc).__name__
+        raise
+    finally:
+        diag.event(
+            log,
+            "subprocess",
+            cmd=" ".join(str(c) for c in cmd),
+            cwd=str(kwargs.get("cwd") or ""),
+            outcome=outcome,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        )
 
 
 # Caps on what get_diff() will produce. The Diff tab re-wraps its whole
@@ -49,7 +82,7 @@ class WorktreeManager:
         repo_name = self.repo_path.name
         worktree_path = self.repo_path.parent / f"{repo_name}-{branch}"
         try:
-            subprocess.run(
+            _run(
                 [
                     "git", "worktree", "add",
                     "-b", branch,
@@ -74,7 +107,7 @@ class WorktreeManager:
             cmd.append("--force")
         cmd.append(str(worktree_path))
         try:
-            subprocess.run(
+            _run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -88,7 +121,7 @@ class WorktreeManager:
 
     def list(self) -> list[WorktreeInfo]:
         """List all worktrees by running `git worktree list --porcelain`."""
-        result = subprocess.run(
+        result = _run(
             ["git", "worktree", "list", "--porcelain"],
             capture_output=True,
             text=True,
@@ -175,7 +208,7 @@ class WorktreeManager:
     def get_git_status(self, worktree_path: str | Path) -> GitStatus:
         """Get git status for a worktree directory."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "status", "--porcelain=v1", "--branch"],
                 capture_output=True,
                 text=True,
@@ -189,7 +222,7 @@ class WorktreeManager:
     def get_last_commit_subject(self, worktree_path: str | Path) -> str:
         """Get the subject line of the last commit."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "log", "-1", "--format=%s"],
                 capture_output=True,
                 text=True,
@@ -249,7 +282,7 @@ class WorktreeManager:
 
         try:
             # Tracked changes (staged + unstaged)
-            result = subprocess.run(
+            result = _run(
                 ["git", "diff"],
                 capture_output=True,
                 cwd=cwd,
@@ -258,7 +291,7 @@ class WorktreeManager:
                 add(result.stdout.decode("utf-8", errors="replace").strip())
 
             # Staged binary files — git diff skips these, show a marker
-            result = subprocess.run(
+            result = _run(
                 ["git", "diff", "--cached", "--numstat", "-z"],
                 capture_output=True,
                 cwd=cwd,
@@ -270,7 +303,7 @@ class WorktreeManager:
                         add(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
 
             # Untracked files — show contents or binary marker
-            result = subprocess.run(
+            result = _run(
                 ["git", "ls-files", "--others", "--exclude-standard", "-z"],
                 capture_output=True,
                 cwd=cwd,
@@ -333,7 +366,7 @@ class WorktreeManager:
     def get_pr_info(worktree_path: str | Path) -> PrInfo | None:
         """Get PR info for a worktree via ``gh pr view``."""
         try:
-            result = subprocess.run(
+            result = _run(
                 [
                     "gh", "pr", "view",
                     "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable",
@@ -353,7 +386,7 @@ class WorktreeManager:
     def is_gh_available() -> bool:
         """Check if ``gh`` CLI is installed and authenticated."""
         try:
-            result = subprocess.run(
+            result = _run(
                 ["gh", "auth", "status"],
                 capture_output=True,
                 text=True,
@@ -371,7 +404,7 @@ def find_repo_root(start_path: str | Path | None = None) -> Path:
     """
     cwd = str(Path(start_path).resolve()) if start_path else None
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,

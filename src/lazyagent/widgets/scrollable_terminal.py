@@ -9,10 +9,12 @@ scrollbars) to let users scroll through history.
 from __future__ import annotations
 
 import asyncio
+import logging
 import platform
 import re
 import shutil
 import subprocess
+import time
 from collections import deque
 
 import pyte
@@ -29,8 +31,13 @@ from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
 
+from lazyagent import diagnostics as diag
 from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
 from lazyagent.styles import SCROLLBAR_CSS
+
+# `log` in this module is Textual's logger, so the diagnostic logger gets its
+# own name.
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # ScrollbackScreen — lightweight pyte Screen subclass
@@ -269,6 +276,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._hidden_feed_buffer: list[str] = []
         self._hidden_feed_handle: asyncio.TimerHandle | None = None
 
+        # Diagnostics only — see lazyagent.diagnostics. `_diag_spawn_id` is
+        # stamped by the spawn path so the log can join a Ctrl+J keypress to
+        # this terminal's first byte of output.
+        self._diag_spawn_id: str = ""
+        self._diag_started: float = 0.0
+        self._diag_first_output: bool = False
+        self._diag_chunks: int = 0
+        self._diag_chars: int = 0
+        self._diag_render_s: float = 0.0
+        self._diag_render_lines: int = 0
+        self._diag_repaint: str = ""
+        self._diag_dirty_rows: int = 0
+
         # Widget-local text selection (replaces Textual's cross-widget system)
         self._sel_start: Offset | None = None
         self._sel_end: Offset | None = None
@@ -336,8 +356,14 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if self.emulator is not None:
             return
         self._stopped = False
-        self.emulator = PtyEmulator(command=self.command)
-        self.emulator.start()
+        self._diag_started = time.perf_counter()
+        self._diag_first_output = False
+        with diag.timed(
+            _log, "term.start", widget=self.id, spawn_id=self._diag_spawn_id
+        ) as span:
+            self.emulator = PtyEmulator(command=self.command)
+            self.emulator.start()
+            span["pid"] = self.emulator.pid
         self.send_queue = self.emulator.recv_queue
         self.recv_queue = self.emulator.send_queue
         self.recv_task = asyncio.create_task(self.recv())
@@ -346,6 +372,14 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         """Kill the PTY subprocess and cancel the recv loop."""
         if self.emulator is None:
             return
+        diag.event(
+            _log,
+            "term.stop",
+            widget=self.id,
+            spawn_id=self._diag_spawn_id,
+            chunks=self._diag_chunks,
+            chars=self._diag_chars,
+        )
         self._stopped = True
         self.recv_task.cancel()
         self.emulator.stop()
@@ -368,11 +402,22 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if not self._hidden_feed_buffer:
             return
         chars = "".join(self._hidden_feed_buffer)
+        buffered = len(self._hidden_feed_buffer)
         self._hidden_feed_buffer.clear()
+        feed_start = time.perf_counter() if diag.HOT else 0.0
         try:
             self.stream.feed(chars)
         except TypeError as error:
             log.warning("could not feed:", error)
+        if diag.HOT:
+            diag.debug_event(
+                _log,
+                "term.flush_hidden",
+                widget=self.id,
+                chunks=buffered,
+                chars=len(chars),
+                feed_ms=round((time.perf_counter() - feed_start) * 1000, 3),
+            )
         # Fire the post-stdout hook once per batch (debounced scan).
         self._after_stdout_processed()
 
@@ -393,6 +438,24 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
                 elif cmd == "stdout":
                     chars = message[1]
+
+                    if diag.ENABLED:
+                        self._diag_chunks += 1
+                        self._diag_chars += len(chars)
+                        if not self._diag_first_output:
+                            self._diag_first_output = True
+                            # Closes the Ctrl+J chain: keypress -> spawn ->
+                            # fork -> the agent actually saying something.
+                            diag.event(
+                                _log,
+                                "term.first_output",
+                                widget=self.id,
+                                spawn_id=self._diag_spawn_id,
+                                chars=len(chars),
+                                since_start_ms=round(
+                                    (time.perf_counter() - self._diag_started) * 1000, 2
+                                ),
+                            )
 
                     # Hook for subclasses (e.g. MonitoredTerminal) — runs per
                     # chunk so hang detection updates last_output_time
@@ -421,10 +484,12 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
                         # Feed to pyte (may trigger index() → scrollback
                         # capture)
+                        feed_start = time.perf_counter() if diag.HOT else 0.0
                         try:
                             self.stream.feed(chars)
                         except TypeError as error:
                             log.warning("could not feed:", error)
+                        feed_end = time.perf_counter() if diag.HOT else 0.0
 
                         self._update_virtual_size()
                         self._refresh_dirty_rows()
@@ -432,6 +497,30 @@ class ScrollableTerminal(ScrollView, can_focus=True):
                             self.scroll_end(
                                 animate=False, immediate=True, x_axis=False
                             )
+
+                        if diag.HOT:
+                            # `render_*` is whatever render_line() cost since
+                            # the last chunk — the actual painting happens on
+                            # Textual's frame, not inside this handler, so it
+                            # is attributed to the chunk that dirtied the rows.
+                            # `repaint`/`dirty_rows` say which repaint path
+                            # this chunk took and over how many rows.
+                            diag.debug_event(
+                                _log,
+                                "term.chunk",
+                                widget=self.id,
+                                chars=len(chars),
+                                feed_ms=round((feed_end - feed_start) * 1000, 3),
+                                post_ms=round(
+                                    (time.perf_counter() - feed_end) * 1000, 3
+                                ),
+                                render_ms=round(self._diag_render_s * 1000, 3),
+                                render_lines=self._diag_render_lines,
+                                repaint=self._diag_repaint,
+                                dirty_rows=self._diag_dirty_rows,
+                            )
+                            self._diag_render_s = 0.0
+                            self._diag_render_lines = 0
 
                         # Post-processing hook for subclasses (e.g. sentinel
                         # scanning) — only runs when visible because the
@@ -538,6 +627,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._last_scrollback_len = scrollback_len
             self._last_cursor = cursor_state
             dirty.clear()
+            self._diag_repaint = "full:scrolled"
             self.refresh()
             return
 
@@ -548,13 +638,21 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             dirty.add(cursor_state[0])
             self._last_cursor = cursor_state
 
+        # Which branch this took, and over how many rows, is the interesting
+        # part of the trace — recorded unconditionally because it is two
+        # attribute stores and no formatting. Emitting it is still gated on
+        # diag.HOT, in recv().
+        self._diag_dirty_rows = len(dirty)
+
         if not dirty:
+            self._diag_repaint = "none"
             return
 
         # Past a certain fraction, one whole-widget repaint beats a pile of
         # single-line regions.
         if len(dirty) * 2 >= screen.lines:
             dirty.clear()
+            self._diag_repaint = "full:threshold"
             self.refresh()
             return
 
@@ -562,12 +660,16 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         # off-viewport row still schedules a repaint pass for nothing.
         top = self.scroll_offset.y
         bottom = top + self.scrollable_content_region.height
+        onscreen = 0
         for screen_y in dirty:
             virtual_y = scrollback_len + screen_y
             if top <= virtual_y < bottom:
                 # refresh_line takes a virtual row and subtracts scroll itself.
                 self.refresh_line(virtual_y)
+                onscreen += 1
         dirty.clear()
+        self._diag_repaint = "partial"
+        self._diag_dirty_rows = onscreen
 
     def _sync_dirty_state(self) -> None:
         """Re-baseline partial-repaint bookkeeping after a full repaint."""
@@ -598,6 +700,21 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._frame_width = -1
 
     def render_line(self, y: int) -> Strip:
+        """Render a single line.
+
+        Per-line timing would be one log record per line per frame, so the cost
+        is accumulated here and reported once per output chunk instead.
+        """
+        if not diag.HOT:
+            return self._render_line(y)
+        start = time.perf_counter()
+        try:
+            return self._render_line(y)
+        finally:
+            self._diag_render_s += time.perf_counter() - start
+            self._diag_render_lines += 1
+
+    def _render_line(self, y: int) -> Strip:
         """Render a single line.
 
         ``y`` is a widget-local coordinate (0 = top of visible area).
