@@ -107,6 +107,7 @@ class TestClaudeHooksSettings:
         # All expected hook events are present
         assert "Notification" in settings["hooks"]
         assert "Stop" in settings["hooks"]
+        assert "UserPromptSubmit" in settings["hooks"]
         assert "PreToolUse" in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
         assert "TaskCompleted" in settings["hooks"]

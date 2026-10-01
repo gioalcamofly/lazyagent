@@ -143,6 +143,20 @@ class TestClaudeHooksObserver:
         assert events[0].status == AgentStatus.WAITING_FOR_USER
         assert events[0].detail == "asking a question"
 
+    def test_user_prompt_submit_sets_running(self, tmp_path):
+        """Every turn starts RUNNING, including turns that use no tools."""
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}) + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "prompt submitted"
+
     def test_stop_event_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
         log_path.write_text(

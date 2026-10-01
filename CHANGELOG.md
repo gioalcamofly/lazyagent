@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `wait_for_agent` MCP tool: blocks until an agent reaches a status (or a
+  group: `idle`, `blocked`, `finished`, `not_running`) instead of polling
+  `get_agent_status` in a loop. A `since` cursor, returned by `spawn_agent` and
+  `send_agent_input`, makes it wait for the turn you just started rather than
+  matching the agent's state from before it. A timeout returns
+  `matched: false`, not an error
+- `wait_for_events` MCP tool: a cursor-based stream of every agent's status
+  changes across all worktrees, optionally blocking until the next matching
+  one. An orchestrator running several agents learns which one needs it next
+  from a single call
+- `send_agent_input` now reports whether the agent picked the text up:
+  `delivery` is `confirmed` once the agent starts a turn, `unconfirmed` if it
+  didn't react within `LAZYAGENT_INPUT_CONFIRM_TIMEOUT` (5 s), or `busy` if it
+  was mid-turn. It warns when the text answered a permission prompt or question
+  rather than starting a new prompt, and `wait_until` blocks until the
+  resulting turn reaches a status
+- The orchestrator's system prompt teaches it to wait on agents with these
+  tools instead of polling them
+
 ### Fixed
+- Claude agents now report `running` at the start of every turn, including
+  turns that use no tools; before, such a turn never left `waiting`, so nothing
+  could tell it had happened
 - `send_agent_input` no longer leaves the text sitting unsent in the agent's
   prompt. The text and the Enter that submits it went out as one PTY write, so
   the agent CLI read them as a single chunk and — past ~64 characters — parsed

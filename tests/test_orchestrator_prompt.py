@@ -23,6 +23,8 @@ class TestDefaultPrompt:
             "stop_agent",
             "get_agent_status",
             "read_agent_output",
+            "wait_for_agent",
+            "wait_for_events",
         ]:
             assert tool in DEFAULT_ORCHESTRATOR_PROMPT
 

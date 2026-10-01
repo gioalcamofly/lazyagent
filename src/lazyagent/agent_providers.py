@@ -363,6 +363,7 @@ def _build_claude_runtime_context(
                     "hooks": [hook_command],
                 }
             ],
+            "UserPromptSubmit": [{"hooks": [hook_command]}],
             "Stop": [{"hooks": [hook_command]}],
             "TaskCompleted": [{"hooks": [hook_command]}],
             "SessionEnd": [{"hooks": [hook_command]}],

@@ -153,6 +153,15 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="asking a question",
                 )
             return None
+        if event_name == "UserPromptSubmit":
+            # The start of every turn. Without it a turn that uses no tools
+            # never leaves WAITING, so nothing can tell it happened — and it
+            # is the direct confirmation that programmatic input was submitted.
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="prompt submitted",
+            )
         if event_name == "Stop":
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,
