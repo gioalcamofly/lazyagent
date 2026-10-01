@@ -154,6 +154,10 @@ class MonitoredTerminal(ScrollableTerminal):
         if not self._stopped:
             self.post_message(AgentExited(self.worktree_path, agent_id=self.agent_id))
 
+    def poll_lifecycle(self) -> None:
+        """Apply whatever the agent's hooks/telemetry reported since last time."""
+        self._apply_events(self._observer.poll())
+
     def check_hang(self) -> None:
         """Called periodically by the app timer. Posts POSSIBLY_HANGED if stale."""
         self._apply_events(self._observer.poll())

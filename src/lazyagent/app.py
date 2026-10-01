@@ -137,6 +137,10 @@ class LazyAgent(App):
         # sampling, and stopped in action_quit.
         diag.start_watchdog()
         self.set_interval(60, diag.wrap_timer("timer.check_hangs", self._check_hangs))
+        # Hook logs are otherwise only read when a visible agent prints
+        # something; a hidden or quiet agent's status (and the mail wake-ups
+        # that follow from it) would lag by up to a minute.
+        self.set_interval(1, diag.wrap_timer("timer.poll_agents", self._poll_agents))
         # Only the selected worktree is polled, and only once a minute:
         # `git status` walks the whole working tree, so sweeping every
         # worktree on a timer costs seconds on a repo with many of them.
@@ -489,6 +493,17 @@ class LazyAgent(App):
         )
 
     # --- Hang detection ---
+
+    def _poll_agents(self) -> None:
+        """Pick up every agent's latest hook/telemetry events."""
+        for key, bucket in list(self._agent_states.items()):
+            panel = self._get_any_panel(key)
+            if panel is None:
+                continue
+            for agent_id in list(bucket):
+                terminal = panel.get_agent(agent_id)
+                if terminal is not None:
+                    terminal.poll_lifecycle()
 
     def _check_hangs(self) -> None:
         """Periodic timer callback: check all active agents for hangs."""

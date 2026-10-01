@@ -99,7 +99,12 @@ class JsonlTailObserver(AgentObserver):
         self._offset = 0
 
     def poll(self) -> list[AgentLifecycleEvent]:
-        if not self._log_path.exists():
+        try:
+            size = self._log_path.stat().st_size
+        except FileNotFoundError:
+            return []
+        if size == self._offset:
+            # Polled every second for every agent: don't open an unchanged log.
             return []
 
         events: list[AgentLifecycleEvent] = []
