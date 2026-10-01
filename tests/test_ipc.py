@@ -612,145 +612,43 @@ class TestSendAgentInputDelivery:
         assert result["result"]["delivery"] == "unchecked"
 
     @pytest.mark.asyncio
-    async def test_wait_until_blocks_for_the_new_turn_not_the_old_state(self):
-        # The agent is already "waiting" before the send; wait_until="idle"
-        # must not match that stale state, only the end of the new turn.
+    async def test_wait_until_is_gone(self):
+        # The blocking wait was removed; a stale caller still gets its text
+        # delivered and no extra keys in the result.
         app, terminal = _app_with_agent(AgentStatus.WAITING)
-        terminal.send_input.side_effect = _react(
-            app, AgentStatus.RUNNING, AgentStatus.WAITING, delay=0.01
-        )
+        terminal.send_input.side_effect = _react(app, AgentStatus.RUNNING)
         server = IpcServer(app, "/tmp/test.sock")
 
         result = await server._dispatch(
             "r",
             "send_agent_input",
-            {"worktree_path": "/tmp/repo", "text": "go", "wait_until": "idle", "timeout": 2},
+            {"worktree_path": "/tmp/repo", "text": "go", "wait_until": "idle"},
         )
 
         res = result["result"]
         assert res["delivery"] == "confirmed"
-        assert res["matched"] is True
-        assert res["event"]["previous_status"] == "running"
-        assert res["agent_status"] == "waiting"
-        assert res["cursor"] == res["event"]["seq"]
+        assert "matched" not in res
 
+
+class TestRemovedWaitTools:
     @pytest.mark.asyncio
-    async def test_wait_until_rejects_unknown_status(self):
-        app, terminal = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
-
-        result = await server._dispatch(
-            "r",
-            "send_agent_input",
-            {"worktree_path": "/tmp/repo", "text": "go", "wait_until": "asleep"},
-        )
-
-        assert result["error"]["code"] == "VALIDATION_ERROR"
-        terminal.send_input.assert_not_awaited()
-
-
-class TestWaitForAgent:
-    @pytest.mark.asyncio
-    async def test_returns_at_once_when_already_in_target(self):
-        app, _ = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
-
-        result = await server._dispatch(
-            "r", "wait_for_agent", {"worktree_path": "/tmp/repo", "timeout": 5}
-        )
-
-        res = result["result"]
-        assert res["matched"] is True
-        assert res["status"] == "waiting"
-        assert res["event"] is None
-
-    @pytest.mark.asyncio
-    async def test_blocks_until_the_transition(self):
+    @pytest.mark.parametrize("method", ["wait_for_agent", "wait_for_events"])
+    async def test_blocking_methods_are_unknown(self, method):
         app, _ = _app_with_agent(AgentStatus.RUNNING)
         server = IpcServer(app, "/tmp/test.sock")
 
-        async def _finish():
-            await asyncio.sleep(0.01)
-            _set_status(app, AgentStatus.WAITING_FOR_APPROVAL)
+        result = await server._dispatch("r", method, {"worktree_path": "/tmp/repo"})
 
-        asyncio.get_running_loop().create_task(_finish())
-        result = await server._dispatch(
-            "r",
-            "wait_for_agent",
-            {"worktree_path": "/tmp/repo", "until": "blocked", "timeout": 2},
-        )
-
-        res = result["result"]
-        assert res["matched"] is True
-        assert res["status"] == "waiting_for_approval"
-        assert res["event"]["status"] == "waiting_for_approval"
-
-    @pytest.mark.asyncio
-    async def test_since_ignores_the_current_state(self):
-        app, _ = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
-        cursor = app.agent_events.cursor
-
-        result = await server._dispatch(
-            "r",
-            "wait_for_agent",
-            {"worktree_path": "/tmp/repo", "until": "idle", "since": cursor, "timeout": 0.01},
-        )
-
-        res = result["result"]
-        assert res["matched"] is False
-        assert res["status"] == "waiting"
-        assert res["cursor"] == cursor
-
-    @pytest.mark.asyncio
-    async def test_exited_agent_matches_finished(self):
-        app, _ = _app_with_agent(AgentStatus.WAITING)
-        app._agent_states.clear()
-        server = IpcServer(app, "/tmp/test.sock")
-
-        result = await server._dispatch(
-            "r",
-            "wait_for_agent",
-            {"worktree_path": "/tmp/repo", "agent_id": "a1", "until": "finished"},
-        )
-
-        assert result["result"]["matched"] is True
-        assert result["result"]["status"] == "exited"
-
-    @pytest.mark.asyncio
-    async def test_timeout_is_capped(self, monkeypatch):
-        monkeypatch.setattr("lazyagent.ipc._MAX_WAIT_TIMEOUT", 0.01)
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
-
-        result = await asyncio.wait_for(
-            server._dispatch(
-                "r", "wait_for_agent", {"worktree_path": "/tmp/repo", "timeout": 9999}
-            ),
-            1,
-        )
-
-        assert result["result"]["matched"] is False
-
-    @pytest.mark.asyncio
-    async def test_negative_timeout_is_rejected(self):
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
-
-        result = await server._dispatch(
-            "r", "wait_for_agent", {"worktree_path": "/tmp/repo", "timeout": -1}
-        )
-
-        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert result["error"]["code"] == "UNKNOWN_METHOD"
 
 
-class TestWaitForEvents:
+class TestListEvents:
     @pytest.mark.asyncio
     async def test_without_since_starts_from_now(self):
         app, _ = _app_with_agent(AgentStatus.WAITING)
         server = IpcServer(app, "/tmp/test.sock")
 
-        result = await server._dispatch("r", "wait_for_events", {})
+        result = await server._dispatch("r", "list_events", {})
 
         assert result["result"] == {"events": [], "cursor": 1, "truncated": False}
 
@@ -762,7 +660,7 @@ class TestWaitForEvents:
         server = IpcServer(app, "/tmp/test.sock")
 
         result = await server._dispatch(
-            "r", "wait_for_events", {"since": 0, "statuses": ["idle"]}
+            "r", "list_events", {"since": 0, "statuses": ["idle"]}
         )
 
         res = result["result"]
@@ -770,26 +668,27 @@ class TestWaitForEvents:
         assert res["cursor"] == 3
 
     @pytest.mark.asyncio
-    async def test_blocks_for_the_next_matching_event_across_worktrees(self):
+    async def test_never_blocks_even_with_a_timeout(self):
         app, _ = _app_with_agent(AgentStatus.RUNNING)
         server = IpcServer(app, "/tmp/test.sock")
 
-        async def _other_agent_stops():
-            await asyncio.sleep(0.01)
-            _set_status(app, AgentStatus.RUNNING, path="/tmp/b", agent_id="b1")
-            _set_status(app, AgentStatus.WAITING_FOR_USER, path="/tmp/b", agent_id="b1")
-
-        asyncio.get_running_loop().create_task(_other_agent_stops())
-        result = await server._dispatch(
-            "r",
-            "wait_for_events",
-            {"statuses": ["idle", "blocked", "finished"], "timeout": 2},
+        result = await asyncio.wait_for(
+            server._dispatch(
+                "r", "list_events", {"statuses": ["idle"], "timeout": 600}
+            ),
+            1,
         )
 
-        events = result["result"]["events"]
-        assert [(e["worktree_path"], e["status"]) for e in events] == [
-            ("/tmp/b", "waiting_for_user")
-        ]
+        assert result["result"]["events"] == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_bad_cursor(self):
+        app, _ = _app_with_agent(AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch("r", "list_events", {"since": -1})
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
 
 
 class TestDispatch:

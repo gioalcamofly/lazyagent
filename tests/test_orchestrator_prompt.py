@@ -23,10 +23,13 @@ class TestDefaultPrompt:
             "stop_agent",
             "get_agent_status",
             "read_agent_output",
-            "wait_for_agent",
-            "wait_for_events",
+            "list_events",
         ]:
             assert tool in DEFAULT_ORCHESTRATOR_PROMPT
+
+    def test_does_not_teach_blocking_waits(self):
+        for gone in ["wait_for_agent", "wait_for_events", "wait_until"]:
+            assert gone not in DEFAULT_ORCHESTRATOR_PROMPT
 
     def test_contains_workflow_phases(self):
         assert "### 1. Assess" in DEFAULT_ORCHESTRATOR_PROMPT

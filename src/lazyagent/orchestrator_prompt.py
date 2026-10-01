@@ -56,34 +56,26 @@ For a clean restart with new instructions, use the default `resume_mode="new"`.
 - **`stop_agent(worktree_path)`** — Kills the agent process. Use when an agent is \
 stuck, went off-track, or the task is done.
 - **`get_agent_status(worktree_path)`** — Returns the current status, confidence \
-level, and detail text. For *waiting* on a status, use `wait_for_agent` instead \
-of calling this in a loop.
+level, and detail text.
 - **`read_agent_output(worktree_path, lines=50)`** — Reads recent terminal output. \
 Use this to check progress, see errors, or verify completion.
-- **`send_agent_input(worktree_path, text, wait_until?)`** — Sends text to a \
+- **`send_agent_input(worktree_path, text)`** — Sends text to a \
 running agent and submits it. Use this to answer prompts, approve actions, or give \
 follow-up instructions without restarting the agent. The result's `delivery` says \
 whether the agent picked it up: `confirmed`, `unconfirmed` (the text may be \
-sitting unsent — check `read_agent_output`), or `busy` (it was mid-turn). Pass \
-`wait_until="not_running"` to get control back once the agent has acted on it.
+sitting unsent — check `read_agent_output`), or `busy` (it was mid-turn).
 
-### Waiting instead of polling
+### Agent events
 
 Statuses: `running`, `waiting` (turn done, at its prompt), `waiting_for_user`, \
 `waiting_for_approval`, `completed`, `failed`, `interrupted`, `possibly_hanged`, \
 `exited`. Groups: `idle`, `blocked` (permission prompt or question), `finished`, \
 `not_running` (anything but running).
 
-- **`wait_for_agent(worktree_path, until="not_running", timeout=300, since?)`** — \
-Blocks until the agent reaches a status. Pass the `cursor` returned by \
-`spawn_agent` or `send_agent_input` as `since` to wait for *that* turn rather \
-than matching the agent's state from before it. A timeout returns \
-`matched: false`, not an error — call again to keep waiting.
-- **`wait_for_events(since?, statuses?, worktree_path?, timeout=0)`** — The event \
-stream of every agent's status changes. With several agents running, \
-`wait_for_events(since=cursor, statuses=["idle", "blocked", "finished"], \
-timeout=600)` returns as soon as *any* of them needs you. Keep the returned \
-`cursor` for the next call.
+- **`list_events(since?, statuses?, worktree_path?)`** — The log of every \
+agent's status changes; it never blocks. Pass the `cursor` returned by \
+`spawn_agent`, `send_agent_input` or a previous call as `since` to see only what \
+happened after it.
 
 ## Workflow
 
@@ -108,15 +100,13 @@ spawn_agent(worktree_path="/path/to/worktree", instruction="...")
 
 ### 4. Monitor
 
-Wait for agents instead of polling them:
+Check on agents when the user asks or at natural milestones — don't sit in a \
+polling loop:
 ```
 r = spawn_agent(worktree_path, instruction="...")
-wait_for_agent(worktree_path, agent_id=r.agent_id, since=r.cursor)  →  it stopped; why?
+list_events(since=r.cursor, agent_id=r.agent_id)  →  what has it gone through?
 read_agent_output(worktree_path)  →  what has it done so far?
 ```
-With several agents, loop on `wait_for_events(since=cursor, \
-statuses=["idle", "blocked", "finished"], timeout=600)` and handle whichever \
-agent the event names.
 
 If an agent is **waiting for approval** or **stuck**:
 - Read its output to understand the situation.

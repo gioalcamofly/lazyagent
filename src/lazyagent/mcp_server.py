@@ -279,9 +279,8 @@ async def spawn_agent(
 
     Returns:
         Object with worktree_path, agent_id, status, and ``cursor`` (event
-        cursor taken before the spawn). To block until the agent has worked
-        through ``instruction``, call
-        ``wait_for_agent(worktree_path, agent_id, since=cursor)``.
+        cursor taken before the spawn; pass it as ``since`` to list_events
+        to see every status change of the new agent).
     """
     params: dict[str, Any] = {
         "worktree_path": worktree_path,
@@ -379,8 +378,6 @@ async def send_agent_input(
     text: str,
     agent_id: str | None = None,
     confirm: bool = True,
-    wait_until: str | list[str] | None = None,
-    timeout: float = 300,
 ) -> dict:
     """Send text to a running agent's terminal and submit it.
 
@@ -397,115 +394,45 @@ async def send_agent_input(
     permission prompt or a question, a warning notes that the text answered
     that dialog rather than starting a new prompt.
 
-    Pass ``wait_until`` to also block until the resulting turn reaches a
-    status, e.g. ``wait_until="not_running"`` to send an instruction and get
-    control back once the agent has finished acting on it.
-
     Args:
         worktree_path: Absolute path of the worktree.
         text: The text to send (it is submitted automatically).
         agent_id: Which agent to send to. May be omitted when the worktree has
             exactly one agent; required when there are several.
         confirm: Wait for the agent to start working on the text (default True).
-        wait_until: Optional status or group (or list) to wait for after the
-            text is submitted. See below.
-        timeout: Seconds to wait for ``wait_until`` (default 300, max 1800).
-
-    Statuses: running, waiting, waiting_for_user, waiting_for_approval,
-    completed, failed, interrupted, possibly_hanged, no_agent, and exited
-    (agent gone). Groups: "idle" (turn finished, at its prompt), "blocked"
-    (on a permission prompt or a question), "finished" (completed, failed,
-    interrupted or exited), "not_running" (anything but running).
 
     Returns:
         Object with agent_id, delivery, status_before, ``cursor`` (event
         cursor taken just before sending — pass it as ``since`` to
-        wait_for_agent to wait for this turn later), optional ``warnings``,
-        and, with ``wait_until``: matched, event, agent_status.
+        list_events to see what the agent did with the text), and optional
+        ``warnings``.
     """
     params: dict[str, Any] = {
         "worktree_path": worktree_path,
         "text": text,
         "confirm": confirm,
-        "timeout": timeout,
     }
     if agent_id is not None:
         params["agent_id"] = agent_id
-    if wait_until is not None:
-        params["wait_until"] = wait_until
     return await _get_client().call("send_agent_input", params)
 
 
 @mcp.tool()
-async def wait_for_agent(
-    worktree_path: str,
-    agent_id: str | None = None,
-    until: str | list[str] = "not_running",
-    timeout: float = 300,
-    since: int | None = None,
-) -> dict:
-    """Block until an agent reaches a status, instead of polling get_agent_status.
-
-    Without ``since``, returns immediately if the agent is already in one of
-    the ``until`` statuses. With ``since`` (a cursor from send_agent_input,
-    spawn-time wait_for_events, or a previous wait), only a transition
-    *after* that cursor counts — use it to wait for the turn you just started
-    without being fooled by the agent's state before your input landed.
-
-    A timeout is not an error: ``matched`` is False and ``status`` is the
-    agent's current status; call again to keep waiting.
-
-    Args:
-        worktree_path: Absolute path of the worktree.
-        agent_id: Which agent. May be omitted when the worktree has exactly
-            one agent. An id that is no longer running reports "exited".
-        until: Status or group (or list) to wait for. Default "not_running".
-        timeout: Seconds to wait (default 300, max 1800).
-        since: Optional event cursor; see above.
-
-    Statuses: running, waiting, waiting_for_user, waiting_for_approval,
-    completed, failed, interrupted, possibly_hanged, no_agent, and exited
-    (agent gone). Groups: "idle" (turn finished, at its prompt), "blocked"
-    (on a permission prompt or a question), "finished" (completed, failed,
-    interrupted or exited), "not_running" (anything but running).
-
-    Returns:
-        Object with agent_id, matched, status (current), waited_seconds,
-        event (the matching transition, or null), and cursor.
-    """
-    params: dict[str, Any] = {
-        "worktree_path": worktree_path,
-        "until": until,
-        "timeout": timeout,
-    }
-    if agent_id is not None:
-        params["agent_id"] = agent_id
-    if since is not None:
-        params["since"] = since
-    return await _get_client().call("wait_for_agent", params)
-
-
-@mcp.tool()
-async def wait_for_events(
+async def list_events(
     since: int | None = None,
     worktree_path: str | None = None,
     agent_id: str | None = None,
     statuses: str | list[str] | None = None,
-    timeout: float = 0,
 ) -> dict:
-    """Read the agent event stream: every status change of every agent.
+    """Read the agent event log: every status change of every agent.
 
-    Each event has seq, time, worktree_path, agent_id, label, status,
-    previous_status and detail. Keep the returned ``cursor`` and pass it back
-    as ``since`` to get only newer events — that is how an orchestrator
-    watching several agents learns which one needs attention next, e.g.
-    ``wait_for_events(since=c, statuses=["idle", "blocked", "finished"],
-    timeout=600)`` returns as soon as any agent stops.
+    Never blocks. Each event has seq, time, worktree_path, agent_id, label,
+    status, previous_status and detail. Keep the returned ``cursor`` and pass
+    it back as ``since`` to get only newer events.
 
-    Omitting ``since`` means "from now": with a timeout it waits for the next
-    event; with ``timeout=0`` it just returns the current cursor to start
-    from. The log keeps the last 1000 events; ``truncated`` is True if events
-    after ``since`` were already dropped.
+    Omitting ``since`` means "from now": it returns no events, just the
+    current cursor to start from. The log keeps the last 1000 events;
+    ``truncated`` is True if events after ``since`` were already dropped.
 
     Args:
         since: Event cursor to read after. Omit to start from now.
@@ -513,8 +440,6 @@ async def wait_for_events(
         agent_id: Only events for this agent id.
         statuses: Only events whose new status is one of these (statuses or
             groups).
-        timeout: Seconds to block until a matching event arrives (default 0 =
-            return immediately, max 1800).
 
     Statuses: running, waiting, waiting_for_user, waiting_for_approval,
     completed, failed, interrupted, possibly_hanged, no_agent, and exited
@@ -525,7 +450,7 @@ async def wait_for_events(
     Returns:
         Object with events (list, oldest first), cursor, and truncated.
     """
-    params: dict[str, Any] = {"timeout": timeout}
+    params: dict[str, Any] = {}
     if since is not None:
         params["since"] = since
     if worktree_path is not None:
@@ -534,7 +459,8 @@ async def wait_for_events(
         params["agent_id"] = agent_id
     if statuses is not None:
         params["statuses"] = statuses
-    return await _get_client().call("wait_for_events", params)
+    return await _get_client().call("list_events", params)
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

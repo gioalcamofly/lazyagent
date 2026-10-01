@@ -20,13 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lazyagent.agent_events import (
-    EXITED,
-    STATUS_GROUPS,
-    AgentEvent,
-    make_filter,
-    resolve_statuses,
-)
+from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
 from lazyagent.models import AgentState, AgentStatus, rollup_status
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
@@ -38,13 +32,6 @@ log = logging.getLogger(__name__)
 
 # How long we wait for Textual-thread operations (spawn/stop agent)
 _TEXTUAL_OP_TIMEOUT = 30.0
-
-# Blocking waits (wait_for_agent / wait_for_events / send_agent_input with
-# wait_until): default and ceiling, in seconds. The ceiling keeps one call from
-# outliving an MCP client's own request timeout; callers loop on a timeout.
-_DEFAULT_WAIT_TIMEOUT = 300.0
-_MAX_WAIT_TIMEOUT = 1800.0
-
 
 def _env_seconds(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -64,21 +51,6 @@ _INPUT_CONFIRM_TIMEOUT = _env_seconds("LAZYAGENT_INPUT_CONFIRM_TIMEOUT", 5.0)
 # An agent sitting on one of these is showing a dialog: input sent to it
 # answers the dialog rather than starting a new turn.
 _BLOCKED_STATUSES = STATUS_GROUPS["blocked"]
-
-
-def _wait_timeout(params: dict, default: float = _DEFAULT_WAIT_TIMEOUT) -> float:
-    raw = params.get("timeout", default)
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"timeout must be a number of seconds, got {raw!r}")
-    if value < 0:
-        raise ValueError("timeout must not be negative")
-    return min(value, _MAX_WAIT_TIMEOUT)
-
-
-def _event_payload(event: AgentEvent | None) -> dict | None:
-    return event.to_dict() if event is not None else None
 
 
 def _ok(request_id: str, result: Any) -> dict:
@@ -106,8 +78,7 @@ class IpcServer:
             "read_agent_output": self.handle_read_agent_output,
             "send_agent_input": self.handle_send_agent_input,
             "list_agents": self.handle_list_agents,
-            "wait_for_agent": self.handle_wait_for_agent,
-            "wait_for_events": self.handle_wait_for_events,
+            "list_events": self.handle_list_events,
         }
 
     @property
@@ -577,8 +548,6 @@ class IpcServer:
             raise ValueError("Agent terminal is not ready")
 
         confirm = params.get("confirm", True)
-        wait_until = resolve_statuses(params.get("wait_until"))
-        timeout = _wait_timeout(params)
 
         bus = self._app.agent_events
         state = self._agent_bucket(worktree_path).get(agent_id)
@@ -616,14 +585,13 @@ class IpcServer:
         # begins with a RUNNING transition (for Claude, the UserPromptSubmit
         # hook). An agent that was already working queues the text or ignores
         # it, and neither is observable, so that case stays "busy".
-        started: AgentEvent | None = None
         if status_before == AgentStatus.RUNNING.value:
             result["delivery"] = "busy"
             warnings.append(
                 "The agent was already working; the text was sent but cannot be "
                 "confirmed until its current turn ends."
             )
-        elif confirm or wait_until is not None:
+        elif confirm:
             events, _ = await bus.wait(
                 cursor,
                 make_filter(
@@ -648,101 +616,16 @@ class IpcServer:
         else:
             result["delivery"] = "unchecked"
 
-        if wait_until is not None:
-            if started is not None and started.status in wait_until:
-                # E.g. the agent exited instead of starting: nothing follows.
-                outcome: AgentEvent | None = started
-            else:
-                after = started.seq if started is not None else cursor
-                events, _ = await bus.wait(
-                    after,
-                    make_filter(worktree_path, agent_id, wait_until),
-                    timeout,
-                )
-                outcome = events[0] if events else None
-            result["matched"] = outcome is not None
-            result["event"] = _event_payload(outcome)
-            result["cursor"] = outcome.seq if outcome is not None else bus.cursor
-            current = self._agent_bucket(worktree_path).get(agent_id)
-            result["agent_status"] = (
-                current.status.value if current is not None else EXITED
-            )
-
         if warnings:
             result["warnings"] = warnings
         return _ok(request_id, result)
 
-    async def handle_wait_for_agent(
+    async def handle_list_events(
         self, request_id: str, params: dict
     ) -> dict:
-        """Block until an agent reaches one of ``until``. Params:
-        worktree_path, agent_id (optional), until (status/group or list,
-        default "not_running"), timeout (seconds), since (optional cursor).
-
-        Without ``since``, an agent already in a target status returns at
-        once. With ``since``, only a transition after that cursor counts —
-        which is how a caller waits for the turn it just started.
-        """
-        worktree_path = params.get("worktree_path", "")
-        if not worktree_path:
-            raise ValueError("worktree_path is required")
-        targets = resolve_statuses(params.get("until") or "not_running")
-        timeout = _wait_timeout(params)
-        since = params.get("since")
-        bus = self._app.agent_events
-
-        bucket = self._agent_bucket(worktree_path)
-        requested = params.get("agent_id")
-        if requested and requested not in bucket:
-            # Gone already; only an explicit id can name an agent that exited.
-            agent_id = requested
-            status_now = EXITED
-        else:
-            agent_id = self._resolve_agent_id(list(bucket.keys()), requested)
-            status_now = bucket[agent_id].status.value
-
-        if since is None:
-            if status_now in targets:
-                return _ok(request_id, {
-                    "worktree_path": worktree_path,
-                    "agent_id": agent_id,
-                    "matched": True,
-                    "status": status_now,
-                    "waited_seconds": 0.0,
-                    "event": None,
-                    "cursor": bus.cursor,
-                })
-            since = bus.cursor
-        elif not isinstance(since, int) or since < 0:
-            raise ValueError("since must be a non-negative integer cursor")
-
-        loop = asyncio.get_running_loop()
-        started_at = loop.time()
-        events, truncated = await bus.wait(
-            since, make_filter(worktree_path, agent_id, targets), timeout
-        )
-        event = events[0] if events else None
-        current = self._agent_bucket(worktree_path).get(agent_id)
-        result = {
-            "worktree_path": worktree_path,
-            "agent_id": agent_id,
-            "matched": event is not None,
-            "status": current.status.value if current is not None else EXITED,
-            "waited_seconds": round(loop.time() - started_at, 3),
-            "event": _event_payload(event),
-            "cursor": event.seq if event is not None else bus.cursor,
-        }
-        if truncated:
-            result["truncated"] = True
-        return _ok(request_id, result)
-
-    async def handle_wait_for_events(
-        self, request_id: str, params: dict
-    ) -> dict:
-        """Return agent events after a cursor, blocking until one arrives.
-        Params: since (cursor; omitted = from now), worktree_path, agent_id,
-        statuses (filters, all optional), timeout (seconds, default 0 =
-        don't block).
+        """Return agent events after a cursor; never blocks. Params: since
+        (cursor; omitted = from now), worktree_path, agent_id, statuses
+        (filters, all optional).
         """
         bus = self._app.agent_events
         since = params.get("since")
@@ -750,13 +633,12 @@ class IpcServer:
             since = bus.cursor
         elif not isinstance(since, int) or since < 0:
             raise ValueError("since must be a non-negative integer cursor")
-        timeout = _wait_timeout(params, default=0.0)
         match = make_filter(
             params.get("worktree_path") or None,
             params.get("agent_id"),
             resolve_statuses(params.get("statuses")),
         )
-        events, truncated = await bus.wait(since, match, timeout)
+        events, truncated = bus.since(since, match)
         # The events are filtered, so the cursor has to cover what the filter
         # skipped too — otherwise the next call would re-scan it forever.
         return _ok(request_id, {
