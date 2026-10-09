@@ -85,7 +85,7 @@ By default lazyagent launches `claude`. Set `provider = "codex"` or `provider = 
 
 lazyagent ships an MCP server that exposes its worktree and agent tools (`list_worktrees`, `spawn_agent`, `send_agent_input`, `list_events`, …) to a standalone `claude` session — useful when you want `claude` running outside lazyagent's TUI to drive a lazyagent instance you have running elsewhere.
 
-> Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the MCP server wired up automatically. The setup below is only needed for `claude` sessions you start by hand in other projects.
+> Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the MCP server wired up automatically, under the name `lazyagent_app` and running the same lazyagent as the app. That way a `lazyagent` server you register below can't shadow it. The setup below is only needed for `claude` sessions you start by hand in other projects.
 
 Register it once at user scope so `claude` finds it from any directory:
 

@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rather than starting a new prompt
 
 ### Fixed
+- Claude agents spawned by lazyagent now actually get lazyagent's MCP server.
+  It was written into the `--settings` file, where Claude Code ignores
+  `mcpServers`; it now goes in a per-agent file passed with `--mcp-config`
+- The per-agent MCP server is named `lazyagent_app` for Claude, Codex and
+  Gemini, so a user-registered `lazyagent` server can't shadow it with another
+  lazyagent install
+- Removing a worktree reports its agents as `exited` in `list_events` instead
+  of dropping them silently
+- Status changes of hidden or quiet agents arrive within a second; every
+  agent's hook log is now polled once a second instead of only when a visible
+  agent printed something
 - Claude agents now report `running` at the start of every turn, including
   turns that use no tools; before, such a turn never left `waiting`, so nothing
   could tell it had happened
