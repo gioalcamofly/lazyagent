@@ -10,6 +10,7 @@ from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_providers import (
+    agent_session_name,
     DEFAULT_AGENT_PROVIDER,
     ResumeMode,
     env_exports,
@@ -179,6 +180,8 @@ class WorktreePanel(Container):
         # own TabPane to the left of the permanent Diff tab.
         self._agents: dict[str, MonitoredTerminal] = {}
         self._labels: dict[str, str] = {}
+        # agent_id -> the session name passed to the CLI (Claude only).
+        self._session_names: dict[str, str] = {}
         self._agent_counter = 0
 
     def compose(self):
@@ -278,6 +281,10 @@ class WorktreePanel(Container):
         """Return the human-facing tab label for an agent."""
         return self._labels.get(agent_id, "")
 
+    def agent_session_name(self, agent_id: str) -> str:
+        """Return the name other Claude sessions address this agent by."""
+        return self._session_names.get(agent_id, "")
+
     @property
     def active_agent_id(self) -> str | None:
         """The agent whose tab is currently active, the sole agent, or None.
@@ -344,6 +351,7 @@ class WorktreePanel(Container):
         for aid in targets:
             terminal = self._agents.pop(aid, None)
             self._labels.pop(aid, None)
+            self._session_names.pop(aid, None)
             if terminal is not None:
                 terminal.stop()
             try:
@@ -362,6 +370,7 @@ class WorktreePanel(Container):
         socket_path: str | None = None,
         instruction: str | None = None,
         label: str | None = None,
+        cross_session_inbound: str | None = None,
         _diag_spawn_id: str = "",
     ) -> str:
         """Spawn a new coding agent in its own tab. Returns the new agent id.
@@ -383,6 +392,10 @@ class WorktreePanel(Container):
         self._labels[agent_id] = tab_label
 
         provider = get_agent_provider(agent_provider)
+        if provider.session_name_flag:
+            self._session_names[agent_id] = agent_session_name(
+                self.worktree_path, agent_id
+            )
         # build_runtime_context touches the filesystem for some providers
         # (hook scripts, settings files), so it is timed separately.
         with diag.timed(
@@ -393,7 +406,9 @@ class WorktreePanel(Container):
             worktree=self.worktree_path,
         ):
             runtime_context = provider.build_runtime_context(
-                self.worktree_path, socket_path=socket_path
+                self.worktree_path,
+                socket_path=socket_path,
+                cross_session_inbound=cross_session_inbound,
             )
         command = provider.build_command(
             self.worktree_path,
@@ -401,6 +416,7 @@ class WorktreePanel(Container):
             runtime_context=runtime_context,
             resume_mode=resume_mode,
             instruction=instruction,
+            session_name=self._session_names.get(agent_id),
         )
 
         with diag.timed(

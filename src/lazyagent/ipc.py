@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
@@ -376,9 +375,11 @@ class IpcServer:
                     socket_path=self._socket_path,
                     instruction=instruction,
                     label=label,
+                    cross_session_inbound=self._app._config.agent.cross_session_inbound,
                 )
                 state = self._app._get_agent_state(worktree_path, agent_id)
                 state.label = panel.agent_label(agent_id)
+                state.session_name = panel.agent_session_name(agent_id)
                 self._app._refresh_sidebar_agents(worktree_path)
                 future.set_result(agent_id)
             except Exception as e:
@@ -713,6 +714,7 @@ class IpcServer:
             {
                 "agent_id": aid,
                 "label": st.label,
+                "session_name": st.session_name,
                 "status": st.status.value,
                 "confidence": st.confidence.value,
                 "detail": st.detail,
