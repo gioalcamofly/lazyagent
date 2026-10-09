@@ -230,6 +230,8 @@ class TestRemoveWorktree:
 
         assert result == _ok("req-1", {"removed": "/tmp/repo-feat"})
         instance.remove.assert_called_once_with("/tmp/repo-feat", True)
+        # Through the app, so each agent is reported as exited.
+        app._drop_worktree_agents.assert_called_once_with("/tmp/repo-feat")
 
 
 class TestSpawnAgent:

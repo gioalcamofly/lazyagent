@@ -238,6 +238,11 @@ class LazyAgent(App):
                     previous_status=state.status.value,
                 )
 
+    def _drop_worktree_agents(self, key: str) -> None:
+        """Drop every agent of a worktree that is going away."""
+        for agent_id in list(self._worktree_agent_states(key)):
+            self._drop_agent_state(key, agent_id)
+
     def _refresh_sidebar_agents(self, key: str) -> None:
         """Push the worktree's current agent roll-up to the sidebar."""
         self.query_one(WorktreeList).update_agent_states(
@@ -815,7 +820,7 @@ class LazyAgent(App):
             try:
                 manager = WorktreeManager(self._repo_root)
                 manager.remove(worktree.path, force=force)
-                self._agent_states.pop(worktree.path, None)
+                self._drop_worktree_agents(worktree.path)
                 self._load_worktrees()
                 if self.worktrees:
                     self.query_one(WorktreeList).index = 0

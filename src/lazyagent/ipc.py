@@ -328,7 +328,7 @@ class IpcServer:
         manager = WorktreeManager(self._app._repo_root)
         await asyncio.to_thread(manager.remove, worktree_path, force)
 
-        self._app._agent_states.pop(worktree_path, None)
+        self._app._drop_worktree_agents(worktree_path)
         self._app.call_later(self._app._load_worktrees)
 
         return _ok(request_id, {"removed": worktree_path})
