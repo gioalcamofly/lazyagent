@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Claude agents get a predictable session name (`--name <worktree folder>-<agent
+  id>`, `<repo>-orchestrator` for the orchestrator), reported as `session_name`
+  by `list_worktrees` and `list_agents`. Other Claude sessions reach them with
+  Claude Code's built-in `SendMessage`
+- The orchestrator prompt teaches `SendMessage` and `notify_when_idle` for
+  Claude workers instead of typed input, and tells the orchestrator its own
+  session name so workers can report back
+- `[agent] cross_session_inbound` (`accept`, `hold` or `refuse`) sets Claude's
+  `crossSessionInbound` for spawned agents
 - `list_events` MCP tool: a cursor-based log of every agent's status changes
   across all worktrees. It never blocks; `spawn_agent` and `send_agent_input`
   return a `cursor` to read it from. Groups (`idle`, `blocked`, `finished`,
@@ -19,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rather than starting a new prompt
 
 ### Fixed
+- A subagent tool call that Claude Code reports after the agent's turn has
+  ended no longer shows the agent as `running` for about a minute. It was seen
+  after a turn a `notify_when_idle` subscriber was waiting on
 - Claude agents spawned by lazyagent now actually get lazyagent's MCP server.
   It was written into the `--settings` file, where Claude Code ignores
   `mcpServers`; it now goes in a per-agent file passed with `--mcp-config`
