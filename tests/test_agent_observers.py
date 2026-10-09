@@ -226,6 +226,57 @@ class TestClaudeHooksObserver:
         assert observer.poll() == []
 
 
+class TestClaudeSubagentAfterStop:
+    """Subagent tool calls after the main agent's Stop don't mean it is busy."""
+
+    @staticmethod
+    def _poll(tmp_path, *hooks: dict):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            "".join(json.dumps(h) + "\n" for h in hooks), encoding="utf-8"
+        )
+        return [e.status for e in ClaudeHooksObserver(str(log_path)).poll()]
+
+    def test_ignored_after_stop(self, tmp_path):
+        # The sequence seen once after a turn a notify_when_idle subscriber
+        # was waiting on: Stop, then a lone subagent ReportFindings.
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "PreToolUse", "tool_name": "ReportFindings",
+             "agent_id": "aa3498b9fbed1bdae"},
+        )
+        assert statuses == [AgentStatus.RUNNING, AgentStatus.WAITING]
+
+    def test_kept_during_a_turn(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub1"},
+        )
+        assert statuses == [AgentStatus.RUNNING, AgentStatus.RUNNING]
+
+    def test_kept_again_after_the_next_prompt(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub1"},
+        )
+        assert statuses == [
+            AgentStatus.WAITING, AgentStatus.RUNNING, AgentStatus.RUNNING
+        ]
+
+    def test_main_agent_tool_after_stop_still_counts(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Bash"},
+        )
+        assert statuses == [AgentStatus.WAITING, AgentStatus.RUNNING]
+
+
 class TestCodexAppServerObserver:
     def test_turn_started_sets_running(self, tmp_path):
         log_path = tmp_path / "events.jsonl"
