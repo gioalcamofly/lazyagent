@@ -138,8 +138,8 @@ class LazyAgent(App):
         diag.start_watchdog()
         self.set_interval(60, diag.wrap_timer("timer.check_hangs", self._check_hangs))
         # Hook logs are otherwise only read when a visible agent prints
-        # something; a hidden or quiet agent's status (and the mail wake-ups
-        # that follow from it) would lag by up to a minute.
+        # something; a hidden or quiet agent's status (and the events that
+        # follow from it) would lag by up to a minute.
         self.set_interval(1, diag.wrap_timer("timer.poll_agents", self._poll_agents))
         # Only the selected worktree is polled, and only once a minute:
         # `git status` walks the whole working tree, so sweeping every
