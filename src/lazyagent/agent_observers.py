@@ -146,8 +146,11 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="needs approval",
                 )
             if notification_type == "idle_prompt":
+                # Claude's "still waiting for your input" reminder for an agent
+                # that finished its turn. It is not a dialog: reporting it as
+                # waiting_for_user would put idle agents in the "blocked" group.
                 return AgentLifecycleEvent(
-                    status=AgentStatus.WAITING_FOR_USER,
+                    status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.HIGH,
                     detail="idle",
                 )

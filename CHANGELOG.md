@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rather than starting a new prompt
 
 ### Fixed
+- A Claude agent that has sat idle at its prompt is reported as `waiting`,
+  not `waiting_for_user`. Claude's idle reminder was mapped like a dialog, so
+  `list_events` put idle agents in the `blocked` group and `send_agent_input`
+  warned that the text "answered that dialog"
 - Claude agents spawned by lazyagent now actually get lazyagent's MCP server.
   It was written into the `--settings` file, where Claude Code ignores
   `mcpServers`; it now goes in a per-agent file passed with `--mcp-config`
