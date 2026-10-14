@@ -462,6 +462,10 @@ class LazyAgent(App):
             label_fn = getattr(panel, "agent_label", None)
             if label_fn is not None:
                 state.label = label_fn(event.agent_id)
+        if panel is not None and not state.session_name:
+            name_fn = getattr(panel, "agent_session_name", None)
+            if name_fn is not None:
+                state.session_name = name_fn(event.agent_id)
         if event.status == AgentStatus.RUNNING and panel is not None:
             terminal = panel.get_agent(event.agent_id)
             if terminal:
@@ -558,10 +562,12 @@ class LazyAgent(App):
                         resume_mode=result.resume_mode,
                         socket_path=self._ipc_socket_path,
                         instruction=result.instruction,
+                        cross_session_inbound=self._config.agent.cross_session_inbound,
                         _diag_spawn_id=spawn_id,
                     )
                     state = self._get_agent_state(worktree.path, agent_id)
                     state.label = panel.agent_label(agent_id)
+                    state.session_name = panel.agent_session_name(agent_id)
                     self._refresh_sidebar_agents(worktree.path)
                     span["agent_id"] = agent_id
 
@@ -590,6 +596,7 @@ class LazyAgent(App):
                     socket_path=self._ipc_socket_path,
                     instruction=result.instruction,
                     system_prompt=orch_prompt,
+                    cross_session_inbound=self._config.agent.cross_session_inbound,
                 )
 
         self.push_screen(SpawnModal("Orchestrator", agent_provider=self._config.agent.provider), on_spawn_dismiss)

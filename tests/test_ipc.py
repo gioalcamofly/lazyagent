@@ -75,6 +75,7 @@ class TestListWorktrees:
             {
                 "agent_id": "a1",
                 "label": "",
+                "session_name": "",
                 "status": "running",
                 "confidence": "low",
                 "detail": "",

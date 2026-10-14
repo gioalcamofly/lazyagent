@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -30,6 +31,22 @@ DEFAULT_AGENT_PROVIDER = "claude"
 # setup for standalone sessions) takes precedence over the per-agent one and
 # may run another lazyagent install entirely.
 MCP_SERVER_NAME = "lazyagent_app"
+
+# Values Claude Code accepts for its crossSessionInbound setting.
+CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
+
+
+def agent_session_name(worktree_path: str, agent_id: str = "") -> str:
+    """Name a spawned agent's session, for providers that take one.
+
+    Other Claude sessions address it by this name with SendMessage, so it is
+    derived from the worktree folder and the agent id rather than left to the
+    CLI's random suffix.
+    """
+    name = Path(worktree_path).name
+    if agent_id:
+        name = f"{name}-{agent_id}"
+    return re.sub(r"[^A-Za-z0-9._]+", "-", name).strip("-") or "agent"
 
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
 ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
@@ -62,6 +79,7 @@ class AgentProvider:
     resume_is_subcommand: bool = False
     instruction_flag: str | None = None
     system_prompt_flag: str | None = None
+    session_name_flag: str | None = None
 
     def build_command(
         self,
@@ -71,6 +89,7 @@ class AgentProvider:
         resume_mode: ResumeMode = ResumeMode.NEW,
         instruction: str | None = None,
         system_prompt: str | None = None,
+        session_name: str | None = None,
     ) -> str:
         """Build the full shell command used to launch this provider."""
         context = runtime_context or self.build_runtime_context(worktree_path)
@@ -86,6 +105,9 @@ class AgentProvider:
 
         if skip_permissions:
             parts.append(self.dangerous_flag)
+
+        if session_name and self.session_name_flag:
+            parts.extend([self.session_name_flag, session_name])
 
         if system_prompt:
             if self.system_prompt_flag:
@@ -126,10 +148,17 @@ class AgentProvider:
         self,
         worktree_path: str,
         socket_path: str | None = None,
+        cross_session_inbound: str | None = None,
     ) -> ProviderRuntimeContext:
-        """Build provider-specific runtime metadata for the spawned session."""
+        """Build provider-specific runtime metadata for the spawned session.
+
+        ``cross_session_inbound`` only applies to Claude, the one provider
+        with cross-session messaging.
+        """
         if self.name == "claude":
-            return _build_claude_runtime_context(self, worktree_path, socket_path)
+            return _build_claude_runtime_context(
+                self, worktree_path, socket_path, cross_session_inbound
+            )
         if self.name == "codex":
             return _build_codex_runtime_context(self, worktree_path, socket_path)
         if self.name == "gemini":
@@ -195,6 +224,7 @@ PROVIDERS = {
         resume_pick_args=("--resume",),
         resume_last_args=("--continue",),
         system_prompt_flag="--append-system-prompt",
+        session_name_flag="--name",
     ),
     "codex": AgentProvider(
         name="codex",
@@ -352,6 +382,7 @@ def _build_claude_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
     socket_path: str | None = None,
+    cross_session_inbound: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -379,6 +410,11 @@ def _build_claude_runtime_context(
             "PostToolUse": [{"hooks": [hook_command]}],
         }
     }
+
+    if cross_session_inbound:
+        # Claude Code holds a SendMessage for approval when the sender runs in
+        # another permission mode; "accept" delivers it anyway.
+        hooks_settings["crossSessionInbound"] = cross_session_inbound
 
     metadata = {
         "temp_dir": str(temp_dir),

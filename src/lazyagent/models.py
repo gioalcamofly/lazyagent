@@ -97,6 +97,7 @@ class AgentState:
     last_output_time: float | None = None  # time.monotonic()
     agent_id: str = ""   # "" = legacy/primary (single-agent, e.g. orchestrator)
     label: str = ""      # human-facing tab label (e.g. "Agent 1")
+    session_name: str = ""  # SendMessage address (Claude agents only)
 
 
 # Priority order for rolling up several per-agent statuses into one summary
