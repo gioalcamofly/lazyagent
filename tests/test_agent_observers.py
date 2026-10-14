@@ -107,7 +107,7 @@ class TestClaudeHooksObserver:
         assert events[0].status == AgentStatus.WAITING_FOR_APPROVAL
         assert events[0].confidence == LifecycleConfidence.HIGH
 
-    def test_idle_prompt_sets_waiting_for_user(self, tmp_path):
+    def test_idle_prompt_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
         log_path.write_text(
             json.dumps(
@@ -122,7 +122,7 @@ class TestClaudeHooksObserver:
         observer = ClaudeHooksObserver(str(log_path))
         events = observer.poll()
         assert len(events) == 1
-        assert events[0].status == AgentStatus.WAITING_FOR_USER
+        assert events[0].status == AgentStatus.WAITING
         assert events[0].detail == "idle"
 
     def test_elicitation_sets_waiting_for_user(self, tmp_path):
