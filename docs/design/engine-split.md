@@ -43,7 +43,7 @@
 | `action_spawn_agent` / `_spawn_orchestrator_agent` | app.py:529-602 | **Engine** `spawn_agent` (+ `kind:"orchestrator"`); **Client** keeps the `SpawnModal` | Spawn logic is duplicated today in the IPC handler (ipc.py:365-390) |
 | `compose_orchestrator_prompt` | app.py:586; orchestrator_prompt.py:178 | **Engine** | Needs config and repo root only |
 | `action_stop_agent` / orchestrator stop | app.py:604-637 | **Engine** `stop_agent`; **Client** chooses the target | The active tab is client state |
-| `action_create_worktree` / `_do_create_worktree` | app.py:751-792 | **Engine** `create_worktree`; **Client** modal | The custom-create path differs between UI (types into shell, :782) and IPC (subprocess, ipc.py:253). Unify on the engine subprocess and stream its output as a job (open question Q6) |
+| `action_create_worktree` / `_do_create_worktree` | app.py:751-792 | **Engine** `create_worktree`; **Client** modal | The custom-create path differs between UI (types into shell, :782) and IPC (subprocess, ipc.py:253). Both paths become an engine job (subprocess) with streamed output (decision D6) |
 | `action_remove_worktree` / `_do_remove_worktree` | app.py:794-851 | **Engine**; **Client** confirm modal | The "agent running" guard is duplicated (app.py:803 vs ipc.py:320) |
 | `_send_to_terminal` | app.py:853-868 | **Engine** `write_input` to the worktree shell session | Writes straight into a widget queue today |
 | `action_refresh` / `_load_worktrees` | app.py:738, :180-199 | **Engine** `refresh_worktrees` → `worktrees.changed` | IPC calls it through `call_later` (ipc.py:268, :296, :331) |
@@ -55,9 +55,9 @@
 
 | State / logic | Where | Goes to | Why |
 |---|---|---|---|
-| `WorktreePanel._agents / _labels / _session_names / _agent_counter` | center_panel.py:181-185, :320-322 | **Engine** `AgentRegistry` | Agent identity and ids. Ids `a1, a2…` are per-panel counters today (Q8) |
+| `WorktreePanel._agents / _labels / _session_names / _agent_counter` | center_panel.py:181-185, :320-322 | **Engine** `AgentRegistry` | Agent identity and ids. Ids `a1, a2…` are per-panel counters today; they become monotonic per worktree and persisted across engine restarts (D8) |
 | Provider command + runtime context build | center_panel.py:394-420; orchestrator_panel.py:96-123 | **Engine** `spawn` | Hook temp dirs, MCP config and the session name are all engine concerns |
-| Per-worktree shell `bash -l` | center_panel.py:209-230 | **Engine** session `kind:"shell"` (recommended, Q1) | Custom create/remove commands are typed into it (app.py:782, :838). It should survive the UI closing like the agents do |
+| Per-worktree shell `bash -l` | center_panel.py:209-230 | **Engine** session `kind:"shell"` (D1) | Custom create/remove commands are typed into it (app.py:782, :838). It should survive the UI closing like the agents do |
 | `OrchestratorPanel._agent_terminal`, `_session_name` | orchestrator_panel.py:35-132 | **Engine** (key `__orchestrator__`) | Same as for agents |
 | `MonitoredTerminal` status/detail/`_last_output_time`/observer/scan timer | monitored_terminal.py:42-49, :88-205 | **Engine** `AgentSession` | Status detection |
 | `ScrollableTerminal.emulator`, queues, `recv` loop | scrollable_terminal.py:327-333, :411-447, :485-604 | **Engine** (PTY I/O) | The process lifetime must not depend on a widget |
@@ -100,7 +100,7 @@
 | R4 | app.py:866 | `terminal.send_queue.put_nowait(["stdin", …])` on the shell widget | Use `Engine.write_input(shell_session, bytes)` |
 | R5 | app.py:194, :252, :339 | The app pushes `_agent_states` and `_git_statuses` dicts by reference into `WorktreeList` | The client store is built from events |
 | R6 | center_panel.py:318; orchestrator_panel.py:61-65 | `has_agent` is derived from `terminal.emulator is not None` | Comes from the registry |
-| R7 | agent_providers.py:254-267 (`env_exports`) | Agents inherit the env **of the process that spawns them** | The engine's env becomes the agents' env (risk K4) |
+| R7 | agent_providers.py:254-267 (`env_exports`) | Agents inherit the env **of the process that spawns them** | The spawning client sends its env with `spawn_agent`; the engine uses that instead of its own `os.environ` (D5) |
 | R8 | mcp_server.py:85-150 | Socket discovery walks ancestor PIDs to `/tmp/lazyagent-<pid>/ipc.sock` | Still works, because agents are children of the engine. Add a stable per-repo path later (§4f) |
 
 ---
@@ -189,9 +189,9 @@ Binary stream frame payload: `u8 type` (1 = output, 2 = input) · `u32 stream_id
 | Method | Origin | Notes |
 |---|---|---|
 | `list_worktrees` | ipc.py:167 | unchanged |
-| `create_worktree` | ipc.py:195 | Custom create always runs as an engine subprocess; output is streamed as a `job` (Q6) |
+| `create_worktree` | ipc.py:195 | Custom create always runs as an engine job; its output is streamed via `job.output` / `job.finished` events (D6). `remove_worktree` custom commands likewise |
 | `remove_worktree` | ipc.py:302 | unchanged |
-| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"`, `system_prompt` composed by the engine; returns `session_id` + `cursor` |
+| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"`, `system_prompt` composed by the engine, `env` from the calling client (D5; MCP forwards the requesting agent's env); returns `session_id` + `cursor` |
 | `stop_agent` | ipc.py:403 | unchanged |
 | `get_agent_status` | ipc.py:442 | unchanged |
 | `read_agent_output` | ipc.py:470 | Reads the engine headless screen |
@@ -224,6 +224,7 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `pr_info.updated` | `{path, pr_info\|null}` | `_apply_pr_info` |
 | `stream.resized` / `stream.reset` | `{stream_id, rows, cols, offset}` | — (reset = slow client dropped, so re-attach) |
 | `engine.notice` | `{severity, message}` | `self.notify` from engine paths |
+| `job.output` / `job.finished` | `{job_id, bytes}` / `{job_id, exit_code}` | Custom create/remove typed into the shell (app.py:782, :838) (D6) |
 | `engine.shutdown` | `{reason}` | — |
 
 - **Event log:** one engine-wide `seq`. `AgentEventBus` (agent_events.py:123) generalises to typed events; `list_events` keeps filtering to `agent.status` so the MCP cursors stay valid.
@@ -314,7 +315,7 @@ web/                     # frontend source: Vite + TS + xterm.js
 
 | Command | Behaviour |
 |---|---|
-| `lazyagent [repo]` | TUI. Connects to the repo's engine, **auto-starting** it detached when none is running (tmux-like). `--embedded` = in-process engine (old behaviour; the fallback during migration) |
+| `lazyagent [repo]` | TUI. Connects to the repo's engine, **auto-starting** it detached when none is running (tmux-like), so the unattended tmux boot keeps working unchanged (D4). `q` only detaches the screen; agents keep running. `--embedded` = in-process engine (old behaviour; migration fallback only) |
 | `lazyagent engine [repo] [--foreground] [status\|stop [--keep-agents]]` | Runs or manages the engine |
 | `lazyagent web [repo] [--port N] [--open]` | Ensures the engine with WS is up, prints `http://127.0.0.1:N/#token=…` |
 | `lazyagent mcp` | Alias of `python -m lazyagent.mcp_server` |
@@ -323,12 +324,12 @@ web/                     # frontend source: Vite + TS + xterm.js
 
 ### 5e. CI additions
 
-- Trigger on `develop` too. Today ci.yml only runs on `main` push/PR, which is why stacked PRs to develop go untested.
+- Trigger on `develop` too. Today ci.yml only runs on `main` push/PR, which is why stacked PRs to develop go untested. **Shipped now as its own small PR, independent of this project (D10).**
 - Job `contract`: protocol tests that start a real engine subprocess with a **fake agent provider** (a scripted PTY program that prints known ANSI and reacts to input) and drive it over the socket.
 - Job `boundary`: the no-Textual-in-engine import check.
 - Job `web` (Phase 2+): `npm ci`, typecheck, unit tests, and a Playwright smoke test against a real engine with the fake agent.
 - Job `wheel`: build, then assert `web/static/index.html` is inside the wheel and `lazyagent --help` runs from a clean venv.
-- Matrix: add `macos-latest` for engine/pty tests. The PTY and `/proc` ancestor walk (mcp_server.py:85) are Linux-only today.
+- Matrix stays Linux-only: macOS is out of scope (D9), so the PTY code and the `/proc` ancestor walk (mcp_server.py:85) can stay Linux-specific.
 
 ---
 
@@ -336,17 +337,19 @@ web/                     # frontend source: Vite + TS + xterm.js
 
 Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move with the code).
 
+- **Prerequisite, outside this plan:** a small PR that enables CI on `develop` (D10), so every PR below runs in CI.
+
 | # | PR | Changes | Tests added | Phase |
 |---|---|---|---|---|
 | 1 | **protocol: envelope + schemas** | `lazyagent/protocol/` (envelope, framing, v1 JSON schemas for the 10 existing methods). No runtime use | Golden fixtures of today's IPC responses (taken from test_ipc.py cases), validated against the schemas; framing round-trip and fuzz | 0 |
-| 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED) | 1 |
+| 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED); monotonic agent ids persisted in the runtime dir and surviving a registry reload (D8) | 1 |
 | 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop | Service tests with a fake `WorktreeManager`; the poller respects the interest set | 1 |
 | 4 | **engine: AgentSession** | `PtyEmulator` + observer + scan/hang logic + modes + `send_input` + ring buffer in `engine/session.py`. `MonitoredTerminal` becomes a *view* that renders from the session's screen (shared in-process, so there is no double parse yet). Fixes C1, C10, R1-R3 | Session tests with the fake-agent PTY: status transitions, send_input framing/ack, `tail_lines`, ring offsets | 1 |
 | 5 | **engine: Engine facade, IPC rewired** | `Engine.spawn/stop/create/remove/open_shell` absorb center_panel.py:365-444, orchestrator_panel.py:79-132 and the app actions. `ipc.py` handlers call `Engine` only (removes C4-C6). The TUI reacts to `agent.spawned/exited` | Existing test_ipc against `Engine` without the Textual app; **boundary test** (engine imports no textual) | 1 |
 | 6 | **engine: v1 server (unix)** | `engine/server.py` speaking §4: hello, req/res, subscribe, attach_stream with snapshot, input frames, resize/claim. Runs in-process alongside the legacy socket | **Contract suite** (black-box over the socket): every method, event ordering, snapshot + live has no gap, offsets, version mismatch, slow-client reset, size-owner rules | 0/1 |
 | 7 | **tui: RemoteBackend** | The TUI talks to the engine only through a `Backend` interface (InProcess / Remote). The terminal widget gets a display pyte fed by stream frames, sized to the PTY. Behind `LAZYAGENT_ENGINE=remote` | TUI pilot tests run against both backends (parametrised fixture) | 1 |
 | 8 | **cli: `lazyagent engine` + auto-start** | Subcommands, runtime dir, lock, detach (setsid), logs, discovery; legacy `ipc.sock` path kept. Default stays `--embedded` until soaked, then flips in a follow-up PR | Subprocess tests: start, attach, quit TUI and the agent survives, reattach and the snapshot matches, `engine stop` | 1 |
-| 9 | **engine: restart manifest** (optional) | Persist registry metadata (session names, worktree, provider) so that after an engine restart it can offer `resume_mode=last` re-spawns | Unit tests | 1 |
+| 9 | **engine: restart manifest** | Persist registry metadata (session names, worktree, provider) so that after an engine restart it can offer `resume_mode=last` re-spawns. The per-worktree id counters were already persisted in PR 2 (D8) | Unit tests | 1 |
 | 10+ | **web** | WS transport + token + Origin; static serving; `web/` scaffold with sidebar, xterm.js terminal and status; `lazyagent web`; CI web and wheel jobs | Contract suite also over WS; Playwright smoke | 2 |
 | … | Diff review with comments (`get_diff` structured + comment threads → `send_agent_input`), notifications (events → Notification API), prompt editor | per feature | 3 |
 | … | Tauri wrapper | — | 4 |
@@ -365,22 +368,26 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 | K1 | The engine feeds pyte for **every** agent continuously; today hidden agents are coalesced to 0.25 s and the scan is gated on visibility (scrollable_terminal.py:54, :528) | Coalesce headless feeds at ≤4 Hz when unattached; detection already tolerates staleness. A Rust or native emulator is the Phase 5 lever |
 | K2 | Double emulation (engine + TUI display) once the engine is out of process | The TUI subscribes only to visible sessions. The in-process backend shares the screen object (PR 4) |
 | K3 | The engine crashing kills **all** agents (the PTY master closes, SIGHUP) | Keep the engine small and well tested; restart manifest (PR 9); crash log in the state dir |
-| K4 | Agents inherit the **engine's** env (`env_exports`, agent_providers.py:254). An auto-started engine freezes `SSH_AUTH_SOCK`, `DISPLAY` and `PATH` from the first TUI | Document it. Optionally let `spawn_agent` take `env` from the requesting client (Q5) |
+| K4 | Agents would inherit the **engine's** env (`env_exports`, agent_providers.py:254), and an auto-started engine would freeze `SSH_AUTH_SOCK`, `DISPLAY` and `PATH` from the first TUI | Resolved by D5: `spawn_agent` carries the client's env. Open detail: which env MCP-initiated spawns use (proposal: the MCP server's own env, which is the requesting agent's) |
 | K5 | Running agents hold `mcp-config.json` files that point at `sys.executable -m lazyagent.mcp_server` and a socket path (agent_providers.py:427-441) | Never move that module path; keep the legacy socket; an engine upgrade means restarting agents |
 | K6 | Web exposure: a localhost WS that can spawn shells is reachable from any browser tab | Token plus strict Origin/Host checks (§4f), 127.0.0.1 only, no CORS |
 | K7 | Snapshot fidelity is limited to pyte's model (no OSC 8 links, images, some modes) | Prefer the raw tail when it is available (§3b option C); snapshot only as a fallback |
-| K8 | Unattended boot (tmux → `lazyagent` → `/gio-planner`) changes once the TUI auto-starts a detached engine | Keep `--embedded`, or make the boot script start `lazyagent engine` first; decide before flipping the default (PR 8) |
+| K8 | Unattended boot (tmux → `lazyagent` → `/gio-planner`) changes once the TUI auto-starts a detached engine | D4: the TUI auto-starts the engine, so the boot script needs no change. PR 8 must include a test of the cold-start path |
 | K9 | Textual-coupled tests (test_app_integration, test_center_panel, test_multi_agent_panel) need fixtures for the backend | Parametrised backend fixture in PR 7 |
 
-### Open questions for Giovanni
+### Decisions (2026-10-15)
 
-1. **Shells:** should the per-worktree `bash -l` terminals be engine sessions (shared across clients and surviving UI close; recommended) or stay client-local?
-2. **Engine scope:** one engine per repo (matches today; recommended for Phase 1) or one global engine for all repos (better for a single web UI)? The protocol carries `repo_root` either way.
-3. **Resize policy:** is `latest` (the active client owns the PTY size) acceptable, or do you prefer `smallest`?
-4. **Quit semantics:** should `q` in the TUI *detach* (agents keep running), with `lazyagent engine stop` as the way to kill everything? Should the TUI auto-start the engine, or should it be started explicitly or by a systemd user unit?
-5. **Agent env:** should agents take their env from the engine (simple, can go stale) or from the client that requests the spawn?
-6. **Custom create/remove commands:** today the UI types them into the shell (interactive, visible), while MCP runs a subprocess. Should both run as an engine job with streamed output, or should the UI keep the shell route?
-7. **Web stack:** `aiohttp` vs `websockets` (+ static); React/Svelte/vanilla + xterm.js? Is Tauri still the plan, or is a browser tab enough?
-8. **Agent ids:** today these are per-panel counters (`a1`, `a2`) that restart at 1. Should they be monotonic per worktree and persisted, so ids are not reused across engine restarts in the event log?
-9. **macOS:** is it in scope? It affects the PTY and `/proc` code paths and the CI matrix.
-10. **CI on `develop`:** OK to enable it now (independent of this project)?
+Giovanni answered the open questions; the sections above already reflect these.
+
+| # | Topic | Decision |
+|---|---|---|
+| D1 | Per-worktree shells | Engine sessions (`kind:"shell"`), shared across clients and surviving UI close |
+| D2 | Engine scope | One engine per repo for Phase 1 (the protocol still carries `repo_root`) |
+| D3 | Resize policy | `latest`: the active client owns the PTY size (§3c) |
+| D4 | Quit / start | `q` only detaches the screen and agents keep running. The TUI auto-starts the engine when none is running, so the unattended tmux boot keeps working |
+| D5 | Agent env | Agents get their env from the client that spawns them, not from the engine (`spawn_agent.env`) |
+| D6 | Custom create/remove | Run as engine jobs with streamed output (`job.output` / `job.finished`) |
+| D7 | Web stack, framework, Tauri | Deferred to Phase 2 |
+| D8 | Agent ids | Monotonic per worktree and persisted across engine restarts (PR 2) |
+| D9 | Platforms | Linux only; macOS out of scope |
+| D10 | CI on `develop` | Enable now, as a separate small PR outside this migration |
