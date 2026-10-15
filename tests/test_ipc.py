@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lazyagent.agent_events import AgentEventBus
 from lazyagent.ipc import IpcServer, _ok, _err
 from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
 from lazyagent.worktree_manager import WorktreeManagerError
@@ -19,6 +20,7 @@ def _make_app(worktrees=None, agent_states=None, git_statuses=None):
     app._agent_states = agent_states or {}
     app._git_statuses = git_statuses or {}
     app._repo_root = "/tmp/repo"
+    app.agent_events = AgentEventBus()
     app._config.agent.provider = "claude"
     app._config.has_custom_create = False
     app._get_agent_state = MagicMock(
@@ -228,6 +230,8 @@ class TestRemoveWorktree:
 
         assert result == _ok("req-1", {"removed": "/tmp/repo-feat"})
         instance.remove.assert_called_once_with("/tmp/repo-feat", True)
+        # Through the app, so each agent is reported as exited.
+        app._drop_worktree_agents.assert_called_once_with("/tmp/repo-feat")
 
 
 class TestSpawnAgent:
@@ -428,6 +432,265 @@ class TestReadAgentOutput:
         # The trailing "\r\n" leaves the cursor on a blank final row.
         assert lines == ["line 7", "line 8", "line 9", "line 10", "line 11", ""]
         assert result["result"]["total_lines"] == len(screen.scrollback) + 4
+
+
+class TestSendAgentInput:
+    """The handler must go through send_input, which separates the payload
+    from the Enter that submits it — a raw ``text + "\\r"`` write leaves the
+    instruction sitting unsent in the agent's prompt."""
+
+    @pytest.fixture(autouse=True)
+    def _no_confirm_wait(self, monkeypatch):
+        # These agents never react; don't sit out the delivery confirmation.
+        monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.0)
+
+    @staticmethod
+    def _app_with_terminal():
+        app = _make_app(worktrees=[_make_worktree()])
+        terminal = MagicMock()
+        terminal.send_input = AsyncMock()
+        panel = MagicMock()
+        panel.agent_ids = ["a1"]
+        panel.get_agent.return_value = terminal
+        center = MagicMock()
+        center.get_panel.return_value = panel
+        app.query_one.return_value = center
+        return app, terminal
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_send_input_with_submit(self):
+        app, terminal = self._app_with_terminal()
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1",
+            "send_agent_input",
+            {"worktree_path": "/tmp/repo", "text": "run the tests"},
+        )
+
+        assert result["result"]["status"] == "sent"
+        terminal.send_input.assert_awaited_once_with("run the tests", submit=True)
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_text(self):
+        app, terminal = self._app_with_terminal()
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": ""}
+        )
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        terminal.send_input.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_stopped_terminal(self):
+        """stop() clears the emulator but leaves send_queue pointing at it."""
+        app, terminal = self._app_with_terminal()
+        terminal.emulator = None
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "hi"}
+        )
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        terminal.send_input.assert_not_awaited()
+
+
+def _set_status(app, status, *, path="/tmp/repo", agent_id="a1", detail=""):
+    """Record a status the way the app does: update the state and publish."""
+    bucket = app._agent_states.setdefault(path, {})
+    state = bucket.setdefault(agent_id, AgentState(agent_id=agent_id))
+    previous = state.status
+    state.status = status
+    state.detail = detail
+    app.agent_events.publish(
+        worktree_path=path,
+        agent_id=agent_id,
+        status=status.value,
+        previous_status=previous.value,
+        detail=detail,
+    )
+
+
+def _app_with_agent(status=AgentStatus.WAITING, detail=""):
+    app = _make_app(worktrees=[_make_worktree()])
+    _set_status(app, status, detail=detail)
+    terminal = MagicMock()
+    terminal.send_input = AsyncMock()
+    panel = MagicMock()
+    panel.agent_ids = ["a1"]
+    panel.get_agent.return_value = terminal
+    center = MagicMock()
+    center.get_panel.return_value = panel
+    app.query_one.return_value = center
+    return app, terminal
+
+
+def _react(app, *statuses, delay=0.0):
+    """send_input side effect: the agent moves through ``statuses``."""
+
+    async def _side_effect(text, submit=False):
+        async def _later():
+            for status in statuses:
+                await asyncio.sleep(delay)
+                _set_status(app, status)
+
+        asyncio.get_running_loop().create_task(_later())
+
+    return _side_effect
+
+
+class TestSendAgentInputDelivery:
+    @pytest.mark.asyncio
+    async def test_confirmed_when_the_agent_starts_a_turn(self):
+        app, terminal = _app_with_agent(AgentStatus.WAITING)
+        terminal.send_input.side_effect = _react(app, AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
+        )
+
+        res = result["result"]
+        assert res["delivery"] == "confirmed"
+        assert res["status_before"] == "waiting"
+        assert res["cursor"] == 1
+        assert "warnings" not in res
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_when_the_agent_does_not_react(self, monkeypatch):
+        monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.01)
+        app, terminal = _app_with_agent(AgentStatus.WAITING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
+        )
+
+        res = result["result"]
+        assert res["delivery"] == "unconfirmed"
+        assert "read_agent_output" in res["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_busy_agent_is_not_waited_on(self):
+        app, terminal = _app_with_agent(AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
+        )
+
+        assert result["result"]["delivery"] == "busy"
+
+    @pytest.mark.asyncio
+    async def test_warns_when_the_text_answered_a_dialog(self):
+        app, terminal = _app_with_agent(
+            AgentStatus.WAITING_FOR_APPROVAL, detail="needs approval"
+        )
+        terminal.send_input.side_effect = _react(app, AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "1"}
+        )
+
+        res = result["result"]
+        assert res["delivery"] == "confirmed"
+        assert "answered that dialog" in res["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_confirm_false_skips_the_check(self):
+        app, terminal = _app_with_agent(AgentStatus.WAITING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r",
+            "send_agent_input",
+            {"worktree_path": "/tmp/repo", "text": "go", "confirm": False},
+        )
+
+        assert result["result"]["delivery"] == "unchecked"
+
+    @pytest.mark.asyncio
+    async def test_wait_until_is_gone(self):
+        # The blocking wait was removed; a stale caller still gets its text
+        # delivered and no extra keys in the result.
+        app, terminal = _app_with_agent(AgentStatus.WAITING)
+        terminal.send_input.side_effect = _react(app, AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r",
+            "send_agent_input",
+            {"worktree_path": "/tmp/repo", "text": "go", "wait_until": "idle"},
+        )
+
+        res = result["result"]
+        assert res["delivery"] == "confirmed"
+        assert "matched" not in res
+
+
+class TestRemovedWaitTools:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["wait_for_agent", "wait_for_events"])
+    async def test_blocking_methods_are_unknown(self, method):
+        app, _ = _app_with_agent(AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch("r", method, {"worktree_path": "/tmp/repo"})
+
+        assert result["error"]["code"] == "UNKNOWN_METHOD"
+
+
+class TestListEvents:
+    @pytest.mark.asyncio
+    async def test_without_since_starts_from_now(self):
+        app, _ = _app_with_agent(AgentStatus.WAITING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch("r", "list_events", {})
+
+        assert result["result"] == {"events": [], "cursor": 1, "truncated": False}
+
+    @pytest.mark.asyncio
+    async def test_filters_and_advances_cursor_past_skipped_events(self):
+        app, _ = _app_with_agent(AgentStatus.RUNNING)
+        _set_status(app, AgentStatus.WAITING)
+        _set_status(app, AgentStatus.RUNNING, path="/tmp/other")
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch(
+            "r", "list_events", {"since": 0, "statuses": ["idle"]}
+        )
+
+        res = result["result"]
+        assert [e["status"] for e in res["events"]] == ["waiting"]
+        assert res["cursor"] == 3
+
+    @pytest.mark.asyncio
+    async def test_never_blocks_even_with_a_timeout(self):
+        app, _ = _app_with_agent(AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await asyncio.wait_for(
+            server._dispatch(
+                "r", "list_events", {"statuses": ["idle"], "timeout": 600}
+            ),
+            1,
+        )
+
+        assert result["result"]["events"] == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_bad_cursor(self):
+        app, _ = _app_with_agent(AgentStatus.RUNNING)
+        server = IpcServer(app, "/tmp/test.sock")
+
+        result = await server._dispatch("r", "list_events", {"since": -1})
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
 
 
 class TestDispatch:

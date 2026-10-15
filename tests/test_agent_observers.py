@@ -107,7 +107,7 @@ class TestClaudeHooksObserver:
         assert events[0].status == AgentStatus.WAITING_FOR_APPROVAL
         assert events[0].confidence == LifecycleConfidence.HIGH
 
-    def test_idle_prompt_sets_waiting_for_user(self, tmp_path):
+    def test_idle_prompt_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
         log_path.write_text(
             json.dumps(
@@ -122,7 +122,7 @@ class TestClaudeHooksObserver:
         observer = ClaudeHooksObserver(str(log_path))
         events = observer.poll()
         assert len(events) == 1
-        assert events[0].status == AgentStatus.WAITING_FOR_USER
+        assert events[0].status == AgentStatus.WAITING
         assert events[0].detail == "idle"
 
     def test_elicitation_sets_waiting_for_user(self, tmp_path):
@@ -142,6 +142,20 @@ class TestClaudeHooksObserver:
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING_FOR_USER
         assert events[0].detail == "asking a question"
+
+    def test_user_prompt_submit_sets_running(self, tmp_path):
+        """Every turn starts RUNNING, including turns that use no tools."""
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}) + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "prompt submitted"
 
     def test_stop_event_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
@@ -307,3 +321,23 @@ class TestGeminiTelemetryObserver:
         events = observer.poll()
         assert len(events) == 1
         assert events[0].status == AgentStatus.COMPLETED
+
+
+class TestJsonlPollIsCheap:
+    def test_unchanged_log_is_not_reopened(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(json.dumps({"hook_event_name": "Stop"}) + "\n")
+        observer = ClaudeHooksObserver(str(log_path))
+        assert len(observer.poll()) == 1
+
+        opened = []
+        real_open = type(log_path).open
+        monkeypatch.setattr(
+            type(log_path), "open", lambda self, *a, **k: opened.append(1) or real_open(self, *a, **k)
+        )
+        assert observer.poll() == []
+        assert opened == []
+
+        with log_path.open("a") as handle:
+            handle.write(json.dumps({"hook_event_name": "UserPromptSubmit"}) + "\n")
+        assert [e.detail for e in observer.poll()] == ["prompt submitted"]

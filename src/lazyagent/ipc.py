@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
 from lazyagent.models import AgentState, AgentStatus, rollup_status
 from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
@@ -31,6 +32,25 @@ log = logging.getLogger(__name__)
 
 # How long we wait for Textual-thread operations (spawn/stop agent)
 _TEXTUAL_OP_TIMEOUT = 30.0
+
+def _env_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# How long send_agent_input waits for the agent to start working on the text
+# before reporting the delivery as unconfirmed.
+_INPUT_CONFIRM_TIMEOUT = _env_seconds("LAZYAGENT_INPUT_CONFIRM_TIMEOUT", 5.0)
+
+# An agent sitting on one of these is showing a dialog: input sent to it
+# answers the dialog rather than starting a new turn.
+_BLOCKED_STATUSES = STATUS_GROUPS["blocked"]
 
 
 def _ok(request_id: str, result: Any) -> dict:
@@ -58,6 +78,7 @@ class IpcServer:
             "read_agent_output": self.handle_read_agent_output,
             "send_agent_input": self.handle_send_agent_input,
             "list_agents": self.handle_list_agents,
+            "list_events": self.handle_list_events,
         }
 
     @property
@@ -307,7 +328,7 @@ class IpcServer:
         manager = WorktreeManager(self._app._repo_root)
         await asyncio.to_thread(manager.remove, worktree_path, force)
 
-        self._app._agent_states.pop(worktree_path, None)
+        self._app._drop_worktree_agents(worktree_path)
         self._app.call_later(self._app._load_worktrees)
 
         return _ok(request_id, {"removed": worktree_path})
@@ -363,12 +384,19 @@ class IpcServer:
             except Exception as e:
                 future.set_exception(e)
 
+        # Before the spawn, so every event of the new agent is after it.
+        cursor = self._app.agent_events.cursor
         self._app.call_later(_do_spawn)
 
         agent_id = await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
         return _ok(
             request_id,
-            {"worktree_path": worktree_path, "agent_id": agent_id, "status": "spawned"},
+            {
+                "worktree_path": worktree_path,
+                "agent_id": agent_id,
+                "status": "spawned",
+                "cursor": cursor,
+            },
         )
 
     async def handle_stop_agent(
@@ -512,18 +540,112 @@ class IpcServer:
 
         agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
         terminal = panel.get_agent(agent_id)
-        if terminal is None or terminal.send_queue is None:
+        if (
+            terminal is None
+            or terminal.emulator is None
+            or terminal.send_queue is None
+        ):
             raise ValueError("Agent terminal is not ready")
 
-        # Append CR (\r) so the agent's TUI treats this as Enter/submit.
-        # Textual delivers Enter as event.character == "\r" in the UI key
-        # handler; LF would be interpreted as Shift+Enter (newline within
-        # the prompt) by Claude Code and most line-editing TUIs.
-        await terminal.send_queue.put(["stdin", text + "\r"])
-        return _ok(
-            request_id,
-            {"worktree_path": worktree_path, "agent_id": agent_id, "status": "sent"},
+        confirm = params.get("confirm", True)
+
+        bus = self._app.agent_events
+        state = self._agent_bucket(worktree_path).get(agent_id)
+        # No state yet = spawned but no status reported so far; the terminal
+        # itself is running (checked above), so it is not "exited".
+        status_before = (
+            state.status.value if state is not None else AgentStatus.NO_AGENT.value
         )
+        # Taken before the write: only transitions after this point can be a
+        # reaction to our input.
+        cursor = bus.cursor
+        warnings: list[str] = []
+        if status_before in _BLOCKED_STATUSES:
+            warnings.append(
+                f"The agent was {status_before} (detail: "
+                f"{state.detail if state else ''!r}), so the text answered that "
+                "dialog instead of starting a new prompt."
+            )
+
+        # send_input, not a raw queue put: the text and the Enter that
+        # submits it have to reach the agent CLI as separate reads, or the
+        # CLI parses the trailing CR as a character inside the message and
+        # the prompt just sits there unsent.
+        await terminal.send_input(text, submit=True)
+
+        result: dict[str, Any] = {
+            "worktree_path": worktree_path,
+            "agent_id": agent_id,
+            "status": "sent",
+            "status_before": status_before,
+            "cursor": cursor,
+        }
+
+        # Delivery is confirmed by the agent starting to work: every turn
+        # begins with a RUNNING transition (for Claude, the UserPromptSubmit
+        # hook). An agent that was already working queues the text or ignores
+        # it, and neither is observable, so that case stays "busy".
+        if status_before == AgentStatus.RUNNING.value:
+            result["delivery"] = "busy"
+            warnings.append(
+                "The agent was already working; the text was sent but cannot be "
+                "confirmed until its current turn ends."
+            )
+        elif confirm:
+            events, _ = await bus.wait(
+                cursor,
+                make_filter(
+                    worktree_path,
+                    agent_id,
+                    frozenset({AgentStatus.RUNNING.value}) | STATUS_GROUPS["finished"],
+                ),
+                _INPUT_CONFIRM_TIMEOUT,
+            )
+            started = events[0] if events else None
+            if started is not None and started.status == AgentStatus.RUNNING.value:
+                result["delivery"] = "confirmed"
+            else:
+                result["delivery"] = "unconfirmed"
+                warnings.append(
+                    f"The agent did not start working within "
+                    f"{_INPUT_CONFIRM_TIMEOUT:g}s. The text may be sitting unsent "
+                    "in its prompt — check read_agent_output."
+                    if started is None
+                    else f"The agent {started.status} instead of starting work."
+                )
+        else:
+            result["delivery"] = "unchecked"
+
+        if warnings:
+            result["warnings"] = warnings
+        return _ok(request_id, result)
+
+    async def handle_list_events(
+        self, request_id: str, params: dict
+    ) -> dict:
+        """Return agent events after a cursor; never blocks. Params: since
+        (cursor; omitted = from now), worktree_path, agent_id, statuses
+        (filters, all optional).
+        """
+        bus = self._app.agent_events
+        since = params.get("since")
+        if since is None:
+            since = bus.cursor
+        elif not isinstance(since, int) or since < 0:
+            raise ValueError("since must be a non-negative integer cursor")
+        match = make_filter(
+            params.get("worktree_path") or None,
+            params.get("agent_id"),
+            resolve_statuses(params.get("statuses")),
+        )
+        events, truncated = bus.since(since, match)
+        # The events are filtered, so the cursor has to cover what the filter
+        # skipped too — otherwise the next call would re-scan it forever.
+        return _ok(request_id, {
+            "events": [e.to_dict() for e in events],
+            "cursor": bus.cursor,
+            "truncated": truncated,
+        })
 
     async def handle_list_agents(
         self, request_id: str, params: dict

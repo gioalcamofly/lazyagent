@@ -278,7 +278,9 @@ async def spawn_agent(
         label: Optional human-facing tab label (defaults to "Agent N").
 
     Returns:
-        Object with worktree_path, agent_id, and status.
+        Object with worktree_path, agent_id, status, and ``cursor`` (event
+        cursor taken before the spawn; pass it as ``since`` to list_events
+        to see every status change of the new agent).
     """
     params: dict[str, Any] = {
         "worktree_path": worktree_path,
@@ -372,26 +374,92 @@ async def read_agent_output(
 
 @mcp.tool()
 async def send_agent_input(
-    worktree_path: str, text: str, agent_id: str | None = None
+    worktree_path: str,
+    text: str,
+    agent_id: str | None = None,
+    confirm: bool = True,
 ) -> dict:
-    """Send text input to a running agent's terminal.
+    """Send text to a running agent's terminal and submit it.
 
-    Use this to provide follow-up instructions, answer prompts, or approve
+    Use this to give follow-up instructions, answer prompts, or approve
     actions without stopping and re-spawning the agent.
+
+    By default the call confirms delivery: it waits (a few seconds at most)
+    for the agent to start working on the text. ``delivery`` in the result is
+    "confirmed" (the agent started a turn), "unconfirmed" (it did not react —
+    the text may be sitting unsent in its prompt; check read_agent_output),
+    "busy" (the agent was already working, so its reaction cannot be observed
+    until the current turn ends) or "unchecked" (``confirm=False``).
+    ``status_before`` says what the agent was doing; if it was blocked on a
+    permission prompt or a question, a warning notes that the text answered
+    that dialog rather than starting a new prompt.
 
     Args:
         worktree_path: Absolute path of the worktree.
-        text: The text to send to the agent's stdin (a newline is appended automatically).
+        text: The text to send (it is submitted automatically).
         agent_id: Which agent to send to. May be omitted when the worktree has
             exactly one agent; required when there are several.
+        confirm: Wait for the agent to start working on the text (default True).
 
     Returns:
-        Object confirming the input was sent (includes agent_id).
+        Object with agent_id, delivery, status_before, ``cursor`` (event
+        cursor taken just before sending — pass it as ``since`` to
+        list_events to see what the agent did with the text), and optional
+        ``warnings``.
     """
-    params: dict[str, Any] = {"worktree_path": worktree_path, "text": text}
+    params: dict[str, Any] = {
+        "worktree_path": worktree_path,
+        "text": text,
+        "confirm": confirm,
+    }
     if agent_id is not None:
         params["agent_id"] = agent_id
     return await _get_client().call("send_agent_input", params)
+
+
+@mcp.tool()
+async def list_events(
+    since: int | None = None,
+    worktree_path: str | None = None,
+    agent_id: str | None = None,
+    statuses: str | list[str] | None = None,
+) -> dict:
+    """Read the agent event log: every status change of every agent.
+
+    Never blocks. Each event has seq, time, worktree_path, agent_id, label,
+    status, previous_status and detail. Keep the returned ``cursor`` and pass
+    it back as ``since`` to get only newer events.
+
+    Omitting ``since`` means "from now": it returns no events, just the
+    current cursor to start from. The log keeps the last 1000 events;
+    ``truncated`` is True if events after ``since`` were already dropped.
+
+    Args:
+        since: Event cursor to read after. Omit to start from now.
+        worktree_path: Only events for this worktree.
+        agent_id: Only events for this agent id.
+        statuses: Only events whose new status is one of these (statuses or
+            groups).
+
+    Statuses: running, waiting, waiting_for_user, waiting_for_approval,
+    completed, failed, interrupted, possibly_hanged, no_agent, and exited
+    (agent gone). Groups: "idle" (turn finished, at its prompt), "blocked"
+    (on a permission prompt or a question), "finished" (completed, failed,
+    interrupted or exited), "not_running" (anything but running).
+
+    Returns:
+        Object with events (list, oldest first), cursor, and truncated.
+    """
+    params: dict[str, Any] = {}
+    if since is not None:
+        params["since"] = since
+    if worktree_path is not None:
+        params["worktree_path"] = worktree_path
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    if statuses is not None:
+        params["statuses"] = statuses
+    return await _get_client().call("list_events", params)
 
 
 if __name__ == "__main__":

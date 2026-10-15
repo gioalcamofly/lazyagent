@@ -99,7 +99,12 @@ class JsonlTailObserver(AgentObserver):
         self._offset = 0
 
     def poll(self) -> list[AgentLifecycleEvent]:
-        if not self._log_path.exists():
+        try:
+            size = self._log_path.stat().st_size
+        except FileNotFoundError:
+            return []
+        if size == self._offset:
+            # Polled every second for every agent: don't open an unchanged log.
             return []
 
         events: list[AgentLifecycleEvent] = []
@@ -141,8 +146,11 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="needs approval",
                 )
             if notification_type == "idle_prompt":
+                # Claude's "still waiting for your input" reminder for an agent
+                # that finished its turn. It is not a dialog: reporting it as
+                # waiting_for_user would put idle agents in the "blocked" group.
                 return AgentLifecycleEvent(
-                    status=AgentStatus.WAITING_FOR_USER,
+                    status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.HIGH,
                     detail="idle",
                 )
@@ -153,6 +161,15 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="asking a question",
                 )
             return None
+        if event_name == "UserPromptSubmit":
+            # The start of every turn. Without it a turn that uses no tools
+            # never leaves WAITING, so nothing can tell it happened — and it
+            # is the direct confirmation that programmatic input was submitted.
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="prompt submitted",
+            )
         if event_name == "Stop":
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,

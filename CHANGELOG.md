@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `list_events` MCP tool: a cursor-based log of every agent's status changes
+  across all worktrees. It never blocks; `spawn_agent` and `send_agent_input`
+  return a `cursor` to read it from. Groups (`idle`, `blocked`, `finished`,
+  `not_running`) filter it
+- `send_agent_input` now reports whether the agent picked the text up:
+  `delivery` is `confirmed` once the agent starts a turn, `unconfirmed` if it
+  didn't react within `LAZYAGENT_INPUT_CONFIRM_TIMEOUT` (5 s), or `busy` if it
+  was mid-turn. It warns when the text answered a permission prompt or question
+  rather than starting a new prompt
+
+### Fixed
+- A Claude agent that has sat idle at its prompt is reported as `waiting`,
+  not `waiting_for_user`. Claude's idle reminder was mapped like a dialog, so
+  `list_events` put idle agents in the `blocked` group and `send_agent_input`
+  warned that the text "answered that dialog"
+- Claude agents spawned by lazyagent now actually get lazyagent's MCP server.
+  It was written into the `--settings` file, where Claude Code ignores
+  `mcpServers`; it now goes in a per-agent file passed with `--mcp-config`
+- The per-agent MCP server is named `lazyagent_app` for Claude, Codex and
+  Gemini, so a user-registered `lazyagent` server can't shadow it with another
+  lazyagent install
+- Removing a worktree reports its agents as `exited` in `list_events` instead
+  of dropping them silently
+- Status changes of hidden or quiet agents arrive within a second; every
+  agent's hook log is now polled once a second instead of only when a visible
+  agent printed something
+- Claude agents now report `running` at the start of every turn, including
+  turns that use no tools; before, such a turn never left `waiting`, so nothing
+  could tell it had happened
+- `send_agent_input` no longer leaves the text sitting unsent in the agent's
+  prompt. The text and the Enter that submits it went out as one PTY write, so
+  the agent CLI read them as a single chunk and — past ~64 characters — parsed
+  the trailing CR as a character inside the message instead of a keypress.
+  Short messages submitted, longer ones didn't, which is why it looked random.
+  The text is now framed as a bracketed paste (when the agent has asked for
+  DECSET 2004) and the submit key is written separately, once the agent has
+  shown it read the text. `LAZYAGENT_SUBMIT_ACK_TIMEOUT` and
+  `LAZYAGENT_SUBMIT_SETTLE_DELAY` tune that handshake
+- Terminal modes (mouse tracking, bracketed paste) are now tracked for hidden
+  terminals too — MCP input usually targets an agent the user isn't looking at
+- Pasting into a terminal pane forwards the text as a real paste, so embedded
+  newlines are content rather than keypresses
+- PTY writes are resumed on a short write instead of silently dropping the tail
+
 ## [0.7.0] - 2026-09-29
 
 ### Added

@@ -25,6 +25,12 @@ class ResumeMode(Enum):
 
 DEFAULT_AGENT_PROVIDER = "claude"
 
+# Name of the MCP server lazyagent wires into the agents it spawns. Not plain
+# "lazyagent": a user-scope server registered under that name (the README's
+# setup for standalone sessions) takes precedence over the per-agent one and
+# may run another lazyagent install entirely.
+MCP_SERVER_NAME = "lazyagent_app"
+
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
 ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
 
@@ -98,6 +104,8 @@ class AgentProvider:
 
         if "settings_path" in context.metadata:
             parts.extend(["--settings", context.metadata["settings_path"]])
+        if "mcp_config_path" in context.metadata:
+            parts.extend(["--mcp-config", context.metadata["mcp_config_path"]])
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
         script = (
             f"{env_exports(context.env_overrides)}"
@@ -265,7 +273,7 @@ def _build_gemini_runtime_context(
         # installed, so the MCP server would fail to start.
         settings = {
             "mcpServers": {
-                "lazyagent": {
+                MCP_SERVER_NAME: {
                     "command": sys.executable,
                     "args": ["-m", "lazyagent.mcp_server"],
                     "env": {
@@ -317,10 +325,10 @@ def _build_codex_runtime_context(
         # See note in the gemini context builder: sys.executable handles
         # pipx/isolated-venv installs that "python3" misses.
         config_toml = (
-            '[mcp_servers.lazyagent]\n'
+            f'[mcp_servers.{MCP_SERVER_NAME}]\n'
             f'command = {json.dumps(sys.executable)}\n'
             f'args = ["-m", "lazyagent.mcp_server"]\n'
-            '\n[mcp_servers.lazyagent.env]\n'
+            f'\n[mcp_servers.{MCP_SERVER_NAME}.env]\n'
             'PYTHONUNBUFFERED = "1"\n'
             f'LAZYAGENT_SOCKET = {json.dumps(socket_path)}\n'
         )
@@ -363,6 +371,7 @@ def _build_claude_runtime_context(
                     "hooks": [hook_command],
                 }
             ],
+            "UserPromptSubmit": [{"hooks": [hook_command]}],
             "Stop": [{"hooks": [hook_command]}],
             "TaskCompleted": [{"hooks": [hook_command]}],
             "SessionEnd": [{"hooks": [hook_command]}],
@@ -371,20 +380,33 @@ def _build_claude_runtime_context(
         }
     }
 
+    metadata = {
+        "temp_dir": str(temp_dir),
+        "hook_log_path": str(hook_log_path),
+        "hook_script_path": str(hook_script_path),
+        "settings_path": str(settings_path),
+    }
     if socket_path:
+        # Claude Code reads MCP servers from --mcp-config files, not from a
+        # --settings file (an mcpServers key there is silently ignored).
         # sys.executable, not "python3": pipx/isolated-venv installs
         # don't expose lazyagent on the system python, so a bare "python3"
         # invocation in the agent's environment would ImportError.
-        hooks_settings["mcpServers"] = {
-            "lazyagent": {
-                "command": sys.executable,
-                "args": ["-m", "lazyagent.mcp_server"],
-                "env": {
-                    "PYTHONUNBUFFERED": "1",
-                    "LAZYAGENT_SOCKET": socket_path,
-                },
+        mcp_config_path = temp_dir / "mcp-config.json"
+        mcp_config = {
+            "mcpServers": {
+                MCP_SERVER_NAME: {
+                    "command": sys.executable,
+                    "args": ["-m", "lazyagent.mcp_server"],
+                    "env": {
+                        "PYTHONUNBUFFERED": "1",
+                        "LAZYAGENT_SOCKET": socket_path,
+                    },
+                }
             }
         }
+        mcp_config_path.write_text(json.dumps(mcp_config), encoding="utf-8")
+        metadata["mcp_config_path"] = str(mcp_config_path)
 
     settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
@@ -395,12 +417,7 @@ def _build_claude_runtime_context(
         env_overrides={
             "LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path),
         },
-        metadata={
-            "temp_dir": str(temp_dir),
-            "hook_log_path": str(hook_log_path),
-            "hook_script_path": str(hook_script_path),
-            "settings_path": str(settings_path),
-        },
+        metadata=metadata,
     )
 
 
