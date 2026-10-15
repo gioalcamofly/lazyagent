@@ -1,0 +1,14 @@
+{
+  "case": "remove_worktree/error_main",
+  "method": "remove_worktree",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Cannot remove the main worktree"
+    },
+    "id": "req-1"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "case": "get_agent_status/error_ambiguous_agent",
+  "method": "get_agent_status",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Multiple agents in this worktree; specify agent_id. Available: ['a1', 'a2']"
+    },
+    "id": "req-1"
+  }
+}

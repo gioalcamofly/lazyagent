@@ -1,0 +1,59 @@
+{
+  "case": "list_worktrees/agents_and_git_status",
+  "method": "list_worktrees",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": [
+      {
+        "agent_status": "no_agent",
+        "agents": [],
+        "branch": "main",
+        "git_status": {
+          "ahead": 1,
+          "behind": 3,
+          "dirty_count": 2
+        },
+        "head": "abc123",
+        "is_bare": false,
+        "is_main": true,
+        "path": "/tmp/repo"
+      },
+      {
+        "agent_status": "waiting_for_approval",
+        "agents": [
+          {
+            "agent_id": "a1",
+            "confidence": "high",
+            "detail": "Bash",
+            "label": "Agent 1",
+            "session_name": "repo-feat-a1",
+            "status": "running"
+          },
+          {
+            "agent_id": "a2",
+            "confidence": "low",
+            "detail": "",
+            "label": "Agent 2",
+            "session_name": "",
+            "status": "waiting_for_approval"
+          }
+        ],
+        "branch": "feat",
+        "head": "abc123",
+        "is_bare": false,
+        "is_main": false,
+        "path": "/tmp/repo-feat"
+      },
+      {
+        "agent_status": "no_agent",
+        "agents": [],
+        "branch": null,
+        "head": "def456",
+        "is_bare": false,
+        "is_main": false,
+        "path": "/tmp/repo-detached"
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "case": "list_events/error_bad_cursor",
+  "method": "list_events",
+  "params": {
+    "since": -1
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "since must be a non-negative integer cursor"
+    },
+    "id": "req-1"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "case": "dispatch/error_internal",
+  "method": "list_worktrees",
+  "params": {},
+  "response": {
+    "error": {
+      "code": "INTERNAL_ERROR",
+      "message": "'NoneType' object is not iterable"
+    },
+    "id": "req-1"
+  }
+}

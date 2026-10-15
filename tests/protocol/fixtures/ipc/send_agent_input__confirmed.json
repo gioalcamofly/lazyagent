@@ -1,0 +1,19 @@
+{
+  "case": "send_agent_input/confirmed",
+  "method": "send_agent_input",
+  "params": {
+    "text": "go",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "cursor": 1,
+      "delivery": "confirmed",
+      "status": "sent",
+      "status_before": "waiting",
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

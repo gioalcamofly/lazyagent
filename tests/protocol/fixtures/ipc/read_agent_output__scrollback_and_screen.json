@@ -1,0 +1,24 @@
+{
+  "case": "read_agent_output/scrollback_and_screen",
+  "method": "read_agent_output",
+  "params": {
+    "lines": 6,
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "lines": [
+        "line 7",
+        "line 8",
+        "line 9",
+        "line 10",
+        "line 11",
+        ""
+      ],
+      "total_lines": 13,
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

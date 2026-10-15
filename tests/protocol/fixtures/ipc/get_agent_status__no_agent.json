@@ -1,0 +1,16 @@
+{
+  "case": "get_agent_status/no_agent",
+  "method": "get_agent_status",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "",
+      "detail": "",
+      "status": "no_agent",
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

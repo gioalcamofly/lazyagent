@@ -1,0 +1,17 @@
+{
+  "case": "create_worktree/custom_command",
+  "method": "create_worktree",
+  "params": {
+    "base_branch": "main",
+    "branch": "feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "branch": "feat",
+      "custom_command": true,
+      "path": "/tmp/repo-feat",
+      "warning": "Path is predicted from the naming convention (<parent>/<repo>-<branch>), not parsed from the create command output. If the custom script writes elsewhere, poll list_worktrees to find the real path before calling spawn_agent on it."
+    }
+  }
+}

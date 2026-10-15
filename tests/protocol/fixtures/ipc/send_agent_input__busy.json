@@ -1,0 +1,22 @@
+{
+  "case": "send_agent_input/busy",
+  "method": "send_agent_input",
+  "params": {
+    "text": "go",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "cursor": 1,
+      "delivery": "busy",
+      "status": "sent",
+      "status_before": "running",
+      "warnings": [
+        "The agent was already working; the text was sent but cannot be confirmed until its current turn ends."
+      ],
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

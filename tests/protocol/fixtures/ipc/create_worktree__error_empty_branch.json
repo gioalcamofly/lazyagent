@@ -1,0 +1,14 @@
+{
+  "case": "create_worktree/error_empty_branch",
+  "method": "create_worktree",
+  "params": {
+    "branch": ""
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "branch is required and must not be empty"
+    },
+    "id": "req-1"
+  }
+}

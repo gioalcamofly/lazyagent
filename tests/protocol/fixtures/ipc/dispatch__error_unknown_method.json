@@ -1,0 +1,12 @@
+{
+  "case": "dispatch/error_unknown_method",
+  "method": "nonexistent",
+  "params": {},
+  "response": {
+    "error": {
+      "code": "UNKNOWN_METHOD",
+      "message": "Unknown method: nonexistent"
+    },
+    "id": "req-1"
+  }
+}

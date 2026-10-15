@@ -1,0 +1,14 @@
+{
+  "case": "list_agents/empty",
+  "method": "list_agents",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agents": [],
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

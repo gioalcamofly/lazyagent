@@ -1,0 +1,9 @@
+{
+  "case": "list_worktrees/empty",
+  "method": "list_worktrees",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": []
+  }
+}

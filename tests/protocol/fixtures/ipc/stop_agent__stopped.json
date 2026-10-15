@@ -1,0 +1,16 @@
+{
+  "case": "stop_agent/stopped",
+  "method": "stop_agent",
+  "params": {
+    "agent_id": "a2",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a2",
+      "status": "stopped",
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

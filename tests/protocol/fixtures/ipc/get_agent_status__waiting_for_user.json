@@ -1,0 +1,17 @@
+{
+  "case": "get_agent_status/waiting_for_user",
+  "method": "get_agent_status",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "confidence": "high",
+      "detail": "needs input",
+      "status": "waiting_for_user",
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

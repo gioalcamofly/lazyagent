@@ -1,0 +1,14 @@
+{
+  "case": "remove_worktree/removed",
+  "method": "remove_worktree",
+  "params": {
+    "force": true,
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "removed": "/tmp/repo-feat"
+    }
+  }
+}

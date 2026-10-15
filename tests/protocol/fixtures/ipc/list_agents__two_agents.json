@@ -1,0 +1,31 @@
+{
+  "case": "list_agents/two_agents",
+  "method": "list_agents",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agents": [
+        {
+          "agent_id": "a1",
+          "confidence": "low",
+          "detail": "",
+          "label": "Agent 1",
+          "session_name": "",
+          "status": "running"
+        },
+        {
+          "agent_id": "a2",
+          "confidence": "low",
+          "detail": "",
+          "label": "Agent 2",
+          "session_name": "repo-a2",
+          "status": "waiting_for_user"
+        }
+      ],
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}
