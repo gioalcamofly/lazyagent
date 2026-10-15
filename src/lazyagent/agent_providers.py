@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -24,6 +25,28 @@ class ResumeMode(Enum):
     RESUME_LAST = "last"
 
 DEFAULT_AGENT_PROVIDER = "claude"
+
+# Name of the MCP server lazyagent wires into the agents it spawns. Not plain
+# "lazyagent": a user-scope server registered under that name (the README's
+# setup for standalone sessions) takes precedence over the per-agent one and
+# may run another lazyagent install entirely.
+MCP_SERVER_NAME = "lazyagent_app"
+
+# Values Claude Code accepts for its crossSessionInbound setting.
+CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
+
+
+def agent_session_name(worktree_path: str, agent_id: str = "") -> str:
+    """Name a spawned agent's session, for providers that take one.
+
+    Other Claude sessions address it by this name with SendMessage, so it is
+    derived from the worktree folder and the agent id rather than left to the
+    CLI's random suffix.
+    """
+    name = Path(worktree_path).name
+    if agent_id:
+        name = f"{name}-{agent_id}"
+    return re.sub(r"[^A-Za-z0-9._]+", "-", name).strip("-") or "agent"
 
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
 ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
@@ -56,6 +79,7 @@ class AgentProvider:
     resume_is_subcommand: bool = False
     instruction_flag: str | None = None
     system_prompt_flag: str | None = None
+    session_name_flag: str | None = None
 
     def build_command(
         self,
@@ -65,6 +89,7 @@ class AgentProvider:
         resume_mode: ResumeMode = ResumeMode.NEW,
         instruction: str | None = None,
         system_prompt: str | None = None,
+        session_name: str | None = None,
     ) -> str:
         """Build the full shell command used to launch this provider."""
         context = runtime_context or self.build_runtime_context(worktree_path)
@@ -80,6 +105,9 @@ class AgentProvider:
 
         if skip_permissions:
             parts.append(self.dangerous_flag)
+
+        if session_name and self.session_name_flag:
+            parts.extend([self.session_name_flag, session_name])
 
         if system_prompt:
             if self.system_prompt_flag:
@@ -98,6 +126,8 @@ class AgentProvider:
 
         if "settings_path" in context.metadata:
             parts.extend(["--settings", context.metadata["settings_path"]])
+        if "mcp_config_path" in context.metadata:
+            parts.extend(["--mcp-config", context.metadata["mcp_config_path"]])
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
         script = (
             f"{env_exports(context.env_overrides)}"
@@ -118,10 +148,17 @@ class AgentProvider:
         self,
         worktree_path: str,
         socket_path: str | None = None,
+        cross_session_inbound: str | None = None,
     ) -> ProviderRuntimeContext:
-        """Build provider-specific runtime metadata for the spawned session."""
+        """Build provider-specific runtime metadata for the spawned session.
+
+        ``cross_session_inbound`` only applies to Claude, the one provider
+        with cross-session messaging.
+        """
         if self.name == "claude":
-            return _build_claude_runtime_context(self, worktree_path, socket_path)
+            return _build_claude_runtime_context(
+                self, worktree_path, socket_path, cross_session_inbound
+            )
         if self.name == "codex":
             return _build_codex_runtime_context(self, worktree_path, socket_path)
         if self.name == "gemini":
@@ -187,6 +224,7 @@ PROVIDERS = {
         resume_pick_args=("--resume",),
         resume_last_args=("--continue",),
         system_prompt_flag="--append-system-prompt",
+        session_name_flag="--name",
     ),
     "codex": AgentProvider(
         name="codex",
@@ -265,7 +303,7 @@ def _build_gemini_runtime_context(
         # installed, so the MCP server would fail to start.
         settings = {
             "mcpServers": {
-                "lazyagent": {
+                MCP_SERVER_NAME: {
                     "command": sys.executable,
                     "args": ["-m", "lazyagent.mcp_server"],
                     "env": {
@@ -317,10 +355,10 @@ def _build_codex_runtime_context(
         # See note in the gemini context builder: sys.executable handles
         # pipx/isolated-venv installs that "python3" misses.
         config_toml = (
-            '[mcp_servers.lazyagent]\n'
+            f'[mcp_servers.{MCP_SERVER_NAME}]\n'
             f'command = {json.dumps(sys.executable)}\n'
             f'args = ["-m", "lazyagent.mcp_server"]\n'
-            '\n[mcp_servers.lazyagent.env]\n'
+            f'\n[mcp_servers.{MCP_SERVER_NAME}.env]\n'
             'PYTHONUNBUFFERED = "1"\n'
             f'LAZYAGENT_SOCKET = {json.dumps(socket_path)}\n'
         )
@@ -344,6 +382,7 @@ def _build_claude_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
     socket_path: str | None = None,
+    cross_session_inbound: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -363,6 +402,7 @@ def _build_claude_runtime_context(
                     "hooks": [hook_command],
                 }
             ],
+            "UserPromptSubmit": [{"hooks": [hook_command]}],
             "Stop": [{"hooks": [hook_command]}],
             "TaskCompleted": [{"hooks": [hook_command]}],
             "SessionEnd": [{"hooks": [hook_command]}],
@@ -371,20 +411,38 @@ def _build_claude_runtime_context(
         }
     }
 
+    if cross_session_inbound:
+        # Claude Code holds a SendMessage for approval when the sender runs in
+        # another permission mode; "accept" delivers it anyway.
+        hooks_settings["crossSessionInbound"] = cross_session_inbound
+
+    metadata = {
+        "temp_dir": str(temp_dir),
+        "hook_log_path": str(hook_log_path),
+        "hook_script_path": str(hook_script_path),
+        "settings_path": str(settings_path),
+    }
     if socket_path:
+        # Claude Code reads MCP servers from --mcp-config files, not from a
+        # --settings file (an mcpServers key there is silently ignored).
         # sys.executable, not "python3": pipx/isolated-venv installs
         # don't expose lazyagent on the system python, so a bare "python3"
         # invocation in the agent's environment would ImportError.
-        hooks_settings["mcpServers"] = {
-            "lazyagent": {
-                "command": sys.executable,
-                "args": ["-m", "lazyagent.mcp_server"],
-                "env": {
-                    "PYTHONUNBUFFERED": "1",
-                    "LAZYAGENT_SOCKET": socket_path,
-                },
+        mcp_config_path = temp_dir / "mcp-config.json"
+        mcp_config = {
+            "mcpServers": {
+                MCP_SERVER_NAME: {
+                    "command": sys.executable,
+                    "args": ["-m", "lazyagent.mcp_server"],
+                    "env": {
+                        "PYTHONUNBUFFERED": "1",
+                        "LAZYAGENT_SOCKET": socket_path,
+                    },
+                }
             }
         }
+        mcp_config_path.write_text(json.dumps(mcp_config), encoding="utf-8")
+        metadata["mcp_config_path"] = str(mcp_config_path)
 
     settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
@@ -395,12 +453,7 @@ def _build_claude_runtime_context(
         env_overrides={
             "LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path),
         },
-        metadata={
-            "temp_dir": str(temp_dir),
-            "hook_log_path": str(hook_log_path),
-            "hook_script_path": str(hook_script_path),
-            "settings_path": str(settings_path),
-        },
+        metadata=metadata,
     )
 
 

@@ -17,6 +17,7 @@ from lazyagent import diagnostics as diag
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
 from lazyagent.ipc import IpcServer, start_ipc_server
+from lazyagent.agent_events import EXITED, AgentEventBus
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
@@ -101,6 +102,9 @@ class LazyAgent(App):
         # inner maps agent id -> state. The orchestrator (and any single-agent
         # caller) uses agent id "".
         self._agent_states: dict[str, dict[str, AgentState]] = {}
+        # Every status transition recorded in _agent_states, for the MCP
+        # wait/event tools.
+        self.agent_events = AgentEventBus()
         self._git_statuses: dict[str, GitStatus] = {}
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
@@ -133,6 +137,10 @@ class LazyAgent(App):
         # sampling, and stopped in action_quit.
         diag.start_watchdog()
         self.set_interval(60, diag.wrap_timer("timer.check_hangs", self._check_hangs))
+        # Hook logs are otherwise only read when a visible agent prints
+        # something; a hidden or quiet agent's status (and the events that
+        # follow from it) would lag by up to a minute.
+        self.set_interval(1, diag.wrap_timer("timer.poll_agents", self._poll_agents))
         # Only the selected worktree is polled, and only once a minute:
         # `git status` walks the whole working tree, so sweeping every
         # worktree on a timer costs seconds on a repo with many of them.
@@ -222,9 +230,22 @@ class LazyAgent(App):
         """Remove a single agent from the registry, pruning empty buckets."""
         bucket = self._agent_states.get(key)
         if bucket is not None:
-            bucket.pop(agent_id, None)
+            state = bucket.pop(agent_id, None)
             if not bucket:
                 self._agent_states.pop(key, None)
+            if state is not None:
+                self.agent_events.publish(
+                    worktree_path=key,
+                    agent_id=agent_id,
+                    label=state.label,
+                    status=EXITED,
+                    previous_status=state.status.value,
+                )
+
+    def _drop_worktree_agents(self, key: str) -> None:
+        """Drop every agent of a worktree that is going away."""
+        for agent_id in list(self._worktree_agent_states(key)):
+            self._drop_agent_state(key, agent_id)
 
     def _refresh_sidebar_agents(self, key: str) -> None:
         """Push the worktree's current agent roll-up to the sidebar."""
@@ -432,6 +453,7 @@ class LazyAgent(App):
 
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
         state = self._get_agent_state(event.worktree_path, event.agent_id)
+        previous = state.status
         state.status = event.status
         state.confidence = event.confidence
         state.detail = event.detail
@@ -440,10 +462,23 @@ class LazyAgent(App):
             label_fn = getattr(panel, "agent_label", None)
             if label_fn is not None:
                 state.label = label_fn(event.agent_id)
+        if panel is not None and not state.session_name:
+            name_fn = getattr(panel, "agent_session_name", None)
+            if name_fn is not None:
+                state.session_name = name_fn(event.agent_id)
         if event.status == AgentStatus.RUNNING and panel is not None:
             terminal = panel.get_agent(event.agent_id)
             if terminal:
                 state.last_output_time = terminal.last_output_time
+        if event.status != previous:
+            self.agent_events.publish(
+                worktree_path=event.worktree_path,
+                agent_id=event.agent_id,
+                label=state.label,
+                status=event.status.value,
+                previous_status=previous.value,
+                detail=event.detail,
+            )
         self._refresh_sidebar_agents(event.worktree_path)
 
     async def on_agent_exited(self, event: AgentExited) -> None:
@@ -462,6 +497,17 @@ class LazyAgent(App):
         )
 
     # --- Hang detection ---
+
+    def _poll_agents(self) -> None:
+        """Pick up every agent's latest hook/telemetry events."""
+        for key, bucket in list(self._agent_states.items()):
+            panel = self._get_any_panel(key)
+            if panel is None:
+                continue
+            for agent_id in list(bucket):
+                terminal = panel.get_agent(agent_id)
+                if terminal is not None:
+                    terminal.poll_lifecycle()
 
     def _check_hangs(self) -> None:
         """Periodic timer callback: check all active agents for hangs."""
@@ -516,10 +562,12 @@ class LazyAgent(App):
                         resume_mode=result.resume_mode,
                         socket_path=self._ipc_socket_path,
                         instruction=result.instruction,
+                        cross_session_inbound=self._config.agent.cross_session_inbound,
                         _diag_spawn_id=spawn_id,
                     )
                     state = self._get_agent_state(worktree.path, agent_id)
                     state.label = panel.agent_label(agent_id)
+                    state.session_name = panel.agent_session_name(agent_id)
                     self._refresh_sidebar_agents(worktree.path)
                     span["agent_id"] = agent_id
 
@@ -548,6 +596,7 @@ class LazyAgent(App):
                     socket_path=self._ipc_socket_path,
                     instruction=result.instruction,
                     system_prompt=orch_prompt,
+                    cross_session_inbound=self._config.agent.cross_session_inbound,
                 )
 
         self.push_screen(SpawnModal("Orchestrator", agent_provider=self._config.agent.provider), on_spawn_dismiss)
@@ -793,7 +842,7 @@ class LazyAgent(App):
             try:
                 manager = WorktreeManager(self._repo_root)
                 manager.remove(worktree.path, force=force)
-                self._agent_states.pop(worktree.path, None)
+                self._drop_worktree_agents(worktree.path)
                 self._load_worktrees()
                 if self.worktrees:
                     self.query_one(WorktreeList).index = 0

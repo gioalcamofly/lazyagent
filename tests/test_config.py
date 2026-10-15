@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lazyagent.config import Config, OrchestratorConfig, WorktreeConfig, format_command, load_config
+from lazyagent.config import Config, WorktreeConfig, format_command, load_config
 
 
 class TestLoadConfig:
@@ -55,6 +55,22 @@ provider = "codex"
         (tmp_path / ".lazyagent.toml").write_text(toml_content)
         config = load_config(tmp_path)
         assert config.agent.provider == "codex"
+
+    def test_cross_session_inbound_defaults_to_none(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text("[agent]\n")
+        assert load_config(tmp_path).agent.cross_session_inbound is None
+
+    def test_cross_session_inbound_accept(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            '[agent]\ncross_session_inbound = "accept"\n'
+        )
+        assert load_config(tmp_path).agent.cross_session_inbound == "accept"
+
+    def test_cross_session_inbound_unknown_value_is_ignored(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            '[agent]\ncross_session_inbound = "always"\n'
+        )
+        assert load_config(tmp_path).agent.cross_session_inbound is None
 
     def test_agent_provider_gemini(self, tmp_path: Path):
         toml_content = """\

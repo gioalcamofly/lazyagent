@@ -21,4 +21,5 @@ RESEARCH.md
 STATUS.md
 
 .specs/
-.claude/
+.claude/*
+!.claude/skills/

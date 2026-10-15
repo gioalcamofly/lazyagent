@@ -227,6 +227,26 @@ def test_do_remove_worktree_injects_custom_command_with_repo_cd_prefix() -> None
     app.action_focus_terminal.assert_called_once_with()
 
 
+def test_do_remove_worktree_reports_its_agents_as_exited(monkeypatch) -> None:
+    monkeypatch.setattr("lazyagent.app.WorktreeManager", MagicMock())
+    app = _make_app_with_config()
+    app._load_worktrees = MagicMock()
+    app.query_one = MagicMock()
+    app._agent_states = {
+        FEATURE_WORKTREE.path: {
+            "a1": AgentState(status=AgentStatus.COMPLETED, agent_id="a1"),
+        }
+    }
+
+    app._do_remove_worktree(FEATURE_WORKTREE)
+
+    events, _ = app.agent_events.since(0)
+    assert [(e.worktree_path, e.agent_id, e.status) for e in events] == [
+        (FEATURE_WORKTREE.path, "a1", "exited")
+    ]
+    assert FEATURE_WORKTREE.path not in app._agent_states
+
+
 @pytest.mark.parametrize("status", [AgentStatus.RUNNING, AgentStatus.WAITING])
 def test_remove_worktree_is_blocked_for_active_agents(status: AgentStatus) -> None:
     app = LazyAgent(repo_path="/repo")

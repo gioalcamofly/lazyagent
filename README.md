@@ -83,9 +83,9 @@ By default lazyagent launches `claude`. Set `provider = "codex"` or `provider = 
 
 ## Claude Code MCP Integration (optional)
 
-lazyagent ships an MCP server that exposes its worktree and agent tools (`list_worktrees`, `spawn_agent`, `read_agent_output`, …) to a standalone `claude` session — useful when you want `claude` running outside lazyagent's TUI to drive a lazyagent instance you have running elsewhere.
+lazyagent ships an MCP server that exposes its worktree and agent tools (`list_worktrees`, `spawn_agent`, `send_agent_input`, `list_events`, …) to a standalone `claude` session — useful when you want `claude` running outside lazyagent's TUI to drive a lazyagent instance you have running elsewhere.
 
-> Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the MCP server wired up automatically. The setup below is only needed for `claude` sessions you start by hand in other projects.
+> Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the MCP server wired up automatically, under the name `lazyagent_app` and running the same lazyagent as the app. That way a `lazyagent` server you register below can't shadow it. The setup below is only needed for `claude` sessions you start by hand in other projects.
 
 Register it once at user scope so `claude` finds it from any directory:
 
@@ -137,6 +137,12 @@ Statuses are normalized into a clear lifecycle:
 
 <!-- Screenshot placeholder: sidebar showing mixed agent statuses -->
 
+### Messaging between Claude agents
+
+Claude agents that lazyagent spawns get a predictable session name — `<worktree folder>-<agent id>`, e.g. `myrepo-fix-login-a1`, and `<repo>-orchestrator` for the orchestrator. `list_worktrees` and `list_agents` report it as `session_name`. The orchestrator uses Claude Code's built-in `SendMessage` with that name to give workers instructions and `notify_when_idle` to be woken when they finish; workers report back the same way. Messages never land in a permission prompt or a half-typed draft, which typed input (`send_agent_input`, still used for Codex and Gemini) can.
+
+Claude Code holds a message from a session in another permission mode until a human approves it. Spawn the orchestrator and its workers in the same mode, or set `cross_session_inbound = "accept"` (see [Configuration](#configuration)). Accepting means any of your local Claude sessions can instruct the agents, including a bypass-permissions one, so turn it on only if that is what you want.
+
 ### Diff Tab
 
 Press `Ctrl+D` to see working-tree changes (both tracked and untracked files) rendered inline. Review what your agents have done before committing.
@@ -187,6 +193,10 @@ default_branch = "main"
 [agent]
 # Agent CLI to launch: "claude" (default), "codex", or "gemini"
 provider = "claude"
+# Claude only: what spawned agents do with SendMessage from a session in another
+# permission mode — "accept", "hold" or "refuse". Unset keeps Claude Code's
+# default, which holds such messages until a human approves them.
+# cross_session_inbound = "accept"
 
 [worktree]
 # Custom command templates for worktree management

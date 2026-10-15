@@ -99,7 +99,12 @@ class JsonlTailObserver(AgentObserver):
         self._offset = 0
 
     def poll(self) -> list[AgentLifecycleEvent]:
-        if not self._log_path.exists():
+        try:
+            size = self._log_path.stat().st_size
+        except FileNotFoundError:
+            return []
+        if size == self._offset:
+            # Polled every second for every agent: don't open an unchanged log.
             return []
 
         events: list[AgentLifecycleEvent] = []
@@ -130,8 +135,21 @@ class JsonlTailObserver(AgentObserver):
 class ClaudeHooksObserver(JsonlTailObserver):
     """Observer that tails Claude hook events written to a JSONL file."""
 
+    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
+        super().__init__(log_path, temp_dir=temp_dir)
+        # False between the main agent's Stop and the next prompt.
+        self._turn_open = True
+
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_name = data.get("hook_event_name")
+        if event_name in ("PreToolUse", "PostToolUse") and data.get("agent_id"):
+            # A subagent's tool call after the main agent's Stop isn't the
+            # agent working. Seen from Claude Code 2.1.295 after a turn a
+            # SendMessage notify_when_idle subscriber was waiting on: a lone
+            # PreToolUse with no PostToolUse or Stop, which left the agent
+            # showing as running until the next idle_prompt notification.
+            if not self._turn_open:
+                return None
         if event_name == "Notification":
             notification_type = str(data.get("notification_type", "")).strip().lower()
             if notification_type == "permission_prompt":
@@ -141,8 +159,11 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="needs approval",
                 )
             if notification_type == "idle_prompt":
+                # Claude's "still waiting for your input" reminder for an agent
+                # that finished its turn. It is not a dialog: reporting it as
+                # waiting_for_user would put idle agents in the "blocked" group.
                 return AgentLifecycleEvent(
-                    status=AgentStatus.WAITING_FOR_USER,
+                    status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.HIGH,
                     detail="idle",
                 )
@@ -153,7 +174,18 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="asking a question",
                 )
             return None
+        if event_name == "UserPromptSubmit":
+            self._turn_open = True
+            # The start of every turn. Without it a turn that uses no tools
+            # never leaves WAITING, so nothing can tell it happened — and it
+            # is the direct confirmation that programmatic input was submitted.
+            return AgentLifecycleEvent(
+                status=AgentStatus.RUNNING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="prompt submitted",
+            )
         if event_name == "Stop":
+            self._turn_open = False
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,
             # not COMPLETED (which is reserved for TaskCompleted/SessionEnd).

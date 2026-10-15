@@ -107,7 +107,7 @@ class TestClaudeHooksObserver:
         assert events[0].status == AgentStatus.WAITING_FOR_APPROVAL
         assert events[0].confidence == LifecycleConfidence.HIGH
 
-    def test_idle_prompt_sets_waiting_for_user(self, tmp_path):
+    def test_idle_prompt_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
         log_path.write_text(
             json.dumps(
@@ -122,7 +122,7 @@ class TestClaudeHooksObserver:
         observer = ClaudeHooksObserver(str(log_path))
         events = observer.poll()
         assert len(events) == 1
-        assert events[0].status == AgentStatus.WAITING_FOR_USER
+        assert events[0].status == AgentStatus.WAITING
         assert events[0].detail == "idle"
 
     def test_elicitation_sets_waiting_for_user(self, tmp_path):
@@ -142,6 +142,20 @@ class TestClaudeHooksObserver:
         assert len(events) == 1
         assert events[0].status == AgentStatus.WAITING_FOR_USER
         assert events[0].detail == "asking a question"
+
+    def test_user_prompt_submit_sets_running(self, tmp_path):
+        """Every turn starts RUNNING, including turns that use no tools."""
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}) + "\n",
+            encoding="utf-8",
+        )
+        observer = ClaudeHooksObserver(str(log_path))
+        events = observer.poll()
+        assert len(events) == 1
+        assert events[0].status == AgentStatus.RUNNING
+        assert events[0].confidence == LifecycleConfidence.HIGH
+        assert events[0].detail == "prompt submitted"
 
     def test_stop_event_sets_waiting(self, tmp_path):
         log_path = tmp_path / "hooks.jsonl"
@@ -210,6 +224,57 @@ class TestClaudeHooksObserver:
         assert len(events) == 1
         assert events[0].status == AgentStatus.COMPLETED
         assert observer.poll() == []
+
+
+class TestClaudeSubagentAfterStop:
+    """Subagent tool calls after the main agent's Stop don't mean it is busy."""
+
+    @staticmethod
+    def _poll(tmp_path, *hooks: dict):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            "".join(json.dumps(h) + "\n" for h in hooks), encoding="utf-8"
+        )
+        return [e.status for e in ClaudeHooksObserver(str(log_path)).poll()]
+
+    def test_ignored_after_stop(self, tmp_path):
+        # The sequence seen once after a turn a notify_when_idle subscriber
+        # was waiting on: Stop, then a lone subagent ReportFindings.
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "PreToolUse", "tool_name": "ReportFindings",
+             "agent_id": "aa3498b9fbed1bdae"},
+        )
+        assert statuses == [AgentStatus.RUNNING, AgentStatus.WAITING]
+
+    def test_kept_during_a_turn(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub1"},
+        )
+        assert statuses == [AgentStatus.RUNNING, AgentStatus.RUNNING]
+
+    def test_kept_again_after_the_next_prompt(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub1"},
+        )
+        assert statuses == [
+            AgentStatus.WAITING, AgentStatus.RUNNING, AgentStatus.RUNNING
+        ]
+
+    def test_main_agent_tool_after_stop_still_counts(self, tmp_path):
+        statuses = self._poll(
+            tmp_path,
+            {"hook_event_name": "Stop"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Bash"},
+        )
+        assert statuses == [AgentStatus.WAITING, AgentStatus.RUNNING]
 
 
 class TestCodexAppServerObserver:
@@ -307,3 +372,23 @@ class TestGeminiTelemetryObserver:
         events = observer.poll()
         assert len(events) == 1
         assert events[0].status == AgentStatus.COMPLETED
+
+
+class TestJsonlPollIsCheap:
+    def test_unchanged_log_is_not_reopened(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(json.dumps({"hook_event_name": "Stop"}) + "\n")
+        observer = ClaudeHooksObserver(str(log_path))
+        assert len(observer.poll()) == 1
+
+        opened = []
+        real_open = type(log_path).open
+        monkeypatch.setattr(
+            type(log_path), "open", lambda self, *a, **k: opened.append(1) or real_open(self, *a, **k)
+        )
+        assert observer.poll() == []
+        assert opened == []
+
+        with log_path.open("a") as handle:
+            handle.write(json.dumps({"hook_event_name": "UserPromptSubmit"}) + "\n")
+        assert [e.detail for e in observer.poll()] == ["prompt submitted"]

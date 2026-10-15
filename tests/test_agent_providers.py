@@ -8,8 +8,10 @@ from lazyagent.agent_observers import (
 )
 from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
+    MCP_SERVER_NAME,
     ObservationMode,
     ResumeMode,
+    agent_session_name,
     get_agent_provider,
     normalize_provider_name,
 )
@@ -107,6 +109,7 @@ class TestClaudeHooksSettings:
         # All expected hook events are present
         assert "Notification" in settings["hooks"]
         assert "Stop" in settings["hooks"]
+        assert "UserPromptSubmit" in settings["hooks"]
         assert "PreToolUse" in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
         assert "TaskCompleted" in settings["hooks"]
@@ -122,18 +125,18 @@ class TestClaudeHooksSettings:
 
 
 class TestClaudeMcpSettings:
-    def test_settings_file_with_mcp_server(self):
+    def test_mcp_server_goes_in_mcp_config_not_settings(self):
         provider = get_agent_provider("claude")
         context = provider.build_runtime_context("/tmp/wt", socket_path="/tmp/test.sock")
 
         settings_path = context.metadata["settings_path"]
         settings = json.loads(open(settings_path, encoding="utf-8").read())
+        # Claude Code ignores mcpServers in a --settings file.
+        assert list(settings.keys()) == ["hooks"]
 
-        # Both hooks and mcpServers should be present
-        assert "hooks" in settings
-        assert "mcpServers" in settings
-
-        mcp_cfg = settings["mcpServers"]["lazyagent"]
+        mcp_config_path = context.metadata["mcp_config_path"]
+        mcp_config = json.loads(open(mcp_config_path, encoding="utf-8").read())
+        mcp_cfg = mcp_config["mcpServers"][MCP_SERVER_NAME]
         # sys.executable so the MCP server runs in the same interpreter
         # lazyagent itself is running in (handles pipx/venv installs).
         import sys
@@ -142,7 +145,19 @@ class TestClaudeMcpSettings:
         assert mcp_cfg["env"]["LAZYAGENT_SOCKET"] == "/tmp/test.sock"
         assert mcp_cfg["env"]["PYTHONUNBUFFERED"] == "1"
 
-    def test_settings_file_without_socket_path_has_no_mcp(self):
+    def test_command_passes_mcp_config(self):
+        provider = get_agent_provider("claude")
+        context = provider.build_runtime_context("/tmp/wt", socket_path="/tmp/test.sock")
+
+        script = shlex.split(provider.build_command("/tmp/wt", runtime_context=context))[2]
+
+        assert f"--mcp-config {context.metadata['mcp_config_path']}" in script
+
+    def test_server_is_not_named_lazyagent(self):
+        # A user-scope "lazyagent" server would shadow the per-agent one.
+        assert MCP_SERVER_NAME == "lazyagent_app"
+
+    def test_without_socket_path_has_no_mcp(self):
         provider = get_agent_provider("claude")
         context = provider.build_runtime_context("/tmp/wt")
 
@@ -150,7 +165,45 @@ class TestClaudeMcpSettings:
         settings = json.loads(open(settings_path, encoding="utf-8").read())
 
         assert list(settings.keys()) == ["hooks"]
-        assert "mcpServers" not in settings
+        assert "mcp_config_path" not in context.metadata
+        script = shlex.split(provider.build_command("/tmp/wt", runtime_context=context))[2]
+        assert "--mcp-config" not in script
+
+
+class TestSessionName:
+    def test_worktree_folder_and_agent_id(self):
+        assert agent_session_name("/repos/smith-PROJ-25382", "a1") == "smith-PROJ-25382-a1"
+
+    def test_without_agent_id(self):
+        assert agent_session_name("/repos/app") == "app"
+
+    def test_unsafe_characters_are_replaced(self):
+        assert agent_session_name("/repos/my app (copy)", "a2") == "my-app-copy-a2"
+
+    def test_claude_gets_name_flag(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", session_name="wt-a1")
+        )[2]
+        assert "--name wt-a1" in script
+
+    def test_providers_without_flag_ignore_it(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", session_name="wt-a1")
+        )[2]
+        assert "wt-a1" not in script
+
+
+class TestCrossSessionInbound:
+    @staticmethod
+    def _settings(**kwargs) -> dict:
+        context = get_agent_provider("claude").build_runtime_context("/tmp/wt", **kwargs)
+        return json.loads(open(context.metadata["settings_path"], encoding="utf-8").read())
+
+    def test_written_when_set(self):
+        assert self._settings(cross_session_inbound="accept")["crossSessionInbound"] == "accept"
+
+    def test_left_alone_by_default(self):
+        assert "crossSessionInbound" not in self._settings()
 
 
 class TestBuildCommandResume:
