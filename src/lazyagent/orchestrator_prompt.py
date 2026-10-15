@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lazyagent.agent_providers import agent_session_name, get_agent_provider
 from lazyagent.config import Config
 
 DEFAULT_USER_PROMPT_FILE = ".lazyagent-orchestrator.md"
@@ -59,9 +60,10 @@ stuck, went off-track, or the task is done.
 level, and detail text.
 - **`read_agent_output(worktree_path, lines=50)`** — Reads recent terminal output. \
 Use this to check progress, see errors, or verify completion.
-- **`send_agent_input(worktree_path, text)`** — Sends text to a \
-running agent and submits it. Use this to answer prompts, approve actions, or give \
-follow-up instructions without restarting the agent. The result's `delivery` says \
+- **`send_agent_input(worktree_path, text)`** — Types text into a \
+running agent's terminal and submits it. Use this to answer a permission prompt or \
+question on its screen, and to give follow-up instructions to agents that have no \
+`session_name` (Codex, Gemini). For Claude agents, prefer `SendMessage` (below). The result's `delivery` says \
 whether the agent picked it up: `confirmed`, `unconfirmed` (the text may be \
 sitting unsent — check `read_agent_output`), or `busy` (it was mid-turn).
 
@@ -76,6 +78,26 @@ Statuses: `running`, `waiting` (turn done, at its prompt), `waiting_for_user`, \
 agent's status changes; it never blocks. Pass the `cursor` returned by \
 `spawn_agent`, `send_agent_input` or a previous call as `since` to see only what \
 happened after it.
+
+### Messaging Claude agents
+
+Every Claude agent lazyagent spawns has a `session_name` (in `list_worktrees` and \
+`list_agents`). Claude Code's own **`SendMessage`** tool reaches it by that name — \
+use it instead of `send_agent_input` for Claude agents:
+
+- `SendMessage(to=session_name, message="...")` — the message reaches the agent \
+whether it is idle (it starts a turn) or busy (it arrives at its next tool call). It \
+never lands in a permission prompt or a half-typed draft.
+- Add `notify_when_idle=true` to get one `[Cross-session idle notice]` when the agent \
+next finishes its turn, with a one-line summary of what it did. Omit `message` for \
+the notice alone. Notices and replies reach you only once your own turn ends, so \
+end your turn instead of waiting or polling.
+- Workers reply with `SendMessage` too: their messages arrive as \
+`<cross-session-message from="...">`. Reply to one by using its `from` as `to`.
+- Spawn workers in the same permission mode as yourself (`skip_permissions=true` if \
+you run with permissions bypassed). A session holds messages from a session in \
+another mode until its human approves them, unless the user set \
+`cross_session_inbound = "accept"` in `.lazyagent.toml`.
 
 ## Workflow
 
@@ -100,10 +122,14 @@ spawn_agent(worktree_path="/path/to/worktree", instruction="...")
 
 ### 4. Monitor
 
-Check on agents when the user asks or at natural milestones — don't sit in a \
-polling loop:
+Don't sit in a polling loop. For a Claude agent, subscribe and end your turn — \
+you are woken when it finishes:
 ```
 r = spawn_agent(worktree_path, instruction="...")
+SendMessage(to=<its session_name>, notify_when_idle=true)  →  then end your turn
+```
+For any agent, or to see what happened in between:
+```
 list_events(since=r.cursor, agent_id=r.agent_id)  →  what has it gone through?
 read_agent_output(worktree_path)  →  what has it done so far?
 ```
@@ -133,6 +159,8 @@ redirect URL is not URL-encoded" is better than "fix the login bug".
 - **One task per agent.** Don't combine unrelated changes.
 - **Include verification.** "Run `pytest tests/test_auth.py` to verify the fix" \
 helps the agent validate its own work.
+- **Say how to report back.** For a Claude agent, end the instruction with "When \
+you finish or get blocked, report with SendMessage to `<your session name>`".
 
 ## Rules
 
@@ -152,10 +180,15 @@ def compose_orchestrator_prompt(config: Config, repo_root: str | Path) -> str:
 
     Layers (in order):
     1. Default prompt (always included)
-    2. Agent instruction template section (from config, if set)
-    3. User prompt file content (if the file exists)
+    2. The orchestrator's session name (providers that take one)
+    3. Agent instruction template section (from config, if set)
+    4. User prompt file content (if the file exists)
     """
     parts: list[str] = [DEFAULT_ORCHESTRATOR_PROMPT]
+
+    session_section = _format_session_name_section(config, repo_root)
+    if session_section:
+        parts.append(session_section)
 
     template_section = _format_template_section(config)
     if template_section:
@@ -188,4 +221,16 @@ def _format_template_section(config: Config) -> str | None:
         "When spawning agents, use the following template for their instructions "
         "(substitute placeholders as appropriate):\n\n"
         f"```\n{template}\n```"
+    )
+
+
+def _format_session_name_section(config: Config, repo_root: str | Path) -> str | None:
+    """Tell the orchestrator the session name its workers message it by."""
+    if not get_agent_provider(config.agent.provider).session_name_flag:
+        return None
+    name = agent_session_name(str(repo_root), "orchestrator")
+    return (
+        "## Your session name\n\n"
+        f"Your session name is `{name}`: that is the `to` your Claude workers "
+        "use to message you. If `ListAgents` shows it with a suffix, use that."
     )

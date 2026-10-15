@@ -4,6 +4,7 @@ from textual.containers import Container
 from textual.widgets import Static
 
 from lazyagent.agent_providers import (
+    agent_session_name,
     DEFAULT_AGENT_PROVIDER,
     ResumeMode,
     get_agent_provider,
@@ -35,6 +36,7 @@ class OrchestratorPanel(Container):
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
         self._agent_terminal: MonitoredTerminal | None = None
+        self._session_name = ""
 
     def compose(self):
         yield Static(_PLACEHOLDER_TEXT, id="orch-placeholder")
@@ -46,6 +48,10 @@ class OrchestratorPanel(Container):
     def get_agent(self, agent_id: str = "") -> MonitoredTerminal | None:
         """The orchestrator is single-agent; ``agent_id`` is ignored."""
         return self._agent_terminal
+
+    def agent_session_name(self, agent_id: str = "") -> str:
+        """The name other Claude sessions address the orchestrator by."""
+        return self._session_name
 
     @property
     def agent_ids(self) -> list[str]:
@@ -78,6 +84,7 @@ class OrchestratorPanel(Container):
         socket_path: str | None = None,
         instruction: str | None = None,
         system_prompt: str | None = None,
+        cross_session_inbound: str | None = None,
     ) -> None:
         """Spawn the orchestrator agent process."""
         # Remove previous terminal or placeholder
@@ -93,8 +100,15 @@ class OrchestratorPanel(Container):
             pass
 
         provider = get_agent_provider(agent_provider)
+        self._session_name = (
+            agent_session_name(self.worktree_path, "orchestrator")
+            if provider.session_name_flag
+            else ""
+        )
         runtime_context = provider.build_runtime_context(
-            self.worktree_path, socket_path=socket_path
+            self.worktree_path,
+            socket_path=socket_path,
+            cross_session_inbound=cross_session_inbound,
         )
         command = provider.build_command(
             self.worktree_path,
@@ -103,6 +117,7 @@ class OrchestratorPanel(Container):
             resume_mode=resume_mode,
             instruction=instruction,
             system_prompt=system_prompt,
+            session_name=self._session_name or None,
         )
 
         terminal = MonitoredTerminal(

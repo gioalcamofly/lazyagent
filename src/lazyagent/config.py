@@ -5,7 +5,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lazyagent.agent_providers import DEFAULT_AGENT_PROVIDER, normalize_provider_name
+from lazyagent.agent_providers import (
+    CROSS_SESSION_INBOUND_VALUES,
+    DEFAULT_AGENT_PROVIDER,
+    normalize_provider_name,
+)
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -34,6 +38,9 @@ class AgentConfig:
     """Configuration for agent process selection."""
 
     provider: str = DEFAULT_AGENT_PROVIDER
+    # Claude's crossSessionInbound for spawned agents: "accept", "hold" or
+    # "refuse". None leaves Claude Code's own setting alone.
+    cross_session_inbound: str | None = None
 
 
 @dataclass
@@ -84,6 +91,9 @@ def load_config(repo_root: str | Path) -> Config:
     )
     agent_data = data.get("agent", {})
     provider = normalize_provider_name(agent_data.get("provider"))
+    cross_session_inbound = agent_data.get("cross_session_inbound")
+    if cross_session_inbound not in CROSS_SESSION_INBOUND_VALUES:
+        cross_session_inbound = None
     orch_data = data.get("orchestrator", {})
     orchestrator_config = OrchestratorConfig(
         prompt_file=orch_data.get("prompt_file"),
@@ -92,7 +102,9 @@ def load_config(repo_root: str | Path) -> Config:
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
     return Config(
         worktree=worktree_config,
-        agent=AgentConfig(provider=provider),
+        agent=AgentConfig(
+            provider=provider, cross_session_inbound=cross_session_inbound
+        ),
         orchestrator=orchestrator_config,
         default_branch=default_branch,
     )

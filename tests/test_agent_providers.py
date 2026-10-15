@@ -11,6 +11,7 @@ from lazyagent.agent_providers import (
     MCP_SERVER_NAME,
     ObservationMode,
     ResumeMode,
+    agent_session_name,
     get_agent_provider,
     normalize_provider_name,
 )
@@ -167,6 +168,42 @@ class TestClaudeMcpSettings:
         assert "mcp_config_path" not in context.metadata
         script = shlex.split(provider.build_command("/tmp/wt", runtime_context=context))[2]
         assert "--mcp-config" not in script
+
+
+class TestSessionName:
+    def test_worktree_folder_and_agent_id(self):
+        assert agent_session_name("/repos/smith-PROJ-25382", "a1") == "smith-PROJ-25382-a1"
+
+    def test_without_agent_id(self):
+        assert agent_session_name("/repos/app") == "app"
+
+    def test_unsafe_characters_are_replaced(self):
+        assert agent_session_name("/repos/my app (copy)", "a2") == "my-app-copy-a2"
+
+    def test_claude_gets_name_flag(self):
+        script = shlex.split(
+            get_agent_provider("claude").build_command("/tmp/wt", session_name="wt-a1")
+        )[2]
+        assert "--name wt-a1" in script
+
+    def test_providers_without_flag_ignore_it(self):
+        script = shlex.split(
+            get_agent_provider("codex").build_command("/tmp/wt", session_name="wt-a1")
+        )[2]
+        assert "wt-a1" not in script
+
+
+class TestCrossSessionInbound:
+    @staticmethod
+    def _settings(**kwargs) -> dict:
+        context = get_agent_provider("claude").build_runtime_context("/tmp/wt", **kwargs)
+        return json.loads(open(context.metadata["settings_path"], encoding="utf-8").read())
+
+    def test_written_when_set(self):
+        assert self._settings(cross_session_inbound="accept")["crossSessionInbound"] == "accept"
+
+    def test_left_alone_by_default(self):
+        assert "crossSessionInbound" not in self._settings()
 
 
 class TestBuildCommandResume:

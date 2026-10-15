@@ -135,8 +135,21 @@ class JsonlTailObserver(AgentObserver):
 class ClaudeHooksObserver(JsonlTailObserver):
     """Observer that tails Claude hook events written to a JSONL file."""
 
+    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
+        super().__init__(log_path, temp_dir=temp_dir)
+        # False between the main agent's Stop and the next prompt.
+        self._turn_open = True
+
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_name = data.get("hook_event_name")
+        if event_name in ("PreToolUse", "PostToolUse") and data.get("agent_id"):
+            # A subagent's tool call after the main agent's Stop isn't the
+            # agent working. Seen from Claude Code 2.1.295 after a turn a
+            # SendMessage notify_when_idle subscriber was waiting on: a lone
+            # PreToolUse with no PostToolUse or Stop, which left the agent
+            # showing as running until the next idle_prompt notification.
+            if not self._turn_open:
+                return None
         if event_name == "Notification":
             notification_type = str(data.get("notification_type", "")).strip().lower()
             if notification_type == "permission_prompt":
@@ -162,6 +175,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 )
             return None
         if event_name == "UserPromptSubmit":
+            self._turn_open = True
             # The start of every turn. Without it a turn that uses no tools
             # never leaves WAITING, so nothing can tell it happened — and it
             # is the direct confirmation that programmatic input was submitted.
@@ -171,6 +185,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail="prompt submitted",
             )
         if event_name == "Stop":
+            self._turn_open = False
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,
             # not COMPLETED (which is reserved for TaskCompleted/SessionEnd).
