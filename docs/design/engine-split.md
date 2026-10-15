@@ -389,7 +389,7 @@ Same protocol, different order: get a GUI on screen before the engine leaves the
 | Risk | Big refactor before any visible result | Low, mostly additive |
 | Duplication | None | TUI and host paint similar data until compact mode covers it |
 
-Both orderings share the protocol and the contract suite, so choosing one doesn't discard work from the other. See O1.
+Both orderings share the protocol and the contract suite, so choosing one doesn't discard work from the other. Hosted mode first was chosen (D11).
 
 ---
 
@@ -425,9 +425,4 @@ Giovanni answered the open questions; the sections above already reflect these.
 | D8 | Agent ids | Monotonic per worktree and persisted across engine restarts (PR 2) |
 | D9 | Platforms | Linux only; macOS out of scope |
 | D10 | CI on `develop` | Enable now, as a separate small PR outside this migration |
-
-### Open questions
-
-| # | Topic | Status |
-|---|---|---|
-| O1 | Ordering: engine first (§6) or hosted mode first (§6b) after PR 6 | Open. Recommendation: hosted mode first, since PRs 1-6 are common to both and it gets a GUI on screen sooner |
+| D11 | Ordering | Hosted mode first (§6b). PRs 1-6, then H1/H2, then PRs 7-9 when agents need to survive the UI |
