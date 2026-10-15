@@ -357,6 +357,40 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 
 - **Ordering:** PRs 2-5 are pure refactors (in-process) and can each ship in a release. PR 6 adds capability without a user-visible change. PR 7 is the first switchable behaviour, and PR 8 makes "agents survive the UI" real.
 
+### 6b. Alternative ordering: hosted mode first
+
+Same protocol, different order: get a GUI on screen before the engine leaves the TUI process. The GUI **hosts the existing TUI** in a terminal panel (xterm.js) and paints native widgets from structured data that lazyagent sends over a side channel. This is the Warp and VS Code shell-integration pattern.
+
+```
+┌─────────────── App (GUI) ──────────────────────────────────┐
+│  ┌─ terminal panel (xterm.js) ─┐   ┌─ native widgets ─────┐│
+│  │  lazyagent TUI (compact)    │   │ PR badges, agent     ││
+│  │                             │   │ states, notifications││
+│  └─────────────▲───────────────┘   └──────────▲───────────┘│
+└────────────────┼──────────────────────────────┼────────────┘
+                 │ PTY bytes                    │ JSON events (side channel)
+            lazyagent ──────────────────────────┘
+```
+
+- **Host detection:** the app launches `lazyagent` with `LAZYAGENT_HOST=<socket>` (same idea as `TERM_PROGRAM`). Without it, the TUI is unchanged. With it, the TUI enters **hosted mode**: it hides what the host paints (sidebar, PR badges, status bar) and keeps the agent terminals.
+- **Side channel:**
+
+  | Channel | How | Pro | Con |
+  |---|---|---|---|
+  | **Socket (primary)** | The host connects to the v1 server (PR 6): `list_worktrees`, `subscribe` events, PR status | Already designed; rich data | Doesn't cross SSH without socket forwarding |
+  | **OSC escapes (secondary)** | lazyagent emits private OSC sequences in its output; the host strips and handles them (like OSC 9 / OSC 133) | Works over SSH and inside tmux (needs `allow-passthrough on`) | Only for small payloads: notifications, focus hints |
+
+- **Sequence:** PRs 1-6 as in §6 → **H1** hosted-mode flag and compact layout in the TUI → **H2** minimal host app (xterm.js panel + widgets fed by `subscribe`) → replace TUI parts with native widgets as needed → resume PRs 7-9 when "agents survive the UI" is needed.
+
+| | Engine first (§6) | Hosted mode first (§6b) |
+|---|---|---|
+| First visible GUI | After ~8 internal PRs | After PR 6 + H1/H2 |
+| Agents survive closing the UI | ✅ at PR 8 | ❌ until PRs 7-8 land |
+| Risk | Big refactor before any visible result | Low, mostly additive |
+| Duplication | None | TUI and host paint similar data until compact mode covers it |
+
+Both orderings share the protocol and the contract suite, so choosing one doesn't discard work from the other. See O1.
+
 ---
 
 ## 7. Risks and open questions
@@ -391,3 +425,9 @@ Giovanni answered the open questions; the sections above already reflect these.
 | D8 | Agent ids | Monotonic per worktree and persisted across engine restarts (PR 2) |
 | D9 | Platforms | Linux only; macOS out of scope |
 | D10 | CI on `develop` | Enable now, as a separate small PR outside this migration |
+
+### Open questions
+
+| # | Topic | Status |
+|---|---|---|
+| O1 | Ordering: engine first (§6) or hosted mode first (§6b) after PR 6 | Open. Recommendation: hosted mode first, since PRs 1-6 are common to both and it gets a GUI on screen sooner |
