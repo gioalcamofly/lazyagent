@@ -384,7 +384,7 @@ Same protocol, different order: get a GUI on screen before the engine leaves the
 
 | | Engine first (§6) | Hosted mode first (§6b) |
 |---|---|---|
-| First visible GUI | After ~8 internal PRs | After PR 6 + H1/H2 |
+| First visible GUI | After PRs 1-9 (web is PR 10+) | After PR 6 + H1/H2 |
 | Agents survive closing the UI | ✅ at PR 8 | ❌ until PRs 7-8 land |
 | Risk | Big refactor before any visible result | Low, mostly additive |
 | Duplication | None | TUI and host paint similar data until compact mode covers it |
