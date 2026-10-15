@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lazyagent/protocol/v1/envelope.json",
+  "title": "lazyagent protocol v1 message envelope",
+  "description": "One JSON control message. Peers ignore unknown fields.",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/response_ok"},
+    {"$ref": "#/$defs/response_error"},
+    {"$ref": "#/$defs/event"}
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["type", "id", "method"],
+      "properties": {
+        "type": {"const": "req"},
+        "id": {"type": "string"},
+        "method": {"type": "string", "minLength": 1},
+        "params": {"type": "object", "description": "Omitted means {}."}
+      }
+    },
+    "response_ok": {
+      "type": "object",
+      "required": ["type", "id", "result"],
+      "properties": {
+        "type": {"const": "res"},
+        "id": {"type": "string"},
+        "result": {"description": "Method-specific; see methods.json."}
+      }
+    },
+    "response_error": {
+      "type": "object",
+      "required": ["type", "id", "error"],
+      "properties": {
+        "type": {"const": "res"},
+        "id": {"type": "string"},
+        "error": {"$ref": "#/$defs/error"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Open set. Legacy: UNKNOWN_METHOD, WORKTREE_ERROR, VALIDATION_ERROR, TIMEOUT, INTERNAL_ERROR. v1: UNAUTHORIZED, UNSUPPORTED_VERSION, NOT_SIZE_OWNER, PROTOCOL_ERROR."
+        },
+        "message": {"type": "string"},
+        "data": {"description": "Optional structured detail."}
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["type", "seq", "event"],
+      "properties": {
+        "type": {"const": "evt"},
+        "seq": {"type": "integer", "minimum": 0, "description": "Engine-wide, monotonic."},
+        "event": {"type": "string", "minLength": 1},
+        "data": {"description": "Event-specific; see events.json."}
+      }
+    }
+  }
+}
