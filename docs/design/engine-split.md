@@ -171,18 +171,23 @@ A PTY has one size, and the headless screen must match it.
 
 Binary stream frame payload: `u8 type` (1 = output, 2 = input) · `u32 stream_id` · `u64 offset` (output only) · bytes.
 
+- All integers are big-endian. The `u32 length` counts the payload only, not the 5-byte header. Frames over 16 MiB are rejected.
+- `offset` is the position of the frame's first data byte in the session's output since the session started.
+- A bad header (unknown `kind`, oversized length) is unrecoverable and closes the connection. A bad payload inside a well-delimited frame (invalid JSON, short stream header) is reported and skipped.
+
 ### 4b. Envelope
 
 - **Request:** `{"type":"req","id":"…","method":"…","params":{…}}`. This is the IPC shape plus `type`.
-- **Response:** `{"type":"res","id":"…","result":…}` or `{"type":"res","id":"…","error":{"code","message","data?"}}`. Codes are the existing ones (ipc.py:148-161): `UNKNOWN_METHOD`, `WORKTREE_ERROR`, `VALIDATION_ERROR`, `TIMEOUT`, `INTERNAL_ERROR`. New: `UNAUTHORIZED`, `UNSUPPORTED_VERSION`, `NOT_SIZE_OWNER`.
+- **Response:** `{"type":"res","id":"…","result":…}` or `{"type":"res","id":"…","error":{"code","message","data?"}}`. Codes are the existing ones (ipc.py:148-161): `UNKNOWN_METHOD`, `WORKTREE_ERROR`, `VALIDATION_ERROR`, `TIMEOUT`, `INTERNAL_ERROR`. New: `UNAUTHORIZED`, `UNSUPPORTED_VERSION`, `NOT_SIZE_OWNER`, and `PROTOCOL_ERROR` (malformed envelope). Codes are an open set: a peer must handle one it does not know.
 - **Event:** `{"type":"evt","seq":123,"event":"agent.status","data":{…}}`.
 
 ### 4c. Handshake and versioning
 
-- The first frame is `hello {protocol: 1, client: "tui"|"web"|"mcp"|"cli", client_version, token?}`. The reply is `{protocol: 1, engine_version, capabilities: [...], repo_root, engine_id}`.
-- **Major version** is an integer; a mismatch returns `UNSUPPORTED_VERSION`.
+- The first frame is an ordinary request with method `hello` and params `{protocol: 1, client: "tui"|"web"|"mcp"|"cli", client_version, token?}`. The result is `{protocol: 1, engine_version, capabilities: [...], repo_root, engine_id}`.
+- **Major version** is an integer; a mismatch returns an `UNSUPPORTED_VERSION` error response with `data: {supported: [1], requested}`. The client checks the reply's `protocol` the same way.
 - **Additive changes** (new methods, fields or events) need no bump and are advertised in `capabilities`. Both sides **ignore unknown fields and events**.
-- **JSON Schemas** are kept in `protocol/schema/v1/`. Contract tests validate both directions against them (§6).
+- **JSON Schemas** are kept in `protocol/schema/v1/`: `envelope.json`, `handshake.json`, `methods.json` (`<method>.params` / `<method>.result`) and `events.json` (one definition per event). Contract tests validate both directions against them (§6). Python validates them with a small stdlib validator for the keyword subset they use (`protocol/validation.py`), so the package has no dependencies; a non-Python engine can use any JSON Schema validator.
+- Schemas are lenient on the wire (unknown fields allowed). Tests validate in a strict mode that rejects undeclared fields, which is how the golden fixtures prove that every field the legacy server sends is described.
 
 ### 4d. Methods
 
@@ -224,7 +229,7 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `pr_info.updated` | `{path, pr_info\|null}` | `_apply_pr_info` |
 | `stream.resized` / `stream.reset` | `{stream_id, rows, cols, offset}` | — (reset = slow client dropped, so re-attach) |
 | `engine.notice` | `{severity, message}` | `self.notify` from engine paths |
-| `job.output` / `job.finished` | `{job_id, bytes}` / `{job_id, exit_code}` | Custom create/remove typed into the shell (app.py:782, :838) (D6) |
+| `job.output` / `job.finished` | `{job_id, text}` (UTF-8 decoded with replacement) / `{job_id, exit_code\|null}` | Custom create/remove typed into the shell (app.py:782, :838) (D6) |
 | `engine.shutdown` | `{reason}` | — |
 
 - **Event log:** one engine-wide `seq`. `AgentEventBus` (agent_events.py:123) generalises to typed events; `list_events` keeps filtering to `agent.status` so the MCP cursors stay valid.
@@ -270,7 +275,9 @@ src/lazyagent/
   protocol/              # NO Textual, NO pyte imports
     envelope.py          # req/res/evt dataclasses, error codes
     framing.py           # u32-len frames, stream frame pack/unpack
-    client.py            # asyncio client (unix + ws)
+    handshake.py         # PROTOCOL_VERSION, hello / version checks
+    validation.py        # stdlib validator for schema/v1
+    client.py            # asyncio client (unix + ws), later
     schema/v1/*.json     # contract schemas
   engine/                # NO Textual imports (enforced by test)
     engine.py            # Engine facade: start/stop, public API
@@ -292,7 +299,7 @@ web/                     # frontend source: Vite + TS + xterm.js
 ```
 
 - **Shims:** leave re-export modules at the old paths (`lazyagent.app`, `lazyagent.ipc`, `lazyagent.widgets.*`) for one release, so tests and imports migrate gradually.
-- **Import boundary:** a test (or `ruff` banned-imports / `import-linter`) fails if `lazyagent.engine` or `lazyagent.protocol` imports `textual`.
+- **Import boundary:** a test (or `ruff` banned-imports / `import-linter`) fails if `lazyagent.engine` or `lazyagent.protocol` imports `textual`. `lazyagent.protocol` is stricter: stdlib only and no other `lazyagent` module (tests/protocol/test_boundary.py). Note that `import lazyagent.protocol` still runs `lazyagent/__init__.py`, which loads `pyte_patch` (and so pyte).
 
 ### 5b. uv workspace vs single package
 
@@ -341,7 +348,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 
 | # | PR | Changes | Tests added | Phase |
 |---|---|---|---|---|
-| 1 | **protocol: envelope + schemas** | `lazyagent/protocol/` (envelope, framing, v1 JSON schemas for the 10 existing methods). No runtime use | Golden fixtures of today's IPC responses (taken from test_ipc.py cases), validated against the schemas; framing round-trip and fuzz | 0 |
+| 1 | **protocol: envelope + schemas** | `lazyagent/protocol/` (envelope, framing, handshake, v1 JSON schemas for the 10 existing methods and the §4e events). Stdlib only, relative imports. No runtime use | Golden fixtures of today's IPC responses (taken from test_ipc.py cases), validated against the schemas; framing round-trip and fuzz | 0 |
 | 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED); monotonic agent ids persisted in the runtime dir and surviving a registry reload (D8) | 1 |
 | 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop | Service tests with a fake `WorktreeManager`; the poller respects the interest set | 1 |
 | 4 | **engine: AgentSession** | `PtyEmulator` + observer + scan/hang logic + modes + `send_input` + ring buffer in `engine/session.py`. `MonitoredTerminal` becomes a *view* that renders from the session's screen (shared in-process, so there is no double parse yet). Fixes C1, C10, R1-R3 | Session tests with the fake-agent PTY: status transitions, send_input framing/ack, `tail_lines`, ring offsets | 1 |
