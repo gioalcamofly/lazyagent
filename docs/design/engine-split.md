@@ -354,7 +354,7 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 
 ```
 src/lazyagent/
-  __init__.py            # keeps pyte_patch import (__init__.py:3)
+  __init__.py            # no pyte: the patch is imported by the terminal widget (later engine/pty.py)
   cli.py                 # entry point, subcommands
   protocol/              # NO Textual, NO pyte imports
     envelope.py          # req/res/evt dataclasses, error codes
@@ -383,7 +383,7 @@ web/                     # frontend source: Vite + TS + xterm.js
 ```
 
 - **Shims:** leave re-export modules at the old paths (`lazyagent.app`, `lazyagent.ipc`, `lazyagent.widgets.*`) for one release, so tests and imports migrate gradually.
-- **Import boundary:** a test (or `ruff` banned-imports / `import-linter`) fails if `lazyagent.engine` or `lazyagent.protocol` imports `textual`. `lazyagent.protocol` is stricter: stdlib only and no other `lazyagent` module (tests/protocol/test_boundary.py). Note that `import lazyagent.protocol` still runs `lazyagent/__init__.py`, which loads `pyte_patch` (and so pyte).
+- **Import boundary:** a test (or `ruff` banned-imports / `import-linter`) fails if `lazyagent.engine` or `lazyagent.protocol` imports `textual`. `lazyagent.protocol` is stricter: stdlib only and no other `lazyagent` module (tests/protocol/test_boundary.py). `import lazyagent.protocol` loads no pyte: `pyte_patch` is imported by `widgets/scrollable_terminal.py`, the only module that builds pyte screens, rather than by `lazyagent/__init__.py` (tests/conftest.py applies it for tests that use pyte directly).
 
 ### 5b. uv workspace vs single package
 
