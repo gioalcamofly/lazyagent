@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Diff review · lazyagent mockup</title>
+<!-- Static mockup for docs/design/ui-plan.md. Sample data only; no scripts, no network. -->
+<style>
+:root {
+  --bg: #121212; --surface: #1e1e1e; --panel: #262626; --panel-2: #2e2e2e; --border: #333333;
+  --text: #e0e0e0; --muted: #8a8a8a; --primary: #0178d4; --accent: #ffa62b;
+  --green: #4ebf71; --yellow: #ffcc4d; --cyan: #4fc1e9; --red: #e5534b; --purple: #b083f0;
+  --add-bg: #12301c; --del-bg: #3a1716; --add-hl: #1d5c33; --del-hl: #6b2421;
+  --mono: "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 var(--sans); }
+body { display: flex; flex-direction: column; overflow: hidden; }
+.muted { color: var(--muted); } .mono { font-family: var(--mono); }
+.g { color: var(--green); } .y { color: var(--yellow); } .c { color: var(--cyan); } .r { color: var(--red); } .p { color: var(--purple); } .a { color: var(--accent); } .b { font-weight: 600; }
+button, .btn { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.warn { border-color: var(--yellow); color: var(--yellow); }
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.ghost { background: transparent; }
+kbd { font-family: var(--mono); font-size: 10.5px; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); background: var(--surface); }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.pill.ok { color: var(--green); border-color: var(--green); }
+.pill.warn { color: var(--yellow); border-color: var(--yellow); }
+.pill.bad { color: var(--red); border-color: var(--red); }
+.count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--yellow); color: #1a1a1a; font-weight: 700; font-size: 11px; text-align: center; }
+
+/* top bar */
+#topbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+#topbar .brand { font-weight: 600; color: var(--accent); }
+#topbar .repo { white-space: nowrap; font-family: var(--mono); color: var(--muted); }
+.spacer { flex: 1; }
+.views { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px; }
+.views span { padding: 2px 10px; border-radius: 3px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.views span.on { background: var(--panel-2); color: var(--text); }
+.search { width: 300px; white-space: nowrap; gap: 8px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--bg); display: flex; justify-content: space-between; }
+.usage { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+main { flex: 1; display: flex; min-height: 0; }
+
+/* sidebar */
+#sidebar { width: 290px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+#sidebar .head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+#sidebar .head .t { font-weight: 600; flex: 1; }
+.wts { list-style: none; margin: 0; padding: 4px 0; overflow: hidden; flex: 1; }
+.wt { padding: 6px 10px; border-left: 3px solid transparent; }
+.wt.current { border-left-color: var(--accent); background: #2b2416; }
+.wt-head { display: flex; align-items: baseline; gap: 6px; }
+.wt-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-branch { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; font-family: var(--mono); font-size: 11px; }
+.prb { padding: 0 5px; border-radius: 3px; border: 1px solid var(--border); }
+.prb.open { color: var(--green); border-color: var(--green); }
+.prb.merged { color: var(--purple); border-color: var(--purple); }
+.prb.draft { color: var(--muted); }
+.agents { list-style: none; margin: 4px 0 0; padding: 0; }
+.agent { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+.agent.current { outline: 1px solid var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.agent .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent .status { font-family: var(--mono); font-size: 11px; }
+.s-run .dot, .dot.s-run { background: var(--green); } .s-run .status { color: var(--green); }
+.s-wait .dot, .dot.s-wait { background: var(--yellow); box-shadow: 0 0 0 3px #ffcc4d33; } .s-wait .status { color: var(--yellow); font-weight: 600; }
+.s-done .dot, .dot.s-done { background: var(--cyan); } .s-done .status { color: var(--cyan); }
+.s-fail .dot, .dot.s-fail { background: var(--red); } .s-fail .status { color: var(--red); font-weight: 600; }
+.s-idle .dot { background: var(--muted); } .s-idle .status { color: var(--muted); }
+#sidebar .foot { padding: 6px 10px; font-size: 11px; border-top: 1px solid var(--border); color: var(--muted); display: flex; justify-content: space-between; }
+
+/* centre */
+.centre { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.wthead { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.wthead .n { white-space: nowrap; font-weight: 600; font-size: 14px; }
+.tabs { display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 6px; }
+.tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); border-bottom: 2px solid transparent; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); background: var(--bg); }
+.tab .x { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.tab.add { color: var(--muted); }
+
+.term { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; background: var(--bg); padding: 8px 12px; white-space: pre; overflow: hidden; color: #d4d4d4; }
+.term .dim { color: #7a7a7a; } .term .hl { background: #2a2a2a; }
+.cursor { background: #e0e0e0; color: #121212; }
+.box { border: 1px solid #555; border-radius: 6px; display: inline-block; padding: 0 8px; }
+
+.split { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.pane-title { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-size: 11.5px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+
+/* right panel */
+.right { width: 330px; flex: none; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sect { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.sect h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+.kv { display: grid; grid-template-columns: 90px 1fr; gap: 3px 8px; font-size: 12px; }
+.kv .k { color: var(--muted); }
+.checks { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.checks li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.checks .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.checks .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.feed { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.feed li { display: flex; gap: 8px; padding: 2px 0; }
+.feed .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; width: 38px; }
+
+#toasts { position: fixed; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.toast { padding: 8px 12px; border-radius: 4px; background: var(--panel); border-left: 4px solid var(--primary); box-shadow: 0 2px 8px rgba(0,0,0,.5); font-size: 12.5px; }
+.toast.warning { border-left-color: var(--yellow); }
+.wthead > .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+</style>
+<style>
+.dv { flex: 1; display: flex; min-height: 0; }
+.files { width: 270px; flex: none; border-right: 1px solid var(--border); background: var(--surface); font-size: 12px; overflow: hidden; }
+.files .fh { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+.file { display: flex; gap: 6px; padding: 3px 10px; font-family: var(--mono); font-size: 11.5px; align-items: center; }
+.file.sel { background: var(--panel-2); }
+.file .fn { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file .cm { color: var(--accent); }
+.dir { padding: 5px 10px 2px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.code { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.fbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); font-family: var(--mono); font-size: 12px; }
+table.diff { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+table.diff td { padding: 0 8px; white-space: pre; vertical-align: top; }
+table.diff td.ln { width: 44px; color: #666; text-align: right; user-select: none; padding: 0 6px; }
+table.diff tr.hunk td { background: #1b2733; color: var(--cyan); padding: 2px 8px; }
+table.diff tr.add td { background: var(--add-bg); } table.diff tr.add td.ln { background: #0f2717; }
+table.diff tr.del td { background: var(--del-bg); } table.diff tr.del td.ln { background: #2e1312; }
+table.diff tr.add .w { background: var(--add-hl); } table.diff tr.del .w { background: var(--del-hl); }
+table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
+.thread { margin: 6px 12px 8px 100px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; background: var(--surface); font-family: var(--sans); white-space: normal; }
+.thread .msg { padding: 7px 10px; font-size: 12.5px; }
+.thread .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.thread .tbar { display: flex; gap: 6px; padding: 5px 10px; border-top: 1px solid var(--border); }
+.thread.open .msg.input { color: var(--muted); border: 1px solid var(--primary); margin: 6px 10px 0; border-radius: 4px; }
+.reviewbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+</style>
+</head>
+<body>
+<header id="topbar">
+  <span class="brand">lazyagent</span>
+  <span class="repo">~/smith/agentsmith</span>
+  <span class="pill ok">engine ● connected</span>
+  <span class="spacer"></span>
+  <nav class="views" aria-label="Views">
+    <span class="on">Worktree</span>
+    <span class="">Attention <span class="count">4</span></span>
+    <span class="">Grid</span>
+    <span class="">Orchestrator</span>
+  </nav>
+  <span class="spacer"></span>
+  <span class="usage" title="Estimated, from transcripts (proposal 0006)">today 1.24M tok · ~$4.10</span>
+  <span class="search">Search or run a command<kbd>Ctrl+Shift+P</kbd></span>
+  <button class="btn ghost" title="Settings">⚙</button>
+</header>
+
+<main>
+<aside id="sidebar" aria-label="Worktrees">
+  <div class="head"><span class="t">Worktrees</span><button class="btn ghost" title="New worktree (c)">+ New</button><button class="btn ghost" title="Refresh (r)">⟳</button></div>
+  <ul class="wts">
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name a">◆ Orchestrator</span></div>
+      <ul class="agents"><li class="agent s-run"><span class="dot"></span><span class="label">lazyagent-orchestrator</span><span class="status">running</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">agentsmith</span><span class="wt-branch">main</span></div>
+      <div class="wt-meta"><span class="muted">clean</span></div>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">csr-routing-rules</span><span class="wt-branch">PROJ-17311-routing-rules</span></div>
+      <div class="wt-meta"><span class="y">●3</span><span class="g">↑2</span><span class="prb open">#17311</span><span class="y">CI 9/12</span><span class="muted">142k tok</span></div>
+      <ul class="agents"><li class="agent s-run"><span class="dot"></span><span class="label">Agent 1</span><span class="status">running</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">transfer-dir-availability</span><span class="wt-branch">PROJ-17298-dir-hours</span></div>
+      <div class="wt-meta"><span class="g">↑5</span><span class="prb open">#17298</span><span class="r">CI ✗ 2</span><span class="muted">388k tok</span></div>
+      <ul class="agents">
+        <li class="agent s-wait"><span class="dot"></span><span class="label">Agent 2</span><span class="status">approval</span></li>
+        <li class="agent s-run"><span class="dot"></span><span class="label">Agent 3 · evals</span><span class="status">running</span></li>
+      </ul>
+    </li>
+    <li class="wt current">
+      <div class="wt-head"><span class="wt-name">amplitude-cleanup</span><span class="wt-branch">PROJ-17280-drop-events</span></div>
+      <div class="wt-meta"><span class="g">↑1</span><span class="prb open">#17280</span><span class="g">CI ✓</span><span class="g">approved</span></div>
+      <ul class="agents"><li class="agent s-done current"><span class="dot"></span><span class="label">Agent 4</span><span class="status">done</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">nested-validator</span><span class="wt-branch">PROJ-13026-nested-validator</span></div>
+      <div class="wt-meta"><span class="y">●1</span><span class="muted">no PR</span></div>
+      <ul class="agents"><li class="agent s-wait"><span class="dot"></span><span class="label">Agent 1</span><span class="status">input</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">event-tracking-debt</span><span class="wt-branch">PROJ-17102-dedupe</span></div>
+      <div class="wt-meta"><span class="prb merged">#17102 merged</span></div>
+    </li>
+  </ul>
+  <div class="foot"><span>6 worktrees · 6 agents</span><span><kbd>?</kbd> keys</span></div>
+</aside>
+
+<section class="centre">
+  <div class="wthead">
+    <span class="n">amplitude-cleanup</span><span class="wt-branch">PROJ-17280-drop-events</span>
+    <span class="muted mono" style="font-size:11.5px">vs <span class="c">develop</span> · 7 files · <span class="g">+42</span> <span class="r">−310</span></span>
+    <span class="spacer"></span>
+    <button class="btn">Unified</button><button class="btn ghost">Split</button>
+    <button class="btn ghost">Base: develop ▾</button>
+  </div>
+  <div class="tabs">
+    <span class="tab"><span class="dot" style="background:var(--cyan)"></span>Agent 4 <span class="muted mono" style="font-size:11px">done</span></span>
+    <span class="tab on">Diff <span class="muted mono" style="font-size:11px">+42 −310</span> <span class="count" style="background:var(--accent)">2</span></span>
+  </div>
+  <div class="dv">
+    <nav class="files" aria-label="Changed files">
+      <div class="fh"><b>Files</b><span class="spacer"></span><span class="muted">2 comments</span></div>
+      <div class="dir">src/django/agentsmith/analytics/</div>
+      <div class="file sel"><span class="y">M</span><span class="fn">amplitude.py</span><span class="cm">●2</span><span class="g">+18</span><span class="r">−96</span></div>
+      <div class="file"><span class="r">D</span><span class="fn">legacy_events.py</span><span class="r">−171</span></div>
+      <div class="file"><span class="y">M</span><span class="fn">tasks.py</span><span class="g">+4</span><span class="r">−11</span></div>
+      <div class="dir">src/django/agentsmith/analytics/tests/</div>
+      <div class="file"><span class="y">M</span><span class="fn">test_amplitude.py</span><span class="g">+14</span><span class="r">−28</span></div>
+      <div class="file"><span class="r">D</span><span class="fn">test_legacy_events.py</span><span class="r">−4</span></div>
+      <div class="dir">src/django/agentsmith/va/</div>
+      <div class="file"><span class="y">M</span><span class="fn">call_hooks.py</span><span class="g">+5</span><span class="r">−0</span></div>
+      <div class="dir">docs/</div>
+      <div class="file"><span class="y">M</span><span class="fn">analytics.md</span><span class="g">+1</span><span class="r">−0</span></div>
+    </nav>
+    <div class="code">
+      <div class="fbar"><span class="y">M</span> src/django/agentsmith/analytics/amplitude.py <span class="g">+18</span> <span class="r">−96</span><span class="spacer"></span><span class="muted">click a line number to comment · <kbd>]c</kbd> next comment</span></div>
+      <div style="overflow:hidden;flex:1">
+      <table class="diff">
+        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -41,22 +41,12 @@ class AmplitudeClient:</td></tr>
+        <tr><td class="ln">41</td><td class="ln">41</td><td>    def track(self, event: str, user_id: str, props: dict | None = None) -&gt; None:</td></tr>
+        <tr class="del"><td class="ln">42</td><td class="ln"></td><td>-        if event in LEGACY_EVENT_ALIASES:</td></tr>
+        <tr class="del"><td class="ln">43</td><td class="ln"></td><td>-            event = LEGACY_EVENT_ALIASES[event]</td></tr>
+        <tr class="del"><td class="ln">44</td><td class="ln"></td><td>-            <span class="w">self._warn_legacy(event)</span></td></tr>
+        <tr class="add sel"><td class="ln"></td><td class="ln">42</td><td>+        if event not in <span class="w">ALLOWED_EVENTS</span>:</td></tr>
+        <tr class="add"><td class="ln"></td><td class="ln">43</td><td>+            <span class="w">log.warning("dropping unknown amplitude event %s", event)</span></td></tr>
+        <tr class="add"><td class="ln"></td><td class="ln">44</td><td>+            return</td></tr>
+        <tr><td colspan="3" style="padding:0"><div class="thread">
+          <div class="msg"><div class="who">You · draft</div>Dropping silently changes behaviour for the 3 VA call hooks that still send <code>call_transferred_v1</code>. Either migrate those callers in this PR or keep a one-release alias with a warning.</div>
+          <div class="tbar"><button class="btn ghost">Edit</button><button class="btn ghost">Delete</button><span class="spacer"></span><span class="muted" style="font-size:11px">L42 · will be sent with the review</span></div>
+        </div></td></tr>
+        <tr><td class="ln">45</td><td class="ln">45</td><td>        payload = {</td></tr>
+        <tr><td class="ln">46</td><td class="ln">46</td><td>            "event_type": event,</td></tr>
+        <tr><td class="ln">47</td><td class="ln">47</td><td>            "user_id": user_id,</td></tr>
+        <tr class="del"><td class="ln">48</td><td class="ln"></td><td>-            "event_properties": <span class="w">self._normalize(props or {})</span>,</td></tr>
+        <tr class="add"><td class="ln"></td><td class="ln">48</td><td>+            "event_properties": <span class="w">props or {}</span>,</td></tr>
+        <tr><td colspan="3" style="padding:0"><div class="thread open">
+          <div class="msg input">Is <code>_normalize</code> still needed for the datetime props? test_amplitude only covers strings.</div>
+          <div class="tbar"><button class="btn primary">Add comment</button><button class="btn ghost">Cancel</button><span class="spacer"></span><span class="muted" style="font-size:11px">L48 · <kbd>Ctrl+Enter</kbd></span></div>
+        </div></td></tr>
+        <tr><td class="ln">49</td><td class="ln">49</td><td>            "time": int(time.time() * 1000),</td></tr>
+        <tr><td class="ln">50</td><td class="ln">50</td><td>        }</td></tr>
+        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -112,61 +102,4 @@ class AmplitudeClient:</td></tr>
+        <tr class="del"><td class="ln">112</td><td class="ln"></td><td>-    def _normalize(self, props: dict) -&gt; dict:</td></tr>
+        <tr class="del"><td class="ln">113</td><td class="ln"></td><td>-        out = {}</td></tr>
+        <tr class="del"><td class="ln">114</td><td class="ln"></td><td>-        for key, value in props.items():</td></tr>
+      </table>
+      </div>
+      <div class="reviewbar">
+        <b>Review</b><span class="muted">2 comments in 1 file · comments are kept in this browser until proposal 0008</span>
+        <span class="spacer"></span>
+        <span class="muted" style="font-size:12px">Send to</span><button class="btn">Agent 4 (done, idle) ▾</button>
+        <button class="btn ghost">Preview prompt</button>
+        <button class="btn primary">Submit review to agent</button>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+</body>
+</html>

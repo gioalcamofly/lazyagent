@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Main layout · lazyagent mockup</title>
+<!-- Static mockup for docs/design/ui-plan.md. Sample data only; no scripts, no network. -->
+<style>
+:root {
+  --bg: #121212; --surface: #1e1e1e; --panel: #262626; --panel-2: #2e2e2e; --border: #333333;
+  --text: #e0e0e0; --muted: #8a8a8a; --primary: #0178d4; --accent: #ffa62b;
+  --green: #4ebf71; --yellow: #ffcc4d; --cyan: #4fc1e9; --red: #e5534b; --purple: #b083f0;
+  --add-bg: #12301c; --del-bg: #3a1716; --add-hl: #1d5c33; --del-hl: #6b2421;
+  --mono: "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 var(--sans); }
+body { display: flex; flex-direction: column; overflow: hidden; }
+.muted { color: var(--muted); } .mono { font-family: var(--mono); }
+.g { color: var(--green); } .y { color: var(--yellow); } .c { color: var(--cyan); } .r { color: var(--red); } .p { color: var(--purple); } .a { color: var(--accent); } .b { font-weight: 600; }
+button, .btn { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.warn { border-color: var(--yellow); color: var(--yellow); }
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.ghost { background: transparent; }
+kbd { font-family: var(--mono); font-size: 10.5px; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); background: var(--surface); }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.pill.ok { color: var(--green); border-color: var(--green); }
+.pill.warn { color: var(--yellow); border-color: var(--yellow); }
+.pill.bad { color: var(--red); border-color: var(--red); }
+.count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--yellow); color: #1a1a1a; font-weight: 700; font-size: 11px; text-align: center; }
+
+/* top bar */
+#topbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+#topbar .brand { font-weight: 600; color: var(--accent); }
+#topbar .repo { white-space: nowrap; font-family: var(--mono); color: var(--muted); }
+.spacer { flex: 1; }
+.views { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px; }
+.views span { padding: 2px 10px; border-radius: 3px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.views span.on { background: var(--panel-2); color: var(--text); }
+.search { width: 300px; white-space: nowrap; gap: 8px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--bg); display: flex; justify-content: space-between; }
+.usage { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+main { flex: 1; display: flex; min-height: 0; }
+
+/* sidebar */
+#sidebar { width: 290px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+#sidebar .head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+#sidebar .head .t { font-weight: 600; flex: 1; }
+.wts { list-style: none; margin: 0; padding: 4px 0; overflow: hidden; flex: 1; }
+.wt { padding: 6px 10px; border-left: 3px solid transparent; }
+.wt.current { border-left-color: var(--accent); background: #2b2416; }
+.wt-head { display: flex; align-items: baseline; gap: 6px; }
+.wt-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-branch { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; font-family: var(--mono); font-size: 11px; }
+.prb { padding: 0 5px; border-radius: 3px; border: 1px solid var(--border); }
+.prb.open { color: var(--green); border-color: var(--green); }
+.prb.merged { color: var(--purple); border-color: var(--purple); }
+.prb.draft { color: var(--muted); }
+.agents { list-style: none; margin: 4px 0 0; padding: 0; }
+.agent { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+.agent.current { outline: 1px solid var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.agent .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent .status { font-family: var(--mono); font-size: 11px; }
+.s-run .dot, .dot.s-run { background: var(--green); } .s-run .status { color: var(--green); }
+.s-wait .dot, .dot.s-wait { background: var(--yellow); box-shadow: 0 0 0 3px #ffcc4d33; } .s-wait .status { color: var(--yellow); font-weight: 600; }
+.s-done .dot, .dot.s-done { background: var(--cyan); } .s-done .status { color: var(--cyan); }
+.s-fail .dot, .dot.s-fail { background: var(--red); } .s-fail .status { color: var(--red); font-weight: 600; }
+.s-idle .dot { background: var(--muted); } .s-idle .status { color: var(--muted); }
+#sidebar .foot { padding: 6px 10px; font-size: 11px; border-top: 1px solid var(--border); color: var(--muted); display: flex; justify-content: space-between; }
+
+/* centre */
+.centre { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.wthead { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.wthead .n { white-space: nowrap; font-weight: 600; font-size: 14px; }
+.tabs { display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 6px; }
+.tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); border-bottom: 2px solid transparent; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); background: var(--bg); }
+.tab .x { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.tab.add { color: var(--muted); }
+
+.term { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; background: var(--bg); padding: 8px 12px; white-space: pre; overflow: hidden; color: #d4d4d4; }
+.term .dim { color: #7a7a7a; } .term .hl { background: #2a2a2a; }
+.cursor { background: #e0e0e0; color: #121212; }
+.box { border: 1px solid #555; border-radius: 6px; display: inline-block; padding: 0 8px; }
+
+.split { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.pane-title { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-size: 11.5px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+
+/* right panel */
+.right { width: 330px; flex: none; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sect { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.sect h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+.kv { display: grid; grid-template-columns: 90px 1fr; gap: 3px 8px; font-size: 12px; }
+.kv .k { color: var(--muted); }
+.checks { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.checks li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.checks .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.checks .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.feed { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.feed li { display: flex; gap: 8px; padding: 2px 0; }
+.feed .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; width: 38px; }
+
+#toasts { position: fixed; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.toast { padding: 8px 12px; border-radius: 4px; background: var(--panel); border-left: 4px solid var(--primary); box-shadow: 0 2px 8px rgba(0,0,0,.5); font-size: 12.5px; }
+.toast.warning { border-left-color: var(--yellow); }
+.wthead > .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+</style>
+
+</head>
+<body>
+<header id="topbar">
+  <span class="brand">lazyagent</span>
+  <span class="repo">~/smith/agentsmith</span>
+  <span class="pill ok">engine ● connected</span>
+  <span class="spacer"></span>
+  <nav class="views" aria-label="Views">
+    <span class="on">Worktree</span>
+    <span class="">Attention <span class="count">4</span></span>
+    <span class="">Grid</span>
+    <span class="">Orchestrator</span>
+  </nav>
+  <span class="spacer"></span>
+  <span class="usage" title="Estimated, from transcripts (proposal 0006)">today 1.24M tok · ~$4.10</span>
+  <span class="search">Search or run a command<kbd>Ctrl+Shift+P</kbd></span>
+  <button class="btn ghost" title="Settings">⚙</button>
+</header>
+
+<main>
+<aside id="sidebar" aria-label="Worktrees">
+  <div class="head"><span class="t">Worktrees</span><button class="btn ghost" title="New worktree (c)">+ New</button><button class="btn ghost" title="Refresh (r)">⟳</button></div>
+  <ul class="wts">
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name a">◆ Orchestrator</span></div>
+      <ul class="agents"><li class="agent s-run"><span class="dot"></span><span class="label">lazyagent-orchestrator</span><span class="status">running</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">agentsmith</span><span class="wt-branch">main</span></div>
+      <div class="wt-meta"><span class="muted">clean</span></div>
+    </li>
+    <li class="wt current">
+      <div class="wt-head"><span class="wt-name">csr-routing-rules</span><span class="wt-branch">PROJ-17311-routing-rules</span></div>
+      <div class="wt-meta"><span class="y">●3</span><span class="g">↑2</span><span class="prb open">#17311</span><span class="y">CI 9/12</span><span class="muted">142k tok</span></div>
+      <ul class="agents"><li class="agent s-run current"><span class="dot"></span><span class="label">Agent 1</span><span class="status">running</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">transfer-dir-availability</span><span class="wt-branch">PROJ-17298-dir-hours</span></div>
+      <div class="wt-meta"><span class="g">↑5</span><span class="prb open">#17298</span><span class="r">CI ✗ 2</span><span class="muted">388k tok</span></div>
+      <ul class="agents">
+        <li class="agent s-wait"><span class="dot"></span><span class="label">Agent 2</span><span class="status">approval</span></li>
+        <li class="agent s-run"><span class="dot"></span><span class="label">Agent 3 · evals</span><span class="status">running</span></li>
+      </ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">amplitude-cleanup</span><span class="wt-branch">PROJ-17280-drop-events</span></div>
+      <div class="wt-meta"><span class="g">↑1</span><span class="prb open">#17280</span><span class="g">CI ✓</span><span class="g">approved</span></div>
+      <ul class="agents"><li class="agent s-done"><span class="dot"></span><span class="label">Agent 4</span><span class="status">done</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">nested-validator</span><span class="wt-branch">PROJ-13026-nested-validator</span></div>
+      <div class="wt-meta"><span class="y">●1</span><span class="muted">no PR</span></div>
+      <ul class="agents"><li class="agent s-wait"><span class="dot"></span><span class="label">Agent 1</span><span class="status">input</span></li></ul>
+    </li>
+    <li class="wt">
+      <div class="wt-head"><span class="wt-name">event-tracking-debt</span><span class="wt-branch">PROJ-17102-dedupe</span></div>
+      <div class="wt-meta"><span class="prb merged">#17102 merged</span></div>
+    </li>
+  </ul>
+  <div class="foot"><span>6 worktrees · 6 agents</span><span><kbd>?</kbd> keys</span></div>
+</aside>
+
+<section class="centre">
+  <div class="wthead">
+    <span class="n">csr-routing-rules</span>
+    <span class="wt-branch">PROJ-17311-routing-rules</span>
+    <span class="muted mono" style="font-size:11.5px">base develop · <span class="y">●3 dirty</span> · <span class="g">↑2</span> · last: "feat(csr): match rules by caller tag"</span>
+    <span class="spacer"></span>
+    <button class="btn" title="Spawn agent (s)">+ Agent <kbd>s</kbd></button>
+    <button class="btn" title="Refresh git status (Alt+G)">⟳ <kbd>Alt+G</kbd></button>
+    <button class="btn ghost" title="Show hosted TUI pane">TUI ▸</button>
+  </div>
+  <div class="tabs">
+    <span class="tab on"><span class="dot s-run" style="background:var(--green)"></span>Agent 1 <span class="muted mono" style="font-size:11px">claude · 142k</span><span class="x">✕</span></span>
+    <span class="tab">Diff <span class="muted mono" style="font-size:11px">+184 −37</span></span>
+    <span class="tab add">+</span>
+    <span class="spacer"></span>
+    <span class="tab muted" style="font-size:11.5px"><kbd>Alt+[</kbd> <kbd>Alt+]</kbd> tabs · <kbd>Ctrl+D</kbd> diff</span>
+  </div>
+  <div class="split">
+    <div class="term" style="flex:2">
+<span class="dim">● Read(src/django/agentsmith/csr/routing.py)</span>
+<span class="dim">  ⎿  Read 212 lines</span>
+
+<span class="b">●</span> The rules are evaluated in insertion order, so a catch-all rule created
+  first would shadow every specific one. I'll sort by specificity before
+  matching and add a test for the shadowing case.
+
+<span class="g">●</span> <span class="b">Update</span>(src/django/agentsmith/csr/routing.py)
+  ⎿  Updated <span class="b">src/django/agentsmith/csr/routing.py</span> with <span class="g">14 additions</span> and <span class="r">3 removals</span>
+     <span class="dim">58</span>      def match_rule(self, summary: CallSummary) -&gt; RoutingRule | None:
+     <span class="dim">59</span> <span class="r">-        for rule in self.rules:</span>
+     <span class="dim">59</span> <span class="g">+        for rule in sorted(self.rules, key=_specificity, reverse=True):</span>
+     <span class="dim">60</span>              if rule.matches(summary):
+     <span class="dim">61</span>                  return rule
+
+<span class="g">●</span> <span class="b">Bash</span>(TESTS=agentsmith.csr.tests.test_routing make tests)
+  ⎿  <span class="dim">Running…</span>
+
+<span class="a">✻ Running tests… (38s · ↓ 2.1k tokens · esc to interrupt)</span>
+
+<span class="box"><span class="dim">&gt;</span> <span class="cursor"> </span>                                                                         </span>
+<span class="dim">  ▸▸ accept edits on (shift+tab to cycle)</span>
+    </div>
+    <div class="pane-title">Shell <span class="mono">bash -l</span><span class="spacer"></span><kbd>Ctrl+L</kbd> focus · ▾</div>
+    <div class="term" style="flex:1">
+<span class="g">giovanni@smith</span>:<span class="c">~/smith/agentsmith-csr-routing-rules</span>$ git log --oneline -3
+<span class="y">a91c2e4</span> feat(csr): match rules by caller tag
+<span class="y">5d07b13</span> feat(csr): routing rule model + admin
+<span class="y">145e0aa</span> <span class="c">(origin/develop)</span> Merge pull request #17290
+<span class="g">giovanni@smith</span>:<span class="c">~/smith/agentsmith-csr-routing-rules</span>$ <span class="cursor"> </span>
+    </div>
+  </div>
+</section>
+<aside class="right" aria-label="PR and CI">
+  <div class="sect">
+    <h3>Pull request <span class="a">↗ GitHub</span></h3>
+    <div style="font-weight:600;margin-bottom:4px">#17311 Call summary routing: rules by caller tag</div>
+    <div class="kv">
+      <span class="k">State</span><span class="g">OPEN</span>
+      <span class="k">Base</span><span class="mono">develop</span>
+      <span class="k">Review</span><span class="y">Review required</span>
+      <span class="k">Mergeable</span><span class="g">yes</span>
+    </div>
+  </div>
+  <div class="sect">
+    <h3>Checks <span><span class="g">9 ✓</span> · <span class="y">3 …</span></span></h3>
+    <ul class="checks">
+      <li><span class="g">✓</span><span class="nm">lint / ruff</span><span class="tm">0:41</span></li>
+      <li><span class="g">✓</span><span class="nm">typecheck / mypy</span><span class="tm">2:10</span></li>
+      <li><span class="g">✓</span><span class="nm">migrations-check</span><span class="tm">1:05</span></li>
+      <li><span class="y">◌</span><span class="nm">tests / django (1/4)</span><span class="tm">6:12</span></li>
+      <li><span class="y">◌</span><span class="nm">tests / django (2/4)</span><span class="tm">6:12</span></li>
+      <li><span class="y">◌</span><span class="nm">vart / evals-smoke</span><span class="tm">queued</span></li>
+      <li class="muted"><span>…</span><span class="nm">6 more passed</span></li>
+    </ul>
+    <div style="margin-top:8px;display:flex;gap:6px"><button class="btn">Send failures to agent</button><button class="btn ghost">⚑ wake on red</button></div>
+  </div>
+  <div class="sect" style="flex:1">
+    <h3>This worktree</h3>
+    <ul class="feed">
+      <li><span class="tm">11:42</span><span>Agent 1 <span class="g">running</span> · using Bash</span></li>
+      <li><span class="tm">11:40</span><span>CI started on <span class="mono">a91c2e4</span></span></li>
+      <li><span class="tm">11:39</span><span>Pushed 2 commits</span></li>
+      <li><span class="tm">11:21</span><span>Agent 1 <span class="y">approval</span> → you approved (12 s)</span></li>
+      <li><span class="tm">10:58</span><span>Agent 1 spawned with instruction</span></li>
+      <li><span class="tm">10:57</span><span>Worktree created from <span class="mono">develop</span></span></li>
+    </ul>
+  </div>
+</aside>
+</main>
+<div id="toasts"><div class="toast warning"><b>Agent 2</b> in transfer-dir-availability needs approval · <span class="a">open</span></div></div>
+</body>
+</html>

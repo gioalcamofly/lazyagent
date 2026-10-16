@@ -3,7 +3,7 @@
 - **Status:** draft for review. Plan and mockups only, no code changes.
 - **Base:** `develop` @ `145752e` (H2 merged). All `file:line` refs are under `src/lazyagent/` at that commit.
 - **Builds on:** [engine-split.md](engine-split.md) (§0 why, §4 protocol v1, §6/§6b migration, D1-D11) and [proposals 0001-0009](../proposals/README.md).
-- **Mockups:** [`ui-mockups/`](ui-mockups/) (static HTML + PNG screenshots, §3f).
+- **Mockups:** [`ui-mockups/`](ui-mockups/), shown in §3a-§3d. Static, self-contained HTML/CSS (no scripts, no network) with sample data, in H2's dark tokens; the PNGs are headless Chrome screenshots (Playwright, `channel="chrome"`, 1440×900; the phone one at 390×844).
 
 ## TL;DR
 
