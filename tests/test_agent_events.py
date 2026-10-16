@@ -1,9 +1,8 @@
-"""Tests for the agent event bus and the app's publishing of it."""
+"""Tests for the agent event bus and the engine's publishing of it."""
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,9 +13,9 @@ from lazyagent.agent_events import (
     make_filter,
     resolve_statuses,
 )
-from lazyagent.app import LazyAgent
-from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentStatus
+from lazyagent.engine.session import SessionExited, StatusChanged
+from lazyagent.models import AgentStatus, LifecycleConfidence
+from tests.engine.fakes import make_engine, no_pty, worktree
 
 
 def _publish(bus, status, *, path="/wt", agent_id="a1", previous="running"):
@@ -113,31 +112,30 @@ class TestAgentEventBus:
         assert events == [] and truncated is False
 
 
-class TestAppPublishesEvents:
-    @staticmethod
-    def _app():
-        app = LazyAgent(repo_path="/repo")
-        app._get_any_panel = MagicMock(return_value=None)
-        app._refresh_sidebar_agents = MagicMock()
-        return app
+class TestEnginePublishesEvents:
+    """Session reports reach the event log through the engine."""
 
-    def test_status_change_is_published_once(self):
-        app = self._app()
-        app.on_agent_status_changed(
-            AgentStatusChanged("/wt", AgentStatus.RUNNING, agent_id="a1")
+    @staticmethod
+    async def _engine_with_agent(monkeypatch):
+        no_pty(monkeypatch)
+        engine = make_engine([worktree("/wt", "feat", is_main=False)])
+        await engine.spawn_agent("/wt")
+        return engine, engine.get_session("/wt", "a1")
+
+    @staticmethod
+    def _report(session, status, detail=""):
+        session._emit(
+            StatusChanged("/wt", "a1", status, LifecycleConfidence.LOW, detail, None)
         )
+
+    @pytest.mark.asyncio
+    async def test_status_change_is_published_once(self, monkeypatch):
+        engine, session = await self._engine_with_agent(monkeypatch)
+        self._report(session, AgentStatus.RUNNING)
         # Detail-only update: same status, no new event.
-        app.on_agent_status_changed(
-            AgentStatusChanged(
-                "/wt", AgentStatus.RUNNING, detail="using Bash", agent_id="a1"
-            )
-        )
-        app.on_agent_status_changed(
-            AgentStatusChanged(
-                "/wt", AgentStatus.WAITING, detail="waiting", agent_id="a1"
-            )
-        )
-        events, _ = app.agent_events.since(0)
+        self._report(session, AgentStatus.RUNNING, "using Bash")
+        self._report(session, AgentStatus.WAITING, "waiting")
+        events, _ = engine.events.since(0)
         assert [(e.previous_status, e.status) for e in events] == [
             ("no_agent", "running"),
             ("running", "waiting"),
@@ -145,17 +143,30 @@ class TestAppPublishesEvents:
         assert events[1].detail == "waiting"
 
     @pytest.mark.asyncio
-    async def test_exit_is_published_once(self):
-        app = self._app()
-        app.notify = MagicMock()
-        app.on_agent_status_changed(
-            AgentStatusChanged("/wt", AgentStatus.WAITING, agent_id="a1")
-        )
-        await app.on_agent_exited(AgentExited("/wt", agent_id="a1"))
-        # A second drop (stop racing the exit) must not publish again.
-        app._drop_agent_state("/wt", "a1")
-        events, _ = app.agent_events.since(0)
+    async def test_exit_is_published_once(self, monkeypatch):
+        engine, session = await self._engine_with_agent(monkeypatch)
+        self._report(session, AgentStatus.WAITING)
+        session._emit(SessionExited("/wt", "a1", 0))
+        # A stop racing the exit must not publish again.
+        with pytest.raises(ValueError):
+            engine.stop_agent("/wt", "a1")
+        engine.registry.drop("/wt", "a1")
+        events, _ = engine.events.since(0)
         assert [(e.previous_status, e.status) for e in events] == [
             ("no_agent", "waiting"),
             ("waiting", EXITED),
         ]
+
+
+class TestTruncation:
+    def test_events_of_other_kinds_do_not_count_as_a_gap(self):
+        from lazyagent.engine.events import EventBus
+
+        bus = EventBus(maxlen=2)
+        _publish(bus, "running")                 # seq 1
+        bus.emit("engine.notice", {})            # seq 2
+        _publish(bus, "waiting")                 # seq 3
+        _publish(bus, "running")                 # seq 4, evicts seq 1
+        assert bus.since(1)[1] is False
+        assert bus.since(0)[1] is True
+        assert [e.seq for e in bus.since(2)[0]] == [3, 4]

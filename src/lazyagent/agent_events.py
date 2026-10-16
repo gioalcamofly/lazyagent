@@ -1,6 +1,6 @@
 """Agent lifecycle event bus — the push side of the MCP agent tools.
 
-Every agent status change the app records is appended here as an
+Every agent status change the engine records is appended here as an
 :class:`AgentEvent` with a monotonically increasing ``seq``. Callers keep the
 ``seq`` of the last event they saw (a *cursor*) and ask for what happened
 after it, optionally blocking until something matching arrives. That is what
@@ -8,7 +8,7 @@ lets an orchestrator wait for an agent instead of polling ``get_agent_status``
 in a loop, and what makes "wait for the turn I just started" race-free: a
 cursor taken before the prompt was sent excludes the stale pre-send state.
 
-The bus lives on the app's event loop (the IPC server shares it), so no
+The bus lives on the engine's event loop (the IPC server shares it), so no
 locking is needed; waiters are woken through an ``asyncio.Event`` that is
 swapped for a fresh one on every publish.
 """
@@ -126,11 +126,17 @@ class AgentEventBus:
     def __init__(self, maxlen: int = _DEFAULT_MAXLEN) -> None:
         self._events: deque[AgentEvent] = deque(maxlen=maxlen)
         self._seq = 0
+        # seq of the newest event already evicted from the bounded log.
+        self._evicted = 0
         self._changed = asyncio.Event()
 
     @property
     def cursor(self) -> int:
         """``seq`` of the newest event (0 before the first one)."""
+        return self._seq
+
+    def _next_seq(self) -> int:
+        self._seq += 1
         return self._seq
 
     def publish(
@@ -143,9 +149,8 @@ class AgentEventBus:
         label: str = "",
         detail: str = "",
     ) -> AgentEvent:
-        self._seq += 1
         event = AgentEvent(
-            seq=self._seq,
+            seq=self._next_seq(),
             time=time.time(),
             worktree_path=worktree_path,
             agent_id=agent_id,
@@ -154,11 +159,17 @@ class AgentEventBus:
             previous_status=previous_status,
             detail=detail,
         )
+        if len(self._events) == self._events.maxlen:
+            self._evicted = self._events[0].seq
         self._events.append(event)
         # Wake every waiter, then give later waiters a fresh Event to block on.
         changed, self._changed = self._changed, asyncio.Event()
         changed.set()
+        self._published(event)
         return event
+
+    def _published(self, event: AgentEvent) -> None:
+        """Called after every publish; subclasses fan the event out."""
 
     def since(
         self, cursor: int, match: EventFilter | None = None
@@ -168,7 +179,7 @@ class AgentEventBus:
         Also returns whether events after ``cursor`` were already evicted from
         the bounded log, so the caller knows its view has a gap.
         """
-        truncated = bool(self._events) and self._events[0].seq > cursor + 1
+        truncated = self._evicted > cursor
         events = [
             e for e in self._events
             if e.seq > cursor and (match is None or match(e))

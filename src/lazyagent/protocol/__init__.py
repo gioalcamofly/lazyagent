@@ -39,6 +39,7 @@ LEGACY_METHODS: tuple[str, ...] = (
 
 EVENTS: tuple[str, ...] = (
     "agent.status",
+    "agent.updated",
     "agent.spawned",
     "agent.exited",
     "worktrees.changed",
@@ -47,6 +48,7 @@ EVENTS: tuple[str, ...] = (
     "stream.resized",
     "stream.reset",
     "engine.notice",
+    "job.started",
     "job.output",
     "job.finished",
     "engine.shutdown",

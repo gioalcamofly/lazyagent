@@ -2,27 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import shlex
+import os
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual.containers import Container, VerticalScroll
 from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent import diagnostics as diag
-from lazyagent.agent_providers import (
-    agent_session_name,
-    DEFAULT_AGENT_PROVIDER,
-    ResumeMode,
-    env_exports,
-    get_agent_provider,
-)
 from lazyagent.engine.registry import AgentRegistry
-from lazyagent.engine.session import AgentSession, TerminalSession
+from lazyagent.engine.session import AgentSession
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
+from lazyagent.widgets.job_log import JobLog
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY, OrchestratorPanel
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
+
+if TYPE_CHECKING:
+    from lazyagent.engine.engine import Engine
 
 log = logging.getLogger(__name__)
 
@@ -118,7 +116,12 @@ class GitInfoBar(Static):
 
 
 class WorktreePanel(Container):
-    """Per-worktree panel with Agent and Terminal panes in a vertical split."""
+    """Per-worktree panel with Agent and Terminal panes in a vertical split.
+
+    It shows sessions the engine runs and never starts or stops one itself:
+    the shell comes from ``engine.open_shell`` and each agent tab is added
+    by :meth:`show_agent` when the engine reports a spawn.
+    """
 
     DEFAULT_CSS = f"""
     WorktreePanel {{
@@ -176,12 +179,19 @@ class WorktreePanel(Container):
     """
 
     def __init__(
-        self, worktree_path: str, registry: AgentRegistry | None = None, **kwargs
+        self,
+        worktree_path: str,
+        registry: AgentRegistry | None = None,
+        engine: Engine | None = None,
+        **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
-        # Allocates agent ids and holds each agent's label and session name.
-        self.registry = registry if registry is not None else AgentRegistry()
+        self.engine = engine
+        # Holds each agent's label and session name.
+        if registry is None:
+            registry = engine.registry if engine is not None else AgentRegistry()
+        self.registry = registry
         # agent_id -> terminal. Ordered by spawn order; each agent gets its
         # own TabPane to the left of the permanent Diff tab.
         self._agents: dict[str, MonitoredTerminal] = {}
@@ -209,28 +219,21 @@ class WorktreePanel(Container):
         self._try_start_terminal()
 
     def _try_start_terminal(self) -> None:
-        """Try to mount a real terminal widget."""
+        """Show the worktree's shell, which the engine starts on first use."""
+        if self.engine is None:
+            return
         # Every worktree ever visited leaves one of these shells alive, so this
         # is traced per worktree to make that population visible in the log.
         with diag.timed(log, "panel.start_shell", worktree=self.worktree_path):
             try:
                 placeholder = self.query_one("#terminal-placeholder", Static)
                 pane = self.query_one("#terminal-pane", Container)
+                # This client's environment, not the engine's.
+                session = self.engine.open_shell(self.worktree_path, env=dict(os.environ))
                 placeholder.remove()
-                script = (
-                    f"{env_exports()}"
-                    f" && cd {shlex.quote(self.worktree_path)}"
-                    f" && exec bash -l"
-                )
-                session = TerminalSession(
-                    f"bash -c {shlex.quote(script)}",
-                    worktree_path=self.worktree_path,
-                )
-                terminal = ScrollableTerminal(session, id="terminal-widget")
-                pane.mount(terminal)
-                terminal.start()
+                pane.mount(ScrollableTerminal(session, id="terminal-widget"))
             except Exception:
-                pass
+                log.exception("could not open the shell of %s", self.worktree_path)
 
     def update_git_status(self, git_status: GitStatus, branch: str) -> None:
         """Update the git info bar for this panel."""
@@ -344,7 +347,8 @@ class WorktreePanel(Container):
     async def cleanup_agent(self, agent_id: str | None = None) -> None:
         """Remove one agent's tab (or all), restoring the placeholder if empty.
 
-        ``agent_id=None`` cleans up every agent — used on worktree teardown.
+        Only the view goes: the engine stops the session. ``agent_id=None``
+        removes every tab.
         """
         tabs = self.query_one("#agent-tabs", TabbedContent)
         targets = (
@@ -353,10 +357,7 @@ class WorktreePanel(Container):
             else [agent_id] if agent_id in self._agents else []
         )
         for aid in targets:
-            terminal = self._agents.pop(aid, None)
-            self.registry.unregister(self.worktree_path, aid)
-            if terminal is not None:
-                terminal.stop()
+            self._agents.pop(aid, None)
             try:
                 await tabs.remove_pane(_agent_tab_id(aid))
             except Exception:
@@ -365,23 +366,12 @@ class WorktreePanel(Container):
         if not self._agents:
             await self._ensure_placeholder_tab()
 
-    async def spawn_agent(
-        self,
-        skip_permissions: bool = False,
-        agent_provider: str = DEFAULT_AGENT_PROVIDER,
-        resume_mode: ResumeMode = ResumeMode.NEW,
-        socket_path: str | None = None,
-        instruction: str | None = None,
-        label: str | None = None,
-        cross_session_inbound: str | None = None,
-        _diag_spawn_id: str = "",
-    ) -> str:
-        """Spawn a new coding agent in its own tab. Returns the new agent id.
-
-        ``_diag_spawn_id`` is diagnostics-only: it carries the correlation id
-        from the keypress that started this spawn, and has no effect on what
-        gets spawned.
-        """
+    async def show_agent(self, session: AgentSession, label: str) -> None:
+        """Add a tab for an agent the engine has spawned, make it active and
+        focus it."""
+        agent_id = session.agent_id
+        if agent_id in self._agents:
+            return
         tabs = self.query_one("#agent-tabs", TabbedContent)
 
         # First agent: drop the "press s to spawn" placeholder tab.
@@ -390,64 +380,20 @@ class WorktreePanel(Container):
         except Exception:
             pass
 
-        agent_id = self.registry.new_agent_id(self.worktree_path)
-        tab_label = label or f"Agent {agent_id[1:]}"
-
-        provider = get_agent_provider(agent_provider)
-        session_name = (
-            agent_session_name(self.worktree_path, agent_id)
-            if provider.session_name_flag
-            else ""
-        )
-        self.registry.register(
-            self.worktree_path, agent_id, label=tab_label, session_name=session_name
-        )
-        # build_runtime_context touches the filesystem for some providers
-        # (hook scripts, settings files), so it is timed separately.
         with diag.timed(
-            log,
-            "spawn.build_runtime_context",
-            spawn_id=_diag_spawn_id,
-            provider=agent_provider,
-            worktree=self.worktree_path,
+            log, "spawn.mount_pane", spawn_id=session.spawn_id, agent_id=agent_id
         ):
-            runtime_context = provider.build_runtime_context(
-                self.worktree_path,
-                socket_path=socket_path,
-                cross_session_inbound=cross_session_inbound,
-            )
-        command = provider.build_command(
-            self.worktree_path,
-            skip_permissions=skip_permissions,
-            runtime_context=runtime_context,
-            resume_mode=resume_mode,
-            instruction=instruction,
-            session_name=session_name or None,
-        )
-
-        with diag.timed(
-            log, "spawn.mount_pane", spawn_id=_diag_spawn_id, agent_id=agent_id
-        ):
-            session = AgentSession(
-                command,
-                worktree_path=self.worktree_path,
-                agent_id=agent_id,
-                observer=provider.create_observer_from_context(runtime_context),
-                spawn_id=_diag_spawn_id,
-            )
             terminal = MonitoredTerminal(session, id=_agent_terminal_id(agent_id))
             self._agents[agent_id] = terminal
-            pane = TabPane(tab_label, terminal, id=_agent_tab_id(agent_id))
+            pane = TabPane(label, terminal, id=_agent_tab_id(agent_id))
             await tabs.add_pane(pane, before=_DIFF_TAB_ID)
-        terminal.start()
 
         # Make the new agent's tab active and focus its terminal.
         with diag.timed(
-            log, "spawn.activate_tab", spawn_id=_diag_spawn_id, agent_id=agent_id
+            log, "spawn.activate_tab", spawn_id=session.spawn_id, agent_id=agent_id
         ):
             tabs.active = _agent_tab_id(agent_id)
             terminal.focus()
-        return agent_id
 
 
 class CenterPanel(Container):
@@ -458,7 +404,7 @@ class CenterPanel(Container):
         width: 1fr;
         height: 1fr;
     }
-    ContentSwitcher { height: 1fr; }
+    #panel-switcher { height: 1fr; }
     #center-placeholder {
         width: 1fr;
         height: 1fr;
@@ -467,9 +413,17 @@ class CenterPanel(Container):
     }
     """
 
-    def __init__(self, registry: AgentRegistry | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        registry: AgentRegistry | None = None,
+        engine: Engine | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
-        self.registry = registry if registry is not None else AgentRegistry()
+        self.engine = engine
+        if registry is None:
+            registry = engine.registry if engine is not None else AgentRegistry()
+        self.registry = registry
         # worktree_path -> panel widget. Stored by instance (not DOM id) so we
         # can reserve the slot before ContentSwitcher.add_content's await
         # completes; concurrent ensure_panel calls for the same key then
@@ -482,6 +436,7 @@ class CenterPanel(Container):
             id="center-placeholder",
         )
         yield ContentSwitcher(id="panel-switcher", initial=None)
+        yield JobLog()
 
     def _get_panel_by_key(self, key: str) -> Container | None:
         """Get an existing panel by key, or None."""
@@ -507,7 +462,9 @@ class CenterPanel(Container):
         # shell. `panels` says how many are alive by now.
         with diag.timed(log, "panel.create", worktree=worktree_path) as span:
             panel_id = _panel_id(worktree_path)
-            panel = WorktreePanel(worktree_path, self.registry, id=panel_id)
+            panel = WorktreePanel(
+                worktree_path, self.registry, engine=self.engine, id=panel_id
+            )
             self._panels[worktree_path] = panel
             switcher = self.query_one("#panel-switcher", ContentSwitcher)
             await switcher.add_content(panel, id=panel_id)

@@ -1,6 +1,7 @@
 """Today's legacy IPC responses, captured as golden fixtures.
 
-Each case drives ``IpcServer._dispatch`` the way tests/test_ipc.py does and
+Each case drives ``IpcServer._dispatch`` over an ``Engine`` built from fakes,
+the way tests/test_ipc.py does, and
 records ``{case, method, params, response}``. The fixtures in
 ``fixtures/ipc/`` are what test_golden.py validates against the v1 schemas;
 it also re-runs these cases to check the fixtures still match ipc.py.
@@ -17,7 +18,7 @@ import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from lazyagent.ipc import IpcServer
 from lazyagent.models import (
@@ -28,9 +29,12 @@ from lazyagent.models import (
     WorktreeInfo,
 )
 from lazyagent.worktree_manager import WorktreeManagerError
+from tests.engine.fakes import add_session, pty_free
 from tests.test_ipc import (
-    _app_with_agent,
-    _make_app,
+    _custom,
+    _engine_with_agent,
+    _fake_proc,
+    _make_engine,
     _make_worktree,
     _react,
     _set_status,
@@ -53,33 +57,22 @@ def case(name: str) -> Callable[[Case], Case]:
     return register
 
 
-async def _call(app, method: str, params: dict[str, Any], request_id: str = "req-1"):
-    server = IpcServer(app, "/tmp/test.sock")
+async def _call(engine, method: str, params: dict[str, Any], request_id: str = "req-1"):
+    server = IpcServer(engine, "/tmp/test.sock")
     response = await server._dispatch(request_id, method, params)
     return method, params, response
-
-
-def _panel_app(agent_ids=("a1",), session=None, **kwargs):
-    app = _make_app(**kwargs)
-    panel = MagicMock()
-    panel.agent_ids = list(agent_ids)
-    panel.get_session.return_value = session
-    center = MagicMock()
-    center.get_panel.return_value = panel
-    app.query_one.return_value = center
-    return app
 
 
 # --- list_worktrees -------------------------------------------------------
 
 @case("list_worktrees/empty")
 async def _():
-    return await _call(_make_app(), "list_worktrees", {})
+    return await _call(_make_engine(), "list_worktrees", {})
 
 
 @case("list_worktrees/agents_and_git_status")
 async def _():
-    app = _make_app(
+    engine = _make_engine(
         worktrees=[
             _make_worktree("/tmp/repo", "main", is_main=True),
             _make_worktree("/tmp/repo-feat", "feat", is_main=False),
@@ -104,84 +97,74 @@ async def _():
         },
         git_statuses={"/tmp/repo": GitStatus(dirty_count=2, ahead=1, behind=3)},
     )
-    return await _call(app, "list_worktrees", {})
+    return await _call(engine, "list_worktrees", {})
 
 
 # --- create_worktree ------------------------------------------------------
 
 @case("create_worktree/plain")
 async def _():
-    with patch("lazyagent.ipc.WorktreeManager") as wm:
-        wm.return_value.create.return_value = "/tmp/repo-feat"
-        return await _call(
-            _make_app(), "create_worktree", {"branch": "feat", "base_branch": "main"}
-        )
+    return await _call(
+        _make_engine(), "create_worktree", {"branch": "feat", "base_branch": "main"}
+    )
 
 
 @case("create_worktree/plain_with_ignored_extra")
 async def _():
-    with patch("lazyagent.ipc.WorktreeManager") as wm:
-        wm.return_value.create.return_value = "/tmp/repo-feat"
-        return await _call(
-            _make_app(), "create_worktree", {"branch": "feat", "extra": "--fast"}
-        )
+    return await _call(
+        _make_engine(), "create_worktree", {"branch": "feat", "extra": "--fast"}
+    )
 
 
 @case("create_worktree/custom_command")
 async def _():
-    app = _make_app()
-    app._config.has_custom_create = True
-    app._config.worktree.create = "echo creating {branch}"
-    proc = MagicMock()
-    proc.communicate = MagicMock(return_value=asyncio.Future())
-    proc.communicate.return_value.set_result((b"ok\n", b""))
-    proc.returncode = 0
+    engine = _make_engine(config=_custom(create="echo creating {branch}"))
 
     async def _shell(cmd, **kwargs):
-        return proc
+        return _fake_proc(stdout=b"ok\n")
 
     with patch("asyncio.create_subprocess_shell", side_effect=_shell):
-        return await _call(app, "create_worktree", {"branch": "feat", "base_branch": "main"})
+        return await _call(engine, "create_worktree", {"branch": "feat", "base_branch": "main"})
 
 
 @case("create_worktree/error_empty_branch")
 async def _():
-    return await _call(_make_app(), "create_worktree", {"branch": ""})
+    return await _call(_make_engine(), "create_worktree", {"branch": ""})
 
 
 @case("create_worktree/error_worktree_manager")
 async def _():
-    with patch("lazyagent.ipc.WorktreeManager") as wm:
-        wm.return_value.create.side_effect = WorktreeManagerError("branch exists")
-        return await _call(_make_app(), "create_worktree", {"branch": "feat"})
+    engine = _make_engine()
+    engine.world.create_error = WorktreeManagerError("branch exists")
+    return await _call(engine, "create_worktree", {"branch": "feat"})
 
 
 # --- remove_worktree ------------------------------------------------------
 
 @case("remove_worktree/removed")
 async def _():
-    app = _make_app(worktrees=[_make_worktree("/tmp/repo-feat", "feat", is_main=False)])
-    with patch("lazyagent.ipc.WorktreeManager"):
-        return await _call(
-            app, "remove_worktree", {"worktree_path": "/tmp/repo-feat", "force": True}
-        )
+    engine = _make_engine(worktrees=[_make_worktree("/tmp/repo-feat", "feat", is_main=False)])
+    return await _call(
+        engine, "remove_worktree", {"worktree_path": "/tmp/repo-feat", "force": True}
+    )
 
 
 @case("remove_worktree/error_main")
 async def _():
-    app = _make_app(worktrees=[_make_worktree()])
-    return await _call(app, "remove_worktree", {"worktree_path": "/tmp/repo"})
+    engine = _make_engine(worktrees=[_make_worktree()])
+    return await _call(engine, "remove_worktree", {"worktree_path": "/tmp/repo"})
 
 
 # --- spawn_agent ----------------------------------------------------------
 
 @case("spawn_agent/spawned")
 async def _():
-    app = _make_app(worktrees=[_make_worktree("/tmp/repo-feat", "feat", is_main=False)])
-    app.call_later = MagicMock()
-    with patch("asyncio.wait_for", return_value="a2"):
+    engine = _make_engine(worktrees=[_make_worktree("/tmp/repo-feat", "feat", is_main=False)])
+    # An earlier agent of this worktree already had a1.
+    engine.registry.new_agent_id("/tmp/repo-feat")
+    with pty_free():
         return await _call(
-            app,
+            engine,
             "spawn_agent",
             {
                 "worktree_path": "/tmp/repo-feat",
@@ -195,21 +178,26 @@ async def _():
 
 @case("spawn_agent/error_timeout")
 async def _():
-    app = _make_app(worktrees=[_make_worktree()])
-    app.call_later = MagicMock()
-    with patch("asyncio.wait_for", side_effect=TimeoutError):
-        return await _call(app, "spawn_agent", {"worktree_path": "/tmp/repo"})
+    engine = _make_engine(worktrees=[_make_worktree()])
+
+    async def _stuck(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    engine.spawn_agent = _stuck
+    with patch("lazyagent.ipc._OP_TIMEOUT", 0.0):
+        return await _call(engine, "spawn_agent", {"worktree_path": "/tmp/repo"})
 
 
 # --- stop_agent -----------------------------------------------------------
 
 @case("stop_agent/stopped")
 async def _():
-    app = _panel_app(agent_ids=("a1", "a2"))
-    app.call_later = MagicMock()
-    with patch("asyncio.wait_for", return_value=None):
+    engine = _make_engine(worktrees=[_make_worktree()])
+    with pty_free():
+        await engine.spawn_agent("/tmp/repo")
+        await engine.spawn_agent("/tmp/repo")
         return await _call(
-            app, "stop_agent", {"worktree_path": "/tmp/repo", "agent_id": "a2"}
+            engine, "stop_agent", {"worktree_path": "/tmp/repo", "agent_id": "a2"}
         )
 
 
@@ -217,12 +205,12 @@ async def _():
 
 @case("get_agent_status/no_agent")
 async def _():
-    return await _call(_make_app(), "get_agent_status", {"worktree_path": "/tmp/repo"})
+    return await _call(_make_engine(), "get_agent_status", {"worktree_path": "/tmp/repo"})
 
 
 @case("get_agent_status/waiting_for_user")
 async def _():
-    app = _make_app(
+    engine = _make_engine(
         agent_states={
             "/tmp/repo": {
                 "a1": AgentState(
@@ -234,12 +222,12 @@ async def _():
             }
         }
     )
-    return await _call(app, "get_agent_status", {"worktree_path": "/tmp/repo"})
+    return await _call(engine, "get_agent_status", {"worktree_path": "/tmp/repo"})
 
 
 @case("get_agent_status/error_ambiguous_agent")
 async def _():
-    app = _make_app(
+    engine = _make_engine(
         agent_states={
             "/tmp/repo": {
                 "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1"),
@@ -247,7 +235,7 @@ async def _():
             }
         }
     )
-    return await _call(app, "get_agent_status", {"worktree_path": "/tmp/repo"})
+    return await _call(engine, "get_agent_status", {"worktree_path": "/tmp/repo"})
 
 
 # --- read_agent_output ----------------------------------------------------
@@ -256,20 +244,21 @@ async def _():
 async def _():
     from lazyagent.engine.session import TerminalSession
 
-    session = TerminalSession("unused", rows=4, cols=40)
+    session = TerminalSession("unused", worktree_path="/tmp/repo", agent_id="a1", rows=4, cols=40)
     session._stream.feed("".join(f"line {i}\r\n" for i in range(12)))
-    app = _panel_app(session=session)
-    return await _call(app, "read_agent_output", {"worktree_path": "/tmp/repo", "lines": 6})
+    engine = _make_engine()
+    add_session(engine, session)
+    return await _call(engine, "read_agent_output", {"worktree_path": "/tmp/repo", "lines": 6})
 
 
 # --- send_agent_input -----------------------------------------------------
 
 async def _send(status, params, *, reacts=(), detail=""):
-    app, session = _app_with_agent(status, detail=detail)
+    engine, session = _engine_with_agent(status, detail=detail)
     if reacts:
-        session.send_input.side_effect = _react(app, *reacts)
+        session.send_input.side_effect = _react(engine, *reacts)
     return await _call(
-        app, "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go", **params}
+        engine, "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go", **params}
     )
 
 
@@ -308,12 +297,12 @@ async def _():
 
 @case("list_agents/empty")
 async def _():
-    return await _call(_make_app(), "list_agents", {"worktree_path": "/tmp/repo"})
+    return await _call(_make_engine(), "list_agents", {"worktree_path": "/tmp/repo"})
 
 
 @case("list_agents/two_agents")
 async def _():
-    app = _make_app(
+    engine = _make_engine(
         agent_states={
             "/tmp/repo": {
                 "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1", label="Agent 1"),
@@ -326,56 +315,56 @@ async def _():
             }
         }
     )
-    return await _call(app, "list_agents", {"worktree_path": "/tmp/repo"})
+    return await _call(engine, "list_agents", {"worktree_path": "/tmp/repo"})
 
 
 # --- list_events ----------------------------------------------------------
 
 @case("list_events/from_now")
 async def _():
-    app, _ = _app_with_agent(AgentStatus.WAITING)
-    return await _call(app, "list_events", {})
+    engine, _ = _engine_with_agent(AgentStatus.WAITING)
+    return await _call(engine, "list_events", {})
 
 
 @case("list_events/since_with_filter")
 async def _():
-    app, _ = _app_with_agent(AgentStatus.RUNNING)
-    _set_status(app, AgentStatus.WAITING)
-    _set_status(app, AgentStatus.RUNNING, path="/tmp/other")
-    return await _call(app, "list_events", {"since": 0, "statuses": ["idle"]})
+    engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+    _set_status(engine, AgentStatus.WAITING)
+    _set_status(engine, AgentStatus.RUNNING, path="/tmp/other")
+    return await _call(engine, "list_events", {"since": 0, "statuses": ["idle"]})
 
 
 @case("list_events/exited_agent")
 async def _():
-    app, _ = _app_with_agent(AgentStatus.RUNNING)
-    app.agent_events.publish(
+    engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+    engine.events.publish(
         worktree_path="/tmp/repo",
         agent_id="a1",
         status="exited",
         previous_status="running",
         detail="",
     )
-    return await _call(app, "list_events", {"since": 1, "agent_id": "a1"})
+    return await _call(engine, "list_events", {"since": 1, "agent_id": "a1"})
 
 
 @case("list_events/error_bad_cursor")
 async def _():
-    app, _ = _app_with_agent(AgentStatus.RUNNING)
-    return await _call(app, "list_events", {"since": -1})
+    engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+    return await _call(engine, "list_events", {"since": -1})
 
 
 # --- dispatch-level errors ------------------------------------------------
 
 @case("dispatch/error_unknown_method")
 async def _():
-    return await _call(_make_app(), "nonexistent", {})
+    return await _call(_make_engine(), "nonexistent", {})
 
 
 @case("dispatch/error_internal")
 async def _():
-    app = _make_app()
-    app.worktrees = None  # iterating it raises TypeError inside the handler
-    return await _call(app, "list_worktrees", {})
+    engine = _make_engine()
+    engine.worktree_service.worktrees = None  # iterating it raises TypeError in the handler
+    return await _call(engine, "list_worktrees", {})
 
 
 # --------------------------------------------------------------------------

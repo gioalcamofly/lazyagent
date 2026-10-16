@@ -136,3 +136,22 @@ class TestEnvExports:
         assert "MY_VAR=" in exports
         # shlex.quote wraps in single quotes
         assert "'value with spaces'" in exports
+
+    def test_base_replaces_this_process_environment(self, monkeypatch):
+        """A client's environment (D5) is used instead of this process's."""
+        monkeypatch.setenv("ONLY_IN_THIS_PROCESS", "x")
+        exports = env_exports({"EXTRA": "2"}, base={"PATH": "/client/bin", "TERM": "dumb"})
+        keys = [p.split("=")[0] for p in exports.removeprefix("export ").split()]
+        assert keys == ["PATH", "EXTRA"]
+        assert "PATH=/client/bin" in exports
+
+    def test_build_command_starts_from_the_given_env(self, monkeypatch):
+        monkeypatch.setenv("ONLY_IN_THIS_PROCESS", "x")
+        cmd = get_agent_provider("claude").build_command(
+            "/tmp/wt", env={"PATH": "/client/bin"}
+        )
+        script = shlex.split(cmd)[2]
+        assert "PATH=/client/bin" in script
+        assert "ONLY_IN_THIS_PROCESS" not in script
+        # The provider's own overrides still apply on top.
+        assert "LAZYAGENT_CLAUDE_HOOK_LOG=" in script

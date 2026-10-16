@@ -1,0 +1,1006 @@
+"""The engine facade: the one owner of lazyagent's state and operations.
+
+:class:`Engine` composes everything a client needs and nothing a client
+shows: the repo root and its :class:`~lazyagent.config.Config`, the
+:class:`~lazyagent.engine.registry.AgentRegistry`, the
+:class:`~lazyagent.engine.worktrees.WorktreeService`, every terminal session
+(agents, the orchestrator under :data:`ORCHESTRATOR_KEY`, one ``bash -l``
+shell per worktree), the timers that keep agent status fresh, the jobs that
+run custom create/remove commands, and the legacy IPC server.
+
+Clients (the Textual app, the IPC server) call its methods and react to its
+:class:`~lazyagent.engine.events.EventBus`; they never start a process or
+hold engine state of their own. Everything runs on the loop that called
+:meth:`Engine.start`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import codecs
+import itertools
+import logging
+import os
+import shlex
+from collections.abc import Callable, Collection, Coroutine, Iterable, Mapping
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any
+
+from lazyagent import diagnostics as diag
+from lazyagent.agent_providers import (
+    AgentProvider,
+    ResumeMode,
+    agent_session_name,
+    env_exports,
+    get_agent_provider,
+)
+from lazyagent.config import Config, format_command, load_config
+from lazyagent.engine.events import (
+    AGENT_EXITED,
+    AGENT_SPAWNED,
+    AGENT_UPDATED,
+    ENGINE_NOTICE,
+    JOB_FINISHED,
+    JOB_OUTPUT,
+    JOB_STARTED,
+    EventBus,
+)
+from lazyagent.engine.registry import (
+    ORCHESTRATOR_KEY,
+    AgentIdStore,
+    AgentRegistry,
+    default_id_store_path,
+)
+from lazyagent.engine.scheduler import Scheduler
+from lazyagent.engine.session import (
+    AgentSession,
+    SessionEvent,
+    SessionExited,
+    StatusChanged,
+    TerminalSession,
+)
+from lazyagent.engine.worktrees import (
+    GIT_STATUS_UPDATED,
+    PR_INFO_UPDATED,
+    WORKTREES_CHANGED,
+    WorktreeEvent,
+    WorktreeService,
+)
+from lazyagent.models import (
+    AgentState,
+    AgentStatus,
+    GitStatus,
+    PrInfo,
+    WorktreeInfo,
+    rollup_status,
+)
+from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
+from lazyagent.worktree_manager import (
+    WorktreeManager,
+    WorktreeManagerError,
+    find_repo_root,
+)
+
+if TYPE_CHECKING:
+    from lazyagent.ipc import IpcServer
+
+__all__ = [
+    "AGENT_KIND",
+    "ORCHESTRATOR_KEY",
+    "ORCHESTRATOR_KIND",
+    "SHELL_KIND",
+    "AgentInfo",
+    "ConfigView",
+    "CreatedWorktree",
+    "Engine",
+    "JobResult",
+]
+
+log = logging.getLogger(__name__)
+
+AGENT_KIND = "agent"
+ORCHESTRATOR_KIND = "orchestrator"
+SHELL_KIND = "shell"
+
+# Hook logs are otherwise only read when an agent prints something; a quiet
+# agent's status (and the events that follow from it) would lag.
+POLL_AGENTS_INTERVAL = 1.0
+CHECK_HANGS_INTERVAL = 60.0
+
+NOTICE_SEVERITIES = ("information", "warning", "error")
+
+# An agent in one of these is working or about to: its worktree must not be
+# pulled out from under it.
+_ACTIVE_STATUSES = (AgentStatus.RUNNING, AgentStatus.WAITING)
+
+_JOB_READ_SIZE = 4096
+
+
+@dataclass(frozen=True)
+class AgentInfo:
+    """Who an agent is; the ``agent.spawned`` payload."""
+
+    worktree_path: str
+    agent_id: str
+    session_id: str
+    label: str
+    session_name: str
+    kind: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ConfigView:
+    """The read-only part of the config that clients need (modals)."""
+
+    agent_provider: str
+    default_branch: str
+    has_custom_create: bool
+    has_custom_remove: bool
+
+
+@dataclass(frozen=True)
+class JobResult:
+    """How a job ended. ``exit_code`` is negative for a signal."""
+
+    job_id: str
+    exit_code: int | None
+    stdout: str
+    stderr: str
+
+    @property
+    def detail(self) -> str:
+        """What to tell a caller when the job failed."""
+        return (
+            self.stderr.strip() or self.stdout.strip() or f"exit code {self.exit_code}"
+        )
+
+
+@dataclass(frozen=True)
+class CreatedWorktree:
+    """A new worktree. With ``job_id`` set a custom command created it, and
+    ``path`` is predicted from the naming convention."""
+
+    path: str
+    branch: str
+    job_id: str | None = None
+
+
+@dataclass
+class _Agent:
+    session: AgentSession
+    info: AgentInfo
+    remove_listener: Callable[[], None]
+
+
+class Engine:
+    """Owns agents, shells, worktrees, config, jobs and the event bus."""
+
+    def __init__(
+        self,
+        repo_path: str | None = None,
+        *,
+        manager_factory: Callable[[str], WorktreeManager] | None = None,
+        find_root: Callable[[], Any] | None = None,
+        config_loader: Callable[[str], Config] | None = None,
+        provider_lookup: Callable[[str | None], AgentProvider] | None = None,
+        id_store: AgentIdStore | None = None,
+        persist_ids: bool = True,
+        poll_interval: float = POLL_AGENTS_INTERVAL,
+        hang_interval: float = CHECK_HANGS_INTERVAL,
+    ) -> None:
+        self.repo_path = repo_path
+        # Looked up on each call, not bound here, so tests can swap the
+        # module attributes.
+        self._manager = manager_factory or (lambda root: WorktreeManager(root))
+        self._config_loader = config_loader or (lambda root: load_config(root))
+        self._provider = provider_lookup or (lambda name: get_agent_provider(name))
+        self.config = Config()
+
+        self.events = EventBus()
+        # persist_ids=False keeps agent ids in memory (tests, throwaway engines).
+        if id_store is None and persist_ids:
+            id_store = AgentIdStore(default_id_store_path())
+        self.registry = AgentRegistry(id_store=id_store, events=self.events)
+        self.worktree_service = WorktreeService(
+            self._manager,
+            find_root=find_root or (lambda: find_repo_root()),
+        )
+        self.worktree_service.subscribe(self._on_worktree_event)
+
+        self.socket_path: str | None = None
+        self._ipc_server: IpcServer | None = None
+
+        self._agents: dict[str, dict[str, _Agent]] = {}
+        self._shells: dict[str, TerminalSession] = {}
+        self._session_ids = itertools.count(1)
+        self._job_ids = itertools.count(1)
+        self._jobs: dict[str, asyncio.subprocess.Process] = {}
+
+        self._poll_interval = poll_interval
+        self._hang_interval = hang_interval
+        self._scheduler = Scheduler()
+        self._tasks: set[asyncio.Task] = set()
+        self._groups: dict[str, asyncio.Task] = {}
+        self._started = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self, *, ipc: bool = True) -> None:
+        """List the worktrees, load the config, start the IPC server (when
+        ``ipc``) and the timers."""
+        if self._started:
+            return
+        self._started = True
+        with diag.timed(log, "engine.load_worktrees"):
+            self.refresh_worktrees()
+        self.load_config()
+        if ipc:
+            with diag.timed(log, "engine.start_ipc"):
+                await self._start_ipc()
+        self._scheduler = Scheduler()
+        self._scheduler.every(
+            self._hang_interval, diag.wrap_timer("timer.check_hangs", self.check_hangs)
+        )
+        self._scheduler.every(
+            self._poll_interval, diag.wrap_timer("timer.poll_agents", self.poll_agents)
+        )
+        self._scheduler.start()
+        # Git status and PR info are polled by the service, once a minute and
+        # only for the clients' interest sets.
+        self.worktree_service.start()
+
+    async def stop(self) -> None:
+        """Stop the timers, jobs, IPC server and every session. Idempotent.
+
+        Sessions are stopped quietly: no ``agent.exited`` is emitted for an
+        engine that is going away.
+        """
+        self._started = False
+        self._scheduler.stop()
+        self.worktree_service.stop()
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+        self._groups.clear()
+        for proc in list(self._jobs.values()):
+            _kill(proc)
+        if self._ipc_server is not None:
+            server, self._ipc_server = self._ipc_server, None
+            await server.stop()
+        for bucket in list(self._agents.values()):
+            for agent in list(bucket.values()):
+                agent.remove_listener()
+                agent.session.stop()
+        self._agents.clear()
+        for shell in list(self._shells.values()):
+            shell.stop()
+        self._shells.clear()
+
+    async def _start_ipc(self) -> None:
+        from lazyagent.ipc import start_ipc_server
+
+        try:
+            self._ipc_server, self.socket_path = await start_ipc_server(self)
+        except OSError as e:
+            self.notice("warning", f"IPC server failed to start: {e}")
+
+    def load_config(self) -> None:
+        root = self.repo_root
+        self.config = self._config_loader(root) if root else Config()
+
+    def get_config(self) -> ConfigView:
+        config = self.config
+        return ConfigView(
+            agent_provider=config.agent.provider,
+            default_branch=config.default_branch,
+            has_custom_create=config.has_custom_create,
+            has_custom_remove=config.has_custom_remove,
+        )
+
+    def notice(self, severity: str, message: str) -> None:
+        """Tell every client something it should show the user."""
+        if severity not in NOTICE_SEVERITIES:
+            raise ValueError(f"Unknown severity: {severity!r}")
+        log.info("notice (%s): %s", severity, message)
+        self.events.emit(ENGINE_NOTICE, {"severity": severity, "message": message})
+
+    def subscribe(
+        self, callback, events: Iterable[str] | None = None
+    ) -> Callable[[], None]:
+        """Shorthand for ``self.events.subscribe``."""
+        return self.events.subscribe(callback, events)
+
+    async def wait_idle(self) -> None:
+        """Wait for the background work started so far (git sweeps)."""
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        await self.worktree_service.wait_idle()
+
+    def _spawn(
+        self, coro: Coroutine[Any, Any, Any], *, group: str | None = None
+    ) -> None:
+        """Run ``coro`` in the background. A new task in a ``group`` cancels
+        the one before it: only the latest answer matters."""
+        if group is not None and (previous := self._groups.get(group)) is not None:
+            previous.cancel()
+        task = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(task)
+        if group is not None:
+            self._groups[group] = task
+        task.add_done_callback(lambda t: self._task_done(t, group))
+
+    def _task_done(self, task: asyncio.Task, group: str | None) -> None:
+        self._tasks.discard(task)
+        if group is not None and self._groups.get(group) is task:
+            del self._groups[group]
+        if not task.cancelled() and task.exception() is not None:
+            log.error("engine task failed", exc_info=task.exception())
+
+    # ------------------------------------------------------------------
+    # Worktrees, git, PRs
+    # ------------------------------------------------------------------
+
+    @property
+    def repo_root(self) -> str:
+        return self.worktree_service.repo_root
+
+    @property
+    def worktrees(self) -> list[WorktreeInfo]:
+        return self.worktree_service.worktrees
+
+    @property
+    def git_statuses(self) -> dict[str, GitStatus]:
+        return self.worktree_service.git_statuses
+
+    def worktree(self, path: str) -> WorktreeInfo | None:
+        return self.worktree_service.worktree(path)
+
+    def refresh_worktrees(self) -> bool:
+        """Re-list the worktrees (emits ``worktrees.changed``), then sweep
+        every worktree's git status in the background.
+
+        A listing failure is reported as an ``engine.notice`` and the old
+        list is kept; returns whether the listing worked.
+        """
+        try:
+            self.worktree_service.rescan(self.repo_path)
+        except WorktreeManagerError as e:
+            self.notice("error", str(e))
+            return False
+        self.sweep_git_status()
+        return True
+
+    def sweep_git_status(self) -> None:
+        """Refresh every worktree's git status in the background; a new
+        sweep supersedes one still running."""
+        self._spawn(self.worktree_service.refresh_git_status(), group="git_status_all")
+
+    async def refresh_git_status(self, paths: Collection[str] | None = None) -> None:
+        await self.worktree_service.refresh_git_status(paths)
+
+    async def get_diff(self, path: str) -> str:
+        return await self.worktree_service.get_diff(path)
+
+    def get_pr_info(self, path: str) -> PrInfo | None:
+        """The cached PR info of a worktree (``None`` also when not fetched
+        yet; see :meth:`has_pr_info`)."""
+        return self.worktree_service.pr_info(path)
+
+    def has_pr_info(self, path: str) -> bool:
+        return self.worktree_service.has_pr_info(path)
+
+    async def refresh_pr_info(self, paths: Collection[str]) -> None:
+        await self.worktree_service.refresh_pr_info(paths)
+
+    def set_interest(self, paths: Iterable[str], client: str = "default") -> None:
+        self.worktree_service.set_interest(paths, client)
+
+    def predicted_worktree_name(self, branch: str) -> str:
+        """``<repo>-<branch>``: the name a custom create command is expected
+        to give ``branch``'s worktree."""
+        repo_root = self.repo_root
+        repo_name = os.path.basename(repo_root) if repo_root else ""
+        return f"{repo_name}-{branch}" if repo_name else branch
+
+    def predicted_worktree_path(self, branch: str) -> str:
+        """Where a custom create command is expected to put ``branch``: next
+        to the repo root, under :meth:`predicted_worktree_name`."""
+        repo_root = self.repo_root
+        name = self.predicted_worktree_name(branch)
+        return str(
+            os.path.join(os.path.dirname(repo_root), name) if repo_root else name
+        )
+
+    async def create_worktree(
+        self,
+        branch: str,
+        base_branch: str = "main",
+        extra: str = "",
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> CreatedWorktree:
+        """Create a worktree, with ``git worktree add`` or the configured
+        custom command (run as a job, waited for), then re-list.
+
+        ``extra`` and ``env`` (the environment the job runs with; ``None``
+        means the engine's) only reach a custom command. Raises
+        :class:`WorktreeManagerError` when the creation fails.
+        """
+        branch = branch.strip()
+        if not branch:
+            raise ValueError("branch is required and must not be empty")
+        repo_root = self.repo_root
+        template = self.config.worktree.create
+        if template is not None:
+            path = self.predicted_worktree_path(branch)
+            command = format_command(
+                template,
+                branch=branch,
+                name=self.predicted_worktree_name(branch),
+                base=base_branch,
+                path=path,
+                repo=repo_root,
+                extra=extra,
+            )
+            job = await self.run_job(
+                command, cwd=repo_root, title=f"Create worktree {branch}", env=env
+            )
+            if job.exit_code != 0:
+                raise WorktreeManagerError(
+                    f"Custom create command failed: {job.detail}"
+                )
+            self.refresh_worktrees()
+            return CreatedWorktree(path, branch, job.job_id)
+
+        manager = self._manager(repo_root)
+        path = await asyncio.to_thread(manager.create, branch, base_branch)
+        self.refresh_worktrees()
+        return CreatedWorktree(path, branch)
+
+    def has_active_agents(self, path: str) -> bool:
+        """Whether an agent of the worktree is running or waiting."""
+        return any(
+            s.status in _ACTIVE_STATUSES for s in self.registry.agents(path).values()
+        )
+
+    async def remove_worktree(
+        self,
+        path: str,
+        force: bool = False,
+        *,
+        custom: bool = True,
+        env: Mapping[str, str] | None = None,
+    ) -> str | None:
+        """Remove a worktree and everything the engine runs in it.
+
+        Uses the configured custom remove command (as a job) when there is
+        one and ``custom`` is true (with ``env`` as for create), else
+        ``git worktree remove``. Then stops
+        the worktree's agents and shell, drops their state and re-lists.
+        Returns the job id when a custom command ran.
+        """
+        worktree = self.worktree(path)
+        if worktree is None:
+            raise ValueError(f"Unknown worktree: {path}")
+        if worktree.is_main:
+            raise ValueError("Cannot remove the main worktree")
+        if self.has_active_agents(path):
+            raise ValueError("Agent is running in this worktree — stop it first")
+
+        repo_root = self.repo_root
+        template = self.config.worktree.remove
+        job_id = None
+        if custom and template is not None:
+            command = format_command(
+                template,
+                branch=worktree.branch or "",
+                name=worktree.name,
+                base="",
+                path=worktree.path,
+                repo=repo_root,
+                force="--force" if force else "",
+            )
+            job = await self.run_job(
+                command,
+                cwd=repo_root,
+                title=f"Remove worktree {worktree.name}",
+                env=env,
+            )
+            if job.exit_code != 0:
+                raise WorktreeManagerError(
+                    f"Custom remove command failed: {job.detail}"
+                )
+            job_id = job.job_id
+        else:
+            manager = self._manager(repo_root)
+            await asyncio.to_thread(manager.remove, path, force=force)
+
+        self._drop_worktree(path)
+        self.refresh_worktrees()
+        return job_id
+
+    def _drop_worktree(self, path: str) -> None:
+        for agent_id in list(self._agents.get(path, {})):
+            self._stop_agent(path, agent_id)
+        self.registry.drop_worktree(path)
+        self.close_shell(path)
+
+    def worktrees_payload(self) -> list[dict[str, Any]]:
+        """The worktree list as ``list_worktrees`` / ``worktrees.changed``
+        carry it."""
+        result = []
+        for wt in self.worktrees:
+            agents = self.registry.agents(wt.path)
+            entry: dict[str, Any] = {
+                "path": wt.path,
+                "branch": wt.branch,
+                "head": wt.head,
+                "is_main": wt.is_main,
+                "is_bare": wt.is_bare,
+                # Scalar roll-up kept for back-compat; `agents` has the detail.
+                "agent_status": rollup_status(s.status for s in agents.values()).value,
+                "agents": self.agents_payload(wt.path),
+            }
+            git_status = self.git_statuses.get(wt.path)
+            if git_status:
+                entry["git_status"] = {
+                    "dirty_count": git_status.dirty_count,
+                    "ahead": git_status.ahead,
+                    "behind": git_status.behind,
+                }
+            result.append(entry)
+        return result
+
+    def agents_payload(self, key: str) -> list[dict[str, Any]]:
+        """A worktree's agent states as the IPC responses carry them."""
+        return [
+            {
+                "agent_id": aid,
+                "label": st.label,
+                "session_name": st.session_name,
+                "status": st.status.value,
+                "confidence": st.confidence.value,
+                "detail": st.detail,
+            }
+            for aid, st in self.registry.agents(key).items()
+        ]
+
+    def _on_worktree_event(self, event: WorktreeEvent) -> None:
+        if event.event == WORKTREES_CHANGED:
+            data: Any = self.worktrees_payload()
+        elif event.event == GIT_STATUS_UPDATED:
+            data = {path: asdict(status) for path, status in event.data.items()}
+        elif event.event == PR_INFO_UPDATED:
+            info = event.data["pr_info"]
+            data = {
+                "path": event.data["path"],
+                "pr_info": asdict(info) if info else None,
+            }
+        else:
+            return
+        self.events.emit(event.event, data)
+
+    # ------------------------------------------------------------------
+    # Jobs
+    # ------------------------------------------------------------------
+
+    async def run_job(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        title: str = "",
+        env: Mapping[str, str] | None = None,
+    ) -> JobResult:
+        """Run a shell command to completion, streaming its output.
+
+        ``env`` is the environment it runs with (a client's, D5); ``None``
+        means the engine's own.
+
+        Emits ``job.started``, a ``job.output`` per chunk of stdout or
+        stderr, and ``job.finished`` (always, even when the command could not
+        be started; ``exit_code`` is then ``null``).
+        """
+        job_id = f"j{next(self._job_ids)}"
+        self.events.emit(
+            JOB_STARTED, {"job_id": job_id, "title": title, "command": command}
+        )
+        stdout: list[str] = []
+        stderr: list[str] = []
+        exit_code: int | None = None
+        with diag.timed(log, "engine.job", job_id=job_id, title=title) as span:
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    cwd=cwd or None,
+                    env=dict(env) if env is not None else None,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                self._jobs[job_id] = proc
+                try:
+                    await asyncio.gather(
+                        self._pump(job_id, proc.stdout, stdout),
+                        self._pump(job_id, proc.stderr, stderr),
+                    )
+                    exit_code = await proc.wait()
+                except asyncio.CancelledError:
+                    _kill(proc)
+                    raise
+                finally:
+                    self._jobs.pop(job_id, None)
+            finally:
+                span["exit_code"] = exit_code
+                self.events.emit(
+                    JOB_FINISHED,
+                    {
+                        "job_id": job_id,
+                        "exit_code": exit_code
+                        if exit_code is None or exit_code >= 0
+                        else None,
+                    },
+                )
+        return JobResult(job_id, exit_code, "".join(stdout), "".join(stderr))
+
+    async def _pump(
+        self, job_id: str, stream: asyncio.StreamReader | None, sink: list[str]
+    ) -> None:
+        if stream is None:
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        while True:
+            chunk = await stream.read(_JOB_READ_SIZE)
+            text = decoder.decode(chunk, final=not chunk)
+            if text:
+                sink.append(text)
+                self.events.emit(JOB_OUTPUT, {"job_id": job_id, "text": text})
+            if not chunk:
+                return
+
+    # ------------------------------------------------------------------
+    # Agents
+    # ------------------------------------------------------------------
+
+    async def spawn_agent(
+        self,
+        worktree_path: str,
+        instruction: str | None = None,
+        *,
+        skip_permissions: bool = False,
+        resume_mode: ResumeMode = ResumeMode.NEW,
+        label: str | None = None,
+        kind: str = AGENT_KIND,
+        env: Mapping[str, str] | None = None,
+        spawn_id: str = "",
+    ) -> AgentInfo:
+        """Start a new agent in a worktree (or the orchestrator, for
+        ``kind="orchestrator"``, which runs in the repo root and ignores
+        ``worktree_path`` and ``label``).
+
+        ``env`` is the environment the agent starts from; ``None`` means the
+        engine's own. Emits ``agent.spawned``. ``spawn_id`` is diagnostics
+        only.
+        """
+        if kind == ORCHESTRATOR_KIND:
+            return self._spawn_orchestrator(
+                instruction,
+                skip_permissions=skip_permissions,
+                resume_mode=resume_mode,
+                env=env,
+            )
+        if kind != AGENT_KIND:
+            raise ValueError(f"Unknown agent kind: {kind!r}")
+        if self.worktree(worktree_path) is None:
+            raise ValueError(f"Unknown worktree: {worktree_path}")
+
+        key = worktree_path
+        agent_id = self.registry.new_agent_id(key)
+        label = label or f"Agent {agent_id[1:]}"
+        provider = self._provider(self.config.agent.provider)
+        session_name = (
+            agent_session_name(key, agent_id) if provider.session_name_flag else ""
+        )
+        self.registry.register(key, agent_id, label=label, session_name=session_name)
+        command, observer = self._agent_command(
+            provider,
+            worktree_path,
+            skip_permissions=skip_permissions,
+            resume_mode=resume_mode,
+            instruction=instruction,
+            session_name=session_name,
+            env=env,
+            spawn_id=spawn_id,
+        )
+        session = AgentSession(
+            command,
+            worktree_path=key,
+            agent_id=agent_id,
+            observer=observer,
+            spawn_id=spawn_id,
+        )
+        return self._start_agent(session, label, session_name, AGENT_KIND)
+
+    def _spawn_orchestrator(
+        self,
+        instruction: str | None,
+        *,
+        skip_permissions: bool,
+        resume_mode: ResumeMode,
+        env: Mapping[str, str] | None,
+    ) -> AgentInfo:
+        if self.has_agent(ORCHESTRATOR_KEY):
+            raise ValueError("Orchestrator agent already running")
+        self._stop_agent(ORCHESTRATOR_KEY, "")
+        repo_root = self.repo_root
+        provider = self._provider(self.config.agent.provider)
+        session_name = (
+            agent_session_name(repo_root, "orchestrator")
+            if provider.session_name_flag
+            else ""
+        )
+        self.registry.register(ORCHESTRATOR_KEY, "", session_name=session_name)
+        command, observer = self._agent_command(
+            provider,
+            repo_root,
+            skip_permissions=skip_permissions,
+            resume_mode=resume_mode,
+            instruction=instruction,
+            system_prompt=compose_orchestrator_prompt(self.config, repo_root),
+            session_name=session_name,
+            env=env,
+        )
+        session = AgentSession(
+            command, worktree_path=ORCHESTRATOR_KEY, observer=observer
+        )
+        return self._start_agent(session, "", session_name, ORCHESTRATOR_KIND)
+
+    def _agent_command(
+        self,
+        provider: AgentProvider,
+        cwd: str,
+        *,
+        skip_permissions: bool,
+        resume_mode: ResumeMode,
+        instruction: str | None,
+        session_name: str,
+        env: Mapping[str, str] | None,
+        system_prompt: str | None = None,
+        spawn_id: str = "",
+    ):
+        # build_runtime_context touches the filesystem for some providers
+        # (hook scripts, settings files), so it is timed separately.
+        with diag.timed(
+            log,
+            "spawn.build_runtime_context",
+            spawn_id=spawn_id,
+            provider=provider.name,
+            worktree=cwd,
+        ):
+            runtime_context = provider.build_runtime_context(
+                cwd,
+                socket_path=self.socket_path,
+                cross_session_inbound=self.config.agent.cross_session_inbound,
+            )
+        command = provider.build_command(
+            cwd,
+            skip_permissions=skip_permissions,
+            runtime_context=runtime_context,
+            resume_mode=resume_mode,
+            instruction=instruction,
+            system_prompt=system_prompt,
+            session_name=session_name or None,
+            env=env,
+        )
+        return command, provider.create_observer_from_context(runtime_context)
+
+    def _start_agent(
+        self, session: AgentSession, label: str, session_name: str, kind: str
+    ) -> AgentInfo:
+        key, agent_id = session.worktree_path, session.agent_id
+        session.session_id = self._new_session_id()
+        info = AgentInfo(key, agent_id, session.session_id, label, session_name, kind)
+        remove_listener = session.add_listener(
+            lambda event: self._on_agent_event(info, event)
+        )
+        self._agents.setdefault(key, {})[agent_id] = _Agent(
+            session, info, remove_listener
+        )
+        self.events.emit(AGENT_SPAWNED, info.to_dict())
+        try:
+            session.start()
+        except Exception:
+            self._stop_agent(key, agent_id)
+            raise
+        return info
+
+    def _new_session_id(self) -> str:
+        return f"s{next(self._session_ids)}"
+
+    def _on_agent_event(self, info: AgentInfo, event: SessionEvent) -> None:
+        if isinstance(event, StatusChanged):
+            state = self.registry.update_status(
+                info.worktree_path,
+                info.agent_id,
+                event.status,
+                event.confidence,
+                event.detail,
+                last_output_time=event.last_output_time,
+            )
+            # Every change, the detail-only ones included; agent.status
+            # (the list_events log) only has the transitions.
+            self.events.emit(
+                AGENT_UPDATED,
+                {
+                    "worktree_path": info.worktree_path,
+                    "agent_id": info.agent_id,
+                    "status": state.status.value,
+                    "confidence": state.confidence.value,
+                    "detail": state.detail,
+                },
+            )
+        elif isinstance(event, SessionExited):
+            self._forget_agent(
+                info.worktree_path, info.agent_id, event.exit_code, stopped=False
+            )
+
+    def stop_agent(self, key: str, agent_id: str = "") -> AgentInfo:
+        """Kill an agent (``key`` is a worktree path or ORCHESTRATOR_KEY).
+
+        Emits ``agent.status`` (exited) and ``agent.exited`` with
+        ``stopped: true``.
+        """
+        agent = self._agents.get(key, {}).get(agent_id)
+        if agent is None:
+            raise ValueError(f"No agent {agent_id!r} in this worktree")
+        self._stop_agent(key, agent_id)
+        return agent.info
+
+    def _stop_agent(self, key: str, agent_id: str) -> None:
+        agent = self._agents.get(key, {}).get(agent_id)
+        if agent is None:
+            return
+        agent.remove_listener()
+        agent.session.stop()
+        self._forget_agent(key, agent_id, agent.session.exit_code, stopped=True)
+
+    def _forget_agent(
+        self, key: str, agent_id: str, exit_code: int | None, *, stopped: bool
+    ) -> None:
+        bucket = self._agents.get(key, {})
+        agent = bucket.pop(agent_id, None)
+        if not bucket:
+            self._agents.pop(key, None)
+        if agent is None:
+            return
+        agent.remove_listener()
+        self.registry.drop(key, agent_id)
+        self.registry.unregister(key, agent_id)
+        self.events.emit(
+            AGENT_EXITED,
+            {
+                "worktree_path": key,
+                "agent_id": agent_id,
+                "session_id": agent.info.session_id,
+                "exit_code": exit_code,
+                "stopped": stopped,
+            },
+        )
+
+    def get_session(self, key: str, agent_id: str = "") -> AgentSession | None:
+        agent = self._agents.get(key, {}).get(agent_id)
+        return agent.session if agent is not None else None
+
+    def get_agent(self, key: str, agent_id: str = "") -> AgentInfo | None:
+        agent = self._agents.get(key, {}).get(agent_id)
+        return agent.info if agent is not None else None
+
+    def list_agents(self, key: str) -> list[AgentInfo]:
+        """The agents the engine runs for ``key``, in spawn order."""
+        return [agent.info for agent in self._agents.get(key, {}).values()]
+
+    def agent_ids(self, key: str) -> list[str]:
+        return list(self._agents.get(key, {}))
+
+    def agent_states(self, key: str) -> dict[str, AgentState]:
+        """The registry's view of ``key``'s agents (may be empty)."""
+        return self.registry.agents(key)
+
+    def has_agent(self, key: str) -> bool:
+        """Whether any agent of ``key`` has a live process."""
+        return any(
+            agent.session.running for agent in self._agents.get(key, {}).values()
+        )
+
+    async def send_agent_input(
+        self, key: str, agent_id: str, text: str, *, submit: bool = True
+    ) -> None:
+        session = self.get_session(key, agent_id)
+        if session is None or not session.running:
+            raise ValueError("Agent terminal is not ready")
+        await session.send_input(text, submit=submit)
+
+    def read_agent_output(
+        self, key: str, agent_id: str, lines: int
+    ) -> tuple[list[str], int]:
+        """The last ``lines`` lines of an agent's screen and scrollback, and
+        how many lines it holds in all."""
+        session = self.get_session(key, agent_id)
+        if session is None:
+            raise ValueError("No agent terminal in this worktree")
+        return session.tail_lines(lines), session.total_lines
+
+    def _agent_sessions(self) -> list[AgentSession]:
+        return [
+            agent.session
+            for bucket in self._agents.values()
+            for agent in bucket.values()
+        ]
+
+    def poll_agents(self) -> None:
+        """Pick up every agent's latest hook/telemetry events."""
+        for session in self._agent_sessions():
+            session.poll()
+
+    def check_hangs(self) -> None:
+        """Flag the working agents that have gone quiet for too long."""
+        for session in self._agent_sessions():
+            if session.status == AgentStatus.RUNNING:
+                session.check_hang()
+
+    # ------------------------------------------------------------------
+    # Shells
+    # ------------------------------------------------------------------
+
+    def open_shell(
+        self, worktree_path: str, *, env: Mapping[str, str] | None = None
+    ) -> TerminalSession:
+        """The worktree's ``bash -l`` session, started on first use.
+
+        ``env`` is the environment a new shell starts from; ``None`` means
+        the engine's own. A shell that has exited is replaced.
+        """
+        shell = self._shells.get(worktree_path)
+        if shell is not None and shell.running:
+            return shell
+        script = f"{env_exports(base=env)} && cd {shlex.quote(worktree_path)} && exec bash -l"
+        shell = TerminalSession(
+            f"bash -c {shlex.quote(script)}", worktree_path=worktree_path
+        )
+        shell.session_id = self._new_session_id()
+        shell.add_listener(lambda event: self._on_shell_event(shell, event))
+        self._shells[worktree_path] = shell
+        shell.start()
+        return shell
+
+    def get_shell(self, worktree_path: str) -> TerminalSession | None:
+        return self._shells.get(worktree_path)
+
+    def close_shell(self, worktree_path: str) -> None:
+        shell = self._shells.pop(worktree_path, None)
+        if shell is not None:
+            shell.stop()
+
+    def _on_shell_event(self, shell: TerminalSession, event: SessionEvent) -> None:
+        if (
+            isinstance(event, SessionExited)
+            and self._shells.get(shell.worktree_path) is shell
+        ):
+            del self._shells[shell.worktree_path]
+
+    @staticmethod
+    def write_input(session: TerminalSession, data: bytes | str) -> None:
+        """Send raw input (keys, a command line) to a session."""
+        session.write(data)
+
+
+def _kill(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass

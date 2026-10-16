@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.binding import Binding
@@ -12,9 +13,12 @@ from textual.worker import WorkerState
 
 from lazyagent.app import LazyAgent
 from lazyagent.config import Config, WorktreeConfig
+from lazyagent.engine.engine import CreatedWorktree
 from lazyagent.models import AgentState, AgentStatus, GitStatus, PrInfo, WorktreeInfo
+from lazyagent.worktree_manager import WorktreeManagerError
 from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeResult
+from lazyagent.widgets.job_log import JobLog
 from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeResult
 from lazyagent.widgets.worktree_list import (
@@ -54,8 +58,6 @@ def _make_app_with_config(
     app = LazyAgent(repo_path="/repo")
     app._repo_root = "/repo"
     app._config = Config(worktree=WorktreeConfig(create=create, remove=remove))
-    app._send_to_terminal = MagicMock()
-    app.action_focus_terminal = MagicMock()
     app.notify = MagicMock()
     return app
 
@@ -105,8 +107,8 @@ class DummyWorktreeManager:
 
 
 def _patch_app_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("lazyagent.app.WorktreeManager", DummyWorktreeManager)
-    monkeypatch.setattr("lazyagent.app.load_config", lambda repo_root: Config())
+    monkeypatch.setattr("lazyagent.engine.engine.WorktreeManager", DummyWorktreeManager)
+    monkeypatch.setattr("lazyagent.engine.engine.load_config", lambda repo_root: Config())
     monkeypatch.setattr(
         WorktreePanel,
         "_try_start_terminal",
@@ -128,6 +130,8 @@ async def _drain_workers(app: LazyAgent) -> None:
     """
     deadline = time.perf_counter() + 5.0
     while time.perf_counter() < deadline:
+        # The full git sweep is the engine's own background work.
+        await asyncio.wait_for(app.engine.wait_idle(), 5.0)
         if not [
             w for w in app.workers
             if w.state in (WorkerState.PENDING, WorkerState.RUNNING)
@@ -204,51 +208,58 @@ async def test_ctrl_j_uses_spawn_flow_when_selected_worktree_has_no_agent(
         app.action_spawn_agent.assert_called_once_with()
 
 
-def test_do_create_worktree_injects_custom_command_into_terminal() -> None:
-    app = _make_app_with_config(
-        create="create-worktree {branch} {name} {base} {path} {repo}"
+@pytest.mark.asyncio
+async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> None:
+    """The command itself (custom or not) is the engine's: see
+    tests/engine/test_engine.py::TestWorktreeJobs."""
+    app = _make_app_with_config(create="create-worktree {branch}")
+    app.engine.create_worktree = AsyncMock(
+        return_value=CreatedWorktree("/repo-feature/demo", "feature/demo", "j1")
+    )
+    app._queue_selection = MagicMock()
+
+    await app._do_create_worktree(
+        CreateWorktreeResult(
+            branch="feature/demo", base_branch="main", extra_options="--no-build"
+        )
     )
 
-    app._do_create_worktree(
-        CreateWorktreeResult(branch="feature/demo", base_branch="main")
+    app.engine.create_worktree.assert_awaited_once_with(
+        "feature/demo", "main", "--no-build", env=dict(os.environ)
+    )
+    app._queue_selection.assert_called_once_with("/repo-feature/demo")
+    assert "Created worktree: demo" in app.notify.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_do_create_worktree_reports_a_failure() -> None:
+    app = _make_app_with_config(create="create-worktree {branch}")
+    app.engine.create_worktree = AsyncMock(
+        side_effect=WorktreeManagerError("Custom create command failed: boom")
     )
 
-    app._send_to_terminal.assert_called_once_with(
-        "create-worktree feature/demo repo-feature/demo main /repo-feature/demo /repo"
+    await app._do_create_worktree(CreateWorktreeResult(branch="feat", base_branch="main"))
+
+    assert app.notify.call_args.kwargs["severity"] == "error"
+    assert "boom" in app.notify.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_do_remove_worktree_asks_the_engine() -> None:
+    app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
+    app.engine.remove_worktree = AsyncMock(return_value="j1")
+    app.worktree_service.worktrees = [MAIN_WORKTREE]
+    app._queue_selection = MagicMock()
+
+    await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
+
+    # Jobs started here run with this client's environment (D5).
+    app.engine.remove_worktree.assert_awaited_once_with(
+        "/repo-feature", True, env=dict(os.environ)
     )
-    app.notify.assert_called_once()
-    assert "press r to refresh when done" in app.notify.call_args.args[0]
-
-
-def test_do_remove_worktree_injects_custom_command_with_repo_cd_prefix() -> None:
-    app = _make_app_with_config(remove="remove-worktree {name} {path}")
-
-    app._do_remove_worktree(FEATURE_WORKTREE)
-
-    app._send_to_terminal.assert_called_once_with(
-        "cd /repo && remove-worktree repo-feature /repo-feature"
-    )
-    app.action_focus_terminal.assert_called_once_with()
-
-
-def test_do_remove_worktree_reports_its_agents_as_exited(monkeypatch) -> None:
-    monkeypatch.setattr("lazyagent.app.WorktreeManager", MagicMock())
-    app = _make_app_with_config()
-    app._load_worktrees = MagicMock()
-    app.query_one = MagicMock()
-    app._agent_states = {
-        FEATURE_WORKTREE.path: {
-            "a1": AgentState(status=AgentStatus.COMPLETED, agent_id="a1"),
-        }
-    }
-
-    app._do_remove_worktree(FEATURE_WORKTREE)
-
-    events, _ = app.agent_events.since(0)
-    assert [(e.worktree_path, e.agent_id, e.status) for e in events] == [
-        (FEATURE_WORKTREE.path, "a1", "exited")
-    ]
-    assert FEATURE_WORKTREE.path not in app._agent_states
+    assert "Removed worktree: repo-feature" in app.notify.call_args.args[0]
+    # The first item: removing the selected worktree leaves nothing to keep.
+    app._queue_selection.assert_called_once_with(None)
 
 
 @pytest.mark.parametrize("status", [AgentStatus.RUNNING, AgentStatus.WAITING])
@@ -294,44 +305,6 @@ def test_remove_worktree_result_force() -> None:
     assert result.force is True
 
 
-def test_do_remove_worktree_passes_force_to_builtin() -> None:
-    app = _make_app_with_config()
-    mock_manager = MagicMock()
-    monkeypatch_manager = MagicMock()
-    mock_manager.return_value = monkeypatch_manager
-    app._load_worktrees = MagicMock()
-
-    import lazyagent.app as app_module
-
-    original = app_module.WorktreeManager
-    app_module.WorktreeManager = mock_manager
-    try:
-        app._do_remove_worktree(FEATURE_WORKTREE, force=True)
-        monkeypatch_manager.remove.assert_called_once_with("/repo-feature", force=True)
-    finally:
-        app_module.WorktreeManager = original
-
-
-def test_do_remove_worktree_expands_force_placeholder_in_custom_command() -> None:
-    app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
-
-    app._do_remove_worktree(FEATURE_WORKTREE, force=True)
-
-    app._send_to_terminal.assert_called_once_with(
-        "cd /repo && remove-worktree repo-feature /repo-feature --force"
-    )
-
-
-def test_do_remove_worktree_custom_without_force() -> None:
-    app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
-
-    app._do_remove_worktree(FEATURE_WORKTREE, force=False)
-
-    app._send_to_terminal.assert_called_once_with(
-        "cd /repo && remove-worktree repo-feature /repo-feature"
-    )
-
-
 # --- CreateWorktreeResult extra_options tests ---
 
 
@@ -345,38 +318,6 @@ def test_create_worktree_result_extra_options() -> None:
         branch="feat", base_branch="main", extra_options="--no-build"
     )
     assert result.extra_options == "--no-build"
-
-
-def test_do_create_worktree_expands_extra_placeholder() -> None:
-    app = _make_app_with_config(
-        create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
-    )
-
-    app._do_create_worktree(
-        CreateWorktreeResult(
-            branch="feature/demo",
-            base_branch="main",
-            extra_options="--no-build --skip-hooks",
-        )
-    )
-
-    app._send_to_terminal.assert_called_once_with(
-        "create-worktree feature/demo repo-feature/demo main /repo-feature/demo /repo --no-build --skip-hooks"
-    )
-
-
-def test_do_create_worktree_no_extra_options() -> None:
-    app = _make_app_with_config(
-        create="create-worktree {branch} {name} {base} {path} {repo} {extra}"
-    )
-
-    app._do_create_worktree(
-        CreateWorktreeResult(branch="feature/demo", base_branch="main")
-    )
-
-    app._send_to_terminal.assert_called_once_with(
-        "create-worktree feature/demo repo-feature/demo main /repo-feature/demo /repo"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -820,3 +761,112 @@ class TestDiffRefreshDebounce:
         # harness itself selects twice. What matters is that the settled
         # worktree — and only it — was fetched.
         assert diffs and set(diffs) == {wt.path}
+
+
+@pytest.mark.asyncio
+async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rebuild is asynchronous: selecting among the children before it
+    settles left the index past the end of the list, and the next cursor key
+    crashed the app."""
+    _patch_app_dependencies(monkeypatch)
+    worktrees = list(WORKTREES)
+    monkeypatch.setattr(DummyWorktreeManager, "list", lambda self: list(worktrees))
+    new = WorktreeInfo(
+        path="/repo-new", head="c" * 40, branch="new", is_main=False, is_bare=False
+    )
+    app = LazyAgent(repo_path="/repo")
+
+    async def create(branch, base_branch="main", extra="", **kwargs):
+        worktrees.append(new)
+        app.engine.refresh_worktrees()
+        return CreatedWorktree(new.path, branch)
+
+    async with app.run_test() as pilot:
+        await _select_worktree(app, 1)
+        await pilot.pause()
+        app.engine.create_worktree = create
+        app.notify = MagicMock()
+
+        await app._do_create_worktree(CreateWorktreeResult(branch="new", base_branch="main"))
+        await _drain_workers(app)
+        await pilot.pause()
+
+        wt_list = app.query_one(WorktreeList)
+        assert len(wt_list.children) == 4
+        assert wt_list.highlighted_child.worktree.path == new.path
+        await pilot.press("k")
+        await pilot.pause()
+        assert wt_list.highlighted_child.worktree.path == FEATURE_WORKTREE.path
+
+
+@pytest.mark.asyncio
+async def test_job_output_shows_under_the_worktree_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_app_dependencies(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _select_worktree(app, 1)
+        await pilot.pause()
+
+        await app.engine.run_job("echo from the job", title="Create worktree x")
+        await pilot.pause()
+
+        log = app.query_one(JobLog)
+        center = app.query_one(CenterPanel)
+        assert log.display
+        assert "from the job" in "\n".join(log.lines)
+        # Inside the center panel, not pushed below it by the worktree panel.
+        assert center.region.contains_region(log.region)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [0, 1])
+async def test_refresh_keeps_the_selected_worktree(
+    monkeypatch: pytest.MonkeyPatch, index: int
+) -> None:
+    """``r`` rebuilds the sidebar; the selection used to be lost with it."""
+    _patch_app_dependencies(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test() as pilot:
+        selected = await _select_worktree(app, index)
+        await pilot.pause()
+        app.notify = MagicMock()
+
+        await pilot.press("r")
+        await _drain_workers(app)
+        await pilot.pause()
+
+        assert app._get_selected_worktree() == selected
+        # The index is valid again: the cursor moves on from there.
+        await pilot.press("j")
+        await pilot.pause()
+        assert app._get_selected_worktree() == WORKTREES[min(index + 1, len(WORKTREES) - 1)]
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_the_orchestrator_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_app_dependencies(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test() as pilot:
+        wt_list = app.query_one(WorktreeList)
+        orchestrator = next(
+            c for c in wt_list.children if isinstance(c, OrchestratorListItem)
+        )
+        wt_list.index = 0
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orchestrator))
+        await pilot.pause()
+
+        app.action_refresh()
+        await _drain_workers(app)
+        await pilot.pause()
+
+        assert isinstance(wt_list.highlighted_child, OrchestratorListItem)
+        assert app._orchestrator_selected

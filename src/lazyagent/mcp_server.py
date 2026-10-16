@@ -219,7 +219,8 @@ async def create_worktree(
             break a shell template (``;``, ``$()``, backticks, etc.).
 
     Returns:
-        Object with ``path``, ``branch``, optional ``custom_command``, and
+        Object with ``path``, ``branch``, optional ``custom_command`` and
+        ``job_id`` (the engine job that ran the custom command), and
         optional ``warning`` describing any caveats.
     """
     params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}

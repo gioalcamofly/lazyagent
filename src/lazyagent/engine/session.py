@@ -248,6 +248,8 @@ class TerminalSession:
         self.command = command
         self.worktree_path = worktree_path
         self.agent_id = agent_id
+        # Engine-wide handle, assigned by whoever registers the session.
+        self.session_id = ""
         self.rows = rows
         self.cols = cols
         # Diagnostics only: joins the keypress that spawned this to its output.
@@ -673,6 +675,15 @@ class AgentSession(TerminalSession):
         super().start()
         self._set_status(AgentStatus.RUNNING)
         self._apply_events(self._observer.on_process_started())
+
+    def stop(self) -> None:
+        """Kill the agent and drop its observer's files (hook logs, settings).
+
+        No exit event, as for any explicit stop. Also cleans up a session
+        that was never started, so an abandoned spawn leaves nothing behind.
+        """
+        super().stop()
+        self._observer.cleanup()
 
     # ------------------------------------------------------------------
     # Status

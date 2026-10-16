@@ -11,7 +11,7 @@ from tests.protocol.test_boundary import _imports
 
 ENGINE = Path(lazyagent.__file__).parent / "engine"
 
-_BANNED = ("textual", "lazyagent.widgets", "lazyagent.app", "lazyagent.messages")
+_BANNED = ("textual", "lazyagent.widgets", "lazyagent.app")
 
 
 def _banned(module: str) -> bool:
@@ -52,3 +52,25 @@ def test_importing_the_session_loads_no_textual_or_widgets():
     ).stdout.split()
     assert "pyte" in out
     assert [m for m in out if _banned(m) or m.split(".")[0] == "rich"] == []
+
+
+def test_importing_the_whole_engine_and_ipc_loads_no_textual_or_widgets():
+    """The facade, every engine module and the IPC server it starts are UI-free:
+    the IPC server runs without the Textual app."""
+    modules = sorted(
+        "lazyagent.engine." + path.stem
+        for path in ENGINE.glob("*.py")
+        if path.stem != "__init__"
+    )
+    code = (
+        "import sys, importlib\n"
+        "from lazyagent.engine import Engine\n"
+        f"for name in {modules!r} + ['lazyagent.ipc']:\n"
+        "    importlib.import_module(name)\n"
+        "print('\\n'.join(sorted(sys.modules)))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert "lazyagent.engine.engine" in out and "lazyagent.ipc" in out
+    assert [m for m in out if _banned(m)] == []

@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from lazyagent.engine.session import (
-    AgentSession,
-    SessionEvent,
-    SessionExited,
-    StatusChanged,
-)
-from lazyagent.messages import AgentExited, AgentStatusChanged
+from lazyagent.engine.session import AgentSession
 from lazyagent.models import AgentStatus
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
@@ -14,15 +8,15 @@ from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 class MonitoredTerminal(ScrollableTerminal):
     """View of an :class:`AgentSession`.
 
-    Status detection lives in the session; this widget re-posts the session's
-    status and exit events as Textual messages so they reach the app.
+    Status detection lives in the session, and its status and exit reach the
+    app through the engine's events; this view only renders the session and
+    exposes its identity.
     """
 
     session: AgentSession
 
     def __init__(self, session: AgentSession, **kwargs) -> None:
         super().__init__(session, **kwargs)
-        self._remove_listener = session.add_listener(self._on_session_event)
 
     @property
     def worktree_path(self) -> str:
@@ -39,28 +33,3 @@ class MonitoredTerminal(ScrollableTerminal):
     @property
     def last_output_time(self) -> float | None:
         return self.session.last_output_time
-
-    def _on_session_event(self, event: SessionEvent) -> None:
-        if isinstance(event, StatusChanged):
-            self.post_message(
-                AgentStatusChanged(
-                    event.worktree_path,
-                    event.status,
-                    confidence=event.confidence,
-                    detail=event.detail,
-                    agent_id=event.agent_id,
-                    last_output_time=event.last_output_time,
-                )
-            )
-        elif isinstance(event, SessionExited):
-            self.post_message(
-                AgentExited(
-                    event.worktree_path,
-                    agent_id=event.agent_id,
-                    exit_code=event.exit_code,
-                )
-            )
-
-    def on_unmount(self) -> None:
-        super().on_unmount()
-        self._remove_listener()
