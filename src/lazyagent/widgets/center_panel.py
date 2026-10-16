@@ -297,12 +297,8 @@ class WorktreePanel(Container):
         return self.registry.session_name(self.worktree_path, agent_id)
 
     @property
-    def active_agent_id(self) -> str | None:
-        """The agent whose tab is currently active, the sole agent, or None.
-
-        Falls back to the only agent when the active tab is Diff/placeholder
-        but exactly one agent exists, so ``x``/focus behave intuitively.
-        """
+    def shown_agent_id(self) -> str | None:
+        """The agent whose tab is active, or None (Diff or placeholder)."""
         try:
             tabs = self.query_one("#agent-tabs", TabbedContent)
             active = tabs.active or ""
@@ -313,6 +309,18 @@ class WorktreePanel(Container):
             aid = active[len(prefix):]
             if aid in self._agents:
                 return aid
+        return None
+
+    @property
+    def active_agent_id(self) -> str | None:
+        """The agent whose tab is currently active, the sole agent, or None.
+
+        Falls back to the only agent when the active tab is Diff/placeholder
+        but exactly one agent exists, so ``x``/focus behave intuitively.
+        """
+        aid = self.shown_agent_id
+        if aid is not None:
+            return aid
         if len(self._agents) == 1:
             return next(iter(self._agents))
         return None

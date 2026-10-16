@@ -34,6 +34,8 @@ class ErrorCode:
     UNAUTHORIZED = "UNAUTHORIZED"
     UNSUPPORTED_VERSION = "UNSUPPORTED_VERSION"
     NOT_SIZE_OWNER = "NOT_SIZE_OWNER"
+    # A ui.* command reached an engine with no hosted UI to carry it out.
+    NO_HOSTED_UI = "NO_HOSTED_UI"
     # Raised locally when a message or frame cannot be parsed.
     PROTOCOL_ERROR = "PROTOCOL_ERROR"
 

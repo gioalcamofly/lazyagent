@@ -69,6 +69,14 @@ class Harness:
         """Resize a session the way an in-process client would."""
         raise NotSupported("local_resize")
 
+    def attach_ui(self):
+        """Attach a stand-in hosted UI; returns its detach function."""
+        raise NotSupported("attach_ui")
+
+    def publish_view(self, view: dict[str, Any]) -> None:
+        """Announce a view the way a hosted UI would."""
+        raise NotSupported("publish_view")
+
 
 class PythonHarness(Harness):
     """This package's Engine, with a fake git world and the fake agent."""
@@ -107,6 +115,12 @@ class PythonHarness(Harness):
         session = self.engine.find_session(session_id)
         assert session is not None
         session.resize(rows, cols)
+
+    def attach_ui(self):
+        return self.engine.attach_ui()
+
+    def publish_view(self, view: dict[str, Any]) -> None:
+        self.engine.publish_view(view)
 
 
 IMPLEMENTATIONS = {"python": PythonHarness}

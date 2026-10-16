@@ -38,6 +38,21 @@ _HELP_TEXT = """\
 """
 
 
+# Hosted mode has no sidebar: Ctrl+K leaves the terminal instead.
+_SIDEBAR_LINES = """\
+  [bold]j / k[/bold]           Move down / up in sidebar
+  [bold]Ctrl+K[/bold]          Focus sidebar
+"""
+_HOSTED_LINES = """\
+  [bold]Ctrl+K[/bold]          Leave terminal (keys go to lazyagent)
+"""
+
+
+def help_text(*, hosted: bool = False) -> str:
+    """The shortcut list; ``hosted`` describes the hosted-mode keys."""
+    return _HELP_TEXT.replace(_SIDEBAR_LINES, _HOSTED_LINES) if hosted else _HELP_TEXT
+
+
 class HelpModal(ModalScreen[None]):
     """Modal showing all keyboard shortcuts."""
 
@@ -71,10 +86,14 @@ class HelpModal(ModalScreen[None]):
         Binding("q", "close", "Close", show=False),
     ]
 
+    def __init__(self, *, hosted: bool = False, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.hosted = hosted
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("Keyboard Shortcuts", classes="modal-title")
-            yield Static(_HELP_TEXT)
+            yield Static(help_text(hosted=self.hosted), id="help-text")
             yield Static(
                 "[bold cyan]Esc[/bold cyan] / [bold cyan]q[/bold cyan] / [bold cyan]?[/bold cyan]  close",
                 classes="modal-hint",

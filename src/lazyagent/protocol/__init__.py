@@ -8,6 +8,7 @@ pyte or another ``lazyagent`` module.
 - :mod:`.framing`: length-prefixed control (JSON) and binary stream frames.
 - :mod:`.handshake`: ``hello`` and protocol version checks.
 - :mod:`.validation`: payload validation against ``schema/v1/*.json``.
+- :mod:`.hosted`: hosted mode (``LAZYAGENT_HOST``) and its OSC announcement.
 """
 
 from .envelope import (
@@ -52,6 +53,20 @@ V1_METHODS: tuple[str, ...] = (
     "get_pr_info",
     "set_interest",
     "get_config",
+    "get_sidebar_state",
+    "ui.get_view",
+    "ui.select_worktree",
+    "ui.select_orchestrator",
+    "ui.focus_agent",
+    "ui.open_shell",
+    "ui.show_diff",
+    "ui.open_modal",
+)
+
+# The v1 methods a hosted UI carries out: an engine advertises them only
+# while one is attached and answers NO_HOSTED_UI otherwise.
+UI_COMMAND_METHODS: tuple[str, ...] = tuple(
+    m for m in V1_METHODS if m.startswith("ui.") and m != "ui.get_view"
 )
 
 EVENTS: tuple[str, ...] = (
@@ -70,6 +85,8 @@ EVENTS: tuple[str, ...] = (
     "job.output",
     "job.finished",
     "engine.shutdown",
+    "ui.command",
+    "ui.view_changed",
 )
 
 __all__ = [
@@ -78,6 +95,7 @@ __all__ = [
     "LEGACY_METHODS",
     "PROTOCOL_VERSION",
     "SUPPORTED_VERSIONS",
+    "UI_COMMAND_METHODS",
     "V1_METHODS",
     "ErrorCode",
     "ErrorInfo",

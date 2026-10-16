@@ -11,8 +11,9 @@
         ...
     await client.close()
 
-:meth:`Client.connect` performs the ``hello`` handshake (unless asked not
-to). Responses are matched to requests by id, so requests may overlap.
+:func:`discover` finds a repo's socket from its root. :meth:`Client.connect`
+performs the ``hello`` handshake (unless asked not to). Responses are
+matched to requests by id, so requests may overlap.
 Events are queued for :meth:`Client.events` in arrival order, unknown ones
 included: the caller decides what to ignore. Output frames go to the
 ``on_output(offset, data)`` callback of their stream; ``stream.resized``,
@@ -25,10 +26,12 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from lazyagent.engine.runtime import INFO_NAME, read_info, runtime_dir
 from lazyagent.protocol import framing, handshake
 from lazyagent.protocol.envelope import (
     ErrorCode,
@@ -45,6 +48,26 @@ StreamEventCallback = Callable[[Event], None]
 
 _READ_SIZE = 64 * 1024
 _STREAM_EVENTS = ("stream.resized", "stream.reset", "stream.closed")
+
+
+def discover(
+    repo_root: str | os.PathLike[str], environ: Mapping[str, str] = os.environ
+) -> Path | None:
+    """The v1 socket of the engine serving ``repo_root``, or None.
+
+    ``repo_root`` is the repo's top level as ``git rev-parse --show-toplevel``
+    prints it: the runtime dir is named after a hash of that exact string.
+    The answer comes from the ``engine.json`` the engine writes there; None
+    when there is none, it names another repo, or its socket is gone.
+    """
+    root = os.fspath(repo_root)
+    info = read_info(runtime_dir(root, environ) / INFO_NAME)
+    if info is None or info.get("repo_root") != root:
+        return None
+    socket = info.get("socket")
+    if not isinstance(socket, str) or not Path(socket).exists():
+        return None
+    return Path(socket)
 
 
 class RequestError(Exception):
@@ -365,4 +388,5 @@ __all__ = [
     "ErrorCode",
     "RequestError",
     "Stream",
+    "discover",
 ]

@@ -90,9 +90,10 @@ def _third_party(path: Path) -> list[str]:
 def test_the_v1_server_and_client_use_only_the_stdlib():
     assert _third_party(ENGINE / "server.py") == []
     assert _third_party(ENGINE / "client.py") == []
+    assert _third_party(ENGINE / "runtime.py") == []
 
 
-def test_the_client_needs_only_the_protocol():
+def test_the_client_needs_only_the_protocol_and_the_runtime_dir():
     code = (
         "import sys\n"
         "import lazyagent.engine.client\n"
@@ -103,7 +104,13 @@ def test_the_client_needs_only_the_protocol():
     ).stdout.split()
     lazy = sorted(m for m in out if m.split(".")[0] == "lazyagent")
     assert all(
-        m in ("lazyagent", "lazyagent.engine", "lazyagent.engine.client")
+        m
+        in (
+            "lazyagent",
+            "lazyagent.engine",
+            "lazyagent.engine.client",
+            "lazyagent.engine.runtime",
+        )
         or m.startswith("lazyagent.protocol")
         for m in lazy
     ), lazy

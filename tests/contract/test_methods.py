@@ -32,6 +32,20 @@ async def test_list_worktrees(harness, client):
     assert [wt["is_main"] for wt in result] == [True, False]
 
 
+async def test_list_worktrees_carries_the_v1_agent_fields(harness, client):
+    agent = await spawn(client, harness.feat)
+    result = await checked(client, "list_worktrees")
+    [entry] = next(wt for wt in result if wt["path"] == harness.feat)["agents"]
+    assert entry["session_id"] == agent["session_id"]
+    assert entry["kind"] == "agent"
+    await checked(client, "subscribe", events=["worktrees.changed"])
+    await checked(client, "refresh_worktrees")
+    event = await client.next_event(lambda e: e.event == "worktrees.changed")
+    validation.validate_event("worktrees.changed", event.data, strict=True)
+    [entry] = next(wt for wt in event.data if wt["path"] == harness.feat)["agents"]
+    assert entry["session_id"] == agent["session_id"]
+
+
 async def test_refresh_worktrees(harness, client):
     result = await checked(client, "refresh_worktrees")
     assert [wt["path"] for wt in result] == [harness.repo, harness.feat]

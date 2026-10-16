@@ -45,6 +45,9 @@ from lazyagent.engine.events import (
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
+    UI_COMMAND,
+    UI_VIEW_CHANGED,
+    EngineEvent,
     EventBus,
 )
 from lazyagent.engine.registry import (
@@ -221,6 +224,11 @@ class Engine:
         self.v1_socket_path: str | None = None
         self._v1_server: V1Server | None = None
 
+        # Hosted UIs that carry out ui.command, and the last view a UI
+        # announced (ui.view_changed).
+        self._ui_hosts = 0
+        self.ui_view: dict[str, Any] | None = None
+
         self._agents: dict[str, dict[str, _Agent]] = {}
         self._shells: dict[str, TerminalSession] = {}
         self._session_ids = itertools.count(1)
@@ -361,6 +369,45 @@ class Engine:
     ) -> Callable[[], None]:
         """Shorthand for ``self.events.subscribe``."""
         return self.events.subscribe(callback, events)
+
+    @property
+    def engine_id(self) -> str | None:
+        """The v1 server's ``engine_id``; None while it does not run."""
+        return self._v1_server.engine_id if self._v1_server is not None else None
+
+    # ------------------------------------------------------------------
+    # Hosted UI
+    # ------------------------------------------------------------------
+
+    def attach_ui(self) -> Callable[[], None]:
+        """Register a UI that carries out ``ui.command`` events (a TUI in
+        hosted mode); returns the function that unregisters it."""
+        self._ui_hosts += 1
+        attached = True
+
+        def detach() -> None:
+            nonlocal attached
+            if attached:
+                attached = False
+                self._ui_hosts -= 1
+
+        return detach
+
+    @property
+    def ui_attached(self) -> bool:
+        return self._ui_hosts > 0
+
+    def ui_command(self, command: str, **args: Any) -> EngineEvent:
+        """Ask the hosted UI to change what it shows."""
+        return self.events.emit(UI_COMMAND, {"command": command, **args})
+
+    def publish_view(self, view: dict[str, Any]) -> bool:
+        """Announce what a UI shows (``ui.view_changed``), unless unchanged."""
+        if view == self.ui_view:
+            return False
+        self.ui_view = dict(view)
+        self.events.emit(UI_VIEW_CHANGED, dict(view))
+        return True
 
     async def wait_idle(self) -> None:
         """Wait for the background work started so far (git sweeps)."""
@@ -577,9 +624,10 @@ class Engine:
         self.registry.drop_worktree(path)
         self.close_shell(path)
 
-    def worktrees_payload(self) -> list[dict[str, Any]]:
+    def worktrees_payload(self, *, v1: bool = False) -> list[dict[str, Any]]:
         """The worktree list as ``list_worktrees`` / ``worktrees.changed``
-        carry it."""
+        carry it. ``v1`` adds each agent's ``session_id`` and ``kind``; the
+        legacy IPC answer stays without them."""
         result = []
         for wt in self.worktrees:
             agents = self.registry.agents(wt.path)
@@ -591,7 +639,7 @@ class Engine:
                 "is_bare": wt.is_bare,
                 # Scalar roll-up kept for back-compat; `agents` has the detail.
                 "agent_status": rollup_status(s.status for s in agents.values()).value,
-                "agents": self.agents_payload(wt.path),
+                "agents": self.agents_payload(wt.path, v1=v1),
             }
             git_status = self.git_statuses.get(wt.path)
             if git_status:
@@ -603,10 +651,12 @@ class Engine:
             result.append(entry)
         return result
 
-    def agents_payload(self, key: str) -> list[dict[str, Any]]:
-        """A worktree's agent states as the IPC responses carry them."""
-        return [
-            {
+    def agents_payload(self, key: str, *, v1: bool = False) -> list[dict[str, Any]]:
+        """A worktree's agent states as the IPC responses carry them; ``v1``
+        adds ``session_id`` and ``kind`` for the agents the engine runs."""
+        result = []
+        for aid, st in self.registry.agents(key).items():
+            entry: dict[str, Any] = {
                 "agent_id": aid,
                 "label": st.label,
                 "session_name": st.session_name,
@@ -614,12 +664,16 @@ class Engine:
                 "confidence": st.confidence.value,
                 "detail": st.detail,
             }
-            for aid, st in self.registry.agents(key).items()
-        ]
+            info = self.get_agent(key, aid) if v1 else None
+            if info is not None:
+                entry["session_id"] = info.session_id
+                entry["kind"] = info.kind
+            result.append(entry)
+        return result
 
     def _on_worktree_event(self, event: WorktreeEvent) -> None:
         if event.event == WORKTREES_CHANGED:
-            data: Any = self.worktrees_payload()
+            data: Any = self.worktrees_payload(v1=True)
         elif event.event == GIT_STATUS_UPDATED:
             data = {path: asdict(status) for path, status in event.data.items()}
         elif event.event == PR_INFO_UPDATED:

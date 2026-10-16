@@ -51,6 +51,11 @@ EVENT_SAMPLES = {
     "job.output": {"job_id": "j1", "text": "Preparing worktree\n"},
     "job.finished": {"job_id": "j1", "exit_code": None},
     "engine.shutdown": {"reason": "lazyagent engine stop"},
+    "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
+    "ui.view_changed": {
+        "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",
+        "modal": None,
+    },
 }
 
 

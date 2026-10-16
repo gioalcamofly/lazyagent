@@ -273,7 +273,7 @@ Binary stream frame payload: `u8 type` (1 = output, 2 = input) · `u32 stream_id
 ### 4b. Envelope
 
 - **Request:** `{"type":"req","id":"…","method":"…","params":{…}}`. This is the IPC shape plus `type`.
-- **Response:** `{"type":"res","id":"…","result":…}` or `{"type":"res","id":"…","error":{"code","message","data?"}}`. Codes are the existing ones (ipc.py:148-161): `UNKNOWN_METHOD`, `WORKTREE_ERROR`, `VALIDATION_ERROR`, `TIMEOUT`, `INTERNAL_ERROR`. New: `UNAUTHORIZED`, `UNSUPPORTED_VERSION`, `NOT_SIZE_OWNER`, and `PROTOCOL_ERROR` (malformed envelope). Codes are an open set: a peer must handle one it does not know.
+- **Response:** `{"type":"res","id":"…","result":…}` or `{"type":"res","id":"…","error":{"code","message","data?"}}`. Codes are the existing ones (ipc.py:148-161): `UNKNOWN_METHOD`, `WORKTREE_ERROR`, `VALIDATION_ERROR`, `TIMEOUT`, `INTERNAL_ERROR`. New: `UNAUTHORIZED`, `UNSUPPORTED_VERSION`, `NOT_SIZE_OWNER`, `NO_HOSTED_UI` (H1: a `ui.*` command with no hosted TUI attached), and `PROTOCOL_ERROR` (malformed envelope). Codes are an open set: a peer must handle one it does not know.
 - **Event:** `{"type":"evt","seq":123,"event":"agent.status","data":{…}}`.
 - **As landed (PR 6):** requests on one connection run concurrently (a `send_agent_input` waiting for its confirmation does not hold back the next request or the input frames); responses are matched by `id`. Only `hello` is handled in order, before anything else.
 
@@ -313,9 +313,18 @@ Done in PR 6: every row except `shutdown`. The ten legacy methods are answered b
 | `get_pr_info {worktree_path, refresh?}` | new | Cached, deduplicated; fetches when nothing is cached yet or `refresh`. `fetched: false` means no answer (no `gh`) |
 | `set_interest {worktree_paths}` | new | Scopes the git/PR pollers to what some client shows. Per connection, dropped on disconnect; the pollers use the union of every connection's set and the TUI's. Returns the client's set and the union |
 | `get_config` | new | Read-only subset for modals (`ConfigView`) |
+| `get_sidebar_state` | H1 | Everything a host sidebar needs in one call: `{worktrees, orchestrator: {agents}, pr_info: {path: pr_info\|null}, view, cursor}`. `worktrees` is the v1 `list_worktrees`; `pr_info` holds the worktrees fetched so far; `subscribe {since: cursor}` continues from it without a gap |
+| `ui.get_view` | H1 | `{view}`: the last `ui.view_changed` payload, null until a UI announced one. Always offered |
+| `ui.select_worktree {worktree_path}` / `ui.select_orchestrator` | H1 | Hosted UI shows that worktree (or the orchestrator) and focuses its active agent, else its shell. Unknown worktree → `VALIDATION_ERROR` |
+| `ui.focus_agent {worktree_path?, orchestrator?, agent_id?}` | H1 | Selects the target (default: what the UI shows) and focuses the agent's tab; no `agent_id` = the active tab (Ctrl+J). No agent there, or an unknown id → `VALIDATION_ERROR` |
+| `ui.open_shell {worktree_path?}` / `ui.show_diff {worktree_path?}` | H1 | Focus the worktree shell / the Diff tab (diff refreshed). The orchestrator has neither → `VALIDATION_ERROR` |
+| `ui.open_modal {modal, worktree_path?, orchestrator?}` | H1 | `spawn` / `create` / `remove`, as the `s` / `c` / `d` keys. `remove` of the main worktree or one with an active agent, or any modal while one is open → `VALIDATION_ERROR` |
 | `shutdown {stop_agents: bool}` | new | `lazyagent engine stop`. **Not in PR 6:** `UNKNOWN_METHOD` until PR 8 gives the engine a life of its own |
 
 Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, which avoids base64 for keystrokes.
+
+- **As landed (H1):** the `ui.*` commands (all but `ui.get_view`) are validated by the server, then published as a `ui.command` event that the hosted TUI carries out in order; the result is `{seq, command, worktree_path, agent_id?, modal?}`, `seq` being that event's. They are fire-and-forget: the host learns the outcome from `ui.view_changed`. They are in `capabilities` only while a hosted UI is attached (`Engine.attach_ui`, which the TUI calls before starting the servers), and answer `NO_HOSTED_UI` otherwise. `worktree_path: null` in a result or event means the orchestrator (`create` always answers null).
+- **As landed (H1, Q9):** the v1 `list_worktrees`, `refresh_worktrees` and `worktrees.changed` give each agent `session_id` and `kind`. The legacy NDJSON `list_worktrees` is unchanged (golden fixtures).
 
 ### 4e. Events
 
@@ -333,6 +342,8 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `engine.notice` | `{severity, message}` | `self.notify` from engine paths |
 | `job.started` / `job.output` / `job.finished` | `{job_id, title, command}` / `{job_id, text}` (UTF-8 decoded with replacement) / `{job_id, exit_code\|null}` | Custom create/remove typed into the shell (app.py:782, :838) (D6). `job.started` added in PR 5 so a client can label the output |
 | `engine.shutdown` | `{reason}` | — |
+| `ui.command` | `{command, worktree_path\|null, agent_id?, modal?}` | H1: what a host asked the hosted UI to show (`command` is an open set; a UI ignores one it does not know) |
+| `ui.view_changed` | `{worktree_path\|null, orchestrator, agent_id\|null, focus, modal\|null}` | H1: published by the TUI in every mode, on each change of selection, active tab, focus or modal. `agent_id` is the agent whose tab is active (`""` = the orchestrator's); `focus` is `agent` / `shell` / `diff` / `sidebar` / `modal` / `none` (open set); `modal` names it (`spawn`, `create`, `remove`, `confirm`, `help`). A view is announced once it has stayed put for 50 ms, and a host command's steps (select, mount, focus) are announced as one view at its end, so one host action is normally one event; an unchanged view is not re-sent |
 
 - **Event log:** one engine-wide `seq`. `AgentEventBus` (agent_events.py:123) generalises to typed events; `list_events` keeps filtering to `agent.status` so the MCP cursors stay valid. Done in PR 5: `engine/events.py` `EventBus` (`emit`, `subscribe(callback, events)`, `history(cursor)`); a gap in `seq` between two `list_events` entries is another event, not truncation.
 - **Backpressure:** each client has a bounded output queue (e.g. 1 MiB per stream). On overflow the engine drops that client's stream and sends `stream.reset`; the engine itself never blocks on a slow client.
@@ -351,7 +362,8 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
   - The `SO_PEERCRED` check is always on: a peer with another uid (or none) is closed before it can send anything.
   - Two lazyagent instances in one repo: the second finds a live `engine.sock` (a connect succeeds), leaves it and `engine.json` alone, runs without a v1 server and shows an `engine.notice` warning naming the other pid. A socket file nobody listens on is replaced. The real single-instance lock is PR 8.
   - `LAZYAGENT_V1_SERVER=0` turns the server off (`Engine(v1_server=False)` in code); the legacy socket is unaffected.
-- **Reference client:** `lazyagent.engine.client.Client` (stdlib asyncio; it imports only `lazyagent.protocol`): `connect(path)` with the hello, `request(method, **params)` (raises `RequestError`), `call` (raw `Response`), `events()` / `next_event()`, `attach(session_id, on_output, from_offset=)` → `Stream` (registered before its first frame is read), `detach`, `send_input`. §5a placed it at `protocol/client.py`; it lives next to the server because the protocol package stays free of transports (and of the asyncio socket code a non-Python engine would not share).
+- **Discovery (H1):** a host finds the socket either (a) from the OSC 7717 announcement the hosted TUI writes (§6b), or (b) from `engine.json` in the runtime dir, which is computable from `repo_root` (the exact `git rev-parse --show-toplevel` string): `lazyagent.engine.client.discover(repo_root)` returns the socket path, or None when there is no `engine.json`, it names another repo, or its socket is gone. The runtime-dir helpers live in `engine/runtime.py` (stdlib only).
+- **Reference client:** `lazyagent.engine.client.Client` (stdlib asyncio; it imports only `lazyagent.protocol` and `engine/runtime.py`): `connect(path)` with the hello, `request(method, **params)` (raises `RequestError`), `call` (raw `Response`), `events()` / `next_event()`, `attach(session_id, on_output, from_offset=)` → `Stream` (registered before its first frame is read), `detach`, `send_input`. §5a placed it at `protocol/client.py`; it lives next to the server because the protocol package stays free of transports (and of the asyncio socket code a non-Python engine would not share).
 - **WebSocket:** bind `127.0.0.1` only.
   - **Token is required.** The client sends it in `hello`; the browser takes it from a URL fragment (`/#token=…`) that `lazyagent web` prints.
   - **Origin and Host headers are checked** against `http://127.0.0.1:<port>` and `localhost`. This defends against DNS rebinding and against cross-site WebSocket hijacking from any open browser tab. **Not optional:** the API can spawn shells.
@@ -493,7 +505,7 @@ Same protocol, different order: get a GUI on screen before the engine leaves the
             lazyagent ──────────────────────────┘
 ```
 
-- **Host detection:** the app launches `lazyagent` with `LAZYAGENT_HOST=<socket>` (same idea as `TERM_PROGRAM`). Without it, the TUI is unchanged. With it, the TUI enters **hosted mode**: it hides what the host paints (sidebar, PR badges, status bar) and keeps the agent terminals.
+- **Host detection:** the app launches `lazyagent` with `LAZYAGENT_HOST=<host id>` (same idea as `TERM_PROGRAM`). Without it, the TUI is unchanged. With it, the TUI enters **hosted mode**: it hides what the host paints (sidebar, PR badges, status bar) and keeps the agent terminals.
 - **Side channel:**
 
   | Channel | How | Pro | Con |
@@ -501,7 +513,16 @@ Same protocol, different order: get a GUI on screen before the engine leaves the
   | **Socket (primary)** | The host connects to the v1 server (PR 6): `list_worktrees`, `subscribe` events, PR status | Already designed; rich data | Doesn't cross SSH without socket forwarding |
   | **OSC escapes (secondary)** | lazyagent emits private OSC sequences in its output; the host strips and handles them (like OSC 9 / OSC 133) | Works over SSH and inside tmux (needs `allow-passthrough on`) | Only for small payloads: notifications, focus hints |
 
-- **Sequence:** PRs 1-6 as in §6 → **H1** hosted-mode flag and compact layout in the TUI → **H2** minimal host app (xterm.js panel + widgets fed by `subscribe`) → replace TUI parts with native widgets as needed → resume PRs 7-9 when "agents survive the UI" is needed.
+- **H1 as landed:**
+  - **Flag:** `LAZYAGENT_HOST` set and non-empty. Its value is opaque (it is echoed in the OSC payload as `host`), not a socket: the host gets the socket from the OSC or `discover`. Without it nothing changes, except that `ui.view_changed` is published in every mode.
+  - **Compact layout:** hidden: sidebar (worktree list + PR bar), the per-worktree git info bar, header and footer. Kept: agent tabs, Diff tab, worktree shell, job log, toasts, and every modal (spawn, create, remove, confirm, help). The footer goes too: the host has its own chrome, the panel needs every row, and `?` still lists the keys. The worktree list stays in the DOM (`display: none`, not focusable) because selection still runs through it.
+  - **Keys:** everything works as before; Ctrl+K has no sidebar to go to, so it leaves the terminal (no focus) and `q`, `s`, `x`, `c`, `d` reach the app (the help says so). Ctrl+Q quits from anywhere.
+  - **Host → TUI:** the `ui.*` methods (§4d) → `ui.command` events → carried out by the TUI one at a time. A select focuses the active agent, else the shell. A command that arrives while a modal is open is dropped with a toast.
+  - **TUI → host:** `ui.view_changed` (§4e) and `ui.get_view`.
+  - **OSC:** at start and after each terminal resize the hosted TUI writes `ESC ] 7717 ; lazyagent ; <json> BEL`, `<json>` = `{"v":1, "socket", "engine_id", "repo_root", "pid", "host"}` (ASCII JSON, so no ESC/BEL inside; `socket` and `engine_id` null without a v1 server). It goes through Textual's driver writer, between frames. Inside tmux (`$TMUX`) it is written again wrapped in `ESC P tmux; … ESC \` (needs `allow-passthrough on`). 7717 is unused by the terminals we know (xterm, VTE, kitty, iTerm2, WezTerm and Windows Terminal use 0-52, 99, 104-119, 133, 633, 777, 1337, 5113, 5522, 9001). `lazyagent.protocol.hosted` has `encode_osc` / `parse_osc` / `tmux_passthrough` for hosts written in Python.
+  - **Sidebar data:** `get_sidebar_state` (§4d), then `subscribe {since: cursor}` for `worktrees.changed`, `agent.*`, `git_status.updated`, `pr_info.updated`, `ui.view_changed`. A host that wants PR info for every worktree adds them to its `set_interest`.
+  - **Tests:** tests/test_hosted.py (pilot: layout both ways, Ctrl+K, OSC exact bytes and tmux wrap, view), tests/contract/test_ui.py (protocol level, stand-in UI), tests/contract/test_hosted_tui.py (the real TUI under `run_test` driven over its own v1 socket), tests/protocol/test_hosted.py (OSC format).
+- **Sequence:** PRs 1-6 as in §6 → **H1** hosted-mode flag and compact layout in the TUI ✅ → **H2** minimal host app (xterm.js panel + widgets fed by `subscribe`) → replace TUI parts with native widgets as needed → resume PRs 7-9 when "agents survive the UI" is needed.
 
 | | Engine first (§6) | Hosted mode first (§6b) |
 |---|---|---|
@@ -551,7 +572,7 @@ Decided for PR 6 as below; open for review.
 | Q6 | The TUI as a size client | It claims by resizing (its real size changes) and by typing/pasting; it does not claim on focus or on becoming visible, so switching worktrees never SIGWINCHes a session a v1 client sized | Also claim on focus, which is closer to §3c's "visible and focused" but resizes on every tab switch while a GUI shares the session |
 | Q7 | Snapshot transport | A JSON string in the `attach_stream` result | A binary frame type 3 (`snapshot`), which avoids JSON escaping of ESC (`\u001b`, 6 bytes each) for big screens |
 | Q8 | Raw tail size | Up to 512 KiB behind; further back gets a snapshot even if the ring (4 MiB) still has it | Stream the whole ring tail through the queue in pieces |
-| Q9 | `list_worktrees` agents | Legacy shape; only `list_agents` gains `session_id` / `kind` / `size` / `attached_clients` | Add the v1 fields to `list_worktrees` / `worktrees.changed` too (one call for the H2 sidebar) |
+| Q9 | `list_worktrees` agents | **Resolved in H1:** the v1 `list_worktrees` / `refresh_worktrees` / `worktrees.changed` agents gain `session_id` and `kind` (legacy NDJSON unchanged), and `get_sidebar_state` gives the H2 sidebar worktrees, agents, orchestrator, PR info and view in one call | Only `list_agents` with the v1 fields (the PR 6 behaviour) |
 | Q10 | Second instance in one repo | Runs without v1 and shows a warning toast | Fail the start, or take over the socket |
 
 ### Decisions (2026-10-15)

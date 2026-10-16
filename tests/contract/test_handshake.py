@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from lazyagent.engine.client import RequestError
-from lazyagent.protocol import LEGACY_METHODS, V1_METHODS, validation
+from lazyagent.protocol import (
+    LEGACY_METHODS,
+    UI_COMMAND_METHODS,
+    V1_METHODS,
+    validation,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,7 +24,10 @@ async def test_hello_answers_what_the_schema_says(harness):
     assert result["protocol"] == 1
     assert result["repo_root"] == harness.repo
     assert result["engine_id"]
-    assert set(LEGACY_METHODS) | set(V1_METHODS) <= set(result["capabilities"])
+    # No hosted UI is attached, so the ui commands are not offered.
+    offered = set(LEGACY_METHODS) | set(V1_METHODS) - set(UI_COMMAND_METHODS)
+    assert offered <= set(result["capabilities"])
+    assert not set(UI_COMMAND_METHODS) & set(result["capabilities"])
 
 
 async def test_engine_id_is_stable_across_connections(harness):
