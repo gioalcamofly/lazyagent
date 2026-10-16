@@ -5,9 +5,15 @@
   "description": "Definitions named '<method>.params' and '<method>.result' for the ten methods inherited from the legacy IPC server. Fields marked 'v1' are additions the legacy server does not send.",
   "$defs": {
     "agent_status": {
-      "enum": ["no_agent", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
+      "type": "string",
+      "description": "Open set: clients must tolerate values they do not know.",
+      "x-known-values": ["no_agent", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
     },
-    "confidence": {"enum": ["high", "medium", "low"]},
+    "confidence": {
+      "type": "string",
+      "description": "Open set: clients must tolerate values they do not know.",
+      "x-known-values": ["high", "medium", "low"]
+    },
     "worktree_path": {"type": "string", "minLength": 1},
     "agent_id": {"type": "string", "description": "Optional selector: may be omitted when the worktree has exactly one agent."},
     "git_status": {
@@ -206,7 +212,7 @@
         "status": {"const": "sent"},
         "status_before": {"$ref": "#/$defs/agent_status"},
         "cursor": {"type": "integer", "minimum": 0},
-        "delivery": {"enum": ["confirmed", "unconfirmed", "busy", "unchecked"]},
+        "delivery": {"type": "string", "description": "Open set: clients must tolerate values they do not know.", "x-known-values": ["confirmed", "unconfirmed", "busy", "unchecked"]},
         "warnings": {"type": "array", "items": {"type": "string"}}
       }
     },

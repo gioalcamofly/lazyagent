@@ -78,7 +78,7 @@ def test_pr_info_may_be_null():
 )
 def test_invalid_events_are_rejected(event, data, match):
     with pytest.raises(SchemaValidationError, match=match):
-        validation.validate_event(event, data)
+        validation.validate_event(event, data, strict=True)
 
 
 def test_errors_point_at_the_offending_field():
@@ -87,6 +87,7 @@ def test_errors_point_at_the_offending_field():
             "list_agents",
             {"worktree_path": "/r", "agents": [{"agent_id": "a1", "label": "", "session_name": "",
                                                  "status": "running", "confidence": "sure", "detail": ""}]},
+            strict=True,
         )
     assert info.value.path == "$.agents[0].confidence"
 
@@ -96,6 +97,33 @@ def test_lenient_mode_ignores_unknown_fields_strict_mode_does_not():
     validation.validate_result("list_agents", data)
     with pytest.raises(SchemaValidationError, match="not declared"):
         validation.validate_result("list_agents", data, strict=True)
+
+
+@pytest.mark.parametrize(
+    ("method", "result"),
+    [
+        ("get_agent_status", {"worktree_path": "/r", "agent_id": "a1", "status": "dancing",
+                              "confidence": "sure", "detail": ""}),
+        ("send_agent_input", {"worktree_path": "/r", "agent_id": "a1", "status": "sent",
+                              "status_before": "dancing", "cursor": 0, "delivery": "queued"}),
+    ],
+)
+def test_open_enums_take_any_string_on_the_wire_but_not_in_strict_mode(method, result):
+    validation.validate_result(method, result)
+    with pytest.raises(SchemaValidationError, match="not a known value"):
+        validation.validate_result(method, result, strict=True)
+
+
+def test_open_enums_still_require_a_string():
+    with pytest.raises(SchemaValidationError, match="string"):
+        validation.validate_result(
+            "get_agent_status",
+            {"worktree_path": "/r", "agent_id": "a1", "status": 3, "detail": ""},
+        )
+
+
+def test_unknown_event_status_is_tolerated_on_the_wire():
+    validation.validate_event("agent.status", {**EVENT_SAMPLES["agent.status"], "status": "dancing"})
 
 
 def test_v1_additions_are_optional_and_typed():

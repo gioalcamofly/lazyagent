@@ -6,6 +6,13 @@ use, to keep the protocol package free of runtime dependencies. Loading a
 schema that uses any other keyword fails, so the subset cannot silently
 drift.
 
+Open enums: a value set that may grow (agent ``status``, ``confidence``,
+``delivery``) is written as ``{"type": "string", "x-known-values": [...]}``
+rather than ``enum``. Other validators treat the ``x-`` keyword as an
+annotation, so on the wire any string passes and clients must tolerate values
+they do not know; strict mode here enforces the known list, so tests still
+catch a value the schema has not been told about.
+
 Files:
 
 - ``envelope.json``: the req/res/evt message shapes.
@@ -31,6 +38,8 @@ SUPPORTED_KEYWORDS = frozenset({
     # Assertions.
     "type", "enum", "const", "properties", "required", "additionalProperties",
     "items", "minItems", "minimum", "minLength", "anyOf", "oneOf",
+    # Open enum: enforced in strict mode only.
+    "x-known-values",
 })
 
 _TYPES = {
@@ -113,6 +122,14 @@ class _Validator:
             raise SchemaValidationError(path, f"expected {schema['const']!r}, got {value!r}")
         if "enum" in schema and not any(_equal(value, e) for e in schema["enum"]):
             raise SchemaValidationError(path, f"{value!r} is not one of {schema['enum']}")
+        if (
+            self.strict
+            and "x-known-values" in schema
+            and not any(_equal(value, e) for e in schema["x-known-values"])
+        ):
+            raise SchemaValidationError(
+                path, f"{value!r} is not a known value {schema['x-known-values']}"
+            )
         if "minimum" in schema and _TYPES["number"](value) and value < schema["minimum"]:
             raise SchemaValidationError(path, f"{value} is below the minimum {schema['minimum']}")
         if "minLength" in schema and isinstance(value, str) and len(value) < schema["minLength"]:
@@ -181,9 +198,10 @@ def validate(value: Any, schema: dict[str, Any], *, doc: str, strict: bool = Fal
     """Validate ``value`` against ``schema`` (from file ``doc``, for ``$ref``).
 
     ``strict`` treats every object schema that lists ``properties`` without
-    saying otherwise as ``additionalProperties: false``. The wire contract is
-    lenient (peers ignore unknown fields); strict mode is for tests that
-    prove a payload is fully described by the schema.
+    saying otherwise as ``additionalProperties: false`` and enforces
+    ``x-known-values``. The wire contract is lenient (peers ignore unknown
+    fields and tolerate unknown open-enum values); strict mode is for tests
+    that prove a payload is fully described by the schema.
     """
     _Validator(strict).check(value, schema, doc, "$")
 
