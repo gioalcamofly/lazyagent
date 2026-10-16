@@ -791,6 +791,16 @@ class LazyAgent(App):
                 log.warning("ui.command: %r was not shown in time", path)
                 return False
             await asyncio.sleep(0.02)
+        panel = self.query_one(CenterPanel).get_panel(path) if path else None
+        if panel is not None:
+            # A first visit opens the shell (a round trip to a remote
+            # engine): the command's focus lands once its view is there.
+            try:
+                await asyncio.wait_for(
+                    panel.shell_ready.wait(), max(0.0, deadline - time.monotonic())
+                )
+            except asyncio.TimeoutError:
+                log.warning("ui.command: the shell of %r was not shown in time", path)
         return True
 
     def _focus_shown(self) -> None:
@@ -1026,10 +1036,7 @@ class LazyAgent(App):
             return
         panel = self.query_one(CenterPanel).get_panel(wt.path)
         if panel:
-            try:
-                panel.query_one("#terminal-widget").focus()
-            except Exception:
-                pass
+            panel.focus_shell()
 
     async def action_quit(self) -> None:
         diag.event(log, "app.quit", worktrees=len(self.worktrees))

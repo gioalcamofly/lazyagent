@@ -518,3 +518,18 @@ async def test_quitting_the_tui_leaves_the_agents_running(engine):
         await pilot.press("ctrl+k")
         await pilot.press("q")
     assert session.running
+
+
+async def test_the_shell_takes_the_keyboard_once_its_view_is_there(engine):
+    """Opening a worktree's shell is a round trip: Ctrl+L right after the
+    first visit focuses the shell when its view is mounted."""
+    app = _app(engine)
+    async with app.run_test(size=SIZE) as pilot:
+        feat = _feat(engine)
+        app._queue_selection(feat)
+        await until(lambda: app._shown == feat)
+        panel = app.query_one(CenterPanel).get_panel(feat)
+        app.action_focus_terminal()
+        await until(lambda: panel.shell_ready.is_set())
+        await pilot.pause()
+        assert app.focused is panel.query_one("#terminal-widget")

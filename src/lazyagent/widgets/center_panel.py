@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual.containers import Container, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent import diagnostics as diag
@@ -194,6 +196,11 @@ class WorktreePanel(Container):
         # agent_id -> terminal. Ordered by spawn order; each agent gets its
         # own TabPane to the left of the permanent Diff tab.
         self._agents: dict[str, MonitoredTerminal] = {}
+        # Set once the shell's view is mounted (or could not be): opening it
+        # is a round trip to a remote engine.
+        self.shell_ready = asyncio.Event()
+        # The shell was asked for the keyboard before its view was mounted.
+        self._focus_shell = False
 
     def compose(self):
         yield GitInfoBar(id="git-info-bar")
@@ -220,6 +227,7 @@ class WorktreePanel(Container):
     def _try_start_terminal(self) -> None:
         """Show the worktree's shell, which the engine starts on first use."""
         if self.backend is None:
+            self.shell_ready.set()
             return
         self.call_later(self._start_terminal)
 
@@ -238,9 +246,22 @@ class WorktreePanel(Container):
                 pane = self.query_one("#terminal-pane", Container)
                 for old in pane.query("#terminal-placeholder, #terminal-widget"):
                     await old.remove()
-                await pane.mount(ScrollableTerminal(session, id="terminal-widget"))
+                terminal = ScrollableTerminal(session, id="terminal-widget")
+                await pane.mount(terminal)
+                if self._focus_shell:
+                    self._focus_shell = False
+                    terminal.focus()
             except Exception:
                 log.exception("could not open the shell of %s", self.worktree_path)
+            finally:
+                self.shell_ready.set()
+
+    def focus_shell(self) -> None:
+        """Give the keyboard to the shell, now or once its view is mounted."""
+        try:
+            self.query_one("#terminal-widget").focus()
+        except NoMatches:
+            self._focus_shell = not self.shell_ready.is_set()
 
     async def restart_terminal(self) -> None:
         """Show the shell again after its session went away (an engine that
