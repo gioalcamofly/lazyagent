@@ -667,10 +667,12 @@ class V1Server:
         info = read_info(self.info_path)
         if info is not None and info.get("pid") == os.getpid():
             self.info_path.unlink(missing_ok=True)
-        try:
-            os.rmdir(self.info_path.parent)
-        except OSError:
-            pass
+        # The repo's dir, then the per-user one if no other repo uses it.
+        for directory in (self.info_path.parent, self.info_path.parent.parent):
+            try:
+                os.rmdir(directory)
+            except OSError:
+                break
 
     async def _on_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

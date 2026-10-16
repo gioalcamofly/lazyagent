@@ -57,6 +57,7 @@ async def test_stop_removes_the_socket_and_the_dir(harness):
     assert not path.exists()
     assert not path.with_name("engine.json").exists()
     assert not path.parent.exists()
+    assert not path.parent.parent.exists()  # no other repo's dir was in it
 
 
 async def test_runtime_dir_falls_back_to_tmp():
