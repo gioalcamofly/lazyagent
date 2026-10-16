@@ -71,6 +71,11 @@ _JOB_EVENTS = (JOB_STARTED, JOB_OUTPUT, JOB_FINISHED)
 # How long a host's command waits for the worktree it targets to be shown.
 _UI_SELECT_TIMEOUT = 5.0
 
+# How long the view has to stay put before ui.view_changed announces it: a
+# selection mounts a panel and then moves the focus, and the host should see
+# where that ends, not each step.
+_VIEW_SETTLE = 0.05
+
 # What ui.view_changed calls each modal. Subclasses first: RemoveWorktreeModal
 # is a ConfirmModal.
 _MODAL_NAMES: tuple[tuple[type, str], ...] = (
@@ -164,6 +169,9 @@ class LazyAgent(App):
         self.host = host(os.environ)
         self._detach_ui: Callable[[], None] | None = None
         self._ui_commands: asyncio.Queue[dict] | None = None
+        self._view_timer: Timer | None = None
+        # >0 while a host command runs: its steps are announced as one view.
+        self._view_hold = 0
         if self.host is not None:
             self.add_class("-hosted")
 
@@ -638,8 +646,17 @@ class LazyAgent(App):
         return "none", None
 
     def _publish_view(self) -> None:
-        """Tell the engine (and so every v1 client) what is shown now; a
-        view equal to the last one is not announced again."""
+        """Tell the engine (and so every v1 client) what is shown, once it
+        has settled for :data:`_VIEW_SETTLE`; a view equal to the last one
+        is not announced again."""
+        if self._view_hold or self._view_timer is not None:
+            return
+        self._view_timer = self.set_timer(_VIEW_SETTLE, self._flush_view)
+
+    def _flush_view(self) -> None:
+        self._view_timer = None
+        if self._view_hold:
+            return  # the command announces its outcome when it ends
         try:
             view = self._view()
         except NoMatches:
@@ -699,10 +716,15 @@ class LazyAgent(App):
         assert self._ui_commands is not None
         while True:
             data = await self._ui_commands.get()
+            self._view_hold += 1
             try:
                 await self._carry_out(data)
             except Exception:
                 log.exception("ui.command %r failed", data)
+            finally:
+                self._view_hold -= 1
+            # The focus moves the command asked for land after it returns.
+            self._publish_view()
 
     async def _carry_out(self, data: dict) -> None:
         command = data.get("command")
@@ -742,7 +764,6 @@ class LazyAgent(App):
                 self.action_spawn_agent()
             elif modal == "remove":
                 self.action_remove_worktree()
-        self._publish_view()
 
     async def _show(self, path: str | None) -> bool:
         """Select ``path`` (None: the orchestrator) as the sidebar would and

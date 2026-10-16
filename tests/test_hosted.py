@@ -75,7 +75,7 @@ async def test_ctrl_k_leaves_the_terminal_instead_of_focusing_the_sidebar(
         await pilot.press("ctrl+k")
         assert app.focused is None
         assert not app.query_one(WorktreeList).can_focus
-        assert app.engine.ui_view["focus"] == "none"
+        await _view_is(app, focus="none")
         assert app.engine.ui_attached
         await pilot.press("q")
         await until(lambda: not app.engine.ui_attached)  # q quit: engine stopped
@@ -129,12 +129,22 @@ async def test_a_plain_app_writes_no_announcement(tmp_path, monkeypatch, written
         assert "\x1b]7717;" not in "".join(written)
 
 
+async def _view_is(app, **fields) -> None:
+    """Wait for the published view (it settles after a short delay)."""
+
+    def matches() -> bool:
+        view = app.engine.ui_view or {}
+        return all(view.get(k) == v for k, v in fields.items())
+
+    await until(matches)
+
+
 async def test_the_view_follows_selection_and_focus(tmp_path, monkeypatch):
     app = make_app(tmp_path, monkeypatch, hosted=False)
     async with app.run_test() as pilot:
         await _show(app, pilot, app.feat)
         app.query_one("#terminal-widget").focus()
-        await pilot.pause()
+        await _view_is(app, focus="shell")
         assert app.engine.ui_view == {
             "worktree_path": app.feat,
             "orchestrator": False,
@@ -143,20 +153,13 @@ async def test_the_view_follows_selection_and_focus(tmp_path, monkeypatch):
             "modal": None,
         }
         app.action_focus_diff()
-        await pilot.pause()
-        assert app.engine.ui_view["focus"] == "diff"
+        await _view_is(app, focus="diff")
         await _show(app, pilot, None)
-        assert app.engine.ui_view["orchestrator"] is True
-        assert app.engine.ui_view["worktree_path"] is None
+        await _view_is(app, orchestrator=True, worktree_path=None)
         app.action_help()
-        await pilot.pause()
-        assert (app.engine.ui_view["focus"], app.engine.ui_view["modal"]) == (
-            "modal",
-            "help",
-        )
+        await _view_is(app, focus="modal", modal="help")
         await pilot.press("escape")
-        await pilot.pause()
-        assert app.engine.ui_view["focus"] != "modal"
+        await until(lambda: app.engine.ui_view["focus"] != "modal")
 
 
 @pytest.mark.parametrize("hosted", [True, False])

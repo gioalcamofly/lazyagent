@@ -7,6 +7,8 @@ own v1 server), on the fake git world of tests/hosted_app.py.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from lazyagent.engine.client import Client, RequestError
@@ -64,6 +66,7 @@ async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch
             assert app._selected_worktree.path == app.feat
 
             app.action_focus_diff()
+            await _view(client, worktree_path=app.feat, focus="diff")
 
             await checked(client, "ui.open_shell")
             await _view(client, worktree_path=app.feat, focus="shell")
@@ -93,6 +96,12 @@ async def test_host_focuses_an_agent(tmp_path, monkeypatch):
             # The second tab is up and focused: a later mount would take the
             # focus back.
             await _view(client, agent_id=second["agent_id"], focus="agent")
+            await until(
+                lambda: (
+                    isinstance(app.focused, MonitoredTerminal)
+                    and app.focused.session.agent_id == second["agent_id"]
+                )
+            )
             await checked(
                 client,
                 "ui.focus_agent",
@@ -160,5 +169,29 @@ async def test_a_plain_tui_takes_no_commands_but_reports_its_view(
             assert e.value.code == "NO_HOSTED_UI"
             app._queue_selection(app.feat)
             await _view(client, worktree_path=app.feat)
+        finally:
+            await client.close()
+
+
+async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch):
+    """A selection mounts the panel and then focuses the shell: the host
+    hears only where it ends."""
+    app = make_app(tmp_path, monkeypatch, hosted=True)
+    async with app.run_test(size=SIZE):
+        client = await _connect(app)
+        try:
+            for path in (app.feat, app.repo):
+                await checked(client, "ui.select_worktree", worktree_path=path)
+                event = await client.next_event(
+                    lambda e: e.event == "ui.view_changed", timeout=10
+                )
+                assert (event.data["worktree_path"], event.data["focus"]) == (
+                    path,
+                    "shell",
+                )
+                await asyncio.sleep(0.3)
+                assert [
+                    e for e in client.pending_events() if e.event == "ui.view_changed"
+                ] == []
         finally:
             await client.close()
