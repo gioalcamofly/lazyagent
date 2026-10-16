@@ -217,9 +217,9 @@ async def _spawn_orchestrator(app, pilot, monkeypatch):
     from tests.engine.fakes import no_pty
 
     no_pty(monkeypatch)
-    await app.engine.spawn_agent(app._repo_root, kind="orchestrator")
+    await app.backend.engine.spawn_agent(app._repo_root, kind="orchestrator")
     await pilot.pause()
-    return app.engine.get_session(ORCHESTRATOR_KEY)
+    return app.backend.engine.get_session(ORCHESTRATOR_KEY)
 
 
 @pytest.mark.asyncio
@@ -269,7 +269,7 @@ async def test_orchestrator_exited_resets_state(monkeypatch):
         await pilot.pause()
 
         assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.NO_AGENT
-        assert not app.engine.has_agent(ORCHESTRATOR_KEY)
+        assert not app.backend.engine.has_agent(ORCHESTRATOR_KEY)
         assert panel.agent_terminal is None
         app.notify.assert_called_once()
         assert "Orchestrator exited" in app.notify.call_args.args[0]

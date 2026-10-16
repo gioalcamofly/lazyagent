@@ -11,7 +11,6 @@ from textual.widgets import ContentSwitcher, Static, TabbedContent, TabPane
 
 from lazyagent import diagnostics as diag
 from lazyagent.engine.registry import AgentRegistry
-from lazyagent.engine.session import AgentSession
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.job_log import JobLog
@@ -20,7 +19,7 @@ from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY, OrchestratorP
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 if TYPE_CHECKING:
-    from lazyagent.engine.engine import Engine
+    from lazyagent.backend import Backend
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +118,7 @@ class WorktreePanel(Container):
     """Per-worktree panel with Agent and Terminal panes in a vertical split.
 
     It shows sessions the engine runs and never starts or stops one itself:
-    the shell comes from ``engine.open_shell`` and each agent tab is added
+    the shell comes from ``backend.open_shell`` and each agent tab is added
     by :meth:`show_agent` when the engine reports a spawn.
     """
 
@@ -182,15 +181,15 @@ class WorktreePanel(Container):
         self,
         worktree_path: str,
         registry: AgentRegistry | None = None,
-        engine: Engine | None = None,
+        backend: Backend | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
-        self.engine = engine
+        self.backend = backend
         # Holds each agent's label and session name.
         if registry is None:
-            registry = engine.registry if engine is not None else AgentRegistry()
+            registry = backend.registry if backend is not None else AgentRegistry()
         self.registry = registry
         # agent_id -> terminal. Ordered by spawn order; each agent gets its
         # own TabPane to the left of the permanent Diff tab.
@@ -220,20 +219,33 @@ class WorktreePanel(Container):
 
     def _try_start_terminal(self) -> None:
         """Show the worktree's shell, which the engine starts on first use."""
-        if self.engine is None:
+        if self.backend is None:
+            return
+        self.call_later(self._start_terminal)
+
+    async def _start_terminal(self) -> None:
+        backend = self.backend
+        if backend is None:
             return
         # Every worktree ever visited leaves one of these shells alive, so this
         # is traced per worktree to make that population visible in the log.
         with diag.timed(log, "panel.start_shell", worktree=self.worktree_path):
             try:
-                placeholder = self.query_one("#terminal-placeholder", Static)
-                pane = self.query_one("#terminal-pane", Container)
                 # This client's environment, not the engine's.
-                session = self.engine.open_shell(self.worktree_path, env=dict(os.environ))
-                placeholder.remove()
-                pane.mount(ScrollableTerminal(session, id="terminal-widget"))
+                session = await backend.open_shell(
+                    self.worktree_path, env=dict(os.environ)
+                )
+                pane = self.query_one("#terminal-pane", Container)
+                for old in pane.query("#terminal-placeholder, #terminal-widget"):
+                    await old.remove()
+                await pane.mount(ScrollableTerminal(session, id="terminal-widget"))
             except Exception:
                 log.exception("could not open the shell of %s", self.worktree_path)
+
+    async def restart_terminal(self) -> None:
+        """Show the shell again after its session went away (an engine that
+        came back is a new engine, with new shells)."""
+        await self._start_terminal()
 
     def update_git_status(self, git_status: GitStatus, branch: str) -> None:
         """Update the git info bar for this panel."""
@@ -283,7 +295,7 @@ class WorktreePanel(Container):
         """Return the terminal for a specific agent, or None."""
         return self._agents.get(agent_id)
 
-    def get_session(self, agent_id: str) -> AgentSession | None:
+    def get_session(self, agent_id: str):
         """Return the session behind a specific agent, or None."""
         terminal = self._agents.get(agent_id)
         return terminal.session if terminal is not None else None
@@ -374,7 +386,7 @@ class WorktreePanel(Container):
         if not self._agents:
             await self._ensure_placeholder_tab()
 
-    async def show_agent(self, session: AgentSession, label: str) -> None:
+    async def show_agent(self, session, label: str) -> None:
         """Add a tab for an agent the engine has spawned, make it active and
         focus it."""
         agent_id = session.agent_id
@@ -424,13 +436,13 @@ class CenterPanel(Container):
     def __init__(
         self,
         registry: AgentRegistry | None = None,
-        engine: Engine | None = None,
+        backend: Backend | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.engine = engine
+        self.backend = backend
         if registry is None:
-            registry = engine.registry if engine is not None else AgentRegistry()
+            registry = backend.registry if backend is not None else AgentRegistry()
         self.registry = registry
         # worktree_path -> panel widget. Stored by instance (not DOM id) so we
         # can reserve the slot before ContentSwitcher.add_content's await
@@ -471,7 +483,7 @@ class CenterPanel(Container):
         with diag.timed(log, "panel.create", worktree=worktree_path) as span:
             panel_id = _panel_id(worktree_path)
             panel = WorktreePanel(
-                worktree_path, self.registry, engine=self.engine, id=panel_id
+                worktree_path, self.registry, backend=self.backend, id=panel_id
             )
             self._panels[worktree_path] = panel
             switcher = self.query_one("#panel-switcher", ContentSwitcher)

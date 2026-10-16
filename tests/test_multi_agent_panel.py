@@ -88,13 +88,13 @@ def patched(monkeypatch):
 
 async def _spawn(app, pilot, path=FEATURE_WORKTREE.path) -> str:
     """Spawn through the engine and let the app mount the tab."""
-    info = await app.engine.spawn_agent(path)
+    info = await app.backend.engine.spawn_agent(path)
     await pilot.pause()
     return info.agent_id
 
 
 async def _stop(app, pilot, agent_id, path=FEATURE_WORKTREE.path) -> None:
-    app.engine.stop_agent(path, agent_id)
+    app.backend.engine.stop_agent(path, agent_id)
     await pilot.pause()
 
 
@@ -123,7 +123,7 @@ async def test_spawn_adds_a_tab_per_agent(patched):
         assert panel.has_agent
         session = panel.get_session("a2")
         assert session is panel.get_agent("a2").session
-        assert session is app.engine.get_session(FEATURE_WORKTREE.path, "a2")
+        assert session is app.backend.engine.get_session(FEATURE_WORKTREE.path, "a2")
         assert session.worktree_path == FEATURE_WORKTREE.path
         assert session.agent_id == "a2"
         assert _agent_panes(panel) == ["agent-tab-a1", "agent-tab-a2"]
@@ -250,7 +250,7 @@ async def test_spawn_then_stop_via_app_action(patched):
         await pilot.pause()
 
         assert panel.agent_ids == ["a1"]
-        assert app.engine.agent_ids(FEATURE_WORKTREE.path) == ["a1"]
+        assert app.backend.engine.agent_ids(FEATURE_WORKTREE.path) == ["a1"]
 
 
 async def _select_feature(app, pilot):

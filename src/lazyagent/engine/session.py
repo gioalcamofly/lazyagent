@@ -463,27 +463,10 @@ class TerminalSession:
             self._feed_handle = None
 
     def _scan_terminal_modes(self, chars: str) -> None:
-        """Track the DECSET private modes we care about in an output chunk.
-
-        Mouse tracking (1000) decides whether clicks/scroll go to the child;
-        bracketed paste (2004) decides how ``send_input`` frames text.
-        """
-        for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
-            sequence = sep_match.group(0)
-            if not sequence.startswith(DECSET_PREFIX):
-                continue
-            body = sequence.removeprefix(DECSET_PREFIX)
-            action = body[-1:]
-            if action not in ("h", "l"):
-                continue
-            enabled = action == "h"
-            # Only the last parameter carries the final byte: "1000;1006h"
-            # → ["1000", "1006"].
-            modes = body[:-1].split(";")
-            if "1000" in modes:
-                self.mouse_tracking = enabled
-            if "2004" in modes:
-                self.bracketed_paste = enabled
+        """Track the DECSET private modes we care about in an output chunk."""
+        self.mouse_tracking, self.bracketed_paste = track_modes(
+            chars, self.mouse_tracking, self.bracketed_paste
+        )
 
     # ------------------------------------------------------------------
     # Subscribers
@@ -589,22 +572,9 @@ class TerminalSession:
                 log.exception("size listener failed")
 
     def frame_input(self, text: str) -> str:
-        """Frame ``text`` the way a terminal delivers content, not keystrokes.
-
-        Wrapped in bracketed-paste markers when the child has enabled DECSET
-        2004, which is what stops an embedded control character (in practice
-        the submit CR that follows) from being swallowed into the same text
-        run.
-        """
-        # Content newlines are LF. A CR left in the body reads as Enter to any
-        # child that does parse it as a key, which would submit half a message.
-        body = text.replace("\r\n", "\n").replace("\r", "\n")
-        if not self.bracketed_paste:
-            return body
-        # A literal end marker inside the payload would close the paste early
-        # and let the remainder be parsed as keypresses.
-        body = body.replace(BRACKETED_PASTE_END, "")
-        return BRACKETED_PASTE_START + body + BRACKETED_PASTE_END
+        """Frame ``text`` as a paste, per the child's current modes (see
+        :func:`frame_paste`)."""
+        return frame_paste(text, self.bracketed_paste)
 
     async def send_input(self, text: str, *, submit: bool = False) -> None:
         """Write ``text`` into the child, optionally pressing Enter after it.
@@ -868,6 +838,53 @@ class AgentSession(TerminalSession):
             # Exiting on its own: the observer has had its last word.
             self._observer.cleanup()
             self.status = AgentStatus.NO_AGENT
+
+
+def track_modes(
+    chars: str, mouse_tracking: bool, bracketed_paste: bool
+) -> tuple[bool, bool]:
+    """``(mouse_tracking, bracketed_paste)`` after the DECSET private modes
+    an output chunk sets.
+
+    Mouse tracking (1000) decides whether clicks/scroll go to the child;
+    bracketed paste (2004) decides how input is framed as a paste.
+    """
+    for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
+        sequence = sep_match.group(0)
+        if not sequence.startswith(DECSET_PREFIX):
+            continue
+        body = sequence.removeprefix(DECSET_PREFIX)
+        action = body[-1:]
+        if action not in ("h", "l"):
+            continue
+        enabled = action == "h"
+        # Only the last parameter carries the final byte: "1000;1006h"
+        # → ["1000", "1006"].
+        modes = body[:-1].split(";")
+        if "1000" in modes:
+            mouse_tracking = enabled
+        if "2004" in modes:
+            bracketed_paste = enabled
+    return mouse_tracking, bracketed_paste
+
+
+def frame_paste(text: str, bracketed_paste: bool) -> str:
+    """Frame ``text`` the way a terminal delivers content, not keystrokes.
+
+    Wrapped in bracketed-paste markers when the child has enabled DECSET
+    2004, which is what stops an embedded control character (in practice
+    the submit CR that follows) from being swallowed into the same text
+    run.
+    """
+    # Content newlines are LF. A CR left in the body reads as Enter to any
+    # child that does parse it as a key, which would submit half a message.
+    body = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not bracketed_paste:
+        return body
+    # A literal end marker inside the payload would close the paste early
+    # and let the remainder be parsed as keypresses.
+    body = body.replace(BRACKETED_PASTE_END, "")
+    return BRACKETED_PASTE_START + body + BRACKETED_PASTE_END
 
 
 def _current_task() -> asyncio.Task | None:

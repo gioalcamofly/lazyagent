@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from lazyagent.app import LazyAgent
+from lazyagent.backend.inprocess import InProcessBackend
 from lazyagent.protocol.hosted import HOST_ENV
 from tests.engine.fakes import fake_agent_provider, make_engine, worktree
 
@@ -30,11 +31,11 @@ def make_app(
     feat = tmp_path / "repo-feat"
     repo.mkdir()
     feat.mkdir()
-    app = LazyAgent(repo_path=str(repo))
-    app.engine = make_engine(
+    engine = make_engine(
         [worktree(str(repo)), worktree(str(feat), "feat", is_main=False)],
         repo_root=str(repo),
         provider=fake_agent_provider(tmp_path),
     )
+    app = LazyAgent(repo_path=str(repo), backend=InProcessBackend(engine))
     app.repo, app.feat = str(repo), str(feat)  # type: ignore[attr-defined]
     return app

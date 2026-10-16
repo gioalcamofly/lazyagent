@@ -26,8 +26,8 @@ SIZE = (160, 90)
 
 
 async def _connect(app) -> Client:
-    assert app.engine.v1_socket_path is not None
-    client = await Client.connect(app.engine.v1_socket_path, client="host")
+    assert app.backend.engine.v1_socket_path is not None
+    client = await Client.connect(app.backend.engine.v1_socket_path, client="host")
     await checked(client, "subscribe", events=["ui.view_changed"])
     return client
 
@@ -78,7 +78,9 @@ async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch
             await checked(client, "ui.select_orchestrator")
             await _view(client, orchestrator=True, worktree_path=None)
             assert app._orchestrator_selected
-            assert await checked(client, "ui.get_view") == {"view": app.engine.ui_view}
+            assert await checked(client, "ui.get_view") == {
+                "view": app.backend.engine.ui_view
+            }
             await pilot.pause()
         finally:
             await client.close()

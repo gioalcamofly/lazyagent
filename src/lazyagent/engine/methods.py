@@ -128,7 +128,9 @@ class EngineMethods:
         extra = params.get("extra", "")
         env = check_env(params.get("env"))
 
-        created = await self._engine.create_worktree(branch, base_branch, extra, env=env)
+        created = await self._engine.create_worktree(
+            branch, base_branch, extra, env=env
+        )
         if created.job_id is not None:
             return {
                 "path": created.path,

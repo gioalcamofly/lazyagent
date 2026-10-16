@@ -56,8 +56,8 @@ def _make_app_with_config(
 ) -> LazyAgent:
     """Create a LazyAgent with custom worktree config and mocked I/O."""
     app = LazyAgent(repo_path="/repo")
-    app._repo_root = "/repo"
-    app._config = Config(worktree=WorktreeConfig(create=create, remove=remove))
+    app.backend.engine.worktree_service.repo_root = "/repo"
+    app.backend.engine.config = Config(worktree=WorktreeConfig(create=create, remove=remove))
     app.notify = MagicMock()
     return app
 
@@ -131,7 +131,7 @@ async def _drain_workers(app: LazyAgent) -> None:
     deadline = time.perf_counter() + 5.0
     while time.perf_counter() < deadline:
         # The full git sweep is the engine's own background work.
-        await asyncio.wait_for(app.engine.wait_idle(), 5.0)
+        await asyncio.wait_for(app.backend.engine.wait_idle(), 5.0)
         if not [
             w for w in app.workers
             if w.state in (WorkerState.PENDING, WorkerState.RUNNING)
@@ -213,7 +213,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
     """The command itself (custom or not) is the engine's: see
     tests/engine/test_engine.py::TestWorktreeJobs."""
     app = _make_app_with_config(create="create-worktree {branch}")
-    app.engine.create_worktree = AsyncMock(
+    app.backend.engine.create_worktree = AsyncMock(
         return_value=CreatedWorktree("/repo-feature/demo", "feature/demo", "j1")
     )
     app._queue_selection = MagicMock()
@@ -224,7 +224,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
         )
     )
 
-    app.engine.create_worktree.assert_awaited_once_with(
+    app.backend.engine.create_worktree.assert_awaited_once_with(
         "feature/demo", "main", "--no-build", env=dict(os.environ)
     )
     app._queue_selection.assert_called_once_with("/repo-feature/demo")
@@ -234,7 +234,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
 @pytest.mark.asyncio
 async def test_do_create_worktree_reports_a_failure() -> None:
     app = _make_app_with_config(create="create-worktree {branch}")
-    app.engine.create_worktree = AsyncMock(
+    app.backend.engine.create_worktree = AsyncMock(
         side_effect=WorktreeManagerError("Custom create command failed: boom")
     )
 
@@ -247,14 +247,14 @@ async def test_do_create_worktree_reports_a_failure() -> None:
 @pytest.mark.asyncio
 async def test_do_remove_worktree_asks_the_engine() -> None:
     app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
-    app.engine.remove_worktree = AsyncMock(return_value="j1")
-    app.worktree_service.worktrees = [MAIN_WORKTREE]
+    app.backend.engine.remove_worktree = AsyncMock(return_value="j1")
+    app.backend.engine.worktree_service.worktrees = [MAIN_WORKTREE]
     app._queue_selection = MagicMock()
 
     await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
     # Jobs started here run with this client's environment (D5).
-    app.engine.remove_worktree.assert_awaited_once_with(
+    app.backend.engine.remove_worktree.assert_awaited_once_with(
         "/repo-feature", True, env=dict(os.environ)
     )
     assert "Removed worktree: repo-feature" in app.notify.call_args.args[0]
@@ -605,7 +605,7 @@ class TestPrStatusDebounce:
         async def refresh_pr_info(paths) -> None:
             lookups.append(list(paths))
 
-        monkeypatch.setattr(app.worktree_service, "refresh_pr_info", refresh_pr_info)
+        monkeypatch.setattr(app.backend.engine.worktree_service, "refresh_pr_info", refresh_pr_info)
         return lookups
 
     @pytest.mark.asyncio
@@ -694,7 +694,7 @@ class TestPrStatusDebounce:
 
         async with app.run_test():
             await _drain_workers(app)
-            app.worktree_service._pr_infos[FEATURE_WORKTREE.path] = cached
+            app.backend.engine.worktree_service._pr_infos[FEATURE_WORKTREE.path] = cached
 
             await _select_worktree(app, 1)
 
@@ -780,13 +780,13 @@ async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
 
     async def create(branch, base_branch="main", extra="", **kwargs):
         worktrees.append(new)
-        app.engine.refresh_worktrees()
+        app.backend.engine.refresh_worktrees()
         return CreatedWorktree(new.path, branch)
 
     async with app.run_test() as pilot:
         await _select_worktree(app, 1)
         await pilot.pause()
-        app.engine.create_worktree = create
+        app.backend.engine.create_worktree = create
         app.notify = MagicMock()
 
         await app._do_create_worktree(CreateWorktreeResult(branch="new", base_branch="main"))
@@ -812,7 +812,7 @@ async def test_job_output_shows_under_the_worktree_panel(
         await _select_worktree(app, 1)
         await pilot.pause()
 
-        await app.engine.run_job("echo from the job", title="Create worktree x")
+        await app.backend.engine.run_job("echo from the job", title="Create worktree x")
         await pilot.pause()
 
         log = app.query_one(JobLog)

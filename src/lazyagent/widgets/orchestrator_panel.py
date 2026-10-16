@@ -4,7 +4,6 @@ from textual.containers import Container
 from textual.widgets import Static
 
 from lazyagent.engine.registry import ORCHESTRATOR_KEY, AgentRegistry
-from lazyagent.engine.session import AgentSession
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 
 __all__ = ["ORCHESTRATOR_KEY", "OrchestratorPanel"]
@@ -52,7 +51,7 @@ class OrchestratorPanel(Container):
         """The orchestrator is single-agent; ``agent_id`` is ignored."""
         return self._agent_terminal
 
-    def get_session(self, agent_id: str = "") -> AgentSession | None:
+    def get_session(self, agent_id: str = ""):
         """The orchestrator's session; ``agent_id`` is ignored."""
         terminal = self._agent_terminal
         return terminal.session if terminal is not None else None
@@ -80,7 +79,7 @@ class OrchestratorPanel(Container):
         except Exception:
             self.mount(Static(_PLACEHOLDER_TEXT, id="orch-placeholder"))
 
-    async def show_agent(self, session: AgentSession) -> None:
+    async def show_agent(self, session) -> None:
         """Show the orchestrator session the engine has spawned and focus it."""
         if self._agent_terminal is not None:
             if self._agent_terminal.session is session:
