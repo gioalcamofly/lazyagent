@@ -64,6 +64,14 @@ from lazyagent.engine.session import (
     StatusChanged,
     TerminalSession,
 )
+from lazyagent.engine.types import (
+    AGENT_KIND,
+    ORCHESTRATOR_KIND,
+    SHELL_KIND,
+    AgentInfo,
+    ConfigView,
+    CreatedWorktree,
+)
 from lazyagent.engine.worktrees import (
     GIT_STATUS_UPDATED,
     PR_INFO_UPDATED,
@@ -104,10 +112,6 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-AGENT_KIND = "agent"
-ORCHESTRATOR_KIND = "orchestrator"
-SHELL_KIND = "shell"
-
 # Hook logs are otherwise only read when an agent prints something; a quiet
 # agent's status (and the events that follow from it) would lag.
 POLL_AGENTS_INTERVAL = 1.0
@@ -120,31 +124,6 @@ NOTICE_SEVERITIES = ("information", "warning", "error")
 _ACTIVE_STATUSES = (AgentStatus.RUNNING, AgentStatus.WAITING)
 
 _JOB_READ_SIZE = 4096
-
-
-@dataclass(frozen=True)
-class AgentInfo:
-    """Who an agent is; the ``agent.spawned`` payload."""
-
-    worktree_path: str
-    agent_id: str
-    session_id: str
-    label: str
-    session_name: str
-    kind: str
-
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class ConfigView:
-    """The read-only part of the config that clients need (modals)."""
-
-    agent_provider: str
-    default_branch: str
-    has_custom_create: bool
-    has_custom_remove: bool
 
 
 @dataclass(frozen=True)
@@ -162,16 +141,6 @@ class JobResult:
         return (
             self.stderr.strip() or self.stdout.strip() or f"exit code {self.exit_code}"
         )
-
-
-@dataclass(frozen=True)
-class CreatedWorktree:
-    """A new worktree. With ``job_id`` set a custom command created it, and
-    ``path`` is predicted from the naming convention."""
-
-    path: str
-    branch: str
-    job_id: str | None = None
 
 
 @dataclass

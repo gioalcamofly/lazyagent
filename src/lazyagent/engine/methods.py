@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
-from lazyagent.engine.engine import AGENT_KIND, ORCHESTRATOR_KIND
+from lazyagent.engine.types import AGENT_KIND, ORCHESTRATOR_KIND
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManagerError
 
