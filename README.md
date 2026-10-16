@@ -199,7 +199,8 @@ provider = "claude"
 # cross_session_inbound = "accept"
 
 [worktree]
-# Custom command templates for worktree management
+# Custom command templates for worktree management. They run in the repo root,
+# and their output shows in a log under the worktree view while they run.
 # Available placeholders: {branch}, {name}, {base}, {path}, {repo}
 create = "git worktree add -b {branch} ../{name} {base}"
 remove = "git worktree remove ../{name}"

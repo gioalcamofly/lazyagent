@@ -1,4 +1,4 @@
-"""Tests for the IPC server handlers."""
+"""Tests for the IPC server handlers, run against an Engine (no Textual app)."""
 
 from __future__ import annotations
 
@@ -7,39 +7,62 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lazyagent.agent_events import AgentEventBus
+from lazyagent.config import Config, WorktreeConfig
 from lazyagent.ipc import IpcServer, _ok, _err
 from lazyagent.models import AgentState, AgentStatus, GitStatus, LifecycleConfidence, WorktreeInfo
 from lazyagent.worktree_manager import WorktreeManagerError
+from tests.engine.fakes import add_session, make_engine, no_pty
 
 
-def _make_app(worktrees=None, agent_states=None, git_statuses=None):
-    """Create a mock LazyAgent app."""
-    app = MagicMock()
-    app.worktrees = worktrees or []
-    app._agent_states = agent_states or {}
-    app._git_statuses = git_statuses or {}
-    app._repo_root = "/tmp/repo"
-    app.agent_events = AgentEventBus()
-    app._config.agent.provider = "claude"
-    app._config.has_custom_create = False
-    app._get_agent_state = MagicMock(
-        side_effect=lambda p, aid="": app._agent_states.setdefault(p, {}).setdefault(
-            aid, AgentState(agent_id=aid)
-        )
-    )
-    return app
+def _make_engine(worktrees=None, agent_states=None, git_statuses=None, config=None):
+    """An Engine over fake git, holding the given states."""
+    engine = make_engine(worktrees, config=config)
+    engine.registry.states = agent_states or {}
+    engine.worktree_service.git_statuses = git_statuses or {}
+    return engine
 
 
 def _make_worktree(path="/tmp/repo", branch="main", is_main=True):
     return WorktreeInfo(path=path, head="abc123", branch=branch, is_main=is_main, is_bare=False)
 
 
+def _server(engine):
+    return IpcServer(engine, "/tmp/test.sock")
+
+
+def _custom(create=None, remove=None):
+    return Config(worktree=WorktreeConfig(create=create, remove=remove))
+
+
+def _fake_proc(stdout=b"", stderr=b"", returncode=0):
+    """A finished create_subprocess_shell process with canned output."""
+    proc = MagicMock()
+    proc.stdout = asyncio.StreamReader()
+    proc.stdout.feed_data(stdout)
+    proc.stdout.feed_eof()
+    proc.stderr = asyncio.StreamReader()
+    proc.stderr.feed_data(stderr)
+    proc.stderr.feed_eof()
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.returncode = returncode
+    return proc
+
+
+def _session(running=True):
+    """A stand-in agent session in /tmp/repo, agent a1."""
+    session = MagicMock()
+    session.worktree_path = "/tmp/repo"
+    session.agent_id = "a1"
+    session.running = running
+    session.send_input = AsyncMock()
+    return session
+
+
 class TestListWorktrees:
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_no_worktrees(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
         result = await server._dispatch("req-1", "list_worktrees", {})
         assert result == _ok("req-1", [])
 
@@ -50,12 +73,12 @@ class TestListWorktrees:
         state = AgentState(status=AgentStatus.RUNNING)
         git_st = GitStatus(dirty_count=2, ahead=1)
 
-        app = _make_app(
+        engine = _make_engine(
             worktrees=[wt, wt2],
             agent_states={"/tmp/repo-feat": {"a1": state}},
             git_statuses={"/tmp/repo": git_st},
         )
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
         result = await server._dispatch("req-2", "list_worktrees", {})
 
         data = result["result"]
@@ -86,40 +109,37 @@ class TestListWorktrees:
 class TestCreateWorktree:
     @pytest.mark.asyncio
     async def test_rejects_empty_branch(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
         result = await server._dispatch("req-1", "create_worktree", {"branch": ""})
         assert "error" in result
         assert result["error"]["code"] == "VALIDATION_ERROR"
 
     @pytest.mark.asyncio
     async def test_creates_worktree(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
+        seen = []
+        engine.subscribe(seen.append, ["worktrees.changed"])
 
-        with patch("lazyagent.ipc.WorktreeManager") as MockWM:
-            instance = MockWM.return_value
-            instance.create.return_value = "/tmp/repo-feat"
-
-            result = await server._dispatch("req-1", "create_worktree", {
-                "branch": "feat",
-                "base_branch": "main",
-            })
+        result = await server._dispatch("req-1", "create_worktree", {
+            "branch": "feat",
+            "base_branch": "main",
+        })
 
         assert result == _ok("req-1", {"path": "/tmp/repo-feat", "branch": "feat"})
-        instance.create.assert_called_once_with("feat", "main")
-        app.call_later.assert_called_once()
+        assert engine.world.created == [("feat", "main")]
+        # The worktree list is refreshed right away.
+        assert [e.event for e in seen] == ["worktrees.changed"]
+        assert engine.worktree("/tmp/repo-feat") is not None
 
     @pytest.mark.asyncio
     async def test_propagates_worktree_manager_error(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        engine.world.create_error = WorktreeManagerError("branch exists")
+        server = _server(engine)
 
-        with patch("lazyagent.ipc.WorktreeManager") as MockWM:
-            instance = MockWM.return_value
-            instance.create.side_effect = WorktreeManagerError("branch exists")
-
-            result = await server._dispatch("req-1", "create_worktree", {"branch": "feat"})
+        result = await server._dispatch("req-1", "create_worktree", {"branch": "feat"})
 
         assert "error" in result
         assert result["error"]["code"] == "WORKTREE_ERROR"
@@ -130,18 +150,11 @@ class TestCreateWorktree:
 
         Regression: previously dispatched into the selected worktree's
         terminal pane, which made MCP-driven orchestration impossible when
-        no worktree was selected.
+        no worktree was selected. It runs as an engine job in the repo root.
         """
-        app = _make_app()
-        app._config.has_custom_create = True
-        app._config.worktree.create = "echo creating {branch}"
-        app._get_selected_worktree = MagicMock(return_value=None)
-        server = IpcServer(app, "/tmp/test.sock")
-
-        proc = MagicMock()
-        proc.communicate = MagicMock(return_value=asyncio.Future())
-        proc.communicate.return_value.set_result((b"ok\n", b""))
-        proc.returncode = 0
+        engine = _make_engine(config=_custom(create="echo creating {branch}"))
+        server = _server(engine)
+        proc = _fake_proc(stdout=b"ok\n")
 
         async def _fake_shell(cmd, **kwargs):
             _fake_shell.cmd = cmd
@@ -157,24 +170,18 @@ class TestCreateWorktree:
         assert "result" in result, result
         assert result["result"]["custom_command"] is True
         assert result["result"]["branch"] == "feat"
+        assert result["result"]["path"] == "/tmp/repo-feat"
+        assert result["result"]["job_id"]
         assert "creating feat" in _fake_shell.cmd
         assert _fake_shell.kwargs["cwd"] == "/tmp/repo"
-        app._get_selected_worktree.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_custom_create_surfaces_subprocess_failure(self):
-        app = _make_app()
-        app._config.has_custom_create = True
-        app._config.worktree.create = "false"
-        server = IpcServer(app, "/tmp/test.sock")
-
-        proc = MagicMock()
-        proc.communicate = MagicMock(return_value=asyncio.Future())
-        proc.communicate.return_value.set_result((b"", b"boom\n"))
-        proc.returncode = 2
+        engine = _make_engine(config=_custom(create="false"))
+        server = _server(engine)
 
         async def _fake_shell(cmd, **kwargs):
-            return proc
+            return _fake_proc(stderr=b"boom\n", returncode=2)
 
         with patch("asyncio.create_subprocess_shell", side_effect=_fake_shell):
             result = await server._dispatch("req-1", "create_worktree", {"branch": "feat"})
@@ -188,8 +195,8 @@ class TestRemoveWorktree:
     @pytest.mark.asyncio
     async def test_rejects_main_worktree(self):
         wt = _make_worktree("/tmp/repo", "main", is_main=True)
-        app = _make_app(worktrees=[wt])
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine(worktrees=[wt])
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "remove_worktree", {"worktree_path": "/tmp/repo"})
         assert "error" in result
@@ -199,8 +206,8 @@ class TestRemoveWorktree:
     async def test_rejects_worktree_with_running_agent(self):
         wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
         state = AgentState(status=AgentStatus.RUNNING)
-        app = _make_app(worktrees=[wt], agent_states={"/tmp/repo-feat": {"a1": state}})
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine(worktrees=[wt], agent_states={"/tmp/repo-feat": {"a1": state}})
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "remove_worktree", {"worktree_path": "/tmp/repo-feat"})
         assert "error" in result
@@ -208,8 +215,8 @@ class TestRemoveWorktree:
 
     @pytest.mark.asyncio
     async def test_rejects_unknown_worktree(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "remove_worktree", {"worktree_path": "/tmp/unknown"})
         assert "error" in result
@@ -218,28 +225,51 @@ class TestRemoveWorktree:
     @pytest.mark.asyncio
     async def test_removes_worktree(self):
         wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
-        app = _make_app(worktrees=[wt])
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine(
+            worktrees=[wt],
+            agent_states={
+                "/tmp/repo-feat": {"a1": AgentState(status=AgentStatus.COMPLETED, agent_id="a1")}
+            },
+        )
+        server = _server(engine)
 
-        with patch("lazyagent.ipc.WorktreeManager") as MockWM:
-            instance = MockWM.return_value
-
-            result = await server._dispatch("req-1", "remove_worktree", {
-                "worktree_path": "/tmp/repo-feat",
-                "force": True,
-            })
+        result = await server._dispatch("req-1", "remove_worktree", {
+            "worktree_path": "/tmp/repo-feat",
+            "force": True,
+        })
 
         assert result == _ok("req-1", {"removed": "/tmp/repo-feat"})
-        instance.remove.assert_called_once_with("/tmp/repo-feat", True)
-        # Through the app, so each agent is reported as exited.
-        app._drop_worktree_agents.assert_called_once_with("/tmp/repo-feat")
+        assert engine.world.removed == [("/tmp/repo-feat", True)]
+        # Each agent of the worktree is reported as exited.
+        events, _ = engine.events.since(0)
+        assert [(e.worktree_path, e.agent_id, e.status) for e in events] == [
+            ("/tmp/repo-feat", "a1", "exited")
+        ]
+        assert engine.worktree("/tmp/repo-feat") is None
+
+    @pytest.mark.asyncio
+    async def test_ignores_a_custom_remove_command(self):
+        """MCP removals stay on ``git worktree remove``, as before; only the
+        TUI runs the configured command."""
+        wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
+        engine = _make_engine(worktrees=[wt], config=_custom(remove="false"))
+        server = _server(engine)
+
+        with patch("asyncio.create_subprocess_shell") as shell:
+            result = await server._dispatch(
+                "req-1", "remove_worktree", {"worktree_path": "/tmp/repo-feat"}
+            )
+
+        assert result == _ok("req-1", {"removed": "/tmp/repo-feat"})
+        shell.assert_not_called()
+        assert engine.world.removed == [("/tmp/repo-feat", False)]
 
 
 class TestSpawnAgent:
     @pytest.mark.asyncio
     async def test_rejects_empty_worktree_path(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "spawn_agent", {"worktree_path": ""})
         assert "error" in result
@@ -247,46 +277,90 @@ class TestSpawnAgent:
 
     @pytest.mark.asyncio
     async def test_rejects_unknown_worktree(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "spawn_agent", {"worktree_path": "/tmp/unknown"})
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_does_not_reject_when_agent_already_running(self):
-        """Duplicate spawn is now allowed — a second agent is added.
-
-        The guard that used to reject a running worktree is gone, so the
-        handler proceeds past validation into the Textual-thread spawn. We
-        stub call_later (so the UI work is never scheduled) and wait_for (so
-        it resolves to the new agent id), and assert no "already running"
-        validation error.
-        """
+    async def test_does_not_reject_when_agent_already_running(self, monkeypatch):
+        """Duplicate spawn is allowed — a second agent is added."""
+        no_pty(monkeypatch)
         wt = _make_worktree("/tmp/repo-feat", "feat", is_main=False)
         state = AgentState(status=AgentStatus.RUNNING, agent_id="a1")
-        app = _make_app(
+        engine = _make_engine(
             worktrees=[wt], agent_states={"/tmp/repo-feat": {"a1": state}}
         )
-        app.call_later = MagicMock()
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
 
-        # asyncio.wait_for is async, so patch() auto-uses an AsyncMock.
-        with patch("asyncio.wait_for", return_value="a2"):
-            result = await server._dispatch(
-                "req-1", "spawn_agent", {"worktree_path": "/tmp/repo-feat"}
-            )
+        result = await server._dispatch(
+            "req-1", "spawn_agent", {"worktree_path": "/tmp/repo-feat"}
+        )
 
         assert "result" in result, result
         assert result["result"]["agent_id"] == "a2"
-        assert app.call_later.called
+        assert engine.agent_ids("/tmp/repo-feat") == ["a2"]
+
+    @pytest.mark.asyncio
+    async def test_returns_the_cursor_taken_before_the_spawn(self, monkeypatch):
+        no_pty(monkeypatch)
+        engine = _make_engine(worktrees=[_make_worktree()])
+        engine.events.emit("engine.notice", {"severity": "information", "message": "x"})
+        server = _server(engine)
+
+        result = await server._dispatch("req-1", "spawn_agent", {"worktree_path": "/tmp/repo"})
+
+        assert result["result"]["cursor"] == 1
+        spawned = [e for e in engine.events.history(1) if e.event == "agent.spawned"]
+        assert [e.data["agent_id"] for e in spawned] == ["a1"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_malformed_env(self):
+        engine = _make_engine(worktrees=[_make_worktree()])
+        server = _server(engine)
+
+        result = await server._dispatch(
+            "req-1", "spawn_agent", {"worktree_path": "/tmp/repo", "env": {"A": 1}}
+        )
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+
+
+class TestStopAgent:
+    @pytest.mark.asyncio
+    async def test_stops_the_named_agent(self, monkeypatch):
+        no_pty(monkeypatch)
+        engine = _make_engine(worktrees=[_make_worktree()])
+        await engine.spawn_agent("/tmp/repo")
+        await engine.spawn_agent("/tmp/repo")
+        server = _server(engine)
+
+        result = await server._dispatch(
+            "req-1", "stop_agent", {"worktree_path": "/tmp/repo", "agent_id": "a2"}
+        )
+
+        assert result == _ok(
+            "req-1", {"worktree_path": "/tmp/repo", "agent_id": "a2", "status": "stopped"}
+        )
+        assert engine.agent_ids("/tmp/repo") == ["a1"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_worktree_without_agents(self):
+        engine = _make_engine(worktrees=[_make_worktree()])
+        server = _server(engine)
+
+        result = await server._dispatch("req-1", "stop_agent", {"worktree_path": "/tmp/repo"})
+
+        assert result["error"]["code"] == "VALIDATION_ERROR"
+        assert "No running agent" in result["error"]["message"]
 
 
 class TestGetAgentStatus:
     @pytest.mark.asyncio
     async def test_returns_no_agent_when_not_tracked(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "get_agent_status", {"worktree_path": "/tmp/repo"})
         assert result["result"]["status"] == "no_agent"
@@ -299,8 +373,8 @@ class TestGetAgentStatus:
             detail="needs input",
             agent_id="a1",
         )
-        app = _make_app(agent_states={"/tmp/repo": {"a1": state}})
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine(agent_states={"/tmp/repo": {"a1": state}})
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "get_agent_status", {"worktree_path": "/tmp/repo"})
         assert result["result"]["status"] == "waiting_for_user"
@@ -310,7 +384,7 @@ class TestGetAgentStatus:
 
     @pytest.mark.asyncio
     async def test_requires_agent_id_when_multiple(self):
-        app = _make_app(
+        engine = _make_engine(
             agent_states={
                 "/tmp/repo": {
                     "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1"),
@@ -318,7 +392,7 @@ class TestGetAgentStatus:
                 }
             }
         )
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1", "get_agent_status", {"worktree_path": "/tmp/repo"}
@@ -328,7 +402,7 @@ class TestGetAgentStatus:
 
     @pytest.mark.asyncio
     async def test_selects_specific_agent_when_multiple(self):
-        app = _make_app(
+        engine = _make_engine(
             agent_states={
                 "/tmp/repo": {
                     "a1": AgentState(status=AgentStatus.RUNNING, agent_id="a1"),
@@ -338,7 +412,7 @@ class TestGetAgentStatus:
                 }
             }
         )
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1",
@@ -352,8 +426,8 @@ class TestGetAgentStatus:
 class TestListAgents:
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_agents(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1", "list_agents", {"worktree_path": "/tmp/repo"}
@@ -362,7 +436,7 @@ class TestListAgents:
 
     @pytest.mark.asyncio
     async def test_lists_agents(self):
-        app = _make_app(
+        engine = _make_engine(
             agent_states={
                 "/tmp/repo": {
                     "a1": AgentState(
@@ -376,7 +450,7 @@ class TestListAgents:
                 }
             }
         )
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1", "list_agents", {"worktree_path": "/tmp/repo"}
@@ -390,13 +464,8 @@ class TestListAgents:
 class TestReadAgentOutput:
     @pytest.mark.asyncio
     async def test_rejects_missing_terminal(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
-
-        # Mock query_one to return a CenterPanel mock that returns no panel
-        mock_center = MagicMock()
-        mock_center.get_panel.return_value = None
-        app.query_one.return_value = mock_center
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "read_agent_output", {"worktree_path": "/tmp/repo"})
         assert "error" in result
@@ -405,19 +474,13 @@ class TestReadAgentOutput:
     async def test_returns_the_session_tail(self):
         """The handler reports the session's headless screen; how the tail
         spans scrollback and screen is tested on the session itself."""
-        session = MagicMock()
+        session = _session()
         session.tail_lines.return_value = ["line 10", "line 11"]
         session.total_lines = 13
-        panel = MagicMock()
-        panel.agent_ids = ["a1"]
-        panel.get_session.return_value = session
+        engine = _make_engine()
+        add_session(engine, session)
 
-        app = _make_app()
-        mock_center = MagicMock()
-        mock_center.get_panel.return_value = panel
-        app.query_one.return_value = mock_center
-
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
         result = await server._dispatch(
             "req-1", "read_agent_output", {"worktree_path": "/tmp/repo", "lines": 6}
         )
@@ -438,23 +501,16 @@ class TestSendAgentInput:
         monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.0)
 
     @staticmethod
-    def _app_with_session():
-        app = _make_app(worktrees=[_make_worktree()])
-        session = MagicMock()
-        session.running = True
-        session.send_input = AsyncMock()
-        panel = MagicMock()
-        panel.agent_ids = ["a1"]
-        panel.get_session.return_value = session
-        center = MagicMock()
-        center.get_panel.return_value = panel
-        app.query_one.return_value = center
-        return app, session
+    def _engine_with_session():
+        engine = _make_engine(worktrees=[_make_worktree()])
+        session = _session()
+        add_session(engine, session)
+        return engine, session
 
     @pytest.mark.asyncio
     async def test_delegates_to_send_input_with_submit(self):
-        app, session = self._app_with_session()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = self._engine_with_session()
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1",
@@ -467,8 +523,8 @@ class TestSendAgentInput:
 
     @pytest.mark.asyncio
     async def test_rejects_empty_text(self):
-        app, session = self._app_with_session()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = self._engine_with_session()
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": ""}
@@ -479,9 +535,9 @@ class TestSendAgentInput:
 
     @pytest.mark.asyncio
     async def test_rejects_a_stopped_session(self):
-        app, session = self._app_with_session()
+        engine, session = self._engine_with_session()
         session.running = False
-        server = IpcServer(app, "/tmp/test.sock")
+        server = _server(engine)
 
         result = await server._dispatch(
             "req-1", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "hi"}
@@ -491,45 +547,29 @@ class TestSendAgentInput:
         session.send_input.assert_not_awaited()
 
 
-def _set_status(app, status, *, path="/tmp/repo", agent_id="a1", detail=""):
-    """Record a status the way the app does: update the state and publish."""
-    bucket = app._agent_states.setdefault(path, {})
-    state = bucket.setdefault(agent_id, AgentState(agent_id=agent_id))
-    previous = state.status
-    state.status = status
-    state.detail = detail
-    app.agent_events.publish(
-        worktree_path=path,
-        agent_id=agent_id,
-        status=status.value,
-        previous_status=previous.value,
-        detail=detail,
+def _set_status(engine, status, *, path="/tmp/repo", agent_id="a1", detail=""):
+    """Record a status the way a session report does."""
+    engine.registry.update_status(
+        path, agent_id, status, LifecycleConfidence.LOW, detail
     )
 
 
-def _app_with_agent(status=AgentStatus.WAITING, detail=""):
-    app = _make_app(worktrees=[_make_worktree()])
-    _set_status(app, status, detail=detail)
-    session = MagicMock()
-    session.running = True
-    session.send_input = AsyncMock()
-    panel = MagicMock()
-    panel.agent_ids = ["a1"]
-    panel.get_session.return_value = session
-    center = MagicMock()
-    center.get_panel.return_value = panel
-    app.query_one.return_value = center
-    return app, session
+def _engine_with_agent(status=AgentStatus.WAITING, detail=""):
+    engine = _make_engine(worktrees=[_make_worktree()])
+    _set_status(engine, status, detail=detail)
+    session = _session()
+    add_session(engine, session)
+    return engine, session
 
 
-def _react(app, *statuses, delay=0.0):
+def _react(engine, *statuses, delay=0.0):
     """send_input side effect: the agent moves through ``statuses``."""
 
     async def _side_effect(text, submit=False):
         async def _later():
             for status in statuses:
                 await asyncio.sleep(delay)
-                _set_status(app, status)
+                _set_status(engine, status)
 
         asyncio.get_running_loop().create_task(_later())
 
@@ -539,9 +579,9 @@ def _react(app, *statuses, delay=0.0):
 class TestSendAgentInputDelivery:
     @pytest.mark.asyncio
     async def test_confirmed_when_the_agent_starts_a_turn(self):
-        app, session = _app_with_agent(AgentStatus.WAITING)
-        session.send_input.side_effect = _react(app, AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = _engine_with_agent(AgentStatus.WAITING)
+        session.send_input.side_effect = _react(engine, AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
@@ -556,8 +596,8 @@ class TestSendAgentInputDelivery:
     @pytest.mark.asyncio
     async def test_unconfirmed_when_the_agent_does_not_react(self, monkeypatch):
         monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.01)
-        app, session = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = _engine_with_agent(AgentStatus.WAITING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
@@ -569,8 +609,8 @@ class TestSendAgentInputDelivery:
 
     @pytest.mark.asyncio
     async def test_busy_agent_is_not_waited_on(self):
-        app, session = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = _engine_with_agent(AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go"}
@@ -580,11 +620,11 @@ class TestSendAgentInputDelivery:
 
     @pytest.mark.asyncio
     async def test_warns_when_the_text_answered_a_dialog(self):
-        app, session = _app_with_agent(
+        engine, session = _engine_with_agent(
             AgentStatus.WAITING_FOR_APPROVAL, detail="needs approval"
         )
-        session.send_input.side_effect = _react(app, AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        session.send_input.side_effect = _react(engine, AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r", "send_agent_input", {"worktree_path": "/tmp/repo", "text": "1"}
@@ -596,8 +636,8 @@ class TestSendAgentInputDelivery:
 
     @pytest.mark.asyncio
     async def test_confirm_false_skips_the_check(self):
-        app, session = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = _engine_with_agent(AgentStatus.WAITING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r",
@@ -611,9 +651,9 @@ class TestSendAgentInputDelivery:
     async def test_wait_until_is_gone(self):
         # The blocking wait was removed; a stale caller still gets its text
         # delivered and no extra keys in the result.
-        app, session = _app_with_agent(AgentStatus.WAITING)
-        session.send_input.side_effect = _react(app, AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, session = _engine_with_agent(AgentStatus.WAITING)
+        session.send_input.side_effect = _react(engine, AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch(
             "r",
@@ -630,8 +670,8 @@ class TestRemovedWaitTools:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["wait_for_agent", "wait_for_events"])
     async def test_blocking_methods_are_unknown(self, method):
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch("r", method, {"worktree_path": "/tmp/repo"})
 
@@ -641,8 +681,8 @@ class TestRemovedWaitTools:
 class TestListEvents:
     @pytest.mark.asyncio
     async def test_without_since_starts_from_now(self):
-        app, _ = _app_with_agent(AgentStatus.WAITING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, _ = _engine_with_agent(AgentStatus.WAITING)
+        server = _server(engine)
 
         result = await server._dispatch("r", "list_events", {})
 
@@ -650,10 +690,10 @@ class TestListEvents:
 
     @pytest.mark.asyncio
     async def test_filters_and_advances_cursor_past_skipped_events(self):
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        _set_status(app, AgentStatus.WAITING)
-        _set_status(app, AgentStatus.RUNNING, path="/tmp/other")
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+        _set_status(engine, AgentStatus.WAITING)
+        _set_status(engine, AgentStatus.RUNNING, path="/tmp/other")
+        server = _server(engine)
 
         result = await server._dispatch(
             "r", "list_events", {"since": 0, "statuses": ["idle"]}
@@ -665,8 +705,8 @@ class TestListEvents:
 
     @pytest.mark.asyncio
     async def test_never_blocks_even_with_a_timeout(self):
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await asyncio.wait_for(
             server._dispatch(
@@ -679,8 +719,8 @@ class TestListEvents:
 
     @pytest.mark.asyncio
     async def test_rejects_a_bad_cursor(self):
-        app, _ = _app_with_agent(AgentStatus.RUNNING)
-        server = IpcServer(app, "/tmp/test.sock")
+        engine, _ = _engine_with_agent(AgentStatus.RUNNING)
+        server = _server(engine)
 
         result = await server._dispatch("r", "list_events", {"since": -1})
 
@@ -690,8 +730,8 @@ class TestListEvents:
 class TestDispatch:
     @pytest.mark.asyncio
     async def test_unknown_method_returns_error(self):
-        app = _make_app()
-        server = IpcServer(app, "/tmp/test.sock")
+        engine = _make_engine()
+        server = _server(engine)
 
         result = await server._dispatch("req-1", "nonexistent", {})
         assert "error" in result

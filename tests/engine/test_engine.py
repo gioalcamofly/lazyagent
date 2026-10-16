@@ -609,3 +609,35 @@ class TestLifecycle:
 
         assert not agent.running and not shell.running
         assert "agent.exited" not in events.names()
+
+    @pytest.mark.asyncio
+    async def test_ipc_server_speaks_for_the_engine(self, tmp_path, repo, feat):
+        engine = make_engine(
+            [worktree(str(repo)), worktree(str(feat), "feat", is_main=False)],
+            repo_root=str(repo),
+            provider=fake_agent_provider(tmp_path),
+        )
+        await engine.start()
+        try:
+            assert engine.socket_path and os.path.exists(engine.socket_path)
+
+            async def call(method, **params):
+                reader, writer = await asyncio.open_unix_connection(engine.socket_path)
+                request = {"id": "1", "method": method, "params": params}
+                writer.write(json.dumps(request).encode() + b"\n")
+                await writer.drain()
+                response = json.loads(await reader.readline())
+                writer.close()
+                return response
+
+            listed = await call("list_worktrees")
+            assert [w["path"] for w in listed["result"]] == [str(repo), str(feat)]
+            spawned = await call("spawn_agent", worktree_path=str(feat))
+            assert spawned["result"]["agent_id"] == "a1"
+            assert engine.get_session(str(feat), "a1").running
+            stopped = await call("stop_agent", worktree_path=str(feat))
+            assert stopped["result"]["status"] == "stopped"
+        finally:
+            socket_path = engine.socket_path
+            await engine.stop()
+        assert not os.path.exists(socket_path)

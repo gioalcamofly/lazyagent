@@ -1,9 +1,8 @@
-"""Tests for the agent event bus and its publishers."""
+"""Tests for the agent event bus and the engine's publishing of it."""
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,9 +13,7 @@ from lazyagent.agent_events import (
     make_filter,
     resolve_statuses,
 )
-from lazyagent.app import LazyAgent
 from lazyagent.engine.session import SessionExited, StatusChanged
-from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentStatus, LifecycleConfidence
 from tests.engine.fakes import make_engine, no_pty, worktree
 
@@ -113,54 +110,6 @@ class TestAgentEventBus:
         bus = AgentEventBus()
         events, truncated = await bus.wait(0, timeout=0.01)
         assert events == [] and truncated is False
-
-
-class TestAppPublishesEvents:
-    @staticmethod
-    def _app():
-        app = LazyAgent(repo_path="/repo")
-        app._get_any_panel = MagicMock(return_value=None)
-        app._refresh_sidebar_agents = MagicMock()
-        return app
-
-    def test_status_change_is_published_once(self):
-        app = self._app()
-        app.on_agent_status_changed(
-            AgentStatusChanged("/wt", AgentStatus.RUNNING, agent_id="a1")
-        )
-        # Detail-only update: same status, no new event.
-        app.on_agent_status_changed(
-            AgentStatusChanged(
-                "/wt", AgentStatus.RUNNING, detail="using Bash", agent_id="a1"
-            )
-        )
-        app.on_agent_status_changed(
-            AgentStatusChanged(
-                "/wt", AgentStatus.WAITING, detail="waiting", agent_id="a1"
-            )
-        )
-        events, _ = app.agent_events.since(0)
-        assert [(e.previous_status, e.status) for e in events] == [
-            ("no_agent", "running"),
-            ("running", "waiting"),
-        ]
-        assert events[1].detail == "waiting"
-
-    @pytest.mark.asyncio
-    async def test_exit_is_published_once(self):
-        app = self._app()
-        app.notify = MagicMock()
-        app.on_agent_status_changed(
-            AgentStatusChanged("/wt", AgentStatus.WAITING, agent_id="a1")
-        )
-        await app.on_agent_exited(AgentExited("/wt", agent_id="a1"))
-        # A second drop (stop racing the exit) must not publish again.
-        app._drop_agent_state("/wt", "a1")
-        events, _ = app.agent_events.since(0)
-        assert [(e.previous_status, e.status) for e in events] == [
-            ("no_agent", "waiting"),
-            ("waiting", EXITED),
-        ]
 
 
 class TestEnginePublishesEvents:

@@ -60,8 +60,8 @@ class DummyWorktreeManager:
 
 
 def _patch_app(monkeypatch):
-    monkeypatch.setattr("lazyagent.app.WorktreeManager", DummyWorktreeManager)
-    monkeypatch.setattr("lazyagent.app.load_config", lambda repo_root: Config())
+    monkeypatch.setattr("lazyagent.engine.engine.WorktreeManager", DummyWorktreeManager)
+    monkeypatch.setattr("lazyagent.engine.engine.load_config", lambda repo_root: Config())
     monkeypatch.setattr(WorktreePanel, "_try_start_terminal", lambda self: None)
     monkeypatch.setattr(LazyAgent, "_refresh_pr_status", lambda self: None)
 
@@ -212,20 +212,30 @@ async def test_stop_on_orchestrator_without_agent_notifies(monkeypatch):
         assert "No running orchestrator" in app.notify.call_args.args[0]
 
 
+async def _spawn_orchestrator(app, pilot, monkeypatch):
+    """Spawn the orchestrator through the engine, with no real process."""
+    from tests.engine.fakes import no_pty
+
+    no_pty(monkeypatch)
+    await app.engine.spawn_agent(app._repo_root, kind="orchestrator")
+    await pilot.pause()
+    return app.engine.get_session(ORCHESTRATOR_KEY)
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_status_changed_updates_sidebar(monkeypatch):
     _patch_app(monkeypatch)
     app = LazyAgent(repo_path="/repo")
 
     async with app.run_test() as pilot:
-        from lazyagent.messages import AgentStatusChanged
+        from lazyagent.engine.session import StatusChanged
 
-        event = AgentStatusChanged(
-            worktree_path=ORCHESTRATOR_KEY,
-            status=AgentStatus.RUNNING,
-            confidence=LifecycleConfidence.HIGH,
+        session = await _spawn_orchestrator(app, pilot, monkeypatch)
+        session._emit(
+            StatusChanged(
+                ORCHESTRATOR_KEY, "", AgentStatus.RUNNING, LifecycleConfidence.HIGH, "", None
+            )
         )
-        app.on_agent_status_changed(event)
         await pilot.pause()
 
         assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.RUNNING
@@ -243,19 +253,47 @@ async def test_orchestrator_exited_resets_state(monkeypatch):
     app = LazyAgent(repo_path="/repo")
 
     async with app.run_test() as pilot:
-        from lazyagent.messages import AgentExited
+        from lazyagent.engine.session import SessionExited, StatusChanged
 
-        # Set running state first
-        app._get_agent_state(ORCHESTRATOR_KEY).status = AgentStatus.RUNNING
+        session = await _spawn_orchestrator(app, pilot, monkeypatch)
+        panel = app.query_one(CenterPanel).get_orchestrator_panel()
+        assert panel.agent_terminal is not None
+        session._emit(
+            StatusChanged(
+                ORCHESTRATOR_KEY, "", AgentStatus.RUNNING, LifecycleConfidence.HIGH, "", None
+            )
+        )
 
         app.notify = MagicMock()
-        event = AgentExited(worktree_path=ORCHESTRATOR_KEY)
-        await app.on_agent_exited(event)
+        session._emit(SessionExited(ORCHESTRATOR_KEY, "", 0))
         await pilot.pause()
 
         assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.NO_AGENT
+        assert not app.engine.has_agent(ORCHESTRATOR_KEY)
+        assert panel.agent_terminal is None
         app.notify.assert_called_once()
         assert "Orchestrator exited" in app.notify.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_spawning_the_orchestrator_shows_it(monkeypatch):
+    _patch_app(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test() as pilot:
+        session = await _spawn_orchestrator(app, pilot, monkeypatch)
+
+        panel = app.query_one(CenterPanel).get_orchestrator_panel()
+        assert panel.agent_terminal.session is session
+        assert panel.has_agent
+        assert session.worktree_path == ORCHESTRATOR_KEY
+        assert "--append-system-prompt" in session.command
+
+        app.notify = MagicMock()
+        app._stop_orchestrator_agent()
+        await pilot.pause()
+        assert panel.agent_terminal is None
+        assert "Orchestrator agent stopped" in app.notify.call_args.args[0]
 
 
 @pytest.mark.asyncio

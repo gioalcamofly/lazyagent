@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -13,29 +14,36 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header
 
 from lazyagent import diagnostics as diag
-from lazyagent.config import Config, format_command, load_config
-from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
-from lazyagent.ipc import IpcServer, start_ipc_server
 from lazyagent.agent_events import AgentEventBus
-from lazyagent.engine.registry import AgentIdStore, AgentRegistry, default_id_store_path
-from lazyagent.engine.worktrees import (
+from lazyagent.config import Config
+from lazyagent.engine.engine import ORCHESTRATOR_KIND, Engine
+from lazyagent.engine.events import (
+    AGENT_EXITED,
+    AGENT_SPAWNED,
+    AGENT_STATUS,
+    AGENT_UPDATED,
+    ENGINE_NOTICE,
     GIT_STATUS_UPDATED,
+    JOB_FINISHED,
+    JOB_OUTPUT,
+    JOB_STARTED,
     PR_INFO_UPDATED,
     WORKTREES_CHANGED,
-    WorktreeEvent,
-    WorktreeService,
+    EngineEvent,
 )
-from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.engine.registry import AgentRegistry
+from lazyagent.engine.worktrees import WorktreeService
+from lazyagent.models import AgentState, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
 from lazyagent.widgets.help_modal import HelpModal
+from lazyagent.widgets.job_log import JobLog
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
 from lazyagent.widgets.worktree_list import OrchestratorListItem, WorktreeList, WorktreeListItem
-from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError, find_repo_root
+from lazyagent.worktree_manager import WorktreeManagerError
 
 
 log = logging.getLogger(__name__)
@@ -46,12 +54,18 @@ log = logging.getLogger(__name__)
 # passed through — only the one actually landed on.
 _SELECTION_DEBOUNCE = 0.4
 
-# Interest-set owner name of this TUI in the WorktreeService.
+# Interest-set owner name of this TUI in the engine.
 _INTEREST_CLIENT = "tui"
+
+_JOB_EVENTS = (JOB_STARTED, JOB_OUTPUT, JOB_FINISHED)
 
 
 class LazyAgent(App):
-    """Textual TUI for managing coding agents across git worktrees."""
+    """Textual TUI for managing coding agents across git worktrees.
+
+    A client of its in-process :class:`Engine`: keys call the engine, and the
+    screen follows the engine's events.
+    """
 
     TITLE = "lazyagent"
 
@@ -104,137 +118,164 @@ class LazyAgent(App):
     def __init__(self, repo_path: str | None = None) -> None:
         super().__init__()
         self.repo_path = repo_path
-        self.registry = AgentRegistry(id_store=AgentIdStore(default_id_store_path()))
-        # A lambda, not the class: WorktreeManager is looked up on each call,
-        # so tests can swap it on this module.
-        self.worktree_service = WorktreeService(
-            lambda root: WorktreeManager(root),
-            find_root=lambda: find_repo_root(),
-        )
-        self.worktree_service.subscribe(self._on_worktree_event)
+        self.engine = Engine(repo_path)
+        self._unsubscribe_engine: Callable[[], None] | None = None
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
-        self._config: Config = Config()
-        self._ipc_server: IpcServer | None = None
-        self._ipc_socket_path: str | None = None
         self._selection_debounce: Timer | None = None
+
+    # Views of engine state, for tests and the widgets.
+
+    @property
+    def registry(self) -> AgentRegistry:
+        return self.engine.registry
+
+    @property
+    def worktree_service(self) -> WorktreeService:
+        return self.engine.worktree_service
 
     @property
     def _agent_states(self) -> dict[str, dict[str, AgentState]]:
-        """The registry's worktree key -> agent id -> state map."""
-        return self.registry.states
+        return self.engine.registry.states
 
     @_agent_states.setter
     def _agent_states(self, states: dict[str, dict[str, AgentState]]) -> None:
-        self.registry.states = states
+        self.engine.registry.states = states
 
     @property
     def worktrees(self) -> list[WorktreeInfo]:
-        return self.worktree_service.worktrees
-
-    @worktrees.setter
-    def worktrees(self, worktrees: list[WorktreeInfo]) -> None:
-        self.worktree_service.worktrees = worktrees
+        return self.engine.worktrees
 
     @property
     def _git_statuses(self) -> dict[str, GitStatus]:
-        """The service's path -> git status cache (read by IPC)."""
-        return self.worktree_service.git_statuses
+        return self.engine.git_statuses
 
     @_git_statuses.setter
     def _git_statuses(self, statuses: dict[str, GitStatus]) -> None:
-        self.worktree_service.git_statuses = statuses
+        self.engine.worktree_service.git_statuses = statuses
 
     @property
     def _repo_root(self) -> str:
-        return self.worktree_service.repo_root
+        return self.engine.repo_root
 
     @_repo_root.setter
     def _repo_root(self, root: str) -> None:
-        self.worktree_service.repo_root = root
+        self.engine.worktree_service.repo_root = root
+
+    @property
+    def _config(self) -> Config:
+        return self.engine.config
+
+    @_config.setter
+    def _config(self, config: Config) -> None:
+        self.engine.config = config
 
     @property
     def agent_events(self) -> AgentEventBus:
         """Every agent status transition, for the MCP wait/event tools."""
-        return self.registry.events
+        return self.engine.events
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="sidebar"):
             yield WorktreeList()
             yield PrStatusBar(id="pr-status-bar")
-        yield CenterPanel(registry=self.registry)
+        yield CenterPanel(engine=self.engine)
         yield Footer()
 
     async def on_mount(self) -> None:
         diag.setup()
+        # Before the start, which already reports the worktree list.
+        self._unsubscribe_engine = self.engine.subscribe(self._on_engine_event)
         with diag.timed(log, "app.on_mount") as span:
-            with diag.timed(log, "app.load_worktrees"):
-                self._load_worktrees()
-            self._load_config()
-            with diag.timed(log, "app.start_ipc"):
-                await self._start_ipc_server()
+            await self.engine.start()
             span["worktrees"] = len(self.worktrees)
             span["repo_root"] = self._repo_root
         # Started last so the loop is already doing real work when it begins
         # sampling, and stopped in action_quit.
         diag.start_watchdog()
-        self.set_interval(60, diag.wrap_timer("timer.check_hangs", self._check_hangs))
-        # Hook logs are otherwise only read when a visible agent prints
-        # something; a hidden or quiet agent's status (and the events that
-        # follow from it) would lag by up to a minute.
-        self.set_interval(1, diag.wrap_timer("timer.poll_agents", self._poll_agents))
-        # Git status and PR info are polled by the service, once a minute and
+        # Git status and PR info are polled by the engine, once a minute and
         # only for its interest set, which this TUI keeps at the selected
-        # worktree (see on_list_view_highlighted).
-        self.worktree_service.start()
+        # worktree (see on_list_view_highlighted). The diff is only wanted
+        # while it is shown, so this client polls it.
         self.set_interval(
             30, diag.wrap_timer("timer.diff", self._refresh_selected_diff)
         )
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
         # Also stopped in action_quit; this covers every other way out so the
         # watchdog thread doesn't outlive the loop it is watching and report a
         # dead loop as a stall.
         diag.event(log, "app.unmount")
         diag.stop_watchdog()
-        self.worktree_service.stop()
+        await self._stop_engine()
 
-    async def _start_ipc_server(self) -> None:
-        """Start the IPC server for MCP communication."""
-        try:
-            self._ipc_server, self._ipc_socket_path = await start_ipc_server(self)
-        except Exception as e:
-            self.notify(f"IPC server failed to start: {e}", severity="warning", timeout=5)
-
-    def _load_config(self) -> None:
-        if self._repo_root:
-            self._config = load_config(self._repo_root)
-        else:
-            self._config = Config()
+    async def _stop_engine(self) -> None:
+        if self._unsubscribe_engine is not None:
+            self._unsubscribe_engine()
+            self._unsubscribe_engine = None
+        await self.engine.stop()
 
     def _load_worktrees(self) -> None:
-        try:
-            self.worktree_service.rescan(self.repo_path)
-        except WorktreeManagerError as e:
-            self.notify(str(e), severity="error", timeout=5)
-            return
-        self._refresh_git_statuses()
+        self.engine.refresh_worktrees()
 
-    def _on_worktree_event(self, event: WorktreeEvent) -> None:
-        """Apply a WorktreeService change to the UI.
+    # --- Engine events ---
 
-        The service runs on this app's loop, so this is already the main
-        thread; nothing needs ``call_from_thread``.
+    def _on_engine_event(self, event: EngineEvent) -> None:
+        """Apply an engine change to the screen.
+
+        The engine runs on this app's loop, so this is already the main
+        thread. Reactions that mount or remove widgets are queued with
+        ``call_later``, which runs them one after the other, in event order.
         """
-        if event.event == WORKTREES_CHANGED:
-            self._apply_worktrees(event.data)
-        elif event.event == GIT_STATUS_UPDATED:
-            self._apply_git_statuses(event.data)
-        elif event.event == PR_INFO_UPDATED:
+        name, data = event.event, event.data
+        if name == WORKTREES_CHANGED:
+            self._apply_worktrees(self.worktrees)
+        elif name == GIT_STATUS_UPDATED:
+            statuses = self._git_statuses
+            self._apply_git_statuses({p: statuses[p] for p in data if p in statuses})
+        elif name == PR_INFO_UPDATED:
             selected = self._selected_worktree
-            if selected is not None and selected.path == event.data["path"]:
-                self._apply_pr_info(event.data["pr_info"])
+            if selected is not None and selected.path == data["path"]:
+                self._apply_pr_info(self.engine.get_pr_info(data["path"]))
+        elif name in (AGENT_STATUS, AGENT_UPDATED):
+            self._refresh_sidebar_agents(data["worktree_path"])
+        elif name == AGENT_SPAWNED:
+            self.call_later(self._show_agent, data["worktree_path"], data["agent_id"], data["kind"])
+        elif name == AGENT_EXITED:
+            self.call_later(self._hide_agent, data)
+        elif name == ENGINE_NOTICE:
+            self.notify(data["message"], severity=data["severity"], timeout=5)
+        elif name in _JOB_EVENTS:
+            self.query_one(JobLog).on_job_event(event)
+
+    async def _show_agent(self, key: str, agent_id: str, kind: str) -> None:
+        """Mount the view of an agent the engine has just spawned."""
+        session = self.engine.get_session(key, agent_id)
+        if session is None:
+            return  # gone again before its tab could be shown
+        center = self.query_one(CenterPanel)
+        if kind == ORCHESTRATOR_KIND:
+            orchestrator = await center.ensure_orchestrator_panel(self._repo_root)
+            await orchestrator.show_agent(session)
+            return
+        panel = await center.ensure_panel(key)
+        await panel.show_agent(session, self.registry.label(key, agent_id))
+
+    async def _hide_agent(self, data: dict) -> None:
+        """Remove the view of an agent the engine no longer runs."""
+        key = data["worktree_path"]
+        panel = self._get_any_panel(key)
+        if panel is not None:
+            await panel.cleanup_agent(data["agent_id"])
+        if data.get("stopped"):
+            return
+        label = "Orchestrator" if key == ORCHESTRATOR_KEY else "Agent"
+        self.notify(
+            f"{label} exited — press s to spawn again",
+            severity="warning",
+            timeout=5,
+        )
 
     def _apply_worktrees(self, worktrees: list[WorktreeInfo]) -> None:
         wt_list = self.query_one(WorktreeList)
@@ -267,22 +308,10 @@ class LazyAgent(App):
         """Get or create the AgentState for one agent in a worktree/orchestrator."""
         return self.registry.get(key, agent_id)
 
-    def _worktree_agent_states(self, key: str) -> dict[str, AgentState]:
-        """All agent states for a worktree path / ORCHESTRATOR_KEY (may be empty)."""
-        return self.registry.agents(key)
-
-    def _drop_agent_state(self, key: str, agent_id: str) -> None:
-        """Remove a single agent from the registry, publishing EXITED."""
-        self.registry.drop(key, agent_id)
-
-    def _drop_worktree_agents(self, key: str) -> None:
-        """Drop every agent of a worktree that is going away."""
-        self.registry.drop_worktree(key)
-
     def _refresh_sidebar_agents(self, key: str) -> None:
         """Push the worktree's current agent roll-up to the sidebar."""
         self.query_one(WorktreeList).update_agent_states(
-            key, self._worktree_agent_states(key)
+            key, self.engine.agent_states(key)
         )
 
     def _get_any_panel(self, key: str):
@@ -298,11 +327,7 @@ class LazyAgent(App):
         Only the full-rescan paths need it; the periodic poll refreshes just
         the selected worktree.
         """
-        self.run_worker(
-            self.worktree_service.refresh_git_status(),
-            group="git_status_all",
-            exclusive=True,
-        )
+        self.engine.sweep_git_status()
 
     def _cancel_selection_debounce(self) -> None:
         """Drop refreshes queued for a worktree we have since moved off."""
@@ -344,7 +369,7 @@ class LazyAgent(App):
         if not self._repo_root or wt is None or wt.is_bare:
             return
         self.run_worker(
-            self.worktree_service.refresh_git_status([wt.path]),
+            self.engine.refresh_git_status([wt.path]),
             group="git_status_selected",
             exclusive=True,
         )
@@ -382,7 +407,7 @@ class LazyAgent(App):
         )
 
     async def _fetch_diff(self, worktree_path: str) -> None:
-        diff_text = await self.worktree_service.get_diff(worktree_path)
+        diff_text = await self.engine.get_diff(worktree_path)
         self._apply_diff(worktree_path, diff_text)
 
     def _apply_diff(self, worktree_path: str, diff_text: str) -> None:
@@ -401,7 +426,7 @@ class LazyAgent(App):
         wt = self._selected_worktree
         if wt is None:
             return
-        self.run_worker(self.worktree_service.refresh_pr_info([wt.path]))
+        self.run_worker(self.engine.refresh_pr_info([wt.path]))
 
     def _apply_pr_info(self, pr_info) -> None:
         """Apply PR info to the status bar (must run on main thread)."""
@@ -422,14 +447,14 @@ class LazyAgent(App):
                 span["target"] = "orchestrator"
                 self._orchestrator_selected = True
                 self._selected_worktree = None
-                self.worktree_service.set_interest((), _INTEREST_CLIENT)
+                self.engine.set_interest((), _INTEREST_CLIENT)
                 with diag.timed(log, "sidebar.switch_to_orchestrator"):
                     await center.switch_to_orchestrator(self._repo_root)
             elif event.item is not None and isinstance(event.item, WorktreeListItem):
                 span["target"] = event.item.worktree.path
                 self._orchestrator_selected = False
                 self._selected_worktree = event.item.worktree
-                self.worktree_service.set_interest(
+                self.engine.set_interest(
                     [event.item.worktree.path], _INTEREST_CLIENT
                 )
                 # Mounting the panel for a worktree visited for the first time
@@ -440,9 +465,9 @@ class LazyAgent(App):
                 ):
                     await center.switch_to(event.item.worktree.path)
                 self._push_git_status_to_selected_panel()
-                if self.worktree_service.has_pr_info(event.item.worktree.path):
+                if self.engine.has_pr_info(event.item.worktree.path):
                     self._apply_pr_info(
-                        self.worktree_service.pr_info(event.item.worktree.path)
+                        self.engine.get_pr_info(event.item.worktree.path)
                     )
                 # Show the cached badge immediately, then refresh the status, the
                 # diff and the PR once the selection settles: the periodic poll
@@ -454,63 +479,7 @@ class LazyAgent(App):
                 span["target"] = None
                 self._orchestrator_selected = False
                 self._selected_worktree = None
-                self.worktree_service.set_interest((), _INTEREST_CLIENT)
-
-    # --- Agent message handlers ---
-
-    def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
-        self.registry.update_status(
-            event.worktree_path,
-            event.agent_id,
-            event.status,
-            event.confidence,
-            event.detail,
-            last_output_time=event.last_output_time,
-        )
-        self._refresh_sidebar_agents(event.worktree_path)
-
-    async def on_agent_exited(self, event: AgentExited) -> None:
-        self._drop_agent_state(event.worktree_path, event.agent_id)
-        self._refresh_sidebar_agents(event.worktree_path)
-
-        panel = self._get_any_panel(event.worktree_path)
-        if panel is not None:
-            await panel.cleanup_agent(event.agent_id)
-
-        label = "Orchestrator" if event.worktree_path == ORCHESTRATOR_KEY else "Agent"
-        self.notify(
-            f"{label} exited — press s to spawn again",
-            severity="warning",
-            timeout=5,
-        )
-
-    # --- Hang detection ---
-
-    def _poll_agents(self) -> None:
-        """Pick up every agent's latest hook/telemetry events."""
-        for key, bucket in list(self._agent_states.items()):
-            panel = self._get_any_panel(key)
-            if panel is None:
-                continue
-            for agent_id in list(bucket):
-                session = panel.get_session(agent_id)
-                if session is not None:
-                    session.poll()
-
-    def _check_hangs(self) -> None:
-        """Periodic timer callback: check all active agents for hangs."""
-        for key, bucket in self._agent_states.items():
-            panel = None
-            for agent_id, state in bucket.items():
-                if state.status != AgentStatus.RUNNING:
-                    continue
-                if panel is None:
-                    panel = self._get_any_panel(key)
-                if panel is None:
-                    break
-                session = panel.get_session(agent_id)
-                if session is not None:
-                    session.check_hang()
+                self.engine.set_interest((), _INTEREST_CLIENT)
 
     # --- Actions ---
 
@@ -543,53 +512,55 @@ class LazyAgent(App):
                     center = self.query_one(CenterPanel)
                     # switch_to (not just ensure_panel) so the panel is visible
                     with diag.timed(log, "spawn.switch_to", spawn_id=spawn_id):
-                        panel = await center.switch_to(worktree.path)
-                    agent_id = await panel.spawn_agent(
-                        skip_permissions=result.skip_permissions,
-                        agent_provider=self._config.agent.provider,
-                        resume_mode=result.resume_mode,
-                        socket_path=self._ipc_socket_path,
-                        instruction=result.instruction,
-                        cross_session_inbound=self._config.agent.cross_session_inbound,
-                        _diag_spawn_id=spawn_id,
-                    )
-                    self._get_agent_state(worktree.path, agent_id)
-                    self._refresh_sidebar_agents(worktree.path)
-                    span["agent_id"] = agent_id
+                        await center.switch_to(worktree.path)
+                    try:
+                        info = await self.engine.spawn_agent(
+                            worktree.path,
+                            result.instruction,
+                            skip_permissions=result.skip_permissions,
+                            resume_mode=result.resume_mode,
+                            env=dict(os.environ),
+                            spawn_id=spawn_id,
+                        )
+                    except ValueError as e:
+                        self.notify(str(e), severity="error", timeout=5)
+                        return
+                    span["agent_id"] = info.agent_id
 
+        provider = self.engine.get_config().agent_provider
         with diag.timed(
             log, "spawn.push_modal", spawn_id=spawn_id, worktree=worktree.path
         ):
-            self.push_screen(SpawnModal(worktree.display_label, agent_provider=self._config.agent.provider), on_spawn_dismiss)
+            self.push_screen(SpawnModal(worktree.display_label, agent_provider=provider), on_spawn_dismiss)
 
     def _spawn_orchestrator_agent(self) -> None:
         """Spawn agent in the orchestrator panel."""
-        panel = self._get_any_panel(ORCHESTRATOR_KEY)
-        if panel and panel.has_agent:
+        if self.engine.has_agent(ORCHESTRATOR_KEY):
             self.notify("Orchestrator agent already running", severity="warning")
             return
-
-        orch_prompt = compose_orchestrator_prompt(self._config, self._repo_root)
 
         async def on_spawn_dismiss(result: SpawnResult | None) -> None:
             if result is not None:
                 center = self.query_one(CenterPanel)
-                panel = await center.switch_to_orchestrator(self._repo_root)
-                await panel.spawn_agent(
-                    skip_permissions=result.skip_permissions,
-                    agent_provider=self._config.agent.provider,
-                    resume_mode=result.resume_mode,
-                    socket_path=self._ipc_socket_path,
-                    instruction=result.instruction,
-                    system_prompt=orch_prompt,
-                    cross_session_inbound=self._config.agent.cross_session_inbound,
-                )
+                await center.switch_to_orchestrator(self._repo_root)
+                try:
+                    await self.engine.spawn_agent(
+                        self._repo_root,
+                        result.instruction,
+                        kind=ORCHESTRATOR_KIND,
+                        skip_permissions=result.skip_permissions,
+                        resume_mode=result.resume_mode,
+                        env=dict(os.environ),
+                    )
+                except ValueError as e:
+                    self.notify(str(e), severity="warning")
 
-        self.push_screen(SpawnModal("Orchestrator", agent_provider=self._config.agent.provider), on_spawn_dismiss)
+        provider = self.engine.get_config().agent_provider
+        self.push_screen(SpawnModal("Orchestrator", agent_provider=provider), on_spawn_dismiss)
 
     async def action_stop_agent(self) -> None:
         if self._orchestrator_selected:
-            await self._stop_orchestrator_agent()
+            self._stop_orchestrator_agent()
             return
 
         worktree = self._get_selected_worktree()
@@ -600,26 +571,21 @@ class LazyAgent(App):
         center = self.query_one(CenterPanel)
         panel = center.get_panel(worktree.path)
         agent_id = panel.active_agent_id if panel else None
-        if panel is None or agent_id is None:
+        if agent_id is None or self.engine.get_session(worktree.path, agent_id) is None:
             self.notify("No running agent in this worktree", severity="warning")
             return
 
-        # stop() cancels recv before disconnect fires, so update state directly.
-        self._drop_agent_state(worktree.path, agent_id)
-        self._refresh_sidebar_agents(worktree.path)
-        await panel.cleanup_agent(agent_id)
+        # The tab goes when the engine reports the agent gone.
+        self.engine.stop_agent(worktree.path, agent_id)
         self.notify("Agent stopped")
 
-    async def _stop_orchestrator_agent(self) -> None:
+    def _stop_orchestrator_agent(self) -> None:
         """Stop the orchestrator agent."""
-        panel = self._get_any_panel(ORCHESTRATOR_KEY)
-        if panel is None or not panel.has_agent:
+        if not self.engine.has_agent(ORCHESTRATOR_KEY):
             self.notify("No running orchestrator agent", severity="warning")
             return
 
-        self._drop_agent_state(ORCHESTRATOR_KEY, "")
-        self._refresh_sidebar_agents(ORCHESTRATOR_KEY)
-        await panel.cleanup_agent()
+        self.engine.stop_agent(ORCHESTRATOR_KEY, "")
         self.notify("Orchestrator agent stopped")
 
     def action_focus_sidebar(self) -> None:
@@ -716,10 +682,7 @@ class LazyAgent(App):
     async def action_quit(self) -> None:
         diag.event(log, "app.quit", worktrees=len(self.worktrees))
         diag.stop_watchdog()
-        self.worktree_service.stop()
-        if self._ipc_server is not None:
-            await self._ipc_server.stop()
-            self._ipc_server = None
+        await self._stop_engine()
         self.exit()
 
     def action_refresh(self) -> None:
@@ -736,47 +699,33 @@ class LazyAgent(App):
         self.notify("Refreshing git status…", timeout=2)
 
     def action_create_worktree(self) -> None:
+        config = self.engine.get_config()
+
         def on_modal_dismiss(result: CreateWorktreeResult | None) -> None:
             if result is None:
                 return
-            self._do_create_worktree(result)
+            # A custom create command can run for minutes; its output shows
+            # in the job log meanwhile.
+            self.run_worker(self._do_create_worktree(result), group="worktree_job")
 
         self.push_screen(
             CreateWorktreeModal(
-                default_branch=self._config.default_branch,
-                show_extra_options=self._config.has_custom_create,
+                default_branch=config.default_branch,
+                show_extra_options=config.has_custom_create,
             ),
             on_modal_dismiss,
         )
 
-    def _do_create_worktree(self, result: CreateWorktreeResult) -> None:
-        if self._config.has_custom_create:
-            repo_name = os.path.basename(self._repo_root) if self._repo_root else ""
-            wt_name = f"{repo_name}-{result.branch}" if repo_name else result.branch
-            wt_path = str(
-                (self._repo_root and os.path.join(os.path.dirname(self._repo_root), wt_name))
-                or wt_name
+    async def _do_create_worktree(self, result: CreateWorktreeResult) -> None:
+        try:
+            created = await self.engine.create_worktree(
+                result.branch, result.base_branch, result.extra_options
             )
-            cmd = format_command(
-                self._config.worktree.create,  # type: ignore[arg-type]
-                branch=result.branch,
-                name=wt_name,
-                base=result.base_branch,
-                path=wt_path,
-                repo=self._repo_root,
-                extra=result.extra_options,
-            )
-            self._send_to_terminal(cmd)
-            self.notify("Command sent to terminal — press r to refresh when done", timeout=5)
-        else:
-            try:
-                manager = WorktreeManager(self._repo_root)
-                new_path = manager.create(result.branch, result.base_branch)
-                self._load_worktrees()
-                self._select_worktree_by_path(new_path)
-                self.notify(f"Created worktree: {os.path.basename(new_path)}")
-            except WorktreeManagerError as e:
-                self.notify(str(e), severity="error", timeout=5)
+        except (WorktreeManagerError, ValueError) as e:
+            self.notify(str(e), severity="error", timeout=5)
+            return
+        self._select_worktree_by_path(created.path)
+        self.notify(f"Created worktree: {os.path.basename(created.path)}")
 
     def action_remove_worktree(self) -> None:
         worktree = self._get_selected_worktree()
@@ -787,11 +736,7 @@ class LazyAgent(App):
             self.notify("Cannot remove the main worktree", severity="error")
             return
 
-        states = self._worktree_agent_states(worktree.path)
-        if any(
-            s.status in (AgentStatus.RUNNING, AgentStatus.WAITING)
-            for s in states.values()
-        ):
+        if self.engine.has_active_agents(worktree.path):
             self.notify(
                 "Agent is running in this worktree — stop it first (x)",
                 severity="warning",
@@ -800,7 +745,10 @@ class LazyAgent(App):
 
         def on_remove_dismiss(result: RemoveWorktreeResult | None) -> None:
             if result is not None and worktree is not None:
-                self._do_remove_worktree(worktree, force=result.force)
+                self.run_worker(
+                    self._do_remove_worktree(worktree, force=result.force),
+                    group="worktree_job",
+                )
 
         self.push_screen(
             RemoveWorktreeModal(
@@ -810,48 +758,15 @@ class LazyAgent(App):
             on_remove_dismiss,
         )
 
-    def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
-        force_flag = "--force" if force else ""
-        if self._config.has_custom_remove:
-            cmd = format_command(
-                self._config.worktree.remove,  # type: ignore[arg-type]
-                branch=worktree.branch or "",
-                name=worktree.name,
-                base="",
-                path=worktree.path,
-                repo=self._repo_root,
-                force=force_flag,
-            )
-            self._send_to_terminal(f"cd {self._repo_root} && {cmd}")
-            self.action_focus_terminal()
-            self.notify("Command sent to terminal — press r to refresh when done", timeout=5)
-        else:
-            try:
-                manager = WorktreeManager(self._repo_root)
-                manager.remove(worktree.path, force=force)
-                self._drop_worktree_agents(worktree.path)
-                self._load_worktrees()
-                if self.worktrees:
-                    self.query_one(WorktreeList).index = 0
-                self.notify(f"Removed worktree: {worktree.name}")
-            except WorktreeManagerError as e:
-                self.notify(str(e), severity="error", timeout=5)
-
-    def _send_to_terminal(self, cmd: str) -> None:
-        """Send a command string to the active worktree's terminal pane."""
-        wt = self._get_selected_worktree()
-        if not wt:
-            self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
-            return
-        panel = self.query_one(CenterPanel).get_panel(wt.path)
-        if panel is None:
-            self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
-            return
+    async def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
         try:
-            terminal = panel.query_one("#terminal-widget")
-            terminal.session.write(cmd + "\n")
-        except Exception:
-            self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
+            await self.engine.remove_worktree(worktree.path, force)
+        except (WorktreeManagerError, ValueError) as e:
+            self.notify(str(e), severity="error", timeout=5)
+            return
+        if self.worktrees:
+            self.query_one(WorktreeList).index = 0
+        self.notify(f"Removed worktree: {worktree.name}")
 
     def action_open_pr_url(self, url: str) -> None:
         self.open_url(url)

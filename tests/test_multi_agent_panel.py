@@ -62,9 +62,9 @@ class DummyWorktreeManager:
 
 @pytest.fixture
 def patched(monkeypatch):
-    """Patch out app I/O and the agent pty so spawn_agent only drives the UI."""
-    monkeypatch.setattr("lazyagent.app.WorktreeManager", DummyWorktreeManager)
-    monkeypatch.setattr("lazyagent.app.load_config", lambda repo_root: Config())
+    """Patch out app I/O and the agent pty so a spawn only drives the UI."""
+    monkeypatch.setattr("lazyagent.engine.engine.WorktreeManager", DummyWorktreeManager)
+    monkeypatch.setattr("lazyagent.engine.engine.load_config", lambda repo_root: Config())
     monkeypatch.setattr(WorktreePanel, "_try_start_terminal", lambda self: None)
     monkeypatch.setattr(LazyAgent, "_refresh_pr_status", lambda self: None)
 
@@ -76,9 +76,25 @@ def patched(monkeypatch):
 
         self._emulator = SimpleNamespace(recv_queue=asyncio.Queue(), pid=0)
 
+    def fake_stop(self):
+        self._stopped = True
+        self._emulator = None
+
     monkeypatch.setattr(AgentSession, "start", fake_start)
-    monkeypatch.setattr(AgentSession, "stop", lambda self: None)
+    monkeypatch.setattr(AgentSession, "stop", fake_stop)
     monkeypatch.setattr(MonitoredTerminal, "focus", lambda self: self)
+
+
+async def _spawn(app, pilot, path=FEATURE_WORKTREE.path) -> str:
+    """Spawn through the engine and let the app mount the tab."""
+    info = await app.engine.spawn_agent(path)
+    await pilot.pause()
+    return info.agent_id
+
+
+async def _stop(app, pilot, agent_id, path=FEATURE_WORKTREE.path) -> None:
+    app.engine.stop_agent(path, agent_id)
+    await pilot.pause()
 
 
 def _agent_panes(panel: WorktreePanel) -> list[str]:
@@ -98,15 +114,15 @@ async def test_spawn_adds_a_tab_per_agent(patched):
         panel = await center.switch_to(FEATURE_WORKTREE.path)
         await pilot.pause()
 
-        a1 = await panel.spawn_agent()
-        a2 = await panel.spawn_agent()
-        await pilot.pause()
+        a1 = await _spawn(app, pilot)
+        a2 = await _spawn(app, pilot)
 
         assert [a1, a2] == ["a1", "a2"]
         assert panel.agent_ids == ["a1", "a2"]
         assert panel.has_agent
         session = panel.get_session("a2")
         assert session is panel.get_agent("a2").session
+        assert session is app.engine.get_session(FEATURE_WORKTREE.path, "a2")
         assert session.worktree_path == FEATURE_WORKTREE.path
         assert session.agent_id == "a2"
         assert _agent_panes(panel) == ["agent-tab-a1", "agent-tab-a2"]
@@ -129,16 +145,19 @@ async def test_agent_ids_and_session_names_continue_after_a_restart(patched):
         async with app.run_test() as pilot:
             panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
             await pilot.pause()
-            ids = [await panel.spawn_agent() for _ in expected]
-            await panel.cleanup_agent()
+            ids = [await _spawn(app, pilot) for _ in expected]
+            assert panel.agent_session_name(ids[-1]) == f"repo-feature-{ids[-1]}"
+            for agent_id in ids:
+                await _stop(app, pilot, agent_id)
             assert ids == expected
+            # Stopped agents are forgotten.
             assert panel.agent_session_name(ids[-1]) == ""
 
     app = LazyAgent(repo_path="/repo")
     async with app.run_test() as pilot:
         panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
         await pilot.pause()
-        agent_id = await panel.spawn_agent()
+        agent_id = await _spawn(app, pilot)
         assert agent_id == "a4"
         assert panel.agent_label(agent_id) == "Agent 4"
         assert panel.agent_session_name(agent_id) == "repo-feature-a4"
@@ -150,12 +169,10 @@ async def test_cleanup_one_agent_keeps_the_others(patched):
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
-        await panel.spawn_agent()
-        await panel.spawn_agent()
-        await pilot.pause()
+        await _spawn(app, pilot)
+        await _spawn(app, pilot)
 
-        await panel.cleanup_agent("a1")
-        await pilot.pause()
+        await _stop(app, pilot, "a1")
 
         assert panel.agent_ids == ["a2"]
         assert _agent_panes(panel) == ["agent-tab-a2"]
@@ -170,11 +187,9 @@ async def test_cleanup_last_agent_restores_placeholder(patched):
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
-        await panel.spawn_agent()
-        await pilot.pause()
+        await _spawn(app, pilot)
 
-        await panel.cleanup_agent("a1")
-        await pilot.pause()
+        await _stop(app, pilot, "a1")
 
         assert panel.agent_ids == []
         assert _agent_panes(panel) == []
@@ -188,8 +203,7 @@ async def test_active_agent_id_falls_back_to_sole_agent(patched):
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
-        await panel.spawn_agent()
-        await pilot.pause()
+        await _spawn(app, pilot)
 
         panel.switch_to_tab(_DIFF_TAB_ID)
         await pilot.pause()
@@ -203,9 +217,8 @@ async def test_active_agent_id_none_when_diff_active_and_multiple(patched):
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
-        await panel.spawn_agent()
-        await panel.spawn_agent()
-        await pilot.pause()
+        await _spawn(app, pilot)
+        await _spawn(app, pilot)
 
         panel.switch_to_tab(_DIFF_TAB_ID)
         await pilot.pause()
@@ -227,17 +240,16 @@ async def test_spawn_then_stop_via_app_action(patched):
 
         center = app.query_one(CenterPanel)
         panel = center.get_panel(FEATURE_WORKTREE.path)
-        await panel.spawn_agent()
-        await panel.spawn_agent()
-        await pilot.pause()
+        await _spawn(app, pilot)
+        await _spawn(app, pilot)
 
-        # Two agents tracked? The panel knows; the registry is populated as
-        # status events arrive, so drive a stop of the active (newest) agent.
+        # Stop the active (newest) agent with the key action.
         app.notify = lambda *a, **k: None
         await app.action_stop_agent()
         await pilot.pause()
 
         assert panel.agent_ids == ["a1"]
+        assert app.engine.agent_ids(FEATURE_WORKTREE.path) == ["a1"]
 
 
 async def _select_feature(app, pilot):
@@ -257,10 +269,9 @@ async def test_cycle_agents_wraps_both_directions(patched):
     app = LazyAgent(repo_path="/repo")
     async with app.run_test() as pilot:
         panel = await _select_feature(app, pilot)
-        await panel.spawn_agent()  # a1
-        await panel.spawn_agent()  # a2
-        await panel.spawn_agent()  # a3 (active)
-        await pilot.pause()
+        await _spawn(app, pilot)  # a1
+        await _spawn(app, pilot)  # a2
+        await _spawn(app, pilot)  # a3 (active)
 
         assert panel.active_agent_id == "a3"
 
@@ -286,8 +297,7 @@ async def test_cycle_agents_noop_with_single_agent(patched):
     app = LazyAgent(repo_path="/repo")
     async with app.run_test() as pilot:
         panel = await _select_feature(app, pilot)
-        await panel.spawn_agent()  # a1
-        await pilot.pause()
+        await _spawn(app, pilot)  # a1
 
         app.action_next_agent()
         app.action_prev_agent()

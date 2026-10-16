@@ -1,7 +1,8 @@
-"""IPC server — Unix domain socket server running inside the Textual app.
+"""IPC server — the legacy Unix domain socket server of the engine.
 
-Receives JSON requests from the MCP server process, dispatches to handlers
-that operate on the ``LazyAgent`` app instance.
+Receives JSON requests from the MCP server process and dispatches them to
+handlers that call the :class:`~lazyagent.engine.engine.Engine`'s public API
+only. It runs on the engine's loop, so the handlers call it directly.
 
 Protocol: newline-delimited JSON.
 
@@ -21,16 +22,17 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
-from lazyagent.models import AgentState, AgentStatus, rollup_status
-from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
+from lazyagent.models import AgentStatus
+from lazyagent.worktree_manager import WorktreeManagerError
 
 if TYPE_CHECKING:
-    from lazyagent.app import LazyAgent
+    from lazyagent.engine.engine import Engine
 
 log = logging.getLogger(__name__)
 
-# How long we wait for Textual-thread operations (spawn/stop agent)
-_TEXTUAL_OP_TIMEOUT = 30.0
+# How long a spawn may take before the caller is told it timed out.
+_OP_TIMEOUT = 30.0
+
 
 def _env_seconds(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -61,10 +63,10 @@ def _err(request_id: str, code: str, message: str) -> dict:
 
 
 class IpcServer:
-    """Asyncio Unix domain socket server bound to the Textual app."""
+    """Asyncio Unix domain socket server in front of an :class:`Engine`."""
 
-    def __init__(self, app: LazyAgent, socket_path: str) -> None:
-        self._app = app
+    def __init__(self, engine: Engine, socket_path: str) -> None:
+        self._engine = engine
         self._socket_path = socket_path
         self._server: asyncio.AbstractServer | None = None
         self._handlers = {
@@ -168,29 +170,7 @@ class IpcServer:
         self, request_id: str, params: dict
     ) -> dict:
         """List all worktrees with agent status and git status."""
-        result = []
-        for wt in self._app.worktrees:
-            bucket = self._agent_bucket(wt.path)
-            git_st = self._app._git_statuses.get(wt.path)
-            rolled = rollup_status(s.status for s in bucket.values())
-            entry: dict[str, Any] = {
-                "path": wt.path,
-                "branch": wt.branch,
-                "head": wt.head,
-                "is_main": wt.is_main,
-                "is_bare": wt.is_bare,
-                # Scalar roll-up kept for back-compat; `agents` has the detail.
-                "agent_status": rolled.value,
-                "agents": self._agents_payload(bucket),
-            }
-            if git_st:
-                entry["git_status"] = {
-                    "dirty_count": git_st.dirty_count,
-                    "ahead": git_st.ahead,
-                    "behind": git_st.behind,
-                }
-            result.append(entry)
-        return _ok(request_id, result)
+        return _ok(request_id, self._engine.worktrees_payload())
 
     async def handle_create_worktree(
         self, request_id: str, params: dict
@@ -204,19 +184,18 @@ class IpcServer:
                 configured.
 
         Two paths:
-        - **No custom create command**: runs ``git worktree add``
-          synchronously and returns the actual path. ``extra`` is ignored
-          (with a warning in the response so callers notice).
+        - **No custom create command**: runs ``git worktree add`` and
+          returns the actual path. ``extra`` is ignored (with a warning in
+          the response so callers notice).
         - **Custom create command** (``[worktree] create = "..."`` in
-          ``.lazyagent.toml``): the command is dispatched into the user's
-          currently-selected worktree terminal and runs asynchronously.
-          ``path`` in the response is *predicted* from the modal's naming
-          convention (``<parent>/<repo>-<branch>``); the caller MUST poll
-          ``list_worktrees`` to confirm the worktree actually appeared
+          ``.lazyagent.toml``): the command runs as an engine job in the repo
+          root (its output is streamed as ``job.output`` events) and the call
+          waits for it. ``path`` in the response is *predicted* from the
+          naming convention (``<parent>/<repo>-<branch>``); the caller MUST
+          poll ``list_worktrees`` to confirm the worktree actually appeared
           before calling ``spawn_agent`` on it. ``custom_command: true``
-          flags this contract. If no worktree is selected in the UI the
-          call fails with VALIDATION_ERROR rather than silently dropping
-          the command.
+          flags this contract. A failing command is a WORKTREE_ERROR carrying
+          its output.
         """
         branch = params.get("branch", "").strip()
         if not branch:
@@ -224,52 +203,13 @@ class IpcServer:
         base_branch = params.get("base_branch", "main")
         extra = params.get("extra", "")
 
-        if self._app._config.has_custom_create:
-            from lazyagent.config import format_command
-
-            repo_root = self._app._repo_root
-            repo_name = os.path.basename(repo_root) if repo_root else ""
-            wt_name = f"{repo_name}-{branch}" if repo_name else branch
-            wt_path = str(
-                os.path.join(os.path.dirname(repo_root), wt_name)
-                if repo_root
-                else wt_name
-            )
-            cmd = format_command(
-                self._app._config.worktree.create,  # type: ignore[arg-type]
-                branch=branch,
-                name=wt_name,
-                base=base_branch,
-                path=wt_path,
-                repo=repo_root,
-                extra=extra,
-            )
-            # Run the custom command directly via subprocess so MCP callers
-            # don't need a worktree selected in the UI (which was previously
-            # required because we dispatched the command into a worktree's
-            # terminal pane). cwd defaults to repo_root; the template can
-            # still `cd` if it wants. Output is captured and surfaced on
-            # failure so the caller knows what went wrong.
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                cwd=repo_root or None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_b, stderr_b = await proc.communicate()
-            if proc.returncode != 0:
-                stderr = stderr_b.decode(errors="replace").strip()
-                stdout = stdout_b.decode(errors="replace").strip()
-                detail = stderr or stdout or f"exit code {proc.returncode}"
-                raise WorktreeManagerError(
-                    f"Custom create command failed: {detail}"
-                )
-
-            self._app.call_later(self._app._load_worktrees)
+        created = await self._engine.create_worktree(branch, base_branch, extra)
+        if created.job_id is not None:
             return _ok(request_id, {
-                "path": wt_path,
-                "branch": branch,
+                "path": created.path,
+                "branch": created.branch,
                 "custom_command": True,
+                "job_id": created.job_id,
                 "warning": (
                     "Path is predicted from the naming convention "
                     "(<parent>/<repo>-<branch>), not parsed from the create "
@@ -279,64 +219,42 @@ class IpcServer:
                 ),
             })
 
-        # Plain ``git worktree add`` path. Surface a warning if extra was
-        # passed but cannot be honoured — easier for an LLM caller to
-        # notice than a silent drop.
+        # Surface a warning if extra was passed but cannot be honoured —
+        # easier for an LLM caller to notice than a silent drop.
         result: dict[str, Any] = {}
         if extra:
             result["warning"] = (
                 "extra= was provided but this repo has no custom create "
                 "command configured; the value was ignored."
             )
-
-        manager = WorktreeManager(self._app._repo_root)
-        new_path = await asyncio.to_thread(manager.create, branch, base_branch)
-
-        # Refresh the worktree list on the Textual thread
-        self._app.call_later(self._app._load_worktrees)
-
-        result["path"] = new_path
-        result["branch"] = branch
+        result["path"] = created.path
+        result["branch"] = created.branch
         return _ok(request_id, result)
 
     async def handle_remove_worktree(
         self, request_id: str, params: dict
     ) -> dict:
-        """Remove a worktree. Params: worktree_path, force (optional)."""
+        """Remove a worktree. Params: worktree_path, force (optional).
+
+        Always ``git worktree remove``: a configured custom remove command is
+        what the TUI runs, not this method.
+        """
         worktree_path = params.get("worktree_path", "")
         force = params.get("force", False)
 
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        # Reject main worktree
-        wt_info = self._find_worktree(worktree_path)
-        if wt_info is None:
-            raise ValueError(f"Unknown worktree: {worktree_path}")
-        if wt_info.is_main:
-            raise ValueError("Cannot remove the main worktree")
-
-        # Reject if any agent is running
-        bucket = self._agent_bucket(worktree_path)
-        if any(
-            s.status in (AgentStatus.RUNNING, AgentStatus.WAITING)
-            for s in bucket.values()
-        ):
-            raise ValueError("Agent is running in this worktree — stop it first")
-
-        manager = WorktreeManager(self._app._repo_root)
-        await asyncio.to_thread(manager.remove, worktree_path, force)
-
-        self._app._drop_worktree_agents(worktree_path)
-        self._app.call_later(self._app._load_worktrees)
-
+        await self._engine.remove_worktree(worktree_path, force, custom=False)
         return _ok(request_id, {"removed": worktree_path})
 
     async def handle_spawn_agent(
         self, request_id: str, params: dict
     ) -> dict:
         """Spawn a NEW agent in a worktree. Params: worktree_path, instruction
-        (optional), skip_permissions (optional), resume_mode (optional).
+        (optional), skip_permissions (optional), resume_mode (optional),
+        label (optional), env (optional: the environment the agent starts
+        from instead of the engine's).
 
         Each call adds another agent; the new agent id is returned. Multiple
         agents per worktree are supported.
@@ -345,11 +263,9 @@ class IpcServer:
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        wt_info = self._find_worktree(worktree_path)
-        if wt_info is None:
+        if self._engine.worktree(worktree_path) is None:
             raise ValueError(f"Unknown worktree: {worktree_path}")
 
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         instruction = params.get("instruction") or params.get("initial_prompt")
         skip_permissions = params.get("skip_permissions", True)
         label = params.get("label")
@@ -361,40 +277,31 @@ class IpcServer:
                 f"Invalid resume_mode: {resume_mode_str!r}. "
                 f"Must be one of: {', '.join(m.value for m in ResumeMode)}"
             )
-
-        async def _do_spawn() -> None:
-            try:
-                from lazyagent.widgets.center_panel import CenterPanel
-
-                center = self._app.query_one(CenterPanel)
-                panel = await center.ensure_panel(worktree_path)
-                agent_id = await panel.spawn_agent(
-                    skip_permissions=skip_permissions,
-                    agent_provider=self._app._config.agent.provider,
-                    resume_mode=resume_mode,
-                    socket_path=self._socket_path,
-                    instruction=instruction,
-                    label=label,
-                    cross_session_inbound=self._app._config.agent.cross_session_inbound,
-                )
-                state = self._app._get_agent_state(worktree_path, agent_id)
-                state.label = panel.agent_label(agent_id)
-                state.session_name = panel.agent_session_name(agent_id)
-                self._app._refresh_sidebar_agents(worktree_path)
-                future.set_result(agent_id)
-            except Exception as e:
-                future.set_exception(e)
+        env = params.get("env")
+        if env is not None and not (
+            isinstance(env, dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+        ):
+            raise ValueError("env must be an object of string values")
 
         # Before the spawn, so every event of the new agent is after it.
-        cursor = self._app.agent_events.cursor
-        self._app.call_later(_do_spawn)
-
-        agent_id = await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
+        cursor = self._engine.events.cursor
+        info = await asyncio.wait_for(
+            self._engine.spawn_agent(
+                worktree_path,
+                instruction,
+                skip_permissions=skip_permissions,
+                resume_mode=resume_mode,
+                label=label,
+                env=env,
+            ),
+            timeout=_OP_TIMEOUT,
+        )
         return _ok(
             request_id,
             {
                 "worktree_path": worktree_path,
-                "agent_id": agent_id,
+                "agent_id": info.agent_id,
                 "status": "spawned",
                 "cursor": cursor,
             },
@@ -411,29 +318,12 @@ class IpcServer:
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        from lazyagent.widgets.center_panel import CenterPanel
-
-        center = self._app.query_one(CenterPanel)
-        panel = center.get_panel(worktree_path)
-        if panel is None or not panel.agent_ids:
+        agent_ids = self._engine.agent_ids(worktree_path)
+        if not agent_ids:
             raise ValueError("No running agent in this worktree")
 
-        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
-
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-
-        async def _do_stop() -> None:
-            try:
-                self._app._drop_agent_state(worktree_path, agent_id)
-                self._app._refresh_sidebar_agents(worktree_path)
-                await panel.cleanup_agent(agent_id)
-                future.set_result(None)
-            except Exception as e:
-                future.set_exception(e)
-
-        self._app.call_later(_do_stop)
-
-        await asyncio.wait_for(future, timeout=_TEXTUAL_OP_TIMEOUT)
+        agent_id = self._resolve_agent_id(agent_ids, params.get("agent_id"))
+        self._engine.stop_agent(worktree_path, agent_id)
         return _ok(
             request_id,
             {"worktree_path": worktree_path, "agent_id": agent_id, "status": "stopped"},
@@ -448,7 +338,7 @@ class IpcServer:
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        bucket = self._agent_bucket(worktree_path)
+        bucket = self._engine.agent_states(worktree_path)
         if not bucket:
             return _ok(request_id, {
                 "worktree_path": worktree_path,
@@ -477,24 +367,20 @@ class IpcServer:
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        from lazyagent.widgets.center_panel import CenterPanel
-
-        center = self._app.query_one(CenterPanel)
-        panel = center.get_panel(worktree_path)
-        if panel is None or not panel.agent_ids:
+        agent_ids = self._engine.agent_ids(worktree_path)
+        if not agent_ids:
             raise ValueError("No agent terminal in this worktree")
 
-        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
-        session = panel.get_session(agent_id)
-        if session is None:
-            raise ValueError("No agent terminal in this worktree")
-        lines = session.tail_lines(num_lines)
+        agent_id = self._resolve_agent_id(agent_ids, params.get("agent_id"))
+        lines, total_lines = self._engine.read_agent_output(
+            worktree_path, agent_id, num_lines
+        )
 
         return _ok(request_id, {
             "worktree_path": worktree_path,
             "agent_id": agent_id,
             "lines": lines,
-            "total_lines": session.total_lines,
+            "total_lines": total_lines,
         })
 
     async def handle_send_agent_input(
@@ -509,22 +395,19 @@ class IpcServer:
         if not text:
             raise ValueError("text is required and must not be empty")
 
-        from lazyagent.widgets.center_panel import CenterPanel
-
-        center = self._app.query_one(CenterPanel)
-        panel = center.get_panel(worktree_path)
-        if panel is None or not panel.agent_ids:
+        agent_ids = self._engine.agent_ids(worktree_path)
+        if not agent_ids:
             raise ValueError("No running agent in this worktree")
 
-        agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
-        session = panel.get_session(agent_id)
+        agent_id = self._resolve_agent_id(agent_ids, params.get("agent_id"))
+        session = self._engine.get_session(worktree_path, agent_id)
         if session is None or not session.running:
             raise ValueError("Agent terminal is not ready")
 
         confirm = params.get("confirm", True)
 
-        bus = self._app.agent_events
-        state = self._agent_bucket(worktree_path).get(agent_id)
+        bus = self._engine.events
+        state = self._engine.agent_states(worktree_path).get(agent_id)
         # No state yet = spawned but no status reported so far; the terminal
         # itself is running (checked above), so it is not "exited".
         status_before = (
@@ -545,7 +428,7 @@ class IpcServer:
         # submits it have to reach the agent CLI as separate reads, or the
         # CLI parses the trailing CR as a character inside the message and
         # the prompt just sits there unsent.
-        await session.send_input(text, submit=True)
+        await self._engine.send_agent_input(worktree_path, agent_id, text, submit=True)
 
         result: dict[str, Any] = {
             "worktree_path": worktree_path,
@@ -601,7 +484,7 @@ class IpcServer:
         (cursor; omitted = from now), worktree_path, agent_id, statuses
         (filters, all optional).
         """
-        bus = self._app.agent_events
+        bus = self._engine.events
         since = params.get("since")
         if since is None:
             since = bus.cursor
@@ -633,26 +516,14 @@ class IpcServer:
         if not worktree_path:
             raise ValueError("worktree_path is required")
 
-        bucket = self._agent_bucket(worktree_path)
         return _ok(request_id, {
             "worktree_path": worktree_path,
-            "agents": self._agents_payload(bucket),
+            "agents": self._engine.agents_payload(worktree_path),
         })
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _find_worktree(self, path: str):
-        """Find a WorktreeInfo by path."""
-        for wt in self._app.worktrees:
-            if wt.path == path:
-                return wt
-        return None
-
-    def _agent_bucket(self, worktree_path: str) -> dict[str, AgentState]:
-        """Agent-state map for a worktree (may be empty)."""
-        return self._app._agent_states.get(worktree_path, {})
 
     @staticmethod
     def _resolve_agent_id(
@@ -680,24 +551,9 @@ class IpcServer:
             f"Available: {available}"
         )
 
-    @staticmethod
-    def _agents_payload(bucket: dict[str, AgentState]) -> list[dict]:
-        """Serialise a worktree's agent states for IPC responses."""
-        return [
-            {
-                "agent_id": aid,
-                "label": st.label,
-                "session_name": st.session_name,
-                "status": st.status.value,
-                "confidence": st.confidence.value,
-                "detail": st.detail,
-            }
-            for aid, st in bucket.items()
-        ]
 
-
-async def start_ipc_server(app: LazyAgent) -> tuple[IpcServer, str]:
-    """Factory: create and start an IPC server for the given app.
+async def start_ipc_server(engine: Engine) -> tuple[IpcServer, str]:
+    """Factory: create and start an IPC server for the given engine.
 
     Returns ``(server, socket_path)``.
     Socket is created at ``/tmp/lazyagent-{pid}/ipc.sock`` with 0o700 dir
@@ -717,7 +573,7 @@ async def start_ipc_server(app: LazyAgent) -> tuple[IpcServer, str]:
     except FileNotFoundError:
         pass
 
-    server = IpcServer(app, socket_path)
+    server = IpcServer(engine, socket_path)
     await server.start()
     # start_unix_server doesn't accept a mode arg; chmod after bind.
     try:
