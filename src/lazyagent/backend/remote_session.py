@@ -44,7 +44,7 @@ from lazyagent.models import AgentStatus
 
 if TYPE_CHECKING:
     from lazyagent.backend.remote import RemoteBackend
-    from lazyagent.protocol.envelope import Event
+    from lazyagent.engine.client import Event
 
 log = logging.getLogger(__name__)
 

@@ -184,6 +184,12 @@ class AgentRegistry:
             if not bucket:
                 del self._identities[key]
 
+    def clear(self) -> None:
+        """Forget every agent and identity, publishing nothing (a client's
+        mirror of the registry starting over)."""
+        self.states.clear()
+        self._identities.clear()
+
     def label(self, key: str, agent_id: str) -> str:
         identity = self._identities.get(key, {}).get(agent_id)
         return identity.label if identity else ""

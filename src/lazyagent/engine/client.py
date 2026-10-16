@@ -177,6 +177,12 @@ class Client:
             raise RequestError(response.error)
         return response.result
 
+    def send(self, method: str, **params: Any) -> asyncio.Future[Response]:
+        """Send a request now and return the future of its response. Requests
+        sent one after the other are on the wire in that order, whoever
+        awaits them."""
+        return self._send_request(str(next(self._ids)), method, params)
+
     def _send_request(
         self, request_id: str, method: str, params: dict[str, Any]
     ) -> asyncio.Future[Response]:

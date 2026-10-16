@@ -224,8 +224,8 @@ class RemoteBackend(Backend):
         if client is None:
             return
         try:
-            cursor = (await client.request("list_events"))["cursor"]
-        except (RequestError, ConnectionClosed, ConnectionError):
+            cursor = (await self.request("list_events"))["cursor"]
+        except (ValueError, EngineUnavailable):
             return
 
         async def caught_up() -> None:
@@ -397,7 +397,8 @@ class RemoteBackend(Backend):
     # ------------------------------------------------------------------
 
     def _seed(self, state: Mapping[str, Any]) -> None:
-        self._registry = AgentRegistry()
+        # Cleared in place: the widgets hold on to the registry.
+        self._registry.clear()
         self._agents = {}
         self._set_worktrees(state["worktrees"])
         self._set_agents(ORCHESTRATOR_KEY, state["orchestrator"]["agents"])
@@ -526,17 +527,29 @@ class RemoteBackend(Backend):
     async def request(self, method: str, **params: Any) -> Any:
         """A request to the engine; errors come back as the exceptions the
         in-process engine raises."""
+        return await self._result(self._send(method, params))
+
+    def _send(self, method: str, params: dict[str, Any]) -> asyncio.Future:
         client = self.client
         if client is None:
             raise EngineUnavailable("not connected to the engine")
         try:
-            return await client.request(method, **params)
-        except RequestError as e:
-            if e.code == "WORKTREE_ERROR":
-                raise WorktreeManagerError(e.message) from None
-            raise ValueError(e.message) from None
+            return client.send(method, **params)
         except (ConnectionClosed, ConnectionError, OSError) as e:
             raise EngineUnavailable(f"lost the engine: {e}") from None
+
+    @staticmethod
+    async def _result(future: asyncio.Future) -> Any:
+        try:
+            response = await future
+        except (ConnectionClosed, ConnectionError, OSError) as e:
+            raise EngineUnavailable(f"lost the engine: {e}") from None
+        error = response.error
+        if error is None:
+            return response.result
+        if error.code == "WORKTREE_ERROR":
+            raise WorktreeManagerError(error.message)
+        raise ValueError(error.message)
 
     def fire(
         self,
@@ -546,14 +559,19 @@ class RemoteBackend(Backend):
         on_error: Callable[[Exception], None] | None = None,
         **params: Any,
     ) -> None:
-        """Send a request without waiting for it. Requests fired one after
-        the other reach the engine in that order."""
-        if self.client is None:
+        """Send a request now without waiting for its answer: requests fired
+        (or awaited) one after the other reach the engine in that order."""
+        try:
+            future = self._send(method, params)
+        except EngineUnavailable as e:
+            log.info("%s not sent: %s", method, e)
+            if on_error is not None:
+                on_error(e)
             return
 
         async def run() -> None:
             try:
-                result = await self.request(method, **params)
+                result = await self._result(future)
             except (ValueError, WorktreeManagerError, EngineUnavailable) as e:
                 log.info("%s failed: %s", method, e)
                 if on_error is not None:
@@ -701,9 +719,6 @@ class RemoteBackend(Backend):
         def failed(error: Exception) -> None:
             self._notice("warning", f"Could not stop the agent: {error}")
 
-        if self.client is None:
-            failed(EngineUnavailable("not connected to the engine"))
-            return
         self.fire("stop_agent", on_error=failed, worktree_path=key, agent_id=agent_id)
 
     async def session(self, key: str, agent_id: str = "") -> RemoteSession | None:
@@ -719,7 +734,8 @@ class RemoteBackend(Backend):
             for entry in listed["agents"]:
                 if entry.get("session_id") == info.session_id and "size" in entry:
                     rows, cols = entry["size"]["rows"], entry["size"]["cols"]
-        if self._agents.get(key, {}).get(agent_id) is not info:
+        current = self._agents.get(key, {}).get(agent_id)
+        if current is None or current.session_id != info.session_id:
             return None  # gone while asking
         session = self._sessions.get(info.session_id)
         if session is None:
