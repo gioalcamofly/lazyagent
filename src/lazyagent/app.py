@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from functools import partial
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -293,12 +294,15 @@ class LazyAgent(App):
         elif self._selected_worktree is not None:
             self._queue_selection(self._selected_worktree.path)
 
+    # Workers get a callable, not a coroutine: a worker cancelled before it
+    # starts (exclusive groups, quitting) would leave the coroutine unawaited.
+
     def _queue_selection(self, path: str | None) -> None:
         """Highlight ``path`` (``None``: the orchestrator) once the sidebar
         is rebuilt. Only the latest request counts, so a create or remove
         that picks its own target overrides keeping the old one."""
         self.run_worker(
-            self._select_worktree_by_path(path),
+            partial(self._select_worktree_by_path, path),
             group="sidebar_selection",
             exclusive=True,
         )
@@ -395,7 +399,7 @@ class LazyAgent(App):
         if not self._repo_root or wt is None or wt.is_bare:
             return
         self.run_worker(
-            self.engine.refresh_git_status([wt.path]),
+            partial(self.engine.refresh_git_status, [wt.path]),
             group="git_status_selected",
             exclusive=True,
         )
@@ -429,7 +433,7 @@ class LazyAgent(App):
         if wt is None:
             return
         self.run_worker(
-            self._fetch_diff(wt.path), group="diff_refresh", exclusive=True
+            partial(self._fetch_diff, wt.path), group="diff_refresh", exclusive=True
         )
 
     async def _fetch_diff(self, worktree_path: str) -> None:
@@ -452,7 +456,7 @@ class LazyAgent(App):
         wt = self._selected_worktree
         if wt is None:
             return
-        self.run_worker(self.engine.refresh_pr_info([wt.path]))
+        self.run_worker(partial(self.engine.refresh_pr_info, [wt.path]))
 
     def _apply_pr_info(self, pr_info) -> None:
         """Apply PR info to the status bar (must run on main thread)."""
@@ -732,7 +736,7 @@ class LazyAgent(App):
                 return
             # A custom create command can run for minutes; its output shows
             # in the job log meanwhile.
-            self.run_worker(self._do_create_worktree(result), group="worktree_job")
+            self.run_worker(partial(self._do_create_worktree, result), group="worktree_job")
 
         self.push_screen(
             CreateWorktreeModal(
@@ -772,7 +776,7 @@ class LazyAgent(App):
         def on_remove_dismiss(result: RemoveWorktreeResult | None) -> None:
             if result is not None and worktree is not None:
                 self.run_worker(
-                    self._do_remove_worktree(worktree, force=result.force),
+                    partial(self._do_remove_worktree, worktree, force=result.force),
                     group="worktree_job",
                 )
 
