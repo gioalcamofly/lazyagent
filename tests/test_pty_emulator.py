@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import pytest
 
 from lazyagent.pty_emulator import PtyEmulator
@@ -61,3 +64,34 @@ class TestWriteAll:
         await _make_emulator(writer)._write_all(b"hello")
 
         assert bytes(writer.written) == b""
+
+
+@pytest.mark.asyncio
+async def test_stop_right_after_the_spawn_kills_the_child():
+    """The child may not lead its own process group yet; stop must not
+    wait forever for a child it failed to signal."""
+    for _ in range(20):
+        emulator = PtyEmulator("sleep 30")
+        await asyncio.wait_for(asyncio.to_thread(emulator.stop), 5)
+        assert emulator.returncode is not None
+
+
+def test_the_child_leads_a_session_on_its_pty():
+    """The PTY is the child's controlling terminal, as with pty.fork."""
+    emulator = PtyEmulator("bash -c 'sleep 0.3; ps -o sid=,tty=,stat= -p $$'")
+    output = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(emulator.fd, 1024)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output += chunk
+    finally:
+        emulator.stop()
+    sid, tty, stat = output.decode().split()
+    assert int(sid) == emulator.pid
+    assert tty.startswith("pts/")
+    assert "+" in stat  # in the terminal's foreground process group

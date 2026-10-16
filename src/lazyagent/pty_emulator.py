@@ -14,7 +14,6 @@ import asyncio
 import fcntl
 import logging
 import os
-import pty
 import re
 import shlex
 import signal
@@ -63,21 +62,15 @@ class PtyEmulator:
         if self.run_task is not None:
             self.run_task.cancel()
 
-        # Kill the entire process group (pty.fork children have pgid == pid)
-        try:
-            os.killpg(self.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        # Kill the entire process group (the child leads its own session)
+        self._signal(signal.SIGTERM)
 
         # Reap the process
         if self.returncode is None:
             try:
                 rpid, status = os.waitpid(self.pid, os.WNOHANG)
                 if rpid == 0:
-                    try:
-                        os.killpg(self.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
+                    self._signal(signal.SIGKILL)
                     _, status = os.waitpid(self.pid, 0)
                 self.returncode = os.waitstatus_to_exitcode(status)
             except ChildProcessError:
@@ -99,6 +92,16 @@ class PtyEmulator:
             pid=self.pid,
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
+
+    def _signal(self, signum: int) -> None:
+        """Signal the child's process group, and the child itself: right
+        after the spawn it may not have run ``setsid`` yet, and then there
+        is no group of that id."""
+        for send in (os.killpg, os.kill):
+            try:
+                send(self.pid, signum)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
     def poll(self) -> int | None:
         """Reap the child if it has exited; return its exit code or None."""
@@ -123,13 +126,36 @@ class PtyEmulator:
         return self.returncode
 
     def _open_terminal(self, command: str) -> int:
-        """Fork a PTY and exec the command in the child."""
+        """Start the command on a new PTY; return the master side.
+
+        ``posix_spawn``, not ``fork``: lazyagent always has worker threads by
+        now, and a forked child runs Python with whatever locks they held
+        until it execs. The child opens the PTY as stdin, and util-linux
+        ``setsid --ctty`` (Linux only, as is lazyagent) gives it its own
+        session with the PTY as controlling terminal, as ``pty.fork`` did,
+        then execs the command in the same process.
+        """
         forked = time.perf_counter()
-        self.pid, fd = pty.fork()
-        if self.pid == 0:
-            argv = shlex.split(command)
-            env = dict(TERM="xterm", LC_ALL="en_US.UTF-8", HOME=str(Path.home()))
-            os.execvpe(argv[0], argv, env)
+        argv = ["setsid", "--ctty", *shlex.split(command)]
+        env = {"TERM": "xterm", "LC_ALL": "en_US.UTF-8", "HOME": str(Path.home())}
+        fd, child_side = os.openpty()
+        try:
+            self.pid = os.posix_spawnp(
+                argv[0],
+                argv,
+                env,
+                file_actions=[
+                    (os.POSIX_SPAWN_OPEN, 0, os.ttyname(child_side), os.O_RDWR, 0),
+                    (os.POSIX_SPAWN_DUP2, 0, 1),
+                    (os.POSIX_SPAWN_DUP2, 0, 2),
+                ],
+            )
+        except BaseException:
+            os.close(fd)
+            raise
+        finally:
+            # Only the child holds it from here, so its exit is the PTY's EOF.
+            os.close(child_side)
         diag.event(
             log,
             "pty.fork",
