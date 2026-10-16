@@ -126,8 +126,9 @@ class EngineMethods:
             raise ValueError("branch is required and must not be empty")
         base_branch = params.get("base_branch", "main")
         extra = params.get("extra", "")
+        env = check_env(params.get("env"))
 
-        created = await self._engine.create_worktree(branch, base_branch, extra)
+        created = await self._engine.create_worktree(branch, base_branch, extra, env=env)
         if created.job_id is not None:
             return {
                 "path": created.path,
@@ -156,19 +157,30 @@ class EngineMethods:
         return result
 
     async def remove_worktree(self, params: dict) -> Any:
-        """Remove a worktree. Params: worktree_path, force (optional).
+        """Remove a worktree. Params: worktree_path, force (optional),
+        custom (optional), env (optional).
 
-        Always ``git worktree remove``: a configured custom remove command is
-        what the TUI runs, not this method.
+        ``git worktree remove`` unless ``custom`` is true: then a configured
+        custom remove command runs as an engine job (with ``env`` when given),
+        as when the TUI removes a worktree.
         """
         worktree_path = params.get("worktree_path", "")
         force = params.get("force", False)
+        custom = params.get("custom", False)
 
         if not worktree_path:
             raise ValueError("worktree_path is required")
+        if type(custom) is not bool:
+            raise ValueError("custom must be a boolean")
+        env = check_env(params.get("env"))
 
-        await self._engine.remove_worktree(worktree_path, force, custom=False)
-        return {"removed": worktree_path}
+        job_id = await self._engine.remove_worktree(
+            worktree_path, force, custom=custom, env=env
+        )
+        result: dict[str, Any] = {"removed": worktree_path}
+        if job_id is not None:
+            result["job_id"] = job_id
+        return result
 
     async def spawn_agent(self, params: dict) -> Any:
         """Spawn a NEW agent in a worktree. Params: worktree_path, instruction

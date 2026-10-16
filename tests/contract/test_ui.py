@@ -165,3 +165,38 @@ async def test_sidebar_state_in_one_call(harness, client):
     await checked(client, "refresh_worktrees")
     event = await client.next_event()
     assert event.seq > state["cursor"]
+
+
+async def test_a_client_can_be_the_hosted_ui(harness, client):
+    """attach_ui: a TUI on a remote engine carries out the ui.* commands;
+    it stops being the hosted UI when it detaches or disconnects."""
+    await checked(client, "subscribe", events=["ui.command"])
+    assert await checked(client, "attach_ui") == {"attached": True}
+    assert await checked(client, "attach_ui") == {"attached": True}
+    host = await harness.connect()
+    assert set(UI_COMMAND_METHODS) <= set(host.hello.capabilities)
+    await checked(host, "ui.select_worktree", worktree_path=harness.feat)
+    event = await client.next_event(lambda e: e.event == "ui.command")
+    assert event.data["worktree_path"] == harness.feat
+
+    assert await checked(client, "detach_ui") == {"attached": False}
+    error = await _error(host, "ui.select_orchestrator")
+    assert error.code == "NO_HOSTED_UI"
+
+    await checked(client, "attach_ui")
+    await client.close()
+    other = await harness.connect()
+    assert not set(UI_COMMAND_METHODS) & set(other.hello.capabilities)
+
+
+async def test_publish_view_announces_what_a_ui_shows(harness, client):
+    watcher = await harness.connect()
+    await checked(watcher, "subscribe", events=["ui.view_changed"])
+    view = _view(worktree_path=harness.feat, focus="shell")
+    assert await checked(client, "publish_view", view=view) == {"published": True}
+    event = await watcher.next_event(lambda e: e.event == "ui.view_changed")
+    assert event.data == view
+    assert await checked(client, "publish_view", view=view) == {"published": False}
+    assert await checked(watcher, "ui.get_view") == {"view": view}
+    error = await _error(client, "publish_view", view={"focus": "shell"})
+    assert error.code == "VALIDATION_ERROR"

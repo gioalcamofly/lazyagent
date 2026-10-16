@@ -542,6 +542,37 @@ class TestWorktreeJobs:
         ]
 
     @pytest.mark.asyncio
+    async def test_the_methods_pass_custom_and_the_client_env(self, tmp_path, repo, feat):
+        """create_worktree / remove_worktree as clients call them: a remote
+        TUI asks for the custom remove and sends its env, like the in-process
+        one does."""
+        from lazyagent.engine.methods import EngineMethods
+
+        engine = _custom_engine(
+            tmp_path, repo, feat,
+            create="echo create=$LAZYAGENT_TEST_JOB_VAR",
+            remove="echo remove=$LAZYAGENT_TEST_JOB_VAR {force}",
+        )
+        methods = EngineMethods(engine)
+        events = Recorder(engine)
+        env = {"PATH": os.environ["PATH"], "LAZYAGENT_TEST_JOB_VAR": "client"}
+
+        created = await methods.create_worktree({"branch": "x", "env": env})
+        removed = await methods.remove_worktree(
+            {"worktree_path": str(feat), "force": True, "custom": True, "env": env}
+        )
+
+        assert created["job_id"] == "j1"
+        assert removed == {"removed": str(feat), "job_id": "j2"}
+        assert [e["text"] for e in events.named("job.output")] == [
+            "create=client\n",
+            "remove=client --force\n",
+        ]
+        validation.validate_result("remove_worktree", removed, strict=True)
+        with pytest.raises(ValueError, match="custom must be a boolean"):
+            await methods.remove_worktree({"worktree_path": str(feat), "custom": "yes"})
+
+    @pytest.mark.asyncio
     async def test_custom_false_uses_git(self, tmp_path, repo, feat):
         engine = _custom_engine(tmp_path, repo, feat, remove="exit 4")
         await engine.remove_worktree(str(feat), custom=False)
