@@ -34,6 +34,7 @@ AGENT_UPDATED = "agent.updated"
 AGENT_SPAWNED = "agent.spawned"
 AGENT_EXITED = "agent.exited"
 ENGINE_NOTICE = "engine.notice"
+ENGINE_SHUTDOWN = "engine.shutdown"
 JOB_STARTED = "job.started"
 JOB_OUTPUT = "job.output"
 JOB_FINISHED = "job.finished"
@@ -84,6 +85,12 @@ class EventBus(AgentEventBus):
     def history(self, cursor: int = 0) -> list[EngineEvent]:
         """Every event still held with ``seq > cursor``, oldest first."""
         return [e for e in self._log if e.seq > cursor]
+
+    def replay(self, cursor: int) -> tuple[list[EngineEvent], bool]:
+        """:meth:`history`, and whether events after ``cursor`` were already
+        evicted (the replay has a gap)."""
+        truncated = bool(self._log) and self._log[0].seq > cursor + 1
+        return self.history(cursor), truncated
 
     def _published(self, event: AgentEvent) -> None:
         self._deliver(EngineEvent(event.seq, AGENT_STATUS, event.to_dict()))

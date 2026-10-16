@@ -5,7 +5,14 @@ Ink-based CLIs read it: bracketed-paste content is buffered as text, a CR
 outside a paste submits, and every read that does not submit redraws the
 prompt (which is what acknowledges the input). On submit it clears the
 screen, prints ``working``, then ``got: <text> paste=<bool>`` and prompts
-again. Submitting ``exit N`` exits with code N.
+again. Submitting ``exit N`` exits with code N. A few more commands script
+output for the protocol tests:
+
+- ``count N``: prints ``line 1`` … ``line N``, one per millisecond;
+- ``spew N``: prints N bytes of 99-character lines as fast as it can;
+- ``size``: prints the terminal size as ``size <rows>x<cols>``.
+
+Each ends with ``done`` and the prompt.
 
 ``--paste`` turns bracketed paste (DECSET 2004) on at startup.
 ``--env=NAME`` prints ``env NAME=<value>`` (``<unset>`` when it is not set)
@@ -72,10 +79,35 @@ def main() -> int:
         if submitted.startswith("exit"):
             out("\r\nbye\r\n")
             return int(submitted.split()[1])
+        if submitted.startswith(("count ", "spew ", "size")):
+            out("\r\n")
+            script(submitted)
+            out("done\r\nyour turn> ")
+            pasted = False
+            continue
         out("\x1b[2J\x1b[Hworking\r\n")
         time.sleep(0.3)
         out(f"got: {submitted!r} paste={pasted}\r\nyour turn> ")
         pasted = False
+
+
+def script(command: str) -> None:
+    name, _, arg = command.partition(" ")
+    if name == "count":
+        for i in range(1, int(arg) + 1):
+            out(f"line {i}\r\n")
+            time.sleep(0.001)
+    elif name == "spew":
+        line = b"x" * 97 + b"\r\n"
+        left = int(arg)
+        while left > 0:
+            chunk = (line * 600)[:left]
+            os.write(1, chunk)
+            left -= len(chunk)
+        out("\r\n")
+    elif name == "size":
+        size = os.get_terminal_size(0)
+        out(f"size {size.lines}x{size.columns}\r\n")
 
 
 if __name__ == "__main__":

@@ -74,3 +74,37 @@ def test_importing_the_whole_engine_and_ipc_loads_no_textual_or_widgets():
     ).stdout.split()
     assert "lazyagent.engine.engine" in out and "lazyagent.ipc" in out
     assert [m for m in out if _banned(m)] == []
+
+
+def _third_party(path: Path) -> list[str]:
+    stdlib = sys.stdlib_module_names
+    return [
+        module
+        for module, level in _imports(path)
+        if level == 0
+        and module.split(".")[0] not in stdlib
+        and module.split(".")[0] not in ("lazyagent", "__future__")
+    ]
+
+
+def test_the_v1_server_and_client_use_only_the_stdlib():
+    assert _third_party(ENGINE / "server.py") == []
+    assert _third_party(ENGINE / "client.py") == []
+
+
+def test_the_client_needs_only_the_protocol():
+    code = (
+        "import sys\n"
+        "import lazyagent.engine.client\n"
+        "print('\\n'.join(sorted(sys.modules)))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    lazy = sorted(m for m in out if m.split(".")[0] == "lazyagent")
+    assert all(
+        m in ("lazyagent", "lazyagent.engine", "lazyagent.engine.client")
+        or m.startswith("lazyagent.protocol")
+        for m in lazy
+    ), lazy
+    assert [m for m in out if m.split(".")[0] in ("pyte", "textual", "rich")] == []

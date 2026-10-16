@@ -37,6 +37,23 @@ LEGACY_METHODS: tuple[str, ...] = (
     "list_events",
 )
 
+# The methods protocol v1 adds.
+V1_METHODS: tuple[str, ...] = (
+    "subscribe",
+    "unsubscribe",
+    "attach_stream",
+    "detach_stream",
+    "resize",
+    "claim_size",
+    "open_shell",
+    "refresh_worktrees",
+    "refresh_git_status",
+    "get_diff",
+    "get_pr_info",
+    "set_interest",
+    "get_config",
+)
+
 EVENTS: tuple[str, ...] = (
     "agent.status",
     "agent.updated",
@@ -47,6 +64,7 @@ EVENTS: tuple[str, ...] = (
     "pr_info.updated",
     "stream.resized",
     "stream.reset",
+    "stream.closed",
     "engine.notice",
     "job.started",
     "job.output",
@@ -60,6 +78,7 @@ __all__ = [
     "LEGACY_METHODS",
     "PROTOCOL_VERSION",
     "SUPPORTED_VERSIONS",
+    "V1_METHODS",
     "ErrorCode",
     "ErrorInfo",
     "Event",

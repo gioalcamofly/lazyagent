@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from lazyagent.ipc import IpcServer
-from lazyagent.protocol import ERROR_CODES, LEGACY_METHODS, envelope, validation
+from lazyagent.protocol import ERROR_CODES, LEGACY_METHODS, V1_METHODS, envelope, validation
 from tests.protocol import golden_cases
 from tests.test_ipc import _make_engine
 
@@ -50,7 +50,7 @@ def test_every_legacy_method_has_a_success_fixture():
 def test_legacy_methods_match_ipc_and_schemas():
     server = IpcServer(_make_engine(), "/tmp/test.sock")
     assert set(LEGACY_METHODS) == set(server._handlers)
-    assert set(LEGACY_METHODS) == set(validation.method_names())
+    assert set(LEGACY_METHODS) | set(V1_METHODS) == set(validation.method_names())
 
 
 @pytest.mark.parametrize("fixture", SUCCESSES, ids=_ids(SUCCESSES))

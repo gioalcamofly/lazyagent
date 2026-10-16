@@ -6,9 +6,10 @@ shows: the repo root and its :class:`~lazyagent.config.Config`, the
 :class:`~lazyagent.engine.worktrees.WorktreeService`, every terminal session
 (agents, the orchestrator under :data:`ORCHESTRATOR_KEY`, one ``bash -l``
 shell per worktree), the timers that keep agent status fresh, the jobs that
-run custom create/remove commands, and the legacy IPC server.
+run custom create/remove commands, the legacy IPC server and the protocol
+v1 server (:mod:`lazyagent.engine.server`).
 
-Clients (the Textual app, the IPC server) call its methods and react to its
+Clients (the Textual app, the IPC and v1 servers) call its methods and react to its
 :class:`~lazyagent.engine.events.EventBus`; they never start a process or
 hold engine state of their own. Everything runs on the loop that called
 :meth:`Engine.start`.
@@ -40,6 +41,7 @@ from lazyagent.engine.events import (
     AGENT_SPAWNED,
     AGENT_UPDATED,
     ENGINE_NOTICE,
+    ENGINE_SHUTDOWN,
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
@@ -82,6 +84,7 @@ from lazyagent.worktree_manager import (
 )
 
 if TYPE_CHECKING:
+    from lazyagent.engine.server import V1Server
     from lazyagent.ipc import IpcServer
 
 __all__ = [
@@ -190,6 +193,7 @@ class Engine:
         persist_ids: bool = True,
         poll_interval: float = POLL_AGENTS_INTERVAL,
         hang_interval: float = CHECK_HANGS_INTERVAL,
+        v1_server: bool | None = None,
     ) -> None:
         self.repo_path = repo_path
         # Looked up on each call, not bound here, so tests can swap the
@@ -212,6 +216,10 @@ class Engine:
 
         self.socket_path: str | None = None
         self._ipc_server: IpcServer | None = None
+        # None: on unless LAZYAGENT_V1_SERVER=0.
+        self._v1_enabled = v1_server
+        self.v1_socket_path: str | None = None
+        self._v1_server: V1Server | None = None
 
         self._agents: dict[str, dict[str, _Agent]] = {}
         self._shells: dict[str, TerminalSession] = {}
@@ -231,8 +239,9 @@ class Engine:
     # ------------------------------------------------------------------
 
     async def start(self, *, ipc: bool = True) -> None:
-        """List the worktrees, load the config, start the IPC server (when
-        ``ipc``) and the timers."""
+        """List the worktrees, load the config, start the servers (when
+        ``ipc``: the legacy IPC one and, unless disabled, the v1 one) and
+        the timers."""
         if self._started:
             return
         self._started = True
@@ -242,6 +251,8 @@ class Engine:
         if ipc:
             with diag.timed(log, "engine.start_ipc"):
                 await self._start_ipc()
+            with diag.timed(log, "engine.start_v1"):
+                await self._start_v1()
         self._scheduler = Scheduler()
         self._scheduler.every(
             self._hang_interval, diag.wrap_timer("timer.check_hangs", self.check_hangs)
@@ -255,11 +266,13 @@ class Engine:
         self.worktree_service.start()
 
     async def stop(self) -> None:
-        """Stop the timers, jobs, IPC server and every session. Idempotent.
+        """Stop the timers, jobs, servers and every session. Idempotent.
 
-        Sessions are stopped quietly: no ``agent.exited`` is emitted for an
-        engine that is going away.
+        Clients hear ``engine.shutdown`` first. Sessions are stopped quietly:
+        no ``agent.exited`` is emitted for an engine that is going away.
         """
+        if self._started:
+            self.events.emit(ENGINE_SHUTDOWN, {"reason": "stopped"})
         self._started = False
         self._scheduler.stop()
         self.worktree_service.stop()
@@ -269,6 +282,10 @@ class Engine:
         self._groups.clear()
         for proc in list(self._jobs.values()):
             _kill(proc)
+        if self._v1_server is not None:
+            v1, self._v1_server = self._v1_server, None
+            self.v1_socket_path = None
+            await v1.stop()
         if self._ipc_server is not None:
             server, self._ipc_server = self._ipc_server, None
             await server.stop()
@@ -288,6 +305,36 @@ class Engine:
             self._ipc_server, self.socket_path = await start_ipc_server(self)
         except OSError as e:
             self.notice("warning", f"IPC server failed to start: {e}")
+
+    async def _start_v1(self) -> None:
+        from lazyagent.engine import server as v1
+
+        enabled = self._v1_enabled
+        if enabled is None:
+            enabled = v1.enabled()
+        repo_root = self.repo_root
+        if not enabled or not repo_root:
+            return
+        path = v1.socket_path(repo_root)
+        server = v1.V1Server(self, path)
+        try:
+            started = await server.start()
+        except OSError as e:
+            self.notice("warning", f"Protocol v1 server failed to start: {e}")
+            return
+        if not started:
+            other = v1.read_info(path.with_name(v1.INFO_NAME)) or {}
+            pid = other.get("pid")
+            self.notice(
+                "warning",
+                "Another lazyagent"
+                + (f" (pid {pid})" if pid else "")
+                + f" already serves this repo on {path}; this instance runs "
+                "without the protocol v1 server.",
+            )
+            return
+        self._v1_server = server
+        self.v1_socket_path = str(path)
 
     def load_config(self) -> None:
         root = self.repo_root
@@ -894,6 +941,17 @@ class Engine:
     def get_session(self, key: str, agent_id: str = "") -> AgentSession | None:
         agent = self._agents.get(key, {}).get(agent_id)
         return agent.session if agent is not None else None
+
+    def find_session(self, session_id: str) -> TerminalSession | None:
+        """The agent or shell session with this engine-wide id."""
+        for bucket in self._agents.values():
+            for agent in bucket.values():
+                if agent.info.session_id == session_id:
+                    return agent.session
+        for shell in self._shells.values():
+            if shell.session_id == session_id:
+                return shell
+        return None
 
     def get_agent(self, key: str, agent_id: str = "") -> AgentInfo | None:
         agent = self._agents.get(key, {}).get(agent_id)

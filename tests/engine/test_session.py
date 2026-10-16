@@ -223,6 +223,21 @@ class TestOutput:
         assert seen == []
 
     @pytest.mark.asyncio
+    async def test_viewers_hear_the_close_whether_it_exits_or_is_stopped(self):
+        exits = TerminalSession("sh -c 'printf bye'")
+        stopped = TerminalSession("sleep 30")
+        closed = []
+        exits.attach(lambda o, d: None, on_close=lambda: closed.append("exited"))
+        stopped.attach(lambda o, d: None, on_close=lambda: closed.append("stopped"))
+        exits.start()
+        stopped.start()
+        deadline = time.monotonic() + 5
+        while "exited" not in closed and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        stopped.stop()
+        assert closed == ["exited", "stopped"]
+
+    @pytest.mark.asyncio
     async def test_resize_applies_batched_output_at_the_old_size_first(self):
         session, _, _ = _agent(rows=3, cols=10)
         session._on_chunk(b"0123456789abc")  # wraps at 10 columns

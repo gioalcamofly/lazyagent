@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "lazyagent/protocol/v1/methods.json",
   "title": "lazyagent protocol v1 method params and results",
-  "description": "Definitions named '<method>.params' and '<method>.result' for the ten methods inherited from the legacy IPC server. Fields marked 'v1' are additions the legacy server does not send.",
+  "description": "Definitions named '<method>.params' and '<method>.result': the ten methods inherited from the legacy IPC server, then the v1 additions. Fields marked 'v1' are additions the legacy server does not send.",
   "$defs": {
     "agent_status": {
       "type": "string",
@@ -107,9 +107,9 @@
 
     "spawn_agent.params": {
       "type": "object",
-      "required": ["worktree_path"],
+      "description": "worktree_path is required for kind 'agent' and ignored for 'orchestrator'.",
       "properties": {
-        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "worktree_path": {"type": "string"},
         "instruction": {"type": ["string", "null"]},
         "initial_prompt": {"type": ["string", "null"], "description": "Deprecated alias of instruction."},
         "skip_permissions": {"type": "boolean", "default": true},
@@ -230,6 +230,205 @@
       "properties": {
         "worktree_path": {"type": "string"},
         "agents": {"type": "array", "items": {"$ref": "#/$defs/agent"}}
+      }
+    },
+
+    "size": {
+      "type": "object",
+      "required": ["rows", "cols"],
+      "properties": {
+        "rows": {"type": "integer", "minimum": 1},
+        "cols": {"type": "integer", "minimum": 1}
+      }
+    },
+    "session_id": {"type": "string", "minLength": 1},
+    "worktree_paths": {"type": "array", "items": {"type": "string"}},
+
+    "subscribe.params": {
+      "type": "object",
+      "properties": {
+        "since": {"type": ["integer", "null"], "minimum": 0, "description": "Replay the events after this seq first; omitted or null means from now."},
+        "events": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Only these event names; omitted or null means all. A later subscribe replaces the filter."}
+      }
+    },
+    "subscribe.result": {
+      "type": "object",
+      "required": ["cursor", "replayed", "truncated"],
+      "properties": {
+        "cursor": {"type": "integer", "minimum": 0, "description": "seq of the newest event when the subscription started; live events are after it."},
+        "replayed": {"type": "integer", "minimum": 0, "description": "How many history events follow the response, before the live ones."},
+        "truncated": {"type": "boolean", "description": "True when events after since were already evicted from the history."}
+      }
+    },
+    "unsubscribe.params": {"type": "object", "properties": {}},
+    "unsubscribe.result": {
+      "type": "object",
+      "required": ["unsubscribed"],
+      "properties": {
+        "unsubscribed": {"type": "boolean", "description": "False when there was no subscription."}
+      }
+    },
+
+    "attach_stream.params": {
+      "type": "object",
+      "required": ["session_id"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/session_id"},
+        "from_offset": {"type": ["integer", "null"], "minimum": 0, "description": "Resume point: offset after the last byte the client has."}
+      }
+    },
+    "attach_stream.result": {
+      "type": "object",
+      "required": ["stream_id", "session_id", "size", "mode", "offset"],
+      "properties": {
+        "stream_id": {"type": "integer", "minimum": 1, "description": "Per connection; output and input frames carry it."},
+        "session_id": {"type": "string"},
+        "size": {"$ref": "#/$defs/size"},
+        "mode": {"enum": ["snapshot", "tail"], "description": "tail: output frames resume at from_offset. snapshot: render 'snapshot' into an empty terminal of 'size', then the output frames from 'offset'."},
+        "offset": {"type": "integer", "minimum": 0, "description": "Offset of the first output frame that follows."},
+        "snapshot": {"type": "string", "description": "mode snapshot only: ANSI that rebuilds the screen and capped scrollback as of 'offset'."}
+      }
+    },
+    "detach_stream.params": {
+      "type": "object",
+      "required": ["stream_id"],
+      "properties": {
+        "stream_id": {"type": "integer", "minimum": 1}
+      }
+    },
+    "detach_stream.result": {
+      "type": "object",
+      "required": ["stream_id", "detached"],
+      "properties": {
+        "stream_id": {"type": "integer"},
+        "detached": {"const": true}
+      }
+    },
+
+    "resize.params": {
+      "type": "object",
+      "required": ["session_id", "rows", "cols"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/session_id"},
+        "rows": {"type": "integer", "minimum": 1},
+        "cols": {"type": "integer", "minimum": 1}
+      }
+    },
+    "resize.result": {"$ref": "#/$defs/size_owner"},
+    "claim_size.params": {
+      "type": "object",
+      "required": ["session_id"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/session_id"},
+        "rows": {"type": "integer", "minimum": 1, "description": "With cols: claim and resize in one step."},
+        "cols": {"type": "integer", "minimum": 1}
+      }
+    },
+    "claim_size.result": {"$ref": "#/$defs/size_owner"},
+    "size_owner": {
+      "type": "object",
+      "required": ["session_id", "rows", "cols", "owner"],
+      "properties": {
+        "session_id": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 1},
+        "cols": {"type": "integer", "minimum": 1},
+        "owner": {"type": "boolean", "description": "Whether the caller owns the session's size."}
+      }
+    },
+
+    "open_shell.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "env": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "Environment of a shell started by this call; ignored when it already runs."
+        }
+      }
+    },
+    "open_shell.result": {
+      "type": "object",
+      "required": ["worktree_path", "session_id", "size"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "session_id": {"type": "string"},
+        "size": {"$ref": "#/$defs/size"}
+      }
+    },
+
+    "refresh_worktrees.params": {"type": "object", "properties": {}},
+    "refresh_worktrees.result": {"$ref": "#/$defs/list_worktrees.result"},
+    "refresh_git_status.params": {
+      "type": "object",
+      "properties": {
+        "paths": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Omitted or null means every worktree."}
+      }
+    },
+    "refresh_git_status.result": {
+      "type": "object",
+      "required": ["statuses"],
+      "properties": {
+        "statuses": {"$ref": "events.json#/$defs/git_status.updated"}
+      }
+    },
+    "get_diff.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"}
+      }
+    },
+    "get_diff.result": {
+      "type": "object",
+      "required": ["worktree_path", "diff"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "diff": {"type": "string", "description": "Capped like the TUI's diff tab."}
+      }
+    },
+    "get_pr_info.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "refresh": {"type": "boolean", "default": false, "description": "Fetch even when a cached answer exists."}
+      }
+    },
+    "get_pr_info.result": {
+      "type": "object",
+      "required": ["worktree_path", "pr_info", "fetched"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "pr_info": {"anyOf": [{"$ref": "events.json#/$defs/pr_info"}, {"type": "null"}]},
+        "fetched": {"type": "boolean", "description": "False when no answer could be fetched (no gh); pr_info is then null."}
+      }
+    },
+    "set_interest.params": {
+      "type": "object",
+      "required": ["worktree_paths"],
+      "properties": {
+        "worktree_paths": {"$ref": "#/$defs/worktree_paths"}
+      }
+    },
+    "set_interest.result": {
+      "type": "object",
+      "required": ["worktree_paths", "interest"],
+      "properties": {
+        "worktree_paths": {"$ref": "#/$defs/worktree_paths", "description": "This client's interest set."},
+        "interest": {"$ref": "#/$defs/worktree_paths", "description": "The union over every client, which the pollers use."}
+      }
+    },
+    "get_config.params": {"type": "object", "properties": {}},
+    "get_config.result": {
+      "type": "object",
+      "required": ["agent_provider", "default_branch", "has_custom_create", "has_custom_remove"],
+      "properties": {
+        "agent_provider": {"type": "string"},
+        "default_branch": {"type": "string"},
+        "has_custom_create": {"type": "boolean"},
+        "has_custom_remove": {"type": "boolean"}
       }
     },
 

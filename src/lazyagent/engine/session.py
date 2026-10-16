@@ -37,7 +37,11 @@ import pyte
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_observers import AgentLifecycleEvent, AgentObserver
-from lazyagent.engine.screen import ScrollbackScreen
+from lazyagent.engine.screen import (
+    SNAPSHOT_SCROLLBACK_LINES,
+    ScrollbackScreen,
+    ansi_snapshot,
+)
 from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
 
@@ -141,6 +145,8 @@ class SessionExited:
 SessionEvent = StatusChanged | SessionExited
 SessionListener = Callable[[SessionEvent], None]
 OutputListener = Callable[[int, bytes], None]
+# (rows, cols, offset): the new size and the output offset it applies from.
+SizeListener = Callable[[int, int, int], None]
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +228,17 @@ class ByteRing:
 
 
 class _Viewer:
-    __slots__ = ("on_output", "watching")
+    __slots__ = ("on_close", "on_output", "watching")
 
-    def __init__(self, on_output: OutputListener, watching: Callable[[], bool]):
+    def __init__(
+        self,
+        on_output: OutputListener,
+        watching: Callable[[], bool],
+        on_close: Callable[[], None] | None,
+    ):
         self.on_output = on_output
         self.watching = watching
+        self.on_close = on_close
 
 
 class TerminalSession:
@@ -276,6 +288,7 @@ class TerminalSession:
 
         self._listeners: list[SessionListener] = []
         self._viewers: list[_Viewer] = []
+        self._size_listeners: list[SizeListener] = []
         self._pending_feed: list[str] = []
         self._feed_handle: asyncio.TimerHandle | None = None
 
@@ -341,6 +354,12 @@ class TerminalSession:
             self.exit_code = emulator.returncode
         self._cancel_feed_timer()
         self._before_close()
+        for viewer in list(self._viewers):
+            if viewer.on_close is not None:
+                try:
+                    viewer.on_close()
+                except Exception:
+                    log.exception("viewer close callback failed")
 
     async def _recv(self) -> None:
         emulator = self._emulator
@@ -485,14 +504,16 @@ class TerminalSession:
         on_output: OutputListener,
         *,
         watching: Callable[[], bool] = lambda: True,
+        on_close: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
-        """Call ``on_output(offset, data)`` for every output chunk.
+        """Call ``on_output(offset, data)`` for every output chunk, and
+        ``on_close()`` once the PTY is gone (stopped or exited).
 
         While any viewer's ``watching()`` is true the screen is fed before
         the call, so the viewer can render it right away. Returns a detach
         function.
         """
-        viewer = _Viewer(on_output, watching)
+        viewer = _Viewer(on_output, watching, on_close)
         self._viewers.append(viewer)
 
         def detach() -> None:
@@ -500,6 +521,38 @@ class TerminalSession:
                 self._viewers.remove(viewer)
 
         return detach
+
+    def on_resize(self, listener: SizeListener) -> Callable[[], None]:
+        """Call ``listener(rows, cols, offset)`` after every size change;
+        returns a remover."""
+        self._size_listeners.append(listener)
+
+        def remove() -> None:
+            if listener in self._size_listeners:
+                self._size_listeners.remove(listener)
+
+        return remove
+
+    @property
+    def viewer_count(self) -> int:
+        return len(self._viewers)
+
+    def snapshot(
+        self, max_scrollback: int = SNAPSHOT_SCROLLBACK_LINES
+    ) -> tuple[int, str]:
+        """``(offset, ansi)``: the screen as ANSI (see
+        :func:`~lazyagent.engine.screen.ansi_snapshot`) and the output offset
+        it is exact at. The bytes from ``offset`` on are not in it: a client
+        that renders the snapshot then feeds the output from ``offset`` ends
+        up with this screen.
+        """
+        self.flush()
+        # A chunk that ended inside a UTF-8 sequence leaves its first bytes
+        # in the decoder, out of the screen.
+        undecoded = len(self._decoder.getstate()[0])
+        return self.ring.end_offset - undecoded, ansi_snapshot(
+            self.screen, max_scrollback
+        )
 
     def _emit(self, event: SessionEvent) -> None:
         for listener in list(self._listeners):
@@ -528,6 +581,12 @@ class TerminalSession:
         self.screen.resize(rows, cols)
         if self._emulator is not None:
             self._emulator.recv_queue.put_nowait(["set_size", rows, cols])
+        offset = self.ring.end_offset
+        for listener in list(self._size_listeners):
+            try:
+                listener(rows, cols, offset)
+            except Exception:
+                log.exception("size listener failed")
 
     def frame_input(self, text: str) -> str:
         """Frame ``text`` the way a terminal delivers content, not keystrokes.

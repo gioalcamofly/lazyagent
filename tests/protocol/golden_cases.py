@@ -184,7 +184,7 @@ async def _():
         await asyncio.sleep(10)
 
     engine.spawn_agent = _stuck
-    with patch("lazyagent.ipc._OP_TIMEOUT", 0.0):
+    with patch("lazyagent.engine.methods._OP_TIMEOUT", 0.0):
         return await _call(engine, "spawn_agent", {"worktree_path": "/tmp/repo"})
 
 
@@ -269,7 +269,7 @@ async def _():
 
 @case("send_agent_input/unconfirmed")
 async def _():
-    with patch("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.0):
+    with patch("lazyagent.engine.methods._INPUT_CONFIRM_TIMEOUT", 0.0):
         return await _send(AgentStatus.WAITING, {})
 
 

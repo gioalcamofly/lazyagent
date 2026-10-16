@@ -39,9 +39,11 @@
     },
     "stream_geometry": {
       "type": "object",
+      "description": "Sent only to the connection that owns the stream; 'seq' is then the engine's latest seq, not a new one, and these events are not replayed.",
       "required": ["stream_id", "rows", "cols", "offset"],
       "properties": {
         "stream_id": {"type": "integer", "minimum": 0},
+        "session_id": {"type": "string"},
         "rows": {"type": "integer", "minimum": 1},
         "cols": {"type": "integer", "minimum": 1},
         "offset": {"type": "integer", "minimum": 0, "description": "Output offset at which the change applies."}
@@ -114,6 +116,17 @@
     },
     "stream.resized": {"$ref": "#/$defs/stream_geometry"},
     "stream.reset": {"$ref": "#/$defs/stream_geometry"},
+    "stream.closed": {
+      "type": "object",
+      "description": "The session's PTY is gone (exited or stopped); the stream is detached. Per connection, like stream.resized.",
+      "required": ["stream_id", "session_id", "offset"],
+      "properties": {
+        "stream_id": {"type": "integer", "minimum": 0},
+        "session_id": {"type": "string"},
+        "offset": {"type": "integer", "minimum": 0, "description": "Offset after the last output byte."},
+        "exit_code": {"type": ["integer", "null"]}
+      }
+    },
     "engine.notice": {
       "type": "object",
       "required": ["severity", "message"],

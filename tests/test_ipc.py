@@ -498,7 +498,7 @@ class TestSendAgentInput:
     @pytest.fixture(autouse=True)
     def _no_confirm_wait(self, monkeypatch):
         # These agents never react; don't sit out the delivery confirmation.
-        monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.0)
+        monkeypatch.setattr("lazyagent.engine.methods._INPUT_CONFIRM_TIMEOUT", 0.0)
 
     @staticmethod
     def _engine_with_session():
@@ -595,7 +595,7 @@ class TestSendAgentInputDelivery:
 
     @pytest.mark.asyncio
     async def test_unconfirmed_when_the_agent_does_not_react(self, monkeypatch):
-        monkeypatch.setattr("lazyagent.ipc._INPUT_CONFIRM_TIMEOUT", 0.01)
+        monkeypatch.setattr("lazyagent.engine.methods._INPUT_CONFIRM_TIMEOUT", 0.01)
         engine, session = _engine_with_agent(AgentStatus.WAITING)
         server = _server(engine)
 
