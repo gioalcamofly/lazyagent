@@ -10,6 +10,7 @@ from lazyagent.agent_providers import (
     get_agent_provider,
 )
 from lazyagent.engine.registry import ORCHESTRATOR_KEY, AgentRegistry
+from lazyagent.engine.session import AgentSession
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 
 __all__ = ["ORCHESTRATOR_KEY", "OrchestratorPanel"]
@@ -54,6 +55,11 @@ class OrchestratorPanel(Container):
         """The orchestrator is single-agent; ``agent_id`` is ignored."""
         return self._agent_terminal
 
+    def get_session(self, agent_id: str = "") -> AgentSession | None:
+        """The orchestrator's session; ``agent_id`` is ignored."""
+        terminal = self._agent_terminal
+        return terminal.session if terminal is not None else None
+
     def agent_session_name(self, agent_id: str = "") -> str:
         """The name other Claude sessions address the orchestrator by."""
         return self._session_name
@@ -64,10 +70,7 @@ class OrchestratorPanel(Container):
 
     @property
     def has_agent(self) -> bool:
-        return (
-            self._agent_terminal is not None
-            and self._agent_terminal.emulator is not None
-        )
+        return self._agent_terminal is not None and self._agent_terminal.session.running
 
     async def cleanup_agent(self, agent_id: str | None = None) -> None:
         """Remove the agent terminal and restore the placeholder."""
@@ -126,12 +129,12 @@ class OrchestratorPanel(Container):
             session_name=self._session_name or None,
         )
 
-        terminal = MonitoredTerminal(
-            command=command,
+        session = AgentSession(
+            command,
             worktree_path=ORCHESTRATOR_KEY,
             observer=provider.create_observer_from_context(runtime_context),
-            id="orch-agent-terminal",
         )
+        terminal = MonitoredTerminal(session, id="orch-agent-terminal")
         self._agent_terminal = terminal
         self.mount(terminal)
         terminal.start()

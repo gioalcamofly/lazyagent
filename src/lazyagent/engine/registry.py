@@ -226,13 +226,19 @@ class AgentRegistry:
         status: AgentStatus,
         confidence: LifecycleConfidence,
         detail: str = "",
+        last_output_time: float | None = None,
     ) -> AgentState:
-        """Record an agent's status; publish an event if the status changed."""
+        """Record an agent's status; publish an event if the status changed.
+
+        ``last_output_time`` (``time.monotonic()``) is kept when given.
+        """
         state = self.get(key, agent_id)
         previous = state.status
         state.status = status
         state.confidence = confidence
         state.detail = detail
+        if last_output_time is not None:
+            state.last_output_time = last_output_time
         self._apply_identity(key, agent_id, state)
         if status != previous:
             self.events.publish(

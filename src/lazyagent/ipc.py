@@ -485,39 +485,16 @@ class IpcServer:
             raise ValueError("No agent terminal in this worktree")
 
         agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
-        terminal = panel.get_agent(agent_id)
-        if terminal is None:
+        session = panel.get_session(agent_id)
+        if session is None:
             raise ValueError("No agent terminal in this worktree")
-        screen = terminal._screen
-        total_lines = len(screen.scrollback) + screen.lines
-
-        # Collect only the last num_lines by iterating from the end:
-        # first the live screen buffer (bottom), then scrollback (top).
-        collected: list[str] = []
-        remaining = min(num_lines, total_lines)
-
-        # Live screen lines (bottom-up)
-        for row in range(screen.lines - 1, -1, -1):
-            if remaining <= 0:
-                break
-            collected.append(screen.screen_text(row))
-            remaining -= 1
-
-        # Scrollback lines (bottom-up)
-        if remaining > 0:
-            for index in range(len(screen.scrollback) - 1, -1, -1):
-                if remaining <= 0:
-                    break
-                collected.append(screen.scrollback_text(index))
-                remaining -= 1
-
-        collected.reverse()
+        lines = session.tail_lines(num_lines)
 
         return _ok(request_id, {
             "worktree_path": worktree_path,
             "agent_id": agent_id,
-            "lines": collected,
-            "total_lines": total_lines,
+            "lines": lines,
+            "total_lines": session.total_lines,
         })
 
     async def handle_send_agent_input(
@@ -540,12 +517,8 @@ class IpcServer:
             raise ValueError("No running agent in this worktree")
 
         agent_id = self._resolve_agent_id(panel.agent_ids, params.get("agent_id"))
-        terminal = panel.get_agent(agent_id)
-        if (
-            terminal is None
-            or terminal.emulator is None
-            or terminal.send_queue is None
-        ):
+        session = panel.get_session(agent_id)
+        if session is None or not session.running:
             raise ValueError("Agent terminal is not ready")
 
         confirm = params.get("confirm", True)
@@ -572,7 +545,7 @@ class IpcServer:
         # submits it have to reach the agent CLI as separate reads, or the
         # CLI parses the trailing CR as a character inside the message and
         # the prompt just sits there unsent.
-        await terminal.send_input(text, submit=True)
+        await session.send_input(text, submit=True)
 
         result: dict[str, Any] = {
             "worktree_path": worktree_path,

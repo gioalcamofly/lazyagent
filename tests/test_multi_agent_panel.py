@@ -13,6 +13,7 @@ from lazyagent.widgets.center_panel import (
     _DIFF_TAB_ID,
     _PLACEHOLDER_TAB_ID,
 )
+from lazyagent.engine.session import AgentSession
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.worktree_list import format_agents_status
 from lazyagent.models import WorktreeInfo, GitStatus
@@ -68,16 +69,15 @@ def patched(monkeypatch):
     monkeypatch.setattr(LazyAgent, "_refresh_pr_status", lambda self: None)
 
     def fake_start(self):
-        # Pretend the pty is live without spawning a subprocess. Real queues
-        # so on_resize/on_show (which put set_size messages) don't blow up.
+        # Pretend the pty is live without spawning a subprocess. A real queue
+        # so a resize (which queues a set_size message) doesn't blow up.
         import asyncio
+        from types import SimpleNamespace
 
-        self.emulator = object()
-        self.send_queue = asyncio.Queue()
-        self.recv_queue = asyncio.Queue()
+        self._emulator = SimpleNamespace(recv_queue=asyncio.Queue(), pid=0)
 
-    monkeypatch.setattr(MonitoredTerminal, "start", fake_start)
-    monkeypatch.setattr(MonitoredTerminal, "stop", lambda self: None)
+    monkeypatch.setattr(AgentSession, "start", fake_start)
+    monkeypatch.setattr(AgentSession, "stop", lambda self: None)
     monkeypatch.setattr(MonitoredTerminal, "focus", lambda self: self)
 
 
@@ -104,6 +104,11 @@ async def test_spawn_adds_a_tab_per_agent(patched):
 
         assert [a1, a2] == ["a1", "a2"]
         assert panel.agent_ids == ["a1", "a2"]
+        assert panel.has_agent
+        session = panel.get_session("a2")
+        assert session is panel.get_agent("a2").session
+        assert session.worktree_path == FEATURE_WORKTREE.path
+        assert session.agent_id == "a2"
         assert _agent_panes(panel) == ["agent-tab-a1", "agent-tab-a2"]
 
         # Newest agent's tab is active, and the placeholder tab is gone.

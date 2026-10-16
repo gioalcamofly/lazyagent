@@ -59,11 +59,11 @@ async def _call(app, method: str, params: dict[str, Any], request_id: str = "req
     return method, params, response
 
 
-def _panel_app(agent_ids=("a1",), terminal=None, **kwargs):
+def _panel_app(agent_ids=("a1",), session=None, **kwargs):
     app = _make_app(**kwargs)
     panel = MagicMock()
     panel.agent_ids = list(agent_ids)
-    panel.get_agent.return_value = terminal
+    panel.get_session.return_value = session
     center = MagicMock()
     center.get_panel.return_value = panel
     app.query_one.return_value = center
@@ -254,26 +254,20 @@ async def _():
 
 @case("read_agent_output/scrollback_and_screen")
 async def _():
-    import pyte
+    from lazyagent.engine.session import TerminalSession
 
-    from lazyagent.widgets.scrollable_terminal import ScrollbackScreen
-
-    screen = ScrollbackScreen(40, 4)
-    stream = pyte.Stream(screen)
-    for i in range(12):
-        stream.feed(f"line {i}\r\n")
-    terminal = MagicMock()
-    terminal._screen = screen
-    app = _panel_app(terminal=terminal)
+    session = TerminalSession("unused", rows=4, cols=40)
+    session._stream.feed("".join(f"line {i}\r\n" for i in range(12)))
+    app = _panel_app(session=session)
     return await _call(app, "read_agent_output", {"worktree_path": "/tmp/repo", "lines": 6})
 
 
 # --- send_agent_input -----------------------------------------------------
 
 async def _send(status, params, *, reacts=(), detail=""):
-    app, terminal = _app_with_agent(status, detail=detail)
+    app, session = _app_with_agent(status, detail=detail)
     if reacts:
-        terminal.send_input.side_effect = _react(app, *reacts)
+        session.send_input.side_effect = _react(app, *reacts)
     return await _call(
         app, "send_agent_input", {"worktree_path": "/tmp/repo", "text": "go", **params}
     )

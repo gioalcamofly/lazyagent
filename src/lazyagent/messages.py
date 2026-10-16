@@ -19,6 +19,7 @@ class AgentStatusChanged(Message):
         confidence: LifecycleConfidence = LifecycleConfidence.LOW,
         detail: str = "",
         agent_id: str = "",
+        last_output_time: float | None = None,
     ) -> None:
         super().__init__()
         self.worktree_path = worktree_path
@@ -26,12 +27,16 @@ class AgentStatusChanged(Message):
         self.confidence = confidence
         self.detail = detail
         self.agent_id = agent_id
+        self.last_output_time = last_output_time
 
 
 class AgentExited(Message):
-    """Claude process disconnected from the pty."""
+    """Agent process disconnected from the pty."""
 
-    def __init__(self, worktree_path: str, agent_id: str = "") -> None:
+    def __init__(
+        self, worktree_path: str, agent_id: str = "", exit_code: int | None = None
+    ) -> None:
         super().__init__()
         self.worktree_path = worktree_path
         self.agent_id = agent_id
+        self.exit_code = exit_code

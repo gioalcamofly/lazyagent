@@ -17,6 +17,7 @@ from lazyagent.agent_providers import (
     get_agent_provider,
 )
 from lazyagent.engine.registry import AgentRegistry
+from lazyagent.engine.session import AgentSession, TerminalSession
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
@@ -221,10 +222,11 @@ class WorktreePanel(Container):
                     f" && cd {shlex.quote(self.worktree_path)}"
                     f" && exec bash -l"
                 )
-                terminal = ScrollableTerminal(
-                    command=f"bash -c {shlex.quote(script)}",
-                    id="terminal-widget",
+                session = TerminalSession(
+                    f"bash -c {shlex.quote(script)}",
+                    worktree_path=self.worktree_path,
                 )
+                terminal = ScrollableTerminal(session, id="terminal-widget")
                 pane.mount(terminal)
                 terminal.start()
             except Exception:
@@ -278,6 +280,11 @@ class WorktreePanel(Container):
         """Return the terminal for a specific agent, or None."""
         return self._agents.get(agent_id)
 
+    def get_session(self, agent_id: str) -> AgentSession | None:
+        """Return the session behind a specific agent, or None."""
+        terminal = self._agents.get(agent_id)
+        return terminal.session if terminal is not None else None
+
     def agent_label(self, agent_id: str) -> str:
         """Return the human-facing tab label for an agent."""
         return self.registry.label(self.worktree_path, agent_id)
@@ -316,7 +323,7 @@ class WorktreePanel(Container):
     @property
     def has_agent(self) -> bool:
         """True if any spawned agent has a live pty."""
-        return any(t.emulator is not None for t in self._agents.values())
+        return any(t.session.running for t in self._agents.values())
 
     async def _ensure_placeholder_tab(self) -> None:
         """Re-add the placeholder tab when no agents remain."""
@@ -421,14 +428,14 @@ class WorktreePanel(Container):
         with diag.timed(
             log, "spawn.mount_pane", spawn_id=_diag_spawn_id, agent_id=agent_id
         ):
-            terminal = MonitoredTerminal(
-                command=command,
+            session = AgentSession(
+                command,
                 worktree_path=self.worktree_path,
-                observer=provider.create_observer_from_context(runtime_context),
                 agent_id=agent_id,
-                id=_agent_terminal_id(agent_id),
+                observer=provider.create_observer_from_context(runtime_context),
+                spawn_id=_diag_spawn_id,
             )
-            terminal._diag_spawn_id = _diag_spawn_id
+            terminal = MonitoredTerminal(session, id=_agent_terminal_id(agent_id))
             self._agents[agent_id] = terminal
             pane = TabPane(tab_label, terminal, id=_agent_tab_id(agent_id))
             await tabs.add_pane(pane, before=_DIFF_TAB_ID)

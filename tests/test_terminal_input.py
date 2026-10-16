@@ -11,16 +11,15 @@ matter how the writes coalesce.
 
 from __future__ import annotations
 
-import asyncio
+from unittest.mock import AsyncMock
 
-import pyte
 import pytest
 
+from lazyagent.engine.session import TerminalSession
 from lazyagent.widgets.scrollable_terminal import (
     BRACKETED_PASTE_END,
     BRACKETED_PASTE_START,
     ScrollableTerminal,
-    ScrollbackScreen,
 )
 
 
@@ -123,176 +122,68 @@ class TestTokenizerModel:
 
 
 # ---------------------------------------------------------------------------
-# ScrollableTerminal framing + submit sequencing
+# The widget forwards input to its session
 # ---------------------------------------------------------------------------
+#
+# Framing, submit sequencing and mode tracking belong to the session and are
+# tested in tests/engine/test_session.py.
 
 
-def _make_terminal(*, bracketed_paste: bool = True) -> ScrollableTerminal:
-    """A ScrollableTerminal with a fake emulator and a real send queue."""
+class _RecordingSession(TerminalSession):
+    def __init__(self, *, bracketed_paste: bool = False, mouse_tracking: bool = False):
+        super().__init__("unused")
+        self.bracketed_paste = bracketed_paste
+        self.mouse_tracking = mouse_tracking
+        self.writes: list[str] = []
+
+    @property
+    def running(self) -> bool:
+        return True
+
+    def write(self, data) -> None:
+        self.writes.append(data)
+
+
+def _make_terminal(session: TerminalSession) -> ScrollableTerminal:
     t = ScrollableTerminal.__new__(ScrollableTerminal)
-    t.ncol = 80
-    t.nrow = 5
-    t.mouse_tracking = False
-    t.bracketed_paste = bracketed_paste
-    t._output_event = asyncio.Event()
-    t.emulator = object()
-    t.send_queue = asyncio.Queue()
-    t._screen = ScrollbackScreen(80, 5)
-    t.stream = pyte.Stream(t._screen)
+    t.session = session
+    t.ctrl_keys = {"up": "\x1bOA"}
+    t._follow_output = True
     return t
 
 
-def _drain(queue: asyncio.Queue) -> list[list]:
-    items = []
-    while not queue.empty():
-        items.append(queue.get_nowait())
-    return items
-
-
-class TestFrameInput:
-    def test_wraps_in_paste_markers_when_child_asked_for_them(self):
-        t = _make_terminal(bracketed_paste=True)
-        assert t.frame_input("hello") == (
-            BRACKETED_PASTE_START + "hello" + BRACKETED_PASTE_END
-        )
-
-    def test_no_markers_when_child_did_not_enable_them(self):
-        """Unrequested markers would be inserted as literal junk."""
-        t = _make_terminal(bracketed_paste=False)
-        assert t.frame_input("hello") == "hello"
-
-    def test_carriage_returns_in_body_become_newlines(self):
-        t = _make_terminal(bracketed_paste=False)
-        assert t.frame_input("a\r\nb\rc") == "a\nb\nc"
-
-    def test_embedded_end_marker_is_stripped(self):
-        """Otherwise the payload could close its own paste and inject keys."""
-        t = _make_terminal(bracketed_paste=True)
-        framed = t.frame_input(f"safe{BRACKETED_PASTE_END}\rrm -rf /")
-        assert framed.count(BRACKETED_PASTE_END) == 1
-        assert framed.endswith(BRACKETED_PASTE_END)
-
-
-class TestSendInput:
+class TestWidgetInput:
     @pytest.mark.asyncio
-    async def test_submit_key_is_a_separate_write(self):
-        t = _make_terminal()
-        t._output_event.set()  # child already acknowledged
+    async def test_keys_are_written_to_the_session(self):
+        from textual import events
 
-        await t.send_input(LONG, submit=True)
+        session = _RecordingSession()
+        t = _make_terminal(session)
+        await t.on_key(events.Key("a", "a"))
+        await t.on_key(events.Key("up", None))
+        assert session.writes == ["a", "\x1bOA"]
 
-        writes = _drain(t.send_queue)
-        assert writes == [
-            ["stdin", BRACKETED_PASTE_START + LONG + BRACKETED_PASTE_END],
-            ["stdin", "\r"],
+    @pytest.mark.asyncio
+    async def test_paste_is_framed_by_the_session_modes(self):
+        from textual import events
+
+        session = _RecordingSession(bracketed_paste=True)
+        t = _make_terminal(session)
+        await t.on_paste(events.Paste("one\ntwo"))
+        assert session.writes == [
+            BRACKETED_PASTE_START + "one\ntwo" + BRACKETED_PASTE_END
         ]
 
     @pytest.mark.asyncio
-    async def test_no_submit_key_when_not_submitting(self):
-        t = _make_terminal()
-        await t.send_input("hello", submit=False)
-        assert len(_drain(t.send_queue)) == 1
+    async def test_send_input_goes_through_the_session(self):
+        session = _RecordingSession()
+        session.send_input = AsyncMock()
+        t = _make_terminal(session)
+        await t.send_input("hi", submit=True)
+        session.send_input.assert_awaited_once_with("hi", submit=True)
 
-    @pytest.mark.asyncio
-    async def test_submit_waits_for_the_child_to_acknowledge(self):
-        """The CR is held until the child produces output after our write."""
-        t = _make_terminal()
+    def test_mouse_reports_are_sgr_encoded(self):
+        from lazyagent.widgets.scrollable_terminal import _sgr_mouse
 
-        task = asyncio.create_task(t.send_input(LONG, submit=True))
-        await asyncio.sleep(0.05)
-
-        assert [w[1] for w in _drain(t.send_queue)] == [
-            BRACKETED_PASTE_START + LONG + BRACKETED_PASTE_END
-        ]
-
-        t._output_event.set()  # child redrew — it has read the paste
-        await task
-        assert [w[1] for w in _drain(t.send_queue)] == ["\r"]
-
-    @pytest.mark.asyncio
-    async def test_submits_anyway_when_the_child_stays_silent(self, monkeypatch):
-        """A quiet agent must not swallow the instruction entirely."""
-        monkeypatch.setattr(
-            "lazyagent.widgets.scrollable_terminal.SUBMIT_ACK_TIMEOUT", 0.05
-        )
-        t = _make_terminal()
-
-        await t.send_input(LONG, submit=True)
-
-        assert [w[1] for w in _drain(t.send_queue)][-1] == "\r"
-
-    @pytest.mark.asyncio
-    async def test_stale_output_does_not_count_as_acknowledgement(self):
-        """Output from before our write must not release the submit key."""
-        t = _make_terminal()
-        t._output_event.set()  # output from before we wrote anything
-
-        task = asyncio.create_task(t.send_input(LONG, submit=True))
-        await asyncio.sleep(0)
-        # send_input clears the flag before writing, so this is a fresh wait.
-        assert t._output_event.is_set() is False
-        t._output_event.set()
-        await task
-
-    @pytest.mark.asyncio
-    async def test_raises_when_the_terminal_is_not_running(self):
-        t = _make_terminal()
-        t.emulator = None
-        with pytest.raises(RuntimeError):
-            await t.send_input("hello", submit=True)
-
-
-class TestModeTracking:
-    def test_bracketed_paste_enable_and_disable(self):
-        t = _make_terminal(bracketed_paste=False)
-        t._scan_terminal_modes("\x1b[?2004h")
-        assert t.bracketed_paste is True
-        t._scan_terminal_modes("\x1b[?2004l")
-        assert t.bracketed_paste is False
-
-    def test_mode_in_a_multi_parameter_decset(self):
-        t = _make_terminal(bracketed_paste=False)
-        t._scan_terminal_modes("\x1b[?1000;1006;2004h")
-        assert t.bracketed_paste is True
-        assert t.mouse_tracking is True
-
-    def test_mouse_tracking_still_tracked(self):
-        t = _make_terminal()
-        t._scan_terminal_modes("\x1b[?1000h")
-        assert t.mouse_tracking is True
-        t._scan_terminal_modes("\x1b[?1000l")
-        assert t.mouse_tracking is False
-
-    def test_unrelated_sequences_are_ignored(self):
-        t = _make_terminal(bracketed_paste=False)
-        t._scan_terminal_modes("\x1b[2J\x1b[?25l\x1b[1;5H")
-        assert t.bracketed_paste is False
-        assert t.mouse_tracking is False
-
-
-class TestModeTrackingWhileHidden:
-    """A hidden agent is the normal MCP target; its modes must stay current."""
-
-    @pytest.mark.asyncio
-    async def test_recv_tracks_modes_for_a_zero_height_widget(self):
-        from unittest.mock import PropertyMock, patch
-
-        from textual.geometry import Size
-
-        t = _make_terminal(bracketed_paste=False)
-        t._stopped = False
-        t._hidden_feed_buffer = []
-        t._hidden_feed_handle = None
-        t.recv_queue = asyncio.Queue()
-        t.recv_queue.put_nowait(["stdout", "\x1b[?2004h"])
-
-        with patch.object(
-            type(t), "size", new_callable=PropertyMock, return_value=Size(0, 0)
-        ):
-            task = asyncio.create_task(t.recv())
-            await asyncio.sleep(0.01)
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-        assert t.bracketed_paste is True
-        assert t._output_event.is_set() is True
+        assert _sgr_mouse(0, 4, 2, release=True) == "\x1b[<0;5;3M\x1b[<0;5;3m"
+        assert _sgr_mouse(64, 0, 0) == "\x1b[<64;1;1M"
