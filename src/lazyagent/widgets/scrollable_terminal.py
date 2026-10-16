@@ -751,12 +751,20 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         event.stop()
         char = self.ctrl_keys.get(event.key) or event.character
         if char:
+            self._claim_size()
             self.session.write(char)
+
+    def _claim_size(self) -> None:
+        """Typing here takes the PTY size back from a protocol client that
+        resized it (the latest client to type owns the size)."""
+        if (self.session.rows, self.session.cols) != (self.nrow, self.ncol):
+            self.session.resize(self.nrow, self.ncol)
 
     async def on_paste(self, event: events.Paste) -> None:
         if not self.session.running:
             return
         if event.text:
+            self._claim_size()
             # Re-frame as a paste for the child; it asked for the markers, and
             # forwarding raw text lets embedded newlines act as keypresses.
             self.session.write(self.frame_input(event.text))

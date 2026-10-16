@@ -149,6 +149,7 @@ def _make_terminal(session: TerminalSession) -> ScrollableTerminal:
     t.session = session
     t.ctrl_keys = {"up": "\x1bOA"}
     t._follow_output = True
+    t.nrow, t.ncol = session.rows, session.cols
     return t
 
 

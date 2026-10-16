@@ -604,6 +604,33 @@ class TestOnKeyCopy:
         t.session._emulator.recv_queue.put_nowait.assert_not_called()
 
 
+class TestTypingClaimsTheSize:
+    """The latest client to type owns the PTY size: typing in the TUI takes
+    it back from a protocol client that resized the session."""
+
+    @pytest.mark.asyncio
+    async def test_a_key_resizes_the_pty_back_to_the_view(self):
+        from textual import events
+
+        t = _make_scrollable_terminal()
+        t.session._emulator = MagicMock()
+        t.session.resize(30, 100)  # a remote client resized it
+        await t.on_key(events.Key("a", "a"))
+        assert (t.session.rows, t.session.cols) == (t.nrow, t.ncol)
+        calls = [c.args[0] for c in t.session._emulator.recv_queue.put_nowait.call_args_list]
+        assert calls[-2:] == [["set_size", t.nrow, t.ncol], ["stdin", "a"]]
+
+    @pytest.mark.asyncio
+    async def test_no_resize_when_the_size_already_matches(self):
+        from textual import events
+
+        t = _make_scrollable_terminal()
+        t.session._emulator = MagicMock()
+        await t.on_key(events.Key("a", "a"))
+        calls = [c.args[0] for c in t.session._emulator.recv_queue.put_nowait.call_args_list]
+        assert calls == [["stdin", "a"]]
+
+
 class TestCursorStyle:
     """Tests for _cursor_style and the cached default color resolution."""
 
