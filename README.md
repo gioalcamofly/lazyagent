@@ -79,6 +79,8 @@ From there:
 5. **Review** — press `Ctrl+D` to inspect diffs before committing
 6. **Clean up** — press `d` to remove worktrees when done
 
+> **Experimental:** `lazyagent host` runs the same TUI in a browser page (xterm.js) next to a live sidebar of worktrees, agents and PR/CI status. It serves 127.0.0.1 only; open the URL it prints (it carries an access token).
+
 By default lazyagent launches `claude`. Set `provider = "codex"` or `provider = "gemini"` in `.lazyagent.toml` to switch.
 
 ## Claude Code MCP Integration (optional)
