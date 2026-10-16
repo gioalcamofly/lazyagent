@@ -20,6 +20,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lazyagent import diagnostics as diag
@@ -33,6 +34,7 @@ ORCHESTRATOR_KEY = "__orchestrator__"
 
 _ID_RE = re.compile(r"a(\d+)")
 _STORE_VERSION = 1
+_CORRUPT_BACKUPS_KEPT = 3
 
 
 def default_id_store_path() -> Path:
@@ -54,7 +56,9 @@ class AgentIdStore:
 
     A missing or unreadable file counts as empty and an unwritable one is
     logged and skipped: losing the counters only risks reusing an id from a
-    previous run, which is no reason to stop spawning agents.
+    previous run, which is no reason to stop spawning agents. A corrupt file
+    is renamed to ``<name>.corrupt-<UTC timestamp>`` before it is replaced, so
+    it can still be inspected; only the newest few backups are kept.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -92,8 +96,25 @@ class AgentIdStore:
                 if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
             }
         except (ValueError, KeyError, TypeError) as e:
-            log.warning("agent id store %s is corrupt (%s); starting over", self.path, e)
+            backup = self._back_up_corrupt()
+            log.warning(
+                "agent id store %s is corrupt (%s); moved to %s, starting over",
+                self.path, e, backup,
+            )
             return {}
+
+    def _back_up_corrupt(self) -> Path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        backup = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+        os.replace(self.path, backup)
+        # The timestamp format sorts chronologically by name.
+        backups = sorted(self.path.parent.glob(f"{self.path.name}.corrupt-*"))
+        for old in backups[:-_CORRUPT_BACKUPS_KEPT]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return backup
 
     def _write(self, counters: dict[str, int]) -> None:
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")

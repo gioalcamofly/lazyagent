@@ -231,6 +231,27 @@ def test_corrupt_file_falls_back_to_one_with_a_warning(content, store_path, capl
     assert AgentRegistry(id_store=AgentIdStore(store_path)).new_agent_id("/wt") == "a2"
 
 
+def test_corrupt_file_is_backed_up_before_it_is_replaced(store_path, caplog):
+    store_path.parent.mkdir(parents=True)
+    store_path.write_text("{not json")
+    with caplog.at_level(logging.WARNING, logger="lazyagent.engine.registry"):
+        AgentRegistry(id_store=AgentIdStore(store_path)).new_agent_id("/wt")
+    backups = list(store_path.parent.glob("agent_ids.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "{not json"
+    assert str(backups[0]) in caplog.text
+    assert json.loads(store_path.read_text())["counters"] == {"/wt": 1}
+
+
+def test_only_the_newest_corrupt_backups_are_kept(store_path):
+    store_path.parent.mkdir(parents=True)
+    for i in range(5):
+        store_path.write_text(f"corrupt {i}")
+        AgentRegistry(id_store=AgentIdStore(store_path)).new_agent_id("/wt")
+    backups = sorted(store_path.parent.glob("agent_ids.json.corrupt-*"))
+    assert [b.read_text() for b in backups] == ["corrupt 2", "corrupt 3", "corrupt 4"]
+
+
 def test_bad_entries_are_skipped_good_ones_kept(store_path):
     store_path.parent.mkdir(parents=True)
     store_path.write_text(json.dumps({"counters": {"/wt": 4, "/bad": "7", "/flag": True}}))
