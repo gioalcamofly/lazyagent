@@ -215,7 +215,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
     app.engine.create_worktree = AsyncMock(
         return_value=CreatedWorktree("/repo-feature/demo", "feature/demo", "j1")
     )
-    app._select_worktree_by_path = MagicMock()
+    app._select_worktree_by_path = AsyncMock()
 
     await app._do_create_worktree(
         CreateWorktreeResult(
@@ -224,7 +224,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
     )
 
     app.engine.create_worktree.assert_awaited_once_with("feature/demo", "main", "--no-build")
-    app._select_worktree_by_path.assert_called_once_with("/repo-feature/demo")
+    app._select_worktree_by_path.assert_awaited_once_with("/repo-feature/demo")
     assert "Created worktree: demo" in app.notify.call_args.args[0]
 
 
@@ -246,6 +246,7 @@ async def test_do_remove_worktree_asks_the_engine() -> None:
     app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
     app.engine.remove_worktree = AsyncMock(return_value="j1")
     app.query_one = MagicMock()
+    app.query_one.return_value.wait_rebuilt = AsyncMock()
 
     await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
@@ -752,6 +753,43 @@ class TestDiffRefreshDebounce:
         # harness itself selects twice. What matters is that the settled
         # worktree — and only it — was fetched.
         assert diffs and set(diffs) == {wt.path}
+
+
+@pytest.mark.asyncio
+async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rebuild is asynchronous: selecting among the children before it
+    settles left the index past the end of the list, and the next cursor key
+    crashed the app."""
+    _patch_app_dependencies(monkeypatch)
+    worktrees = list(WORKTREES)
+    monkeypatch.setattr(DummyWorktreeManager, "list", lambda self: list(worktrees))
+    new = WorktreeInfo(
+        path="/repo-new", head="c" * 40, branch="new", is_main=False, is_bare=False
+    )
+    app = LazyAgent(repo_path="/repo")
+
+    async def create(branch, base_branch="main", extra=""):
+        worktrees.append(new)
+        app.engine.refresh_worktrees()
+        return CreatedWorktree(new.path, branch)
+
+    async with app.run_test() as pilot:
+        await _select_worktree(app, 1)
+        await pilot.pause()
+        app.engine.create_worktree = create
+        app.notify = MagicMock()
+
+        await app._do_create_worktree(CreateWorktreeResult(branch="new", base_branch="main"))
+        await pilot.pause()
+
+        wt_list = app.query_one(WorktreeList)
+        assert len(wt_list.children) == 4
+        assert wt_list.highlighted_child.worktree.path == new.path
+        await pilot.press("k")
+        await pilot.pause()
+        assert wt_list.highlighted_child.worktree.path == FEATURE_WORKTREE.path
 
 
 @pytest.mark.asyncio

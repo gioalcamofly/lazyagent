@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable
+
 from textual.binding import Binding
 from textual.widgets import ListItem, ListView, Static
 
@@ -196,8 +198,18 @@ class WorktreeList(ListView):
         Binding("k", "cursor_up", "Up", show=False),
     ]
 
+    # What the last set_worktrees still has to finish: removing the old items
+    # and mounting the new ones both complete after it returns.
+    _rebuild: tuple[Awaitable[None], ...] = ()
+
     def on_mount(self) -> None:
         self.border_title = "Ctrl+K Sidebar"
+
+    async def wait_rebuilt(self) -> None:
+        """Wait until the items of the last :meth:`set_worktrees` are the
+        list's only children, so an index taken now stays valid."""
+        for step in self._rebuild:
+            await step
 
     def set_worktrees(
         self,
@@ -209,13 +221,18 @@ class WorktreeList(ListView):
         ``agent_states`` is the app's two-level registry: outer key is a
         worktree path (or ``ORCHESTRATOR_KEY``), inner maps agent id to state.
         """
-        self.clear()
+        removed = self.clear()
         agent_states = agent_states or {}
         orch_states = agent_states.get(ORCHESTRATOR_KEY, {})
         orch_state = dominant_state(orch_states.values()) if orch_states else None
-        self.append(OrchestratorListItem(agent_state=orch_state))
-        for wt in worktrees:
-            self.append(WorktreeListItem(wt, agent_states=agent_states.get(wt.path, {})))
+        mounted = self.extend([
+            OrchestratorListItem(agent_state=orch_state),
+            *(
+                WorktreeListItem(wt, agent_states=agent_states.get(wt.path, {}))
+                for wt in worktrees
+            ),
+        ])
+        self._rebuild = (removed, mounted)
 
     def update_agent_states(self, key: str, states: dict[str, AgentState]) -> None:
         """Update the sidebar item for a worktree path or ORCHESTRATOR_KEY."""

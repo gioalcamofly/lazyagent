@@ -287,9 +287,15 @@ class LazyAgent(App):
         count = len(worktrees)
         self.sub_title = f"{count} worktree{'s' if count != 1 else ''}"
 
-    def _select_worktree_by_path(self, path: str) -> None:
-        """Highlight the worktree with the given path in the sidebar list."""
+    async def _select_worktree_by_path(self, path: str) -> None:
+        """Highlight the worktree with the given path in the sidebar list.
+
+        Waits for the sidebar rebuild of the last rescan: until its old items
+        are gone, an index taken among the children points past the end of
+        the rebuilt list.
+        """
         wt_list = self.query_one(WorktreeList)
+        await wt_list.wait_rebuilt()
         for idx, child in enumerate(wt_list.children):
             if isinstance(child, WorktreeListItem) and child.worktree.path == path:
                 wt_list.index = idx
@@ -724,7 +730,7 @@ class LazyAgent(App):
         except (WorktreeManagerError, ValueError) as e:
             self.notify(str(e), severity="error", timeout=5)
             return
-        self._select_worktree_by_path(created.path)
+        await self._select_worktree_by_path(created.path)
         self.notify(f"Created worktree: {os.path.basename(created.path)}")
 
     def action_remove_worktree(self) -> None:
@@ -765,7 +771,10 @@ class LazyAgent(App):
             self.notify(str(e), severity="error", timeout=5)
             return
         if self.worktrees:
-            self.query_one(WorktreeList).index = 0
+            wt_list = self.query_one(WorktreeList)
+            # After the rebuild, for the same reason as _select_worktree_by_path.
+            await wt_list.wait_rebuilt()
+            wt_list.index = 0
         self.notify(f"Removed worktree: {worktree.name}")
 
     def action_open_pr_url(self, url: str) -> None:
