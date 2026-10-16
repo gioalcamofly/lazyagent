@@ -524,6 +524,24 @@ class TestWorktreeJobs:
         assert events.named("job.finished") == [{"job_id": "j1", "exit_code": 4}]
 
     @pytest.mark.asyncio
+    async def test_a_client_env_reaches_the_job(self, tmp_path, repo, feat, monkeypatch):
+        monkeypatch.setenv("LAZYAGENT_TEST_JOB_VAR", "from-engine")
+        engine = _custom_engine(
+            tmp_path, repo, feat, create="echo var=$LAZYAGENT_TEST_JOB_VAR"
+        )
+        events = Recorder(engine)
+
+        await engine.create_worktree(
+            "a", env={"PATH": os.environ["PATH"], "LAZYAGENT_TEST_JOB_VAR": "from-client"}
+        )
+        await engine.create_worktree("b")
+
+        assert [e["text"] for e in events.named("job.output")] == [
+            "var=from-client\n",
+            "var=from-engine\n",
+        ]
+
+    @pytest.mark.asyncio
     async def test_custom_false_uses_git(self, tmp_path, repo, feat):
         engine = _custom_engine(tmp_path, repo, feat, remove="exit 4")
         await engine.remove_worktree(str(feat), custom=False)

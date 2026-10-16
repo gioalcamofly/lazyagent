@@ -749,7 +749,10 @@ class LazyAgent(App):
     async def _do_create_worktree(self, result: CreateWorktreeResult) -> None:
         try:
             created = await self.engine.create_worktree(
-                result.branch, result.base_branch, result.extra_options
+                result.branch,
+                result.base_branch,
+                result.extra_options,
+                env=dict(os.environ),
             )
         except (WorktreeManagerError, ValueError) as e:
             self.notify(str(e), severity="error", timeout=5)
@@ -790,7 +793,7 @@ class LazyAgent(App):
 
     async def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
         try:
-            await self.engine.remove_worktree(worktree.path, force)
+            await self.engine.remove_worktree(worktree.path, force, env=dict(os.environ))
         except (WorktreeManagerError, ValueError) as e:
             self.notify(str(e), severity="error", timeout=5)
             return

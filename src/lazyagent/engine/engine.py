@@ -417,12 +417,18 @@ class Engine:
         )
 
     async def create_worktree(
-        self, branch: str, base_branch: str = "main", extra: str = ""
+        self,
+        branch: str,
+        base_branch: str = "main",
+        extra: str = "",
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> CreatedWorktree:
         """Create a worktree, with ``git worktree add`` or the configured
         custom command (run as a job, waited for), then re-list.
 
-        ``extra`` only reaches a custom command. Raises
+        ``extra`` and ``env`` (the environment the job runs with; ``None``
+        means the engine's) only reach a custom command. Raises
         :class:`WorktreeManagerError` when the creation fails.
         """
         branch = branch.strip()
@@ -442,7 +448,7 @@ class Engine:
                 extra=extra,
             )
             job = await self.run_job(
-                command, cwd=repo_root, title=f"Create worktree {branch}"
+                command, cwd=repo_root, title=f"Create worktree {branch}", env=env
             )
             if job.exit_code != 0:
                 raise WorktreeManagerError(
@@ -463,12 +469,18 @@ class Engine:
         )
 
     async def remove_worktree(
-        self, path: str, force: bool = False, *, custom: bool = True
+        self,
+        path: str,
+        force: bool = False,
+        *,
+        custom: bool = True,
+        env: Mapping[str, str] | None = None,
     ) -> str | None:
         """Remove a worktree and everything the engine runs in it.
 
         Uses the configured custom remove command (as a job) when there is
-        one and ``custom`` is true, else ``git worktree remove``. Then stops
+        one and ``custom`` is true (with ``env`` as for create), else
+        ``git worktree remove``. Then stops
         the worktree's agents and shell, drops their state and re-lists.
         Returns the job id when a custom command ran.
         """
@@ -494,7 +506,10 @@ class Engine:
                 force="--force" if force else "",
             )
             job = await self.run_job(
-                command, cwd=repo_root, title=f"Remove worktree {worktree.name}"
+                command,
+                cwd=repo_root,
+                title=f"Remove worktree {worktree.name}",
+                env=env,
             )
             if job.exit_code != 0:
                 raise WorktreeManagerError(
@@ -575,9 +590,17 @@ class Engine:
     # ------------------------------------------------------------------
 
     async def run_job(
-        self, command: str, *, cwd: str | None = None, title: str = ""
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        title: str = "",
+        env: Mapping[str, str] | None = None,
     ) -> JobResult:
         """Run a shell command to completion, streaming its output.
+
+        ``env`` is the environment it runs with (a client's, D5); ``None``
+        means the engine's own.
 
         Emits ``job.started``, a ``job.output`` per chunk of stdout or
         stderr, and ``job.finished`` (always, even when the command could not
@@ -595,6 +618,7 @@ class Engine:
                 proc = await asyncio.create_subprocess_shell(
                     command,
                     cwd=cwd or None,
+                    env=dict(env) if env is not None else None,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

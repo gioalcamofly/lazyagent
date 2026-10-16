@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -223,7 +224,9 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
         )
     )
 
-    app.engine.create_worktree.assert_awaited_once_with("feature/demo", "main", "--no-build")
+    app.engine.create_worktree.assert_awaited_once_with(
+        "feature/demo", "main", "--no-build", env=dict(os.environ)
+    )
     app._queue_selection.assert_called_once_with("/repo-feature/demo")
     assert "Created worktree: demo" in app.notify.call_args.args[0]
 
@@ -250,7 +253,10 @@ async def test_do_remove_worktree_asks_the_engine() -> None:
 
     await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
-    app.engine.remove_worktree.assert_awaited_once_with("/repo-feature", True)
+    # Jobs started here run with this client's environment (D5).
+    app.engine.remove_worktree.assert_awaited_once_with(
+        "/repo-feature", True, env=dict(os.environ)
+    )
     assert "Removed worktree: repo-feature" in app.notify.call_args.args[0]
     # The first item: removing the selected worktree leaves nothing to keep.
     app._queue_selection.assert_called_once_with(None)
@@ -772,7 +778,7 @@ async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
     )
     app = LazyAgent(repo_path="/repo")
 
-    async def create(branch, base_branch="main", extra=""):
+    async def create(branch, base_branch="main", extra="", **kwargs):
         worktrees.append(new)
         app.engine.refresh_worktrees()
         return CreatedWorktree(new.path, branch)
