@@ -912,3 +912,31 @@ async def test_an_agent_out_of_sight_does_not_take_the_keyboard(
         await settle(pilot)
         assert isinstance(app.focused, MonitoredTerminal)
         assert app.focused.session.worktree_path == MAIN_WORKTREE.path
+
+
+@pytest.mark.asyncio
+async def test_two_quick_spawns_leave_the_newer_agent_focused(
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str
+) -> None:
+    """Focus is deferred in Textual: the first agent's focus, queued behind
+    the second agent's tab, must not switch back to the first tab."""
+    from lazyagent.widgets.monitored_terminal import MonitoredTerminal
+    from tests.engine.fakes import no_pty
+
+    _patch_app_dependencies(monkeypatch)
+    no_pty(monkeypatch)
+    app = tui_app(backend_kind)
+
+    async with app.run_test() as pilot:
+        await _select_worktree(app, 1)
+        await settle(pilot)
+        engine = app.backend.engine
+        await engine.spawn_agent(FEATURE_WORKTREE.path)
+        await engine.spawn_agent(FEATURE_WORKTREE.path)
+        await settle(pilot)
+        await settle(pilot)
+
+        panel = app.query_one(CenterPanel).get_panel(FEATURE_WORKTREE.path)
+        assert panel.shown_agent_id == "a2"
+        assert isinstance(app.focused, MonitoredTerminal)
+        assert app.focused.session.agent_id == "a2"

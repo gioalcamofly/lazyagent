@@ -435,7 +435,15 @@ class WorktreePanel(Container):
         ):
             tabs.active = _agent_tab_id(agent_id)
             if focus:
-                terminal.focus()
+                # Widget.focus() is deferred: by the time it runs a newer
+                # agent's tab may be up, and focusing this terminal would
+                # switch back to its tab and hide that one.
+                self.app.call_later(self._focus_if_shown, agent_id)
+
+    def _focus_if_shown(self, agent_id: str) -> None:
+        terminal = self._agents.get(agent_id)
+        if terminal is not None and self.shown_agent_id == agent_id:
+            terminal.focus()
 
 
 class CenterPanel(Container):
