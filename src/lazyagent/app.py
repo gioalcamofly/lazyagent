@@ -1116,9 +1116,16 @@ class LazyAgent(App):
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["host"]:
+        from lazyagent.host.cli import main as host_main
+
+        host_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(
         prog="lazyagent",
         description="TUI for managing coding agents across git worktrees",
+        epilog="lazyagent host [repo]: the TUI in a web page (experimental); "
+        "a repo dir literally named host must be passed as ./host.",
     )
     parser.add_argument(
         "repo",

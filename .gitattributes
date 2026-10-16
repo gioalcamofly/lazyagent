@@ -3,3 +3,6 @@
 # branches independently convert to LF conflicts on *every* line against the
 # CRLF merge base — a whole-file conflict for what may be a one-line change.
 * text=auto eol=lf
+
+# Third-party bundles: not reviewed as source.
+src/lazyagent/host/static/vendor/** linguist-vendored -diff

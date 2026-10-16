@@ -73,7 +73,8 @@ def test_the_pyte_patch_is_applied_wherever_pyte_screens_are_built():
 
 
 def test_only_the_v1_server_and_client_import_protocol():
-    """The TUI uses only the hosted-mode helpers (its OSC announcement)."""
+    """The TUI uses only the hosted-mode helpers (its OSC announcement); the
+    host is a client of both."""
     users = set()
     for path in sorted(PACKAGE.rglob("*.py")):
         if PROTOCOL in path.parents:
@@ -85,6 +86,9 @@ def test_only_the_v1_server_and_client_import_protocol():
         "engine/server.py",
         "engine/client.py",
         "app.py",
+        "host/cli.py",
+        "host/server.py",
+        "host/tui.py",
     }
     assert {module for path, module in users if path == "app.py"} == {
         "lazyagent.protocol.hosted"
