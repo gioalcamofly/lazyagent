@@ -93,14 +93,19 @@ def _env_level() -> int | None:
     return None
 
 
+def state_dir() -> Path:
+    """``$XDG_STATE_HOME/lazyagent`` (``~/.local/state/lazyagent`` by default)."""
+    state_home = os.environ.get("XDG_STATE_HOME") or str(
+        Path.home() / ".local" / "state"
+    )
+    return Path(state_home).expanduser() / "lazyagent"
+
+
 def _resolve_path() -> Path:
     override = os.environ.get("LAZYAGENT_LOG_FILE")
     if override:
         return Path(override).expanduser()
-    state_home = os.environ.get("XDG_STATE_HOME") or str(
-        Path.home() / ".local" / "state"
-    )
-    return Path(state_home).expanduser() / "lazyagent" / "lazyagent.log"
+    return state_dir() / "lazyagent.log"
 
 
 class JsonLineFormatter(logging.Formatter):
