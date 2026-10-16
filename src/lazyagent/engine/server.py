@@ -296,6 +296,9 @@ class _Connection:
         if self.closed:
             return
         self.closed = True
+        # Nothing queued will be written any more: flush() must not wait.
+        self._queue.clear()
+        self._drained.set()
         for task in list(self._tasks):
             task.cancel()
         if self._writer_task is not None:
