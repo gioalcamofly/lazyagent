@@ -138,7 +138,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 
 | State / logic | Where | Goes to | Why |
 |---|---|---|---|
-| `WorktreePanel._agents / _labels / _session_names / _agent_counter` | center_panel.py:181-185, :320-322 | **Engine** `AgentRegistry` | Agent identity and ids. Ids `a1, a2…` are per-panel counters today; they become monotonic per worktree and persisted across engine restarts (D8) |
+| `WorktreePanel._agents / _labels / _session_names / _agent_counter` | center_panel.py:181-185, :320-322 | **Engine** `AgentRegistry` | Agent identity and ids. Ids `a1, a2…` were per-panel counters; since PR 2 the registry allocates them, monotonic per worktree and persisted across restarts (D8), and holds each agent's label and session name. `_agents` (the terminals) is still per panel until PR 4 |
 | Provider command + runtime context build | center_panel.py:394-420; orchestrator_panel.py:96-123 | **Engine** `spawn` | Hook temp dirs, MCP config and the session name are all engine concerns |
 | Per-worktree shell `bash -l` | center_panel.py:209-230 | **Engine** session `kind:"shell"` (D1) | Custom create/remove commands are typed into it (app.py:782, :838). It should survive the UI closing like the agents do |
 | `OrchestratorPanel._agent_terminal`, `_session_name` | orchestrator_panel.py:35-132 | **Engine** (key `__orchestrator__`) | Same as for agents |
@@ -168,7 +168,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | C5 | ipc.py:365-383, :414-429, :480-490, :535-543 | Handlers do `query_one(CenterPanel)` and `panel.spawn_agent / get_agent / cleanup_agent` | Handlers take an `Engine` and never import widgets |
 | C6 | ipc.py:172-174, :227, :330 | Reads private `_app.worktrees`, `_git_statuses`, `_config`, `_drop_worktree_agents` | Use the engine's public API |
 | C7 | center_panel.py:365-444; orchestrator_panel.py:79-132 | Process spawn is interleaved with `TabbedContent.add_pane`/`mount` | Split into `Engine.spawn_agent(...) → AgentInfo` and a TUI reaction to `agent.spawned` that mounts the tab |
-| C8 | app.py:461-472 | The registry pulls `label`, `session_name` and `last_output_time` back from widgets | These become `AgentSession` fields |
+| C8 | app.py:461-472 | The registry pulls `label`, `session_name` and `last_output_time` back from widgets | `label` and `session_name`: fixed in PR 2, the panel registers them with the registry at spawn. `last_output_time` is still copied from the terminal on RUNNING and becomes an `AgentSession` field in PR 4 |
 | C9 | app.py:493, :172, :190 | Engine paths call `self.notify` | Publish an `engine.notice` event that clients show as a toast |
 | C10 | scrollable_terminal.py:528 (`if self.size.height > 0`) | The pyte feed and screen scan run only while the widget is visible; hidden agents rely on the 0.25 s coalesced flush | Feed the headless screen in the engine regardless of clients |
 | C11 | scrollable_terminal.py:1242-1273 | **PTY size = widget size.** A hidden widget never resizes | Resize ownership policy, §3c |
@@ -365,7 +365,7 @@ src/lazyagent/
     schema/v1/*.json     # contract schemas
   engine/                # NO Textual imports (enforced by test)
     engine.py            # Engine facade: start/stop, public API
-    registry.py          # AgentRegistry (from app.py:104, :218-248)
+    registry.py          # AgentRegistry, AgentIdStore, ORCHESTRATOR_KEY (from app.py:104, :218-248)
     session.py           # AgentSession/ShellSession: PtyEmulator + headless screen + observer + ring
     screen.py            # ScrollbackScreen (moved from widgets/scrollable_terminal.py:194-263) + ANSI snapshot
     worktrees.py         # WorktreeService: list/git/pr/diff caches + interest-scoped pollers
@@ -433,7 +433,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 | # | PR | Changes | Tests added | Phase |
 |---|---|---|---|---|
 | 1 | **protocol: envelope + schemas** | `lazyagent/protocol/` (envelope, framing, handshake, v1 JSON schemas for the 10 existing methods and the §4e events). Stdlib only, relative imports. No runtime use | Golden fixtures of today's IPC responses (taken from test_ipc.py cases), validated against the schemas; framing round-trip and fuzz | 0 |
-| 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED); monotonic agent ids persisted in the runtime dir and surviving a registry reload (D8) | 1 |
+| 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED); monotonic agent ids persisted in the state dir and surviving a registry reload (D8) | 1 |
 | 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop | Service tests with a fake `WorktreeManager`; the poller respects the interest set | 1 |
 | 4 | **engine: AgentSession** | `PtyEmulator` + observer + scan/hang logic + modes + `send_input` + ring buffer in `engine/session.py`. `MonitoredTerminal` becomes a *view* that renders from the session's screen (shared in-process, so there is no double parse yet). Fixes C1, C10, R1-R3 | Session tests with the fake-agent PTY: status transitions, send_input framing/ack, `tail_lines`, ring offsets | 1 |
 | 5 | **engine: Engine facade, IPC rewired** | `Engine.spawn/stop/create/remove/open_shell` absorb center_panel.py:365-444, orchestrator_panel.py:79-132 and the app actions. `ipc.py` handlers call `Engine` only (removes C4-C6). The TUI reacts to `agent.spawned/exited` | Existing test_ipc against `Engine` without the Textual app; **boundary test** (engine imports no textual) | 1 |
@@ -513,7 +513,7 @@ Giovanni answered the open questions; the sections above already reflect these.
 | D5 | Agent env | Agents get their env from the client that spawns them, not from the engine (`spawn_agent.env`) |
 | D6 | Custom create/remove | Run as engine jobs with streamed output (`job.output` / `job.finished`) |
 | D7 | Web stack, framework, Tauri | Deferred to Phase 2 |
-| D8 | Agent ids | Monotonic per worktree and persisted across engine restarts (PR 2) |
+| D8 | Agent ids | Monotonic per worktree and persisted across engine restarts (PR 2). Counters live in `$XDG_STATE_HOME/lazyagent/agent_ids.json` (`~/.local/state/…`), keyed by the worktree's absolute path and shared by every lazyagent instance; writes are `flock` (on `agent_ids.json.lock`) + temp file + `os.replace`. A missing or corrupt file restarts at 1, never below an id live in the registry. It is the state dir, not the runtime dir: `$XDG_RUNTIME_DIR` is wiped at logout, which would defeat the point |
 | D9 | Platforms | Linux only; macOS out of scope |
 | D10 | CI on `develop` | Enable now, as a separate small PR outside this migration |
 | D11 | Ordering | Hosted mode first (§6b). PRs 1-6, then H1/H2, then PRs 7-9 when agents need to survive the UI |
