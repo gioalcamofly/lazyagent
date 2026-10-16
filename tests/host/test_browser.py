@@ -45,8 +45,17 @@ async def _terminal_has(page, needle: str, count: int = 1) -> None:
     )
 
 
-async def test_page_in_a_real_browser(host, browser, tmp_path):
-    page = await browser.new_page(viewport={"width": 1400, "height": 820})
+async def test_page_in_a_real_browser(fake_claude, host, browser, tmp_path):
+    context = await browser.new_context(viewport={"width": 1400, "height": 820})
+    await context.grant_permissions(["notifications"])
+    # Record notifications, and look unfocused so the page sends them.
+    await context.add_init_script(
+        "window.__notes = [];"
+        "window.Notification = class { static permission = 'granted';"
+        " constructor(title, options) { window.__notes.push(options.body); } };"
+        "document.hasFocus = () => false;"
+    )
+    page = await context.new_page()
     problems = []
     page.on(
         "console",
@@ -74,8 +83,22 @@ async def test_page_in_a_real_browser(host, browser, tmp_path):
     await page.click("#toolbar button[data-action=spawn]")
     await page.wait_for_selector("#toolbar button[data-action=spawn]:disabled")
     await _terminal_has(page, "Spawn agent in feat")
-    await page.keyboard.press("Escape")
+    await page.keyboard.press("n")
     await page.wait_for_selector("#toolbar button[data-action=spawn]:enabled")
+
+    # The agent shows up in the sidebar, and its exit becomes a toast.
+    agent = page.locator("li.wt.current li.agent")
+    await agent.wait_for()
+    assert "running" in await agent.inner_text()
+    await _terminal_has(page, "your turn>")
+    await page.keyboard.type("exit 3")
+    await page.keyboard.press("Enter")
+    toast = page.locator(".toast", has_text="exited (code 3)")
+    await toast.wait_for()
+    assert "(repo-feat)" in await toast.inner_text()
+    notes = await page.evaluate("window.__notes")
+    assert any("exited (code 3)" in note for note in notes)
+    await page.wait_for_selector("li.agent", state="detached")
 
     await page.locator("#terminal").click()
     await page.keyboard.press("Control+k")

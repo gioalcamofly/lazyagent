@@ -8,12 +8,14 @@ import io
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
 from lazyagent.host.cli import Host, repo_root
+from tests.engine.fakes import FAKE_AGENT
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -103,3 +105,15 @@ async def _assert_no_orphans(host: Host) -> None:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
     raise AssertionError(f"processes left behind: {left}")
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """``claude`` on the TUI's PATH is the scripted fake agent."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "claude"
+    shim.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_AGENT} "$@"\n')
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return shim

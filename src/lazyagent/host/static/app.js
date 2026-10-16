@@ -144,7 +144,7 @@ function notify(title, body) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   if (document.hasFocus()) return;
   try {
-    new Notification(title, { body, tag: `lazyagent-${title}` });
+    new Notification(title, { body });
   } catch {
     // Some browsers only allow notifications from a service worker.
   }
@@ -299,6 +299,13 @@ function agentsOf(path) {
   return wt ? wt.agents : [];
 }
 
+function agentAlert(agent, path, message, severity) {
+  const where = path === ORCHESTRATOR_KEY ? "orchestrator" : basename(path);
+  const text = `${agentLabel(agent)} (${where}) ${message}`;
+  toast(text, severity);
+  notify("lazyagent", text);
+}
+
 let refreshTimer = null;
 function refreshSoon() {
   clearTimeout(refreshTimer);
@@ -344,16 +351,20 @@ function onEvent(name, data) {
     case "agent.status": {
       const message = ALERT_STATUSES[data.status];
       if (message && data.status !== data.previous_status) {
-        const where = data.worktree_path === ORCHESTRATOR_KEY ? "orchestrator" : basename(data.worktree_path);
-        const text = `${data.label || `Agent ${data.agent_id}`} (${where}) ${message}`;
         const severity = data.status === "completed" ? "success" : data.status.startsWith("waiting") ? "warning" : "error";
-        toast(text, severity);
-        notify("lazyagent", text);
+        agentAlert(data, data.worktree_path, message, severity);
       }
       break;
     }
-    case "agent.spawned":
     case "agent.exited":
+      if (!data.stopped) {
+        const agent = agentsOf(data.worktree_path).find((a) => a.agent_id === data.agent_id);
+        const code = data.exit_code ?? "?";
+        agentAlert(agent || data, data.worktree_path, `exited (code ${code})`, code === 0 ? "information" : "error");
+      }
+      refreshSoon();
+      return;
+    case "agent.spawned":
       refreshSoon();
       return;
     case "ui.view_changed":
