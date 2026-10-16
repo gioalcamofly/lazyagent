@@ -46,3 +46,9 @@ def runtime_dir(_runtime_base, monkeypatch):
     path = f"{base}/{next(counter)}"
     monkeypatch.setenv("XDG_RUNTIME_DIR", path)
     return path
+
+
+@pytest.fixture(params=["inprocess", "remote"])
+def backend_kind(request):
+    """Which backend a TUI pilot test runs against (see tests/tui_backends.py)."""
+    return request.param

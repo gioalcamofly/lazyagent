@@ -18,9 +18,13 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header, TabbedContent
 
 from lazyagent import diagnostics as diag
-from lazyagent.agent_events import AgentEventBus
-from lazyagent.config import Config
-from lazyagent.engine.engine import ORCHESTRATOR_KIND, Engine
+from lazyagent.backend import (
+    BACKEND_CONNECTED,
+    BACKEND_DISCONNECTED,
+    Backend,
+    EngineUnavailable,
+    make_backend,
+)
 from lazyagent.engine.events import (
     AGENT_EXITED,
     AGENT_SPAWNED,
@@ -37,10 +41,10 @@ from lazyagent.engine.events import (
     EngineEvent,
 )
 from lazyagent.engine.registry import AgentRegistry
-from lazyagent.engine.worktrees import WorktreeService
+from lazyagent.engine.types import ORCHESTRATOR_KIND
 from lazyagent.models import AgentState, GitStatus, WorktreeInfo
 from lazyagent.protocol.hosted import encode_osc, host, tmux_passthrough
-from lazyagent.widgets.center_panel import CenterPanel
+from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
 from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.job_log import JobLog
@@ -62,9 +66,6 @@ log = logging.getLogger(__name__)
 # Scrolling the sidebar with j/k should not spawn a `git status` per worktree
 # passed through — only the one actually landed on.
 _SELECTION_DEBOUNCE = 0.4
-
-# Interest-set owner name of this TUI in the engine.
-_INTEREST_CLIENT = "tui"
 
 _JOB_EVENTS = (JOB_STARTED, JOB_OUTPUT, JOB_FINISHED)
 
@@ -93,8 +94,9 @@ _NOTHING = object()
 class LazyAgent(App):
     """Textual TUI for managing coding agents across git worktrees.
 
-    A client of its in-process :class:`Engine`: keys call the engine, and the
-    screen follows the engine's events.
+    A client of the engine through a :class:`~lazyagent.backend.Backend`
+    (in-process by default, or a remote engine): keys call the backend, and
+    the screen follows the engine's events.
     """
 
     TITLE = "lazyagent"
@@ -154,10 +156,12 @@ class LazyAgent(App):
         Binding("question_mark", "help", "Help"),
     ]
 
-    def __init__(self, repo_path: str | None = None) -> None:
+    def __init__(
+        self, repo_path: str | None = None, *, backend: Backend | None = None
+    ) -> None:
         super().__init__()
         self.repo_path = repo_path
-        self.engine = Engine(repo_path)
+        self.backend = backend if backend is not None else make_backend(repo_path)
         self._unsubscribe_engine: Callable[[], None] | None = None
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
@@ -179,52 +183,31 @@ class LazyAgent(App):
 
     @property
     def registry(self) -> AgentRegistry:
-        return self.engine.registry
-
-    @property
-    def worktree_service(self) -> WorktreeService:
-        return self.engine.worktree_service
+        return self.backend.registry
 
     @property
     def _agent_states(self) -> dict[str, dict[str, AgentState]]:
-        return self.engine.registry.states
+        return self.backend.registry.states
 
     @_agent_states.setter
     def _agent_states(self, states: dict[str, dict[str, AgentState]]) -> None:
-        self.engine.registry.states = states
+        self.backend.registry.states = states
 
     @property
     def worktrees(self) -> list[WorktreeInfo]:
-        return self.engine.worktrees
+        return self.backend.worktrees
 
     @property
     def _git_statuses(self) -> dict[str, GitStatus]:
-        return self.engine.git_statuses
+        return self.backend.git_statuses
 
     @_git_statuses.setter
     def _git_statuses(self, statuses: dict[str, GitStatus]) -> None:
-        self.engine.worktree_service.git_statuses = statuses
+        self.backend.git_statuses = statuses
 
     @property
     def _repo_root(self) -> str:
-        return self.engine.repo_root
-
-    @_repo_root.setter
-    def _repo_root(self, root: str) -> None:
-        self.engine.worktree_service.repo_root = root
-
-    @property
-    def _config(self) -> Config:
-        return self.engine.config
-
-    @_config.setter
-    def _config(self, config: Config) -> None:
-        self.engine.config = config
-
-    @property
-    def agent_events(self) -> AgentEventBus:
-        """Every agent status transition, for the MCP wait/event tools."""
-        return self.engine.events
+        return self.backend.repo_root
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -234,7 +217,7 @@ class LazyAgent(App):
             worktree_list.can_focus = self.host is None
             yield worktree_list
             yield PrStatusBar(id="pr-status-bar")
-        yield CenterPanel(engine=self.engine)
+        yield CenterPanel(backend=self.backend)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -242,13 +225,13 @@ class LazyAgent(App):
         # Before the start, which already reports the worktree list, and
         # which advertises the ui.* commands to v1 clients when a UI is
         # attached.
-        self._unsubscribe_engine = self.engine.subscribe(self._on_engine_event)
+        self._unsubscribe_engine = self.backend.subscribe(self._on_engine_event)
         if self.host is not None:
             self._ui_commands = asyncio.Queue()
-            self._detach_ui = self.engine.attach_ui()
+            self._detach_ui = self.backend.attach_ui()
             self.run_worker(self._run_ui_commands, group="ui_commands")
         with diag.timed(log, "app.on_mount") as span:
-            await self.engine.start()
+            await self.backend.start()
             span["worktrees"] = len(self.worktrees)
             span["repo_root"] = self._repo_root
         if self.host is not None:
@@ -279,10 +262,10 @@ class LazyAgent(App):
         if self._detach_ui is not None:
             self._detach_ui()
             self._detach_ui = None
-        await self.engine.stop()
+        await self.backend.stop()
 
     def _load_worktrees(self) -> None:
-        self.engine.refresh_worktrees()
+        self.backend.refresh_worktrees()
 
     # --- Engine events ---
 
@@ -302,12 +285,15 @@ class LazyAgent(App):
         elif name == PR_INFO_UPDATED:
             selected = self._selected_worktree
             if selected is not None and selected.path == data["path"]:
-                self._apply_pr_info(self.engine.get_pr_info(data["path"]))
+                self._apply_pr_info(self.backend.get_pr_info(data["path"]))
         elif name in (AGENT_STATUS, AGENT_UPDATED):
             self._refresh_sidebar_agents(data["worktree_path"])
         elif name == AGENT_SPAWNED:
             self.call_later(self._show_agent, data["worktree_path"], data["agent_id"], data["kind"])
         elif name == AGENT_EXITED:
+            # A remote backend's store forgets the agent on this event, after
+            # the agent.status that announced it.
+            self._refresh_sidebar_agents(data["worktree_path"])
             self.call_later(self._hide_agent, data)
         elif name == ENGINE_NOTICE:
             self.notify(data["message"], severity=data["severity"], timeout=5)
@@ -315,20 +301,34 @@ class LazyAgent(App):
             self.query_one(JobLog).on_job_event(event)
         elif name == UI_COMMAND and self._ui_commands is not None:
             self._ui_commands.put_nowait(data)
+        elif name == BACKEND_DISCONNECTED:
+            self.sub_title = "engine disconnected"
+            self.notify(
+                f"Lost the engine ({data['reason']}); reconnecting…",
+                severity="error",
+                timeout=10,
+            )
+        elif name == BACKEND_CONNECTED and not data["first"]:
+            self.call_later(self._resync, data["engine_changed"])
 
     async def _show_agent(self, key: str, agent_id: str, kind: str) -> None:
         """Mount the view of an agent the engine has just spawned."""
-        session = self.engine.get_session(key, agent_id)
+        session = await self.backend.session(key, agent_id)
         if session is None:
             return  # gone again before its tab could be shown
         center = self.query_one(CenterPanel)
+        # The keyboard follows a new agent only into the panel on screen: an
+        # agent that shows up elsewhere (spawned over MCP, or already running
+        # when this TUI connected) must not take the keys out of sight.
         if kind == ORCHESTRATOR_KIND:
             orchestrator = await center.ensure_orchestrator_panel(self._repo_root)
-            await orchestrator.show_agent(session)
+            await orchestrator.show_agent(session, focus=self._shown is None)
             self._publish_view()
             return
         panel = await center.ensure_panel(key)
-        await panel.show_agent(session, self.registry.label(key, agent_id))
+        await panel.show_agent(
+            session, self.registry.label(key, agent_id), focus=self._shown == key
+        )
         self._publish_view()
 
     async def _hide_agent(self, data: dict) -> None:
@@ -346,6 +346,20 @@ class LazyAgent(App):
             severity="warning",
             timeout=5,
         )
+
+    async def _resync(self, engine_changed: bool) -> None:
+        """Catch up with an engine reached again: drop the tabs of agents it
+        no longer runs, show the ones it does, and (for an engine that came
+        back as a new process) open the worktree shells again."""
+        center = self.query_one(CenterPanel)
+        for key, panel in list(center._panels.items()):
+            for agent_id in list(panel.agent_ids):
+                if not self.backend.has_agent_session(key, agent_id):
+                    await panel.cleanup_agent(agent_id)
+            if engine_changed and isinstance(panel, WorktreePanel):
+                await panel.restart_terminal()
+        self._publish_view()
+        self.notify("Reconnected to the engine", timeout=3)
 
     def _apply_worktrees(self, worktrees: list[WorktreeInfo]) -> None:
         wt_list = self.query_one(WorktreeList)
@@ -410,7 +424,7 @@ class LazyAgent(App):
     def _refresh_sidebar_agents(self, key: str) -> None:
         """Push the worktree's current agent roll-up to the sidebar."""
         self.query_one(WorktreeList).update_agent_states(
-            key, self.engine.agent_states(key)
+            key, self.backend.agent_states(key)
         )
 
     def _get_any_panel(self, key: str):
@@ -426,7 +440,7 @@ class LazyAgent(App):
         Only the full-rescan paths need it; the periodic poll refreshes just
         the selected worktree.
         """
-        self.engine.sweep_git_status()
+        self.backend.sweep_git_status()
 
     def _cancel_selection_debounce(self) -> None:
         """Drop refreshes queued for a worktree we have since moved off."""
@@ -468,7 +482,7 @@ class LazyAgent(App):
         if not self._repo_root or wt is None or wt.is_bare:
             return
         self.run_worker(
-            partial(self.engine.refresh_git_status, [wt.path]),
+            partial(self.backend.refresh_git_status, [wt.path]),
             group="git_status_selected",
             exclusive=True,
         )
@@ -506,7 +520,10 @@ class LazyAgent(App):
         )
 
     async def _fetch_diff(self, worktree_path: str) -> None:
-        diff_text = await self.engine.get_diff(worktree_path)
+        try:
+            diff_text = await self.backend.get_diff(worktree_path)
+        except EngineUnavailable:
+            return  # the backend reports the outage itself
         self._apply_diff(worktree_path, diff_text)
 
     def _apply_diff(self, worktree_path: str, diff_text: str) -> None:
@@ -525,7 +542,7 @@ class LazyAgent(App):
         wt = self._selected_worktree
         if wt is None:
             return
-        self.run_worker(partial(self.engine.refresh_pr_info, [wt.path]))
+        self.run_worker(partial(self.backend.refresh_pr_info, [wt.path]))
 
     def _apply_pr_info(self, pr_info) -> None:
         """Apply PR info to the status bar (must run on main thread)."""
@@ -546,7 +563,7 @@ class LazyAgent(App):
                 span["target"] = "orchestrator"
                 self._orchestrator_selected = True
                 self._selected_worktree = None
-                self.engine.set_interest((), _INTEREST_CLIENT)
+                self.backend.set_interest(())
                 with diag.timed(log, "sidebar.switch_to_orchestrator"):
                     await center.switch_to_orchestrator(self._repo_root)
                 self._shown = None
@@ -554,9 +571,7 @@ class LazyAgent(App):
                 span["target"] = event.item.worktree.path
                 self._orchestrator_selected = False
                 self._selected_worktree = event.item.worktree
-                self.engine.set_interest(
-                    [event.item.worktree.path], _INTEREST_CLIENT
-                )
+                self.backend.set_interest([event.item.worktree.path])
                 # Mounting the panel for a worktree visited for the first time
                 # also starts its `bash -l` shell, so this is where a "browsing
                 # is getting slower" cost would show up.
@@ -566,9 +581,9 @@ class LazyAgent(App):
                     await center.switch_to(event.item.worktree.path)
                 self._shown = event.item.worktree.path
                 self._push_git_status_to_selected_panel()
-                if self.engine.has_pr_info(event.item.worktree.path):
+                if self.backend.has_pr_info(event.item.worktree.path):
                     self._apply_pr_info(
-                        self.engine.get_pr_info(event.item.worktree.path)
+                        self.backend.get_pr_info(event.item.worktree.path)
                     )
                 # Show the cached badge immediately, then refresh the status, the
                 # diff and the PR once the selection settles: the periodic poll
@@ -580,7 +595,7 @@ class LazyAgent(App):
                 span["target"] = None
                 self._orchestrator_selected = False
                 self._selected_worktree = None
-                self.engine.set_interest((), _INTEREST_CLIENT)
+                self.backend.set_interest(())
                 self._shown = _NOTHING
         self._publish_view()
 
@@ -661,7 +676,7 @@ class LazyAgent(App):
             view = self._view()
         except NoMatches:
             return  # torn down, or not composed yet
-        self.engine.publish_view(view)
+        self.backend.publish_view(view)
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         self._publish_view()
@@ -693,8 +708,8 @@ class LazyAgent(App):
             return
         sequence = encode_osc(
             {
-                "socket": self.engine.v1_socket_path,
-                "engine_id": self.engine.engine_id,
+                "socket": self.backend.v1_socket_path,
+                "engine_id": self.backend.engine_id,
                 "repo_root": self._repo_root,
                 "pid": os.getpid(),
                 "host": self.host,
@@ -708,7 +723,7 @@ class LazyAgent(App):
     def on_resize(self, event: events.Resize) -> None:
         # A host that attached late (a tmux client) gets the announcement on
         # its first resize.
-        if self.host is not None and self.engine.v1_socket_path is not None:
+        if self.host is not None and self.backend.v1_socket_path is not None:
             self._announce_to_host()
 
     async def _run_ui_commands(self) -> None:
@@ -776,6 +791,16 @@ class LazyAgent(App):
                 log.warning("ui.command: %r was not shown in time", path)
                 return False
             await asyncio.sleep(0.02)
+        panel = self.query_one(CenterPanel).get_panel(path) if path else None
+        if panel is not None:
+            # A first visit opens the shell (a round trip to a remote
+            # engine): the command's focus lands once its view is there.
+            try:
+                await asyncio.wait_for(
+                    panel.shell_ready.wait(), max(0.0, deadline - time.monotonic())
+                )
+            except asyncio.TimeoutError:
+                log.warning("ui.command: the shell of %r was not shown in time", path)
         return True
 
     def _focus_shown(self) -> None:
@@ -845,7 +870,7 @@ class LazyAgent(App):
                     with diag.timed(log, "spawn.switch_to", spawn_id=spawn_id):
                         await center.switch_to(worktree.path)
                     try:
-                        info = await self.engine.spawn_agent(
+                        info = await self.backend.spawn_agent(
                             worktree.path,
                             result.instruction,
                             skip_permissions=result.skip_permissions,
@@ -853,12 +878,12 @@ class LazyAgent(App):
                             env=dict(os.environ),
                             spawn_id=spawn_id,
                         )
-                    except ValueError as e:
+                    except (ValueError, EngineUnavailable) as e:
                         self.notify(str(e), severity="error", timeout=5)
                         return
                     span["agent_id"] = info.agent_id
 
-        provider = self.engine.get_config().agent_provider
+        provider = self.backend.get_config().agent_provider
         with diag.timed(
             log, "spawn.push_modal", spawn_id=spawn_id, worktree=worktree.path
         ):
@@ -866,7 +891,7 @@ class LazyAgent(App):
 
     def _spawn_orchestrator_agent(self) -> None:
         """Spawn agent in the orchestrator panel."""
-        if self.engine.has_agent(ORCHESTRATOR_KEY):
+        if self.backend.has_agent(ORCHESTRATOR_KEY):
             self.notify("Orchestrator agent already running", severity="warning")
             return
 
@@ -875,7 +900,7 @@ class LazyAgent(App):
                 center = self.query_one(CenterPanel)
                 await center.switch_to_orchestrator(self._repo_root)
                 try:
-                    await self.engine.spawn_agent(
+                    await self.backend.spawn_agent(
                         self._repo_root,
                         result.instruction,
                         kind=ORCHESTRATOR_KIND,
@@ -883,10 +908,10 @@ class LazyAgent(App):
                         resume_mode=result.resume_mode,
                         env=dict(os.environ),
                     )
-                except ValueError as e:
+                except (ValueError, EngineUnavailable) as e:
                     self.notify(str(e), severity="warning")
 
-        provider = self.engine.get_config().agent_provider
+        provider = self.backend.get_config().agent_provider
         self.push_screen(SpawnModal("Orchestrator", agent_provider=provider), on_spawn_dismiss)
 
     async def action_stop_agent(self) -> None:
@@ -902,21 +927,21 @@ class LazyAgent(App):
         center = self.query_one(CenterPanel)
         panel = center.get_panel(worktree.path)
         agent_id = panel.active_agent_id if panel else None
-        if agent_id is None or self.engine.get_session(worktree.path, agent_id) is None:
+        if agent_id is None or not self.backend.has_agent_session(worktree.path, agent_id):
             self.notify("No running agent in this worktree", severity="warning")
             return
 
         # The tab goes when the engine reports the agent gone.
-        self.engine.stop_agent(worktree.path, agent_id)
+        self.backend.stop_agent(worktree.path, agent_id)
         self.notify("Agent stopped")
 
     def _stop_orchestrator_agent(self) -> None:
         """Stop the orchestrator agent."""
-        if not self.engine.has_agent(ORCHESTRATOR_KEY):
+        if not self.backend.has_agent(ORCHESTRATOR_KEY):
             self.notify("No running orchestrator agent", severity="warning")
             return
 
-        self.engine.stop_agent(ORCHESTRATOR_KEY, "")
+        self.backend.stop_agent(ORCHESTRATOR_KEY, "")
         self.notify("Orchestrator agent stopped")
 
     def action_focus_sidebar(self) -> None:
@@ -1011,10 +1036,7 @@ class LazyAgent(App):
             return
         panel = self.query_one(CenterPanel).get_panel(wt.path)
         if panel:
-            try:
-                panel.query_one("#terminal-widget").focus()
-            except Exception:
-                pass
+            panel.focus_shell()
 
     async def action_quit(self) -> None:
         diag.event(log, "app.quit", worktrees=len(self.worktrees))
@@ -1036,7 +1058,7 @@ class LazyAgent(App):
         self.notify("Refreshing git status…", timeout=2)
 
     def action_create_worktree(self) -> None:
-        config = self.engine.get_config()
+        config = self.backend.get_config()
 
         def on_modal_dismiss(result: CreateWorktreeResult | None) -> None:
             if result is None:
@@ -1055,13 +1077,13 @@ class LazyAgent(App):
 
     async def _do_create_worktree(self, result: CreateWorktreeResult) -> None:
         try:
-            created = await self.engine.create_worktree(
+            created = await self.backend.create_worktree(
                 result.branch,
                 result.base_branch,
                 result.extra_options,
                 env=dict(os.environ),
             )
-        except (WorktreeManagerError, ValueError) as e:
+        except (WorktreeManagerError, ValueError, EngineUnavailable) as e:
             self.notify(str(e), severity="error", timeout=5)
             return
         self._queue_selection(created.path)
@@ -1076,7 +1098,7 @@ class LazyAgent(App):
             self.notify("Cannot remove the main worktree", severity="error")
             return
 
-        if self.engine.has_active_agents(worktree.path):
+        if self.backend.has_active_agents(worktree.path):
             self.notify(
                 "Agent is running in this worktree — stop it first (x)",
                 severity="warning",
@@ -1100,8 +1122,8 @@ class LazyAgent(App):
 
     async def _do_remove_worktree(self, worktree: WorktreeInfo, *, force: bool = False) -> None:
         try:
-            await self.engine.remove_worktree(worktree.path, force, env=dict(os.environ))
-        except (WorktreeManagerError, ValueError) as e:
+            await self.backend.remove_worktree(worktree.path, force, env=dict(os.environ))
+        except (WorktreeManagerError, ValueError, EngineUnavailable) as e:
             self.notify(str(e), severity="error", timeout=5)
             return
         if self.worktrees:

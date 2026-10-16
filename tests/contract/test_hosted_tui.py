@@ -26,8 +26,8 @@ SIZE = (160, 90)
 
 
 async def _connect(app) -> Client:
-    assert app.engine.v1_socket_path is not None
-    client = await Client.connect(app.engine.v1_socket_path, client="host")
+    assert app.backend.engine.v1_socket_path is not None
+    client = await Client.connect(app.backend.engine.v1_socket_path, client="host")
     await checked(client, "subscribe", events=["ui.view_changed"])
     return client
 
@@ -54,8 +54,10 @@ async def _view(client, **expected) -> dict:
     return event.data
 
 
-async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_selects_a_worktree_and_opens_its_shell(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE) as pilot:
         client = await _connect(app)
         try:
@@ -78,14 +80,16 @@ async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch
             await checked(client, "ui.select_orchestrator")
             await _view(client, orchestrator=True, worktree_path=None)
             assert app._orchestrator_selected
-            assert await checked(client, "ui.get_view") == {"view": app.engine.ui_view}
+            assert await checked(client, "ui.get_view") == {
+                "view": app.backend.engine.ui_view
+            }
             await pilot.pause()
         finally:
             await client.close()
 
 
-async def test_host_focuses_an_agent(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_focuses_an_agent(tmp_path, monkeypatch, backend_kind):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -120,8 +124,8 @@ async def test_host_focuses_an_agent(tmp_path, monkeypatch):
             await client.close()
 
 
-async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch, backend_kind):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE) as pilot:
         client = await _connect(app)
         try:
@@ -141,8 +145,10 @@ async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch):
             await client.close()
 
 
-async def test_selecting_an_unknown_worktree_changes_nothing(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_selecting_an_unknown_worktree_changes_nothing(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -157,9 +163,9 @@ async def test_selecting_an_unknown_worktree_changes_nothing(tmp_path, monkeypat
 
 
 async def test_a_plain_tui_takes_no_commands_but_reports_its_view(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, backend_kind
 ):
-    app = make_app(tmp_path, monkeypatch, hosted=False)
+    app = make_app(tmp_path, monkeypatch, hosted=False, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -173,10 +179,10 @@ async def test_a_plain_tui_takes_no_commands_but_reports_its_view(
             await client.close()
 
 
-async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch):
+async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch, backend_kind):
     """A selection mounts the panel and then focuses the shell: the host
     hears only where it ends."""
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:

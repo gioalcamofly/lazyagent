@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from lazyagent.engine.session import AgentSession
 from lazyagent.models import AgentStatus
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 
 
 class MonitoredTerminal(ScrollableTerminal):
-    """View of an :class:`AgentSession`.
+    """View of an agent's terminal (an engine
+    :class:`~lazyagent.engine.session.AgentSession` in-process).
 
     Status detection lives in the session, and its status and exit reach the
     app through the engine's events; this view only renders the session and
     exposes its identity.
     """
 
-    session: AgentSession
-
-    def __init__(self, session: AgentSession, **kwargs) -> None:
+    def __init__(self, session, **kwargs) -> None:
         super().__init__(session, **kwargs)
 
     @property

@@ -360,8 +360,11 @@ class WorktreeService:
 
     async def wait_idle(self) -> None:
         """Wait for every tick spawned so far to finish."""
-        while self._ticks:
-            await asyncio.gather(*list(self._ticks), return_exceptions=True)
+        # Only the unfinished ones: a finished task leaves the set in a
+        # done callback, and gathering finished tasks completes without
+        # yielding to the loop that would run it.
+        while pending := [t for t in self._ticks if not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def poll_git_status(self) -> None:
         """One git status tick: the current interest set, nothing else."""

@@ -1,10 +1,14 @@
 """ScrollableTerminal — a terminal widget with scrollback buffer.
 
-A view of a :class:`~lazyagent.engine.session.TerminalSession`: the session
-owns the process and the screen (scrollback included); this widget renders
-that screen with Textual's native scrolling (``virtual_size``,
-``render_line``, scrollbars), and turns keys, pastes and mouse events into
-bytes for the session.
+A view of a terminal session — the engine's
+:class:`~lazyagent.engine.session.TerminalSession` in-process, or a
+:class:`~lazyagent.backend.remote_session.RemoteSession` for a remote
+engine: the session owns the screen (scrollback included) at the PTY's
+size; this widget renders that screen with Textual's native scrolling
+(``virtual_size``, ``render_line``, scrollbars), cropping or padding it to
+its own width, and turns keys, pastes and mouse events into bytes for the
+session. It is attached to the session's output only while it is shown, so
+a remote session streams only to visible views.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 
 # The patch replaces pyte.screens.Char, so it has to land before the names
 # below are bound and before any Screen is built.
@@ -115,9 +120,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self.ncol = session.cols
         self.nrow = session.rows
         self._follow_output = True  # tracks auto-scroll intent across visibility
-        self._detach_output = session.attach(
-            self._on_session_output, watching=self._is_watching
-        )
+        self._detach_output: Callable[[], None] | None = None
 
         # Diagnostics only — see lazyagent.diagnostics.
         self._diag_render_s: float = 0.0
@@ -206,8 +209,22 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         """Stop the session's process."""
         self.session.stop()
 
+    def _attach_output(self) -> None:
+        if self._detach_output is None:
+            self._detach_output = self.session.attach(
+                self._on_session_output, watching=self._is_watching
+            )
+
+    def _stop_output(self) -> None:
+        if self._detach_output is not None:
+            self._detach_output()
+            self._detach_output = None
+
+    def on_hide(self) -> None:
+        self._stop_output()
+
     def on_unmount(self) -> None:
-        self._detach_output()
+        self._stop_output()
 
     # ------------------------------------------------------------------
     # Session output
@@ -261,6 +278,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
     def on_show(self) -> None:
         """Catch up after being hidden: drain buffered output, sync size, scroll."""
+        self._attach_output()
         # Drain anything that arrived while hidden so the first paint
         # reflects the latest state.
         self.session.flush()
