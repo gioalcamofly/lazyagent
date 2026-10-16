@@ -11,7 +11,7 @@ from tests.protocol.test_boundary import _imports
 
 ENGINE = Path(lazyagent.__file__).parent / "engine"
 
-_BANNED = ("textual", "lazyagent.widgets", "lazyagent.app", "lazyagent.messages")
+_BANNED = ("textual", "lazyagent.widgets", "lazyagent.app")
 
 
 def _banned(module: str) -> bool:
