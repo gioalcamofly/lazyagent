@@ -159,3 +159,17 @@ class TestAppPublishesEvents:
             ("no_agent", "waiting"),
             ("waiting", EXITED),
         ]
+
+
+class TestTruncation:
+    def test_events_of_other_kinds_do_not_count_as_a_gap(self):
+        from lazyagent.engine.events import EventBus
+
+        bus = EventBus(maxlen=2)
+        _publish(bus, "running")                 # seq 1
+        bus.emit("engine.notice", {})            # seq 2
+        _publish(bus, "waiting")                 # seq 3
+        _publish(bus, "running")                 # seq 4, evicts seq 1
+        assert bus.since(1)[1] is False
+        assert bus.since(0)[1] is True
+        assert [e.seq for e in bus.since(2)[0]] == [3, 4]

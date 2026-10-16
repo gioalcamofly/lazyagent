@@ -63,6 +63,18 @@
         "detail": {"type": "string"}
       }
     },
+    "agent.updated": {
+      "type": "object",
+      "description": "An agent's current state after any change, detail-only ones included. Not in the list_events log (agent.status has the transitions).",
+      "required": ["worktree_path", "agent_id", "status", "confidence", "detail"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "status": {"$ref": "methods.json#/$defs/agent_status"},
+        "confidence": {"$ref": "methods.json#/$defs/confidence"},
+        "detail": {"type": "string"}
+      }
+    },
     "agent.spawned": {
       "type": "object",
       "required": ["worktree_path", "agent_id", "session_id", "label", "session_name", "kind"],
@@ -82,7 +94,8 @@
         "worktree_path": {"type": "string"},
         "agent_id": {"type": "string"},
         "session_id": {"type": "string"},
-        "exit_code": {"type": ["integer", "null"]}
+        "exit_code": {"type": ["integer", "null"]},
+        "stopped": {"type": "boolean", "description": "True when a client stopped it, false when it exited on its own."}
       }
     },
     "worktrees.changed": {"$ref": "methods.json#/$defs/list_worktrees.result"},
@@ -107,6 +120,15 @@
       "properties": {
         "severity": {"enum": ["information", "warning", "error"]},
         "message": {"type": "string"}
+      }
+    },
+    "job.started": {
+      "type": "object",
+      "required": ["job_id", "title", "command"],
+      "properties": {
+        "job_id": {"type": "string"},
+        "title": {"type": "string", "description": "What the job is for, for display."},
+        "command": {"type": "string"}
       }
     },
     "job.output": {

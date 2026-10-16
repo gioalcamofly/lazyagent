@@ -13,11 +13,18 @@ EVENT_SAMPLES = {
         "seq": 3, "time": 1700000000.5, "worktree_path": "/r", "agent_id": "a1",
         "label": "Agent 1", "status": "waiting", "previous_status": "running", "detail": "",
     },
+    "agent.updated": {
+        "worktree_path": "/r", "agent_id": "a1", "status": "running", "confidence": "high",
+        "detail": "Bash",
+    },
     "agent.spawned": {
         "worktree_path": "/r", "agent_id": "a2", "session_id": "s-7", "label": "Agent 2",
         "session_name": "r-a2", "kind": "agent",
     },
-    "agent.exited": {"worktree_path": "/r", "agent_id": "a2", "session_id": "s-7", "exit_code": 0},
+    "agent.exited": {
+        "worktree_path": "/r", "agent_id": "a2", "session_id": "s-7", "exit_code": 0,
+        "stopped": False,
+    },
     "worktrees.changed": [
         {
             "path": "/r", "branch": None, "head": "abc", "is_main": True, "is_bare": False,
@@ -39,6 +46,7 @@ EVENT_SAMPLES = {
     "stream.resized": {"stream_id": 1, "rows": 50, "cols": 200, "offset": 4096},
     "stream.reset": {"stream_id": 1, "rows": 50, "cols": 200, "offset": 8192},
     "engine.notice": {"severity": "warning", "message": "gh is not installed"},
+    "job.started": {"job_id": "j1", "title": "Create worktree feat", "command": "make wt"},
     "job.output": {"job_id": "j1", "text": "Preparing worktree\n"},
     "job.finished": {"job_id": "j1", "exit_code": None},
     "engine.shutdown": {"reason": "lazyagent engine stop"},
