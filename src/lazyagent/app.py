@@ -291,6 +291,9 @@ class LazyAgent(App):
         elif name == AGENT_SPAWNED:
             self.call_later(self._show_agent, data["worktree_path"], data["agent_id"], data["kind"])
         elif name == AGENT_EXITED:
+            # A remote backend's store forgets the agent on this event, after
+            # the agent.status that announced it.
+            self._refresh_sidebar_agents(data["worktree_path"])
             self.call_later(self._hide_agent, data)
         elif name == ENGINE_NOTICE:
             self.notify(data["message"], severity=data["severity"], timeout=5)
@@ -517,7 +520,10 @@ class LazyAgent(App):
         )
 
     async def _fetch_diff(self, worktree_path: str) -> None:
-        diff_text = await self.backend.get_diff(worktree_path)
+        try:
+            diff_text = await self.backend.get_diff(worktree_path)
+        except EngineUnavailable:
+            return  # the backend reports the outage itself
         self._apply_diff(worktree_path, diff_text)
 
     def _apply_diff(self, worktree_path: str, diff_text: str) -> None:

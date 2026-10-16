@@ -272,6 +272,9 @@ async def test_orchestrator_exited_resets_state(monkeypatch, backend_kind):
         assert app._get_agent_state(ORCHESTRATOR_KEY).status == AgentStatus.NO_AGENT
         assert not app.backend.engine.has_agent(ORCHESTRATOR_KEY)
         assert panel.agent_terminal is None
+        # The sidebar entry no longer says it runs.
+        orch_item = next(iter(app.query_one(WorktreeList).children))
+        assert orch_item._agent_state.status == AgentStatus.NO_AGENT
         app.notify.assert_called_once()
         assert "Orchestrator exited" in app.notify.call_args.args[0]
 

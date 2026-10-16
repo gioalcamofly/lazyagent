@@ -1071,6 +1071,9 @@ class V1Server:
                 "agents": engine.agents_payload(ORCHESTRATOR_KEY, v1=True)
             },
             "pr_info": pr_info,
+            "git_statuses": {
+                path: asdict(status) for path, status in engine.git_statuses.items()
+            },
             "view": engine.ui_view,
             "cursor": engine.events.cursor,
         }

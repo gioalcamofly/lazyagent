@@ -23,6 +23,7 @@ from lazyagent.backend import make_backend
 from lazyagent.backend.inprocess import InProcessBackend
 from lazyagent.backend.remote import RemoteBackend
 from lazyagent.engine.client import Client
+from lazyagent.models import GitStatus
 from lazyagent.widgets.center_panel import CenterPanel
 from tests.contract.helpers import text_lines, until
 from tests.engine.fakes import fake_agent_provider, make_engine, worktree
@@ -254,6 +255,18 @@ async def test_the_store_follows_the_engine(engine, backend):
     assert backend.agent_states(feat)[info.agent_id].status == session.status
     assert backend.has_active_agents(feat)
     assert backend.get_config() == engine.get_config()
+    engine.world.statuses[feat] = GitStatus(
+        dirty_count=2, has_upstream=True, last_commit_subject="the subject"
+    )
+    await engine.refresh_git_status()
+    late = _remote(engine)
+    await late.start()
+    try:
+        # Seeded with the full statuses, not only the counts.
+        assert late.git_statuses == engine.git_statuses
+        assert late.git_statuses[feat].last_commit_subject == "the subject"
+    finally:
+        await late.stop()
 
     engine.stop_agent(feat, info.agent_id)
     await backend.sync()
@@ -366,6 +379,7 @@ async def test_the_view_crops_a_wider_pty_and_typing_takes_the_size_back(engine)
             assert terminal.render_line(0).cell_length == width
             assert (session.rows, session.cols) == (25, 200)
 
+            terminal.focus()
             await pilot.press("a")
             await until(
                 lambda: (session.rows, session.cols) == (terminal.nrow, terminal.ncol)

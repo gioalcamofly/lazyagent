@@ -161,6 +161,9 @@ async def test_sidebar_state_in_one_call(harness, client):
     assert state["orchestrator"] == {"agents": []}
     assert state["pr_info"] == {}
     assert state["view"] is None
+    # Full statuses (last commit subject, upstream) for what was computed.
+    statuses = (await checked(client, "refresh_git_status"))["statuses"]
+    assert (await checked(client, "get_sidebar_state"))["git_statuses"] == statuses
     await checked(client, "subscribe", since=state["cursor"])
     await checked(client, "refresh_worktrees")
     event = await client.next_event()

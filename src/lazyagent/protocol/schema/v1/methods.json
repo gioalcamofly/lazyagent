@@ -453,6 +453,7 @@
           "additionalProperties": {"anyOf": [{"$ref": "events.json#/$defs/pr_info"}, {"type": "null"}]},
           "description": "Worktree path -> PR info (null: no PR), for the worktrees fetched so far."
         },
+        "git_statuses": {"$ref": "events.json#/$defs/git_status.updated", "description": "Worktree path -> full git status, for the worktrees computed so far (worktrees only carries the counts)."},
         "view": {"anyOf": [{"$ref": "#/$defs/ui_view"}, {"type": "null"}]},
         "cursor": {"type": "integer", "minimum": 0, "description": "subscribe {since: cursor} continues from this state without a gap."}
       }

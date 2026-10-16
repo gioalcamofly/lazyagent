@@ -403,6 +403,8 @@ class RemoteBackend(Backend):
         self._set_worktrees(state["worktrees"])
         self._set_agents(ORCHESTRATOR_KEY, state["orchestrator"]["agents"])
         self._pr = {path: _pr_info(info) for path, info in state["pr_info"].items()}
+        for path, status in state.get("git_statuses", {}).items():
+            self._git_statuses[path] = _git_status(status)
 
     def _set_worktrees(self, payload: list[dict[str, Any]]) -> None:
         self._worktrees = [
@@ -639,7 +641,11 @@ class RemoteBackend(Backend):
         self.fire("refresh_git_status")
 
     async def refresh_git_status(self, paths: Collection[str]) -> None:
-        result = await self.request("refresh_git_status", paths=list(paths))
+        try:
+            result = await self.request("refresh_git_status", paths=list(paths))
+        except EngineUnavailable as e:
+            log.info("git status not refreshed: %s", e)
+            return
         for path, status in result["statuses"].items():
             self._git_statuses[path] = _git_status(status)
 
@@ -648,7 +654,13 @@ class RemoteBackend(Backend):
 
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         for path in paths:
-            result = await self.request("get_pr_info", worktree_path=path, refresh=True)
+            try:
+                result = await self.request(
+                    "get_pr_info", worktree_path=path, refresh=True
+                )
+            except EngineUnavailable as e:
+                log.info("PR info not refreshed: %s", e)
+                return
             if result["fetched"]:
                 self._pr[path] = _pr_info(result["pr_info"])
 
