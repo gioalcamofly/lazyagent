@@ -881,3 +881,34 @@ async def test_refresh_keeps_the_orchestrator_selected(
 
         assert isinstance(wt_list.highlighted_child, OrchestratorListItem)
         assert app._orchestrator_selected
+
+
+@pytest.mark.asyncio
+async def test_an_agent_out_of_sight_does_not_take_the_keyboard(
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str
+) -> None:
+    """An agent spawned in a worktree not on screen (over MCP, or already
+    running when a remote TUI connects) gets its tab but not the focus."""
+    from lazyagent.widgets.monitored_terminal import MonitoredTerminal
+    from tests.engine.fakes import no_pty
+
+    _patch_app_dependencies(monkeypatch)
+    no_pty(monkeypatch)
+    app = tui_app(backend_kind)
+
+    async with app.run_test() as pilot:
+        await _select_worktree(app, 0)
+        await settle(pilot)
+        app.query_one(WorktreeList).focus()
+        engine = app.backend.engine
+
+        await engine.spawn_agent(FEATURE_WORKTREE.path)
+        await settle(pilot)
+        panel = app.query_one(CenterPanel).get_panel(FEATURE_WORKTREE.path)
+        assert panel is not None and panel.agent_ids == ["a1"]
+        assert isinstance(app.focused, WorktreeList)
+
+        await engine.spawn_agent(MAIN_WORKTREE.path)
+        await settle(pilot)
+        assert isinstance(app.focused, MonitoredTerminal)
+        assert app.focused.session.worktree_path == MAIN_WORKTREE.path

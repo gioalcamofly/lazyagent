@@ -314,13 +314,18 @@ class LazyAgent(App):
         if session is None:
             return  # gone again before its tab could be shown
         center = self.query_one(CenterPanel)
+        # The keyboard follows a new agent only into the panel on screen: an
+        # agent that shows up elsewhere (spawned over MCP, or already running
+        # when this TUI connected) must not take the keys out of sight.
         if kind == ORCHESTRATOR_KIND:
             orchestrator = await center.ensure_orchestrator_panel(self._repo_root)
-            await orchestrator.show_agent(session)
+            await orchestrator.show_agent(session, focus=self._shown is None)
             self._publish_view()
             return
         panel = await center.ensure_panel(key)
-        await panel.show_agent(session, self.registry.label(key, agent_id))
+        await panel.show_agent(
+            session, self.registry.label(key, agent_id), focus=self._shown == key
+        )
         self._publish_view()
 
     async def _hide_agent(self, data: dict) -> None:

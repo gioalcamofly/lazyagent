@@ -386,9 +386,9 @@ class WorktreePanel(Container):
         if not self._agents:
             await self._ensure_placeholder_tab()
 
-    async def show_agent(self, session, label: str) -> None:
-        """Add a tab for an agent the engine has spawned, make it active and
-        focus it."""
+    async def show_agent(self, session, label: str, *, focus: bool = True) -> None:
+        """Add a tab for an agent the engine has spawned and make it active;
+        focus it unless ``focus`` is false (its panel is not shown)."""
         agent_id = session.agent_id
         if agent_id in self._agents:
             return
@@ -413,7 +413,8 @@ class WorktreePanel(Container):
             log, "spawn.activate_tab", spawn_id=session.spawn_id, agent_id=agent_id
         ):
             tabs.active = _agent_tab_id(agent_id)
-            terminal.focus()
+            if focus:
+                terminal.focus()
 
 
 class CenterPanel(Container):

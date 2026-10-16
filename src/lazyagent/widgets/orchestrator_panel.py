@@ -79,8 +79,9 @@ class OrchestratorPanel(Container):
         except Exception:
             self.mount(Static(_PLACEHOLDER_TEXT, id="orch-placeholder"))
 
-    async def show_agent(self, session) -> None:
-        """Show the orchestrator session the engine has spawned and focus it."""
+    async def show_agent(self, session, *, focus: bool = True) -> None:
+        """Show the orchestrator session the engine has spawned; focus it
+        unless ``focus`` is false (the panel is not shown)."""
         if self._agent_terminal is not None:
             if self._agent_terminal.session is session:
                 return
@@ -96,4 +97,5 @@ class OrchestratorPanel(Container):
         terminal = MonitoredTerminal(session, id="orch-agent-terminal")
         self._agent_terminal = terminal
         await self.mount(terminal)
-        terminal.focus()
+        if focus:
+            terminal.focus()
