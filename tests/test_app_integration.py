@@ -465,21 +465,22 @@ class TestGitStatusRefresh:
         app = LazyAgent(repo_path="/repo")
 
         async with app.run_test():
+            wt = await _select_worktree(app, 1)
             await _drain_workers(app)
+            other = next(w for w in WORKTREES if w.path != wt.path)
             app._git_statuses = {
-                MAIN_WORKTREE.path: GitStatus(last_commit_subject="old main"),
-                FEATURE_WORKTREE.path: GitStatus(last_commit_subject="old feature"),
+                other.path: GitStatus(last_commit_subject="old other"),
+                wt.path: GitStatus(last_commit_subject="old selected"),
             }
 
-            app._apply_git_statuses(
-                {FEATURE_WORKTREE.path: GitStatus(last_commit_subject="new feature")}
-            )
+            app._refresh_selected_git_status()
+            await _drain_workers(app)
 
-            assert app._git_statuses[FEATURE_WORKTREE.path].last_commit_subject == (
-                "new feature"
+            assert app._git_statuses[wt.path].last_commit_subject == (
+                f"commit for {wt.path}"
             )
-            assert app._git_statuses[MAIN_WORKTREE.path].last_commit_subject == (
-                "old main"
+            assert app._git_statuses[other.path].last_commit_subject == (
+                "old other"
             )
 
     @pytest.mark.asyncio
