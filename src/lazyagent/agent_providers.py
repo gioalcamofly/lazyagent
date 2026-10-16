@@ -7,6 +7,7 @@ import shlex
 import stat
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -90,8 +91,13 @@ class AgentProvider:
         instruction: str | None = None,
         system_prompt: str | None = None,
         session_name: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> str:
-        """Build the full shell command used to launch this provider."""
+        """Build the full shell command used to launch this provider.
+
+        ``env`` is the environment the agent starts from (the spawning
+        client's); ``None`` means this process's own.
+        """
         context = runtime_context or self.build_runtime_context(worktree_path)
 
         resume_args = self._resume_args(resume_mode)
@@ -130,7 +136,7 @@ class AgentProvider:
             parts.extend(["--mcp-config", context.metadata["mcp_config_path"]])
         inner_cmd = " ".join(shlex.quote(p) for p in parts)
         script = (
-            f"{env_exports(context.env_overrides)}"
+            f"{env_exports(context.env_overrides, base=env)}"
             f" && cd {shlex.quote(worktree_path)}"
             f" && exec {inner_cmd}"
         )
@@ -251,11 +257,21 @@ PROVIDERS = {
 }
 
 
-def env_exports(extra_env: dict[str, str] | None = None) -> str:
-    """Build a shell snippet that restores the parent process environment."""
+def env_exports(
+    extra_env: dict[str, str] | None = None,
+    *,
+    base: Mapping[str, str] | None = None,
+) -> str:
+    """Build a shell snippet that restores an environment in the child.
+
+    The PTY child starts with almost nothing (see ``PtyEmulator``), so this
+    is what it really runs with: ``base`` (this process's environment when
+    ``None``) plus ``extra_env``.
+    """
+    source = os.environ if base is None else base
     merged = {
         key: val
-        for key, val in os.environ.items()
+        for key, val in source.items()
         if key not in ENV_SKIP
     }
     if extra_env:
