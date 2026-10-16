@@ -36,8 +36,14 @@ def test_the_view_adds_no_session_listener():
     assert session._listeners == []
 
 
-def test_unmount_detaches_from_the_output():
+def test_the_view_is_attached_only_while_shown():
     terminal, session = _make_terminal()
+    assert session._viewers == []
+    terminal._attach_output()
+    terminal._attach_output()
     assert len(session._viewers) == 1
+    terminal.on_hide()
+    assert session._viewers == []
+    terminal._attach_output()
     terminal.on_unmount()
     assert session._viewers == []
