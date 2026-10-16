@@ -83,6 +83,7 @@ from lazyagent.models import (
     AgentState,
     AgentStatus,
     GitStatus,
+    LifecycleConfidence,
     PrInfo,
     WorktreeInfo,
     rollup_status,
@@ -118,6 +119,9 @@ POLL_AGENTS_INTERVAL = 1.0
 CHECK_HANGS_INTERVAL = 60.0
 
 NOTICE_SEVERITIES = ("information", "warning", "error")
+
+# The v1 status of an agent the engine runs that has reported none yet.
+STARTING_STATUS = "starting"
 
 # An agent in one of these is working or about to: its worktree must not be
 # pulled out from under it.
@@ -625,9 +629,11 @@ class Engine:
 
     def agents_payload(self, key: str, *, v1: bool = False) -> list[dict[str, Any]]:
         """A worktree's agent states as the IPC responses carry them; ``v1``
-        adds ``session_id`` and ``kind`` for the agents the engine runs."""
+        adds ``session_id`` and ``kind`` for the agents the engine runs, and
+        lists those with no status yet as ``starting``."""
         result = []
-        for aid, st in self.registry.agents(key).items():
+        states = self.registry.agents(key)
+        for aid, st in states.items():
             entry: dict[str, Any] = {
                 "agent_id": aid,
                 "label": st.label,
@@ -641,6 +647,21 @@ class Engine:
                 entry["session_id"] = info.session_id
                 entry["kind"] = info.kind
             result.append(entry)
+        if v1:
+            for info in self.list_agents(key):
+                if info.agent_id not in states:
+                    result.append(
+                        {
+                            "agent_id": info.agent_id,
+                            "label": info.label,
+                            "session_name": info.session_name,
+                            "status": STARTING_STATUS,
+                            "confidence": LifecycleConfidence.LOW.value,
+                            "detail": "",
+                            "session_id": info.session_id,
+                            "kind": info.kind,
+                        }
+                    )
         return result
 
     def _on_worktree_event(self, event: WorktreeEvent) -> None:

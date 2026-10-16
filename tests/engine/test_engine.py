@@ -776,3 +776,24 @@ async def test_wait_idle_returns_while_a_finished_task_is_still_listed(monkeypat
     await task
     engine._tasks.add(task)
     await asyncio.wait_for(engine.wait_idle(), 1.0)
+
+
+@pytest.mark.asyncio
+async def test_v1_lists_an_agent_with_no_status_yet_as_starting(monkeypatch):
+    from tests.engine.fakes import no_pty
+
+    no_pty(monkeypatch)
+    engine = make_engine([worktree(), worktree("/tmp/repo-feat", "feat", is_main=False)])
+    info = await engine.spawn_agent("/tmp/repo-feat")
+    assert engine.registry.agents("/tmp/repo-feat") == {}
+
+    [entry] = engine.agents_payload("/tmp/repo-feat", v1=True)
+    assert entry["status"] == "starting"
+    assert entry["session_id"] == info.session_id
+    assert entry["label"] == info.label
+    validation.validate_result(
+        "list_worktrees", engine.worktrees_payload(v1=True), strict=True
+    )
+    # The legacy answer is unchanged.
+    assert engine.agents_payload("/tmp/repo-feat") == []
+    engine.stop_agent("/tmp/repo-feat", info.agent_id)

@@ -291,6 +291,23 @@ async def test_a_new_client_learns_the_running_agents(engine):
         await backend.stop()
 
 
+async def test_a_new_client_learns_an_agent_with_no_status_yet(engine, monkeypatch):
+    from tests.engine.fakes import no_pty
+
+    no_pty(monkeypatch)
+    info = await engine.spawn_agent(_feat(engine))
+    backend = _remote(engine)
+    await backend.start()
+    try:
+        assert backend.agent_ids(info.worktree_path) == [info.agent_id]
+        assert backend.agent_states(info.worktree_path) == {}
+        listed = await backend.request("list_agents", worktree_path=info.worktree_path)
+        assert [a["status"] for a in listed["agents"]] == ["starting"]
+        assert (await backend.session(info.worktree_path, info.agent_id)) is not None
+    finally:
+        await backend.stop()
+
+
 async def test_requests_fail_like_the_engine_does(engine, backend):
     with pytest.raises(ValueError, match="Unknown worktree"):
         await backend.spawn_agent("/nowhere")

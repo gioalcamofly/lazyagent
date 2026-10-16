@@ -7,7 +7,7 @@
     "agent_status": {
       "type": "string",
       "description": "Open set: clients must tolerate values they do not know.",
-      "x-known-values": ["no_agent", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
+      "x-known-values": ["no_agent", "starting", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
     },
     "confidence": {
       "type": "string",

@@ -748,6 +748,8 @@ class V1Server:
         async def call(conn: _Connection, params: dict) -> Any:
             result = await handler(params)
             key = result["worktree_path"]
+            # The v1 list has every agent the engine runs, "starting" ones too.
+            result["agents"] = self.engine.agents_payload(key, v1=True)
             for agent in result["agents"]:
                 info = self.engine.get_agent(key, agent["agent_id"])
                 session = self.engine.get_session(key, agent["agent_id"])

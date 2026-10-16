@@ -71,6 +71,8 @@ from lazyagent.worktree_manager import WorktreeManagerError, find_repo_root
 log = logging.getLogger(__name__)
 
 _STREAM_EVENTS = ("stream.resized", "stream.reset", "stream.closed")
+# What the engine's v1 lists say of an agent with no status yet.
+STARTING_STATUS = "starting"
 _ACTIVE_STATUSES = (AgentStatus.RUNNING, AgentStatus.WAITING)
 
 RETRY_INITIAL = 0.25
@@ -434,8 +436,8 @@ class RemoteBackend(Backend):
                 self._forget_key(key)
 
     def _set_agents(self, key: str, agents: list[dict[str, Any]]) -> None:
-        """Replace ``key``'s agent states with a payload's (an agent the
-        engine runs but has no state for yet keeps its identity)."""
+        """Replace ``key``'s agent states with a payload's (a ``starting``
+        agent, which has reported no status yet, gets no state)."""
         states: dict[str, AgentState] = {}
         for entry in agents:
             agent_id = entry["agent_id"]
@@ -443,14 +445,6 @@ class RemoteBackend(Backend):
             session_name = entry.get("session_name") or ""
             self._registry.register(
                 key, agent_id, label=label, session_name=session_name
-            )
-            states[agent_id] = AgentState(
-                status=_status(entry.get("status")),
-                confidence=_confidence(entry.get("confidence")),
-                detail=entry.get("detail") or "",
-                agent_id=agent_id,
-                label=label,
-                session_name=session_name,
             )
             session_id = entry.get("session_id")
             if session_id:
@@ -460,6 +454,16 @@ class RemoteBackend(Backend):
                 self._agents.setdefault(key, {})[agent_id] = AgentInfo(
                     key, agent_id, session_id, label, session_name, kind
                 )
+            if entry.get("status") == STARTING_STATUS:
+                continue  # running, but no status to show yet
+            states[agent_id] = AgentState(
+                status=_status(entry.get("status")),
+                confidence=_confidence(entry.get("confidence")),
+                detail=entry.get("detail") or "",
+                agent_id=agent_id,
+                label=label,
+                session_name=session_name,
+            )
         if states:
             self._registry.states[key] = states
         else:
