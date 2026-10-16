@@ -2,6 +2,7 @@
 
 - **Status:** draft for review. Plan and mockups only, no code changes.
 - **Base:** `develop` @ `145752e` (H2 merged). All `file:line` refs are under `src/lazyagent/` at that commit.
+- **Performance data:** §7d. Numbers come from throwaway benchmark scripts (not in the repo) run on the author's machine (i7-12700H, 20 threads, Linux 6.8, system Chrome headless with `--enable-gpu` on Mesa Intel ADL GT2, CPython 3.12, the worktree's develop venv). Another session was running tests at the same time, so absolute numbers carry noise; repeated runs are given as ranges.
 - **Builds on:** [engine-split.md](engine-split.md) (§0 why, §4 protocol v1, §6/§6b migration, D1-D11) and [proposals 0001-0009](../proposals/README.md).
 - **Mockups:** [`ui-mockups/`](ui-mockups/), shown in §3a-§3d. Static, self-contained HTML/CSS (no scripts, no network) with sample data, in H2's dark tokens; the PNGs are headless Chrome screenshots (Playwright, `channel="chrome"`, 1440×900; the phone one at 390×844).
 
@@ -445,13 +446,119 @@ Status: **exists** = in v1 today (`protocol/schema/v1/`). **host** = exists in t
 
 ### 7d. Performance
 
+Goal: the best performance we can measure. The budgets come first. Every number below was measured on 2026-10-16 (setup in the header) with throwaway scripts: an in-process engine + v1 server with N fake agents (tests/engine/fake_agent.py), a v1 client, a Python WS client against `lazyagent host`, Playwright + system Chrome on the H2 page, and a **U2 prototype**: xterm.js attached to the engine stream through a host-like Python bridge. Ranges are repeated runs.
+
+#### 7d-1. Budgets
+
+| # | Metric | Budget | H2 today | U2 prototype | How it is measured |
+|---|---|---|---|---|---|
+| B1 | Keystroke → glyph, focused terminal, idle machine (p50 / p95) | **≤ 8 / 16 ms** (one 60 Hz frame at p95) | send→DOM 5.7 / 11.9 ms; next frame 17 / 28 | send→DOM 2.8 / 8.7 (DOM); send→recv 1.6 / 1.9 | Playwright: `keydown` → `ws.send` → WS message containing the glyph → MutationObserver on `.xterm-rows` (DOM) or write callback + `requestAnimationFrame` (WebGL). key→send is 0.1 / 0.2 ms |
+| B2 | Same, 10 agents with 8 printing ~1,000 lines/s hidden (p95 / p99) | **≤ 25 / 50 ms** | — | send→recv 30-46 / 44-55 ❌ (engine-bound) | Same, plus `count 60000` in each hidden agent |
+| B3 | Engine echo over the socket, no UI (p95 idle / p95 load / p99 load) | **≤ 3 / 8 / 16 ms** | — | 0.9-2.3 / 5.7 / 17.2 | v1 client: input frame `z` → output frame containing it |
+| B4 | Frames while the focused agent prints 5 MB | **p95 ≤ 17 ms**, long tasks ≤ 100 ms per 5 MB | 16.7-16.8, 0 ms | 16.8, 0-97 ms | rAF deltas + `longtask` PerformanceObserver |
+| B5 | Sustained output of the visible agent, end to end | **≥ 10 MB/s**; the UI never throttles the agent | 0.8-2.1 MB/s (hosted TUI at 94-100% CPU) ❌ | 2.1-2.8 MB/s (engine at 97-98%, pyte) ❌ | `spew 5000000`, time until `done` |
+| B6 | Idle CPU, host + engine + page, 9-10 agents, 1 visible | **≤ 2% of one core** total | engine/TUI 0.0-0.1%, host 0.0%, Chrome 1.3% | engine 0.0%, bridge 0.0%, Chrome 0.6% (WebGL) / 5.1% (DOM) | `/proc/<pid>/stat` utime+stime over 8-10 s, every process of the tree |
+| B7 | Engine CPU per hidden agent printing ~1,000 lines/s | **≤ 1% of a core** | — | 33-52% for 8 → 4-6.5% each ❌ | Same, busy window |
+| B8 | Open a worktree: `attach_stream` + snapshot (p95; worst case right after a burst) | **≤ 50 ms; worst ≤ 100 ms** | — | 3.8-6.0 ms p50 for a 218 KB snapshot (2,000 lines); **0.13-3.9 s** right after a 5-20 MB burst ❌ | v1 client, attach/detach ×10-20 |
+| B9 | Page memory, 10 agents | Renderer RSS **≤ 450 MB**, JS heap **≤ 50 MB** | 378-380 MB, 4.0-5.1 MB | 388-396 MB, 5.9-6.3 MB | CDP `Performance.getMetrics`, `/proc` RSS of `--type=renderer` |
+| B10 | Cold start: command → engine socket → page interactive | **≤ 1 s → ≤ 1.5 s** | 0.76 s (1 worktree), 1.34 s (9) → page ready 1.6 s | page ready 0.17 s (DOM), 2.0 s (WebGL, headless GPU init) | Wall clock from the process spawn |
+| B11 | Grid: 9 live tiles all receiving output | **frame p95 ≤ 17 ms** | — | WebGL 16.8 ✅, DOM 50 ❌ | §7d-4 grid bench |
+| B12 | Sidebar re-render, 100 worktrees | **≤ 4 ms** | not measured | not measured | U1 test: `performance.now()` around a store update |
+| B13 | Engine RSS / host RSS | ≤ 60 MB / ≤ 60 MB | engine-in-TUI 48-57 MB, host 40 MB | engine 29-30 MB | `/proc` RSS |
+
+- ❌ marks a budget the measured baseline misses. **B2, B5, B7 and B8 all fail for the same reason: the engine's headless pyte (§7d-5).** The GUI side (xterm.js, Chrome, the host hop) already meets its budgets.
+
+#### 7d-2. Paths compared
+
+| Path | Echo p50 / p95 (ms) | 5 MB burst | CPU during burst |
+|---|---|---|---|
+| v1 client → engine.sock (no UI) | 0.8-1.7 / 0.9-2.3 | 5 MB delivered in 0.04 s (108-148 MB/s); pyte catches up afterwards | engine ~0.37 s CPU per MB, mostly after delivery |
+| + one Python hop (splice / parse+re-frame / WS framing) | 2.3-2.4 / 3.0-3.1 | 116-149 MB/s | hop 0.11-0.13 s per 20 MB |
+| H2: WS → host → hosted TUI → agent (Python WS client) | 3.5-6.4 / 11.2-13.3 | 2.4-3.0 s (1 agent), 6.1 s (9 agents) | TUI 94-100%, host ~1% |
+| H2 in Chrome (key → DOM) | 5.7 / 11.9 | 4.1-6.0 s | Chrome 57-78%, TUI 73-82% |
+| U2 prototype in Chrome (key → DOM, DOM renderer, per-chunk writes) | 2.8 / 8.7 | 1.8-2.4 s | engine 97-98%, Chrome 40-58%, bridge ~4% |
+
+- **The H2 path is TUI-bound:** the hosted Textual app re-emulates and repaints the agent and re-encodes it as TUI output (0.9-1.9 MB of TUI output per 5 MB of agent output). Native terminals (U2) remove that hop, and U2 must stop the hosted TUI from rendering sessions the page shows (§2e).
+- **U2's burst is engine-bound:** the delivery to the page is slow enough that the 4 Hz pyte flush interleaves with PTY reads on the engine loop, so pyte throttles the agent. With the CLI client the burst arrived before the first flush.
+
+#### 7d-3. The host hop (Q1)
+
+| Option | Echo cost | Throughput | Where the work runs | Verdict |
+|---|---|---|---|---|
+| WS served by the engine | 0 (baseline) | — | Engine loop, the one already saturated by pyte (§7d-5) | No: it saves ~1.4 ms but adds HTTP, WS framing, auth and static files to the hottest loop, and puts the browser-facing attack surface inside the process that owns every PTY |
+| **Host as a v1 client, splicing stream frames (chosen)** | +1.4 ms p50, +0.8 ms p95 | Unchanged (116-149 MB/s) | Its own process and core; ~6 ms CPU per MB | **Yes.** It fits B1 with room; the security model (token, Host/Origin, CSP, whitelist) stays where it is |
+| Host parsing and re-encoding every frame | Same as splice within noise | Same | Same | Not needed for output; the host still parses control frames for the whitelist |
+
+#### 7d-4. Terminal emulators and renderers
+
+Throughput on two 5 MB workloads at 120×40 in 4 KiB chunks: **plain** (the fake agent's `spew`: 99-character lines) and **agent** (synthetic Ink-style output: spinner redraws, box re-renders with erase-line/cursor-up, SGR 256 colours, coloured diff lines).
+
+| Emulator | Kind | plain MB/s | agent MB/s | vs pyte (agent) |
+|---|---|---|---|---|
+| pyte + lazyagent `ScrollbackScreen` (engine today) | Pure Python | 3.0 | 1.7 | 1× |
+| libvterm 0.3 (system lib, via ctypes) | C | 14.1 | 44.6 | 26× |
+| `vt100` 0.3.0 (PyPI, C library + bindings) | C | 73.7 | 65.7 | 38× |
+| xterm.js 6.0.0 parse only (Chrome, no renderer) | JS (JIT) | 52.2 | 41.6 | 24× |
+
+| xterm.js renderer (Chrome, Mesa Intel GPU) | 1 terminal, 2 MB | 4 tiles | 9 tiles | 16 tiles | 20 tiles |
+|---|---|---|---|---|---|
+| DOM: frame p50 / p95 ms, long tasks | 16.6 / 16.8, 0 | 16.7 / 66.6, 0 | 33.3 / 50.0, 0 | 33.2 / 66.7, 140 ms | 49.9 / 83.3, 323 ms |
+| WebGL: frame p50 / p95 ms, long tasks | 16.7 / 16.7, 0 | 16.7 / 33.4, 0 | 16.7 / 16.8, 0 | 16.7 / 33.5, 0 | 16.7 / 50.0, 0 |
+| WebGL contexts lost | — | 0 | 0 | 0 | 0 |
+| WebGL on SwiftShader (no GPU) | 2.1 s for 2 MB, frame p50 66.7 ms, 2.0 s of long tasks (DOM: 0.22 s, 0) | not run | not run | not run | not run |
+
+- Grid tiles receive 400 KB each of the agent workload, at 100×30, font 9 px. WebGL processes the same bytes 2.2-2.6× faster than DOM.
+
+#### 7d-5. Where the engine's CPU goes
+
+cProfile of the engine with 8 hidden agents printing ~1,000 lines/s plus a 5 MB burst. Out of 13.1 s of busy time (cProfile inflates pure-Python code, so read these as shares):
+
+| Share of busy CPU | What |
+|---|---|
+| **77%** | `TerminalSession.flush` → pyte `Stream.feed` (headless emulation, K1) |
+| — 28% of the total | lazyagent's `ScrollbackScreen._encode_scrollback_row` (engine/screen.py:48), run on every line that scrolls off |
+| — 24% of the total | `pyte_patch._patched_draw` |
+| 10% | `TerminalSession._recv` (PTY read, ring, decode, fan-out) |
+| ~13% | asyncio loop, v1 server, framing, observers |
+
+- **Consequences, measured:** 8 chatty hidden agents cost the engine 33-52% of a core (B7). The visible agent's echo then goes from p95 1.9 ms to 30-46 ms (B2), because every 0.25 s flush runs on the loop. A 5-20 MB backlog is fed in **one** `feed()` call, so the next `attach_stream` waited 1.35-3.9 s (B8) and the loop answered nobody in the meantime.
+- **The lever is real (K1, Phase 5 lever in engine-split §0b):** native emulators parse the same agent workload 26-38× faster.
+
+#### 7d-6. Decisions this changes
+
+| # | Decision | Before | Now, and why |
+|---|---|---|---|
+| P1 | Native emulator in the engine | Phase 5 ("Rust later") | **Bring forward to E2, right after U2** (before U6 grid multiplies visible streams). Data: pyte is 77% of busy CPU and the cause of B2/B5/B7/B8; C emulators are 26-38× faster. Proposal: a pyo3 extension over the Rust `vt100` crate (scrollback, `contents_formatted`, modes) or `alacritty_terminal`, built with maturin as manylinux wheels (Linux only, D9). E2 starts with a **spike gate**: ≥ 20× pyte on `agent.bin`, and the snapshot contract tests (cell, scrollback, cursor, modes, margins; engine-split §3b) pass. The Rust crates themselves were not benchmarked here (no toolchain on this machine); the measured C libraries set the expectation. Fallback if the gate fails: libvterm via ctypes (26×, but a system dependency outside the wheel) |
+| P2 | Cheap engine fixes first | — | **E1, alongside U2:** (a) encode scrollback rows lazily at snapshot time instead of on every scroll (28% of busy CPU); (b) feed backlogs in slices (≤ 64 KiB, yielding between them) so a flush never blocks the loop for more than ~5 ms (removes B8's seconds-long stalls); (c) [proposal 0005](../proposals/0005-claude-status-from-hooks.md): agents whose status comes from hooks skip the screen scan and parse lazily. Target after E1: B8 met, B2 p95 halved; B5/B7 need E2 |
+| P3 | Renderer | WebGL for the focused terminal, DOM for grid tiles | **WebGL for every visible terminal** on a real GPU; DOM on software GL or context loss (§6a). Data: 2.2-2.6× DOM in a grid; 20 contexts, none lost; software GL 10× worse |
+| P4 | Live grid tiles | ~6 | **9** (WebGL p95 16.8 ms at 9) |
+| P5 | Hosted TUI with native terminals | TUI pane hidden but alive | Hidden **and** not rendering the agents the page shows (U2 criterion). Data: the TUI is the H2 bottleneck (94-100% CPU, ≤ 2.1 MB/s) |
+| P6 | Host hop (Q1) | Host, by security argument | Host, now also by measurement (§7d-3) |
+| P7 | Hidden streams | Detach on hide | Keep the stream of the last 2-3 viewed sessions attached while hidden (xterm parses at 42-52 MB/s, so keeping one costs ~0% CPU at agent rates), detach after 30 s hidden or when the page is hidden. Reattach is 3.8-6 ms (tail or snapshot) once E1 removes the backlog stall |
+| P8 | Compression | — | **Localhost: none** (the hop moves 100+ MB/s). **Phone only:** permessage-deflate (not in the stdlib WS today). The synthetic agent workload compresses 11.9× at 26 MB/s per core with zlib level 6; real output will compress less |
+| P9 | Shell | Chrome `--app` | Unchanged, now with the reason: the budgets depend on GPU WebGL, measured in Chrome; Tauri only after a WebKitGTK spike passes the same bench |
+
+#### 7d-7. Regression tests
+
+| Test | What it asserts | Runs | Lands in |
+|---|---|---|---|
+| `tests/perf/test_echo.py` (marker `perf`) | Engine echo over the socket: 300 samples after warm-up; p95 ≤ 2× B3 (CI headroom) | Every PR (≈ 10 s) | **U1** |
+| `tests/perf/test_emulator.py` | Feeds `agent.bin`-style output to the engine's emulator; records MB/s; fails below 0.8× the stored baseline | Every PR | **U1** (pyte), the threshold moves with E2 |
+| `tests/perf/test_attach.py` | Snapshot attach p95 ≤ B8, also right after a 5 MB burst | Every PR | **E1** |
+| `tests/host/test_browser_perf.py` (Playwright) | B1 key→DOM p95 (headless CI has no GPU: DOM renderer, 1.5× headroom); B4 frames and long tasks during `spew`; B9 heap | Every PR with the `web` job | **U2** |
+| Nightly `perf` job | The full set above, plus B2/B6/B7 with 10 agents (8 busy) and the grid bench (B11) on a GPU runner if one exists; JSON results kept as an artifact and compared with the last 7 nights (> 20% worse = red) | Nightly, never blocks a PR | **U2** |
+
+- Thresholds hold the median of 3 runs with warm-up, because shared CI runners are noisy (so was this machine). `perf` tests stay out of the default `pytest` run so the 56 s suite stays fast; CI runs them in a separate job.
+- The benchmark harness (engine server with N fake agents, WS client, Playwright instrumentation) becomes test helpers in U1/U2, not ad-hoc scripts.
+
+#### 7d-8. Operating rules (unchanged where the data agrees)
+
 | Concern | Rule |
 |---|---|
-| Many agents (10-20) | Attach streams only for **visible** terminals; hidden tabs detach and reattach on show (tail when close, snapshot otherwise, engine-split §3b). The engine's headless screen keeps detection going (K1) |
-| Hidden page | On `visibilitychange` to hidden, detach all streams after 30 s; keep the event subscription (cheap) |
-| Grid | ≤ 6 live tiles; beyond that text previews from `read_agent_output`. WebGL only on the focused terminal |
-| Event bursts | Store updates are batched per animation frame (signals) |
-| Big diffs | Per-file collapse; files over ~2,000 lines rendered on demand; stage 2 loads files lazily (`get_file_diff`, new) |
+| Many agents | Attach streams only for visible terminals, plus the 2-3 most recent (P7); the engine keeps detection going headless |
+| Hidden page | Detach all streams 30 s after `visibilitychange` → hidden; keep the event subscription |
+| Event bursts | Store updates batched per animation frame |
+| Big diffs | Per-file collapse; files over ~2,000 lines virtualised; stage 2 loads files lazily (`get_file_diff`, new) |
 | Scrollback | xterm.js `scrollback: 5000` per attached terminal; snapshots carry 2,000 lines (engine cap) |
 | Backpressure | Engine drops a slow stream at 1 MiB and sends `stream.reset` (engine-split §4e); the host drops a page 8 MiB behind (H2). The page reattaches |
 
