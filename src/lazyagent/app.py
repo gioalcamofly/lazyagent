@@ -1091,7 +1091,7 @@ class LazyAgent(App):
         self.open_url(url)
 
     def action_help(self) -> None:
-        self.push_screen(HelpModal())
+        self.push_screen(HelpModal(hosted=self.host is not None))
 
 
 def main() -> None:

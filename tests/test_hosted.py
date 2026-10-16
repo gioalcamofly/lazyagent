@@ -157,3 +157,15 @@ async def test_the_view_follows_selection_and_focus(tmp_path, monkeypatch):
         await pilot.press("escape")
         await pilot.pause()
         assert app.engine.ui_view["focus"] != "modal"
+
+
+@pytest.mark.parametrize("hosted", [True, False])
+async def test_help_describes_ctrl_k_for_the_mode(tmp_path, monkeypatch, hosted):
+    app = make_app(tmp_path, monkeypatch, hosted=hosted)
+    async with app.run_test() as pilot:
+        app.action_help()
+        await pilot.pause()
+        text = str(app.screen.query_one("#help-text").render())
+        assert ("Leave terminal" in text) is hosted
+        assert ("Focus sidebar" in text) is not hosted
+        assert ("j / k" in text) is not hosted
