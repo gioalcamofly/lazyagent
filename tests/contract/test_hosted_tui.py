@@ -54,8 +54,10 @@ async def _view(client, **expected) -> dict:
     return event.data
 
 
-async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_selects_a_worktree_and_opens_its_shell(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE) as pilot:
         client = await _connect(app)
         try:
@@ -86,8 +88,8 @@ async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch
             await client.close()
 
 
-async def test_host_focuses_an_agent(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_focuses_an_agent(tmp_path, monkeypatch, backend_kind):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -122,8 +124,8 @@ async def test_host_focuses_an_agent(tmp_path, monkeypatch):
             await client.close()
 
 
-async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch, backend_kind):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE) as pilot:
         client = await _connect(app)
         try:
@@ -143,8 +145,10 @@ async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch):
             await client.close()
 
 
-async def test_selecting_an_unknown_worktree_changes_nothing(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_selecting_an_unknown_worktree_changes_nothing(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -159,9 +163,9 @@ async def test_selecting_an_unknown_worktree_changes_nothing(tmp_path, monkeypat
 
 
 async def test_a_plain_tui_takes_no_commands_but_reports_its_view(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, backend_kind
 ):
-    app = make_app(tmp_path, monkeypatch, hosted=False)
+    app = make_app(tmp_path, monkeypatch, hosted=False, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:
@@ -175,10 +179,10 @@ async def test_a_plain_tui_takes_no_commands_but_reports_its_view(
             await client.close()
 
 
-async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch):
+async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch, backend_kind):
     """A selection mounts the panel and then focuses the shell: the host
     hears only where it ends."""
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE):
         client = await _connect(app)
         try:

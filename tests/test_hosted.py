@@ -33,8 +33,10 @@ async def _show(app, pilot, path) -> None:
     await pilot.pause()
 
 
-async def test_hosted_layout_keeps_only_the_terminals(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_hosted_layout_keeps_only_the_terminals(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=(120, 40)) as pilot:
         await _show(app, pilot, app.feat)
         assert app.has_class("-hosted")
@@ -52,8 +54,8 @@ async def test_hosted_layout_keeps_only_the_terminals(tmp_path, monkeypatch):
         assert app.query_one("#agent-tabs").region.width > 0
 
 
-async def test_plain_layout_is_unchanged(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=False)
+async def test_plain_layout_is_unchanged(tmp_path, monkeypatch, backend_kind):
+    app = make_app(tmp_path, monkeypatch, hosted=False, backend_kind=backend_kind)
     async with app.run_test(size=(120, 40)) as pilot:
         await _show(app, pilot, app.feat)
         assert not app.has_class("-hosted")
@@ -66,9 +68,9 @@ async def test_plain_layout_is_unchanged(tmp_path, monkeypatch):
 
 
 async def test_ctrl_k_leaves_the_terminal_instead_of_focusing_the_sidebar(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, backend_kind
 ):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test() as pilot:
         await _show(app, pilot, app.feat)
         app.query_one("#terminal-widget").focus()
@@ -76,11 +78,10 @@ async def test_ctrl_k_leaves_the_terminal_instead_of_focusing_the_sidebar(
         assert app.focused is None
         assert not app.query_one(WorktreeList).can_focus
         await _view_is(app, focus="none")
-        assert app.backend.engine.ui_attached
+        engine = app.backend.engine
+        await until(lambda: engine.ui_attached)
         await pilot.press("q")
-        await until(
-            lambda: not app.backend.engine.ui_attached
-        )  # q quit: engine stopped
+        await until(lambda: not engine.ui_attached)  # q quit: engine stopped
 
 
 def _announcement(app) -> str:
@@ -95,8 +96,10 @@ def _announcement(app) -> str:
     )
 
 
-async def test_hosted_app_announces_its_socket(tmp_path, monkeypatch, written):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+async def test_hosted_app_announces_its_socket(
+    tmp_path, monkeypatch, written, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test() as pilot:
         await pilot.pause()
         output = "".join(written)
@@ -114,9 +117,9 @@ async def test_hosted_app_announces_its_socket(tmp_path, monkeypatch, written):
 
 
 async def test_inside_tmux_the_announcement_is_also_passed_through(
-    tmp_path, monkeypatch, written
+    tmp_path, monkeypatch, written, backend_kind
 ):
-    app = make_app(tmp_path, monkeypatch, hosted=True)
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -124,8 +127,10 @@ async def test_inside_tmux_the_announcement_is_also_passed_through(
         assert expected + tmux_passthrough(expected) in "".join(written)
 
 
-async def test_a_plain_app_writes_no_announcement(tmp_path, monkeypatch, written):
-    app = make_app(tmp_path, monkeypatch, hosted=False)
+async def test_a_plain_app_writes_no_announcement(
+    tmp_path, monkeypatch, written, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=False, backend_kind=backend_kind)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "\x1b]7717;" not in "".join(written)
@@ -141,8 +146,10 @@ async def _view_is(app, **fields) -> None:
     await until(matches)
 
 
-async def test_the_view_follows_selection_and_focus(tmp_path, monkeypatch):
-    app = make_app(tmp_path, monkeypatch, hosted=False)
+async def test_the_view_follows_selection_and_focus(
+    tmp_path, monkeypatch, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=False, backend_kind=backend_kind)
     async with app.run_test() as pilot:
         await _show(app, pilot, app.feat)
         app.query_one("#terminal-widget").focus()
@@ -165,8 +172,10 @@ async def test_the_view_follows_selection_and_focus(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("hosted", [True, False])
-async def test_help_describes_ctrl_k_for_the_mode(tmp_path, monkeypatch, hosted):
-    app = make_app(tmp_path, monkeypatch, hosted=hosted)
+async def test_help_describes_ctrl_k_for_the_mode(
+    tmp_path, monkeypatch, hosted, backend_kind
+):
+    app = make_app(tmp_path, monkeypatch, hosted=hosted, backend_kind=backend_kind)
     async with app.run_test() as pilot:
         app.action_help()
         await pilot.pause()

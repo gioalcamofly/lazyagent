@@ -1,4 +1,9 @@
-"""Tests for ScrollbackScreen and ScrollableTerminal."""
+"""Tests for ScrollbackScreen and ScrollableTerminal.
+
+The view is driven here with an engine TerminalSession, as in-process; the
+same view on a RemoteSession (remote backend) is covered in
+tests/test_remote_backend.py.
+"""
 from __future__ import annotations
 
 import gc

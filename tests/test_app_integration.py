@@ -12,6 +12,7 @@ from textual.widgets import TabbedContent
 from textual.worker import WorkerState
 
 from lazyagent.app import LazyAgent
+from tests.tui_backends import settle, tui_app
 from lazyagent.config import Config, WorktreeConfig
 from lazyagent.engine.engine import CreatedWorktree
 from lazyagent.models import AgentState, AgentStatus, GitStatus, PrInfo, WorktreeInfo
@@ -54,7 +55,11 @@ def _make_app_with_config(
     create: str | None = None,
     remove: str | None = None,
 ) -> LazyAgent:
-    """Create a LazyAgent with custom worktree config and mocked I/O."""
+    """Create a LazyAgent with custom worktree config and mocked I/O.
+
+    The tests that use it mock the Backend calls the app makes, so they say
+    nothing about which backend runs (and need no pilot): they cover both.
+    """
     app = LazyAgent(repo_path="/repo")
     app.backend.engine.worktree_service.repo_root = "/repo"
     app.backend.engine.config = Config(worktree=WorktreeConfig(create=create, remove=remove))
@@ -130,8 +135,12 @@ async def _drain_workers(app: LazyAgent) -> None:
     """
     deadline = time.perf_counter() + 5.0
     while time.perf_counter() < deadline:
-        # The full git sweep is the engine's own background work.
+        # The full git sweep is the engine's own background work; a remote
+        # app's requests reach the engine before the sync's, and the events
+        # they cause reach the app before it returns.
+        await app.backend.sync()
         await asyncio.wait_for(app.backend.engine.wait_idle(), 5.0)
+        await app.backend.sync()
         if not [
             w for w in app.workers
             if w.state in (WorkerState.PENDING, WorkerState.RUNNING)
@@ -156,15 +165,15 @@ async def _select_worktree(app: LazyAgent, index: int) -> WorktreeInfo:
 
 @pytest.mark.asyncio
 async def test_switching_worktrees_restores_existing_panel_state(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str,
 ) -> None:
     _patch_app_dependencies(monkeypatch)
 
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async with app.run_test() as pilot:
         first = await _select_worktree(app, 0)
-        await pilot.pause()
+        await settle(pilot)
 
         center = app.query_one(CenterPanel)
         first_panel = center.get_panel(first.path)
@@ -175,14 +184,14 @@ async def test_switching_worktrees_restores_existing_panel_state(
         assert first_tabs.active == "diff-tab"
 
         second = await _select_worktree(app, 1)
-        await pilot.pause()
+        await settle(pilot)
 
         second_panel = center.get_panel(second.path)
         assert second_panel is not None
         assert second_panel is not first_panel
 
         await _select_worktree(app, 0)
-        await pilot.pause()
+        await settle(pilot)
 
         assert center.get_panel(first.path) is first_panel
         assert first_panel.query_one("#agent-tabs", TabbedContent).active == "diff-tab"
@@ -190,30 +199,30 @@ async def test_switching_worktrees_restores_existing_panel_state(
 
 @pytest.mark.asyncio
 async def test_ctrl_j_uses_spawn_flow_when_selected_worktree_has_no_agent(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str,
 ) -> None:
     _patch_app_dependencies(monkeypatch)
 
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async with app.run_test() as pilot:
         await _select_worktree(app, 1)
-        await pilot.pause()
+        await settle(pilot)
 
         app.action_spawn_agent = MagicMock()
 
         await pilot.press("ctrl+j")
-        await pilot.pause()
+        await settle(pilot)
 
         app.action_spawn_agent.assert_called_once_with()
 
 
 @pytest.mark.asyncio
-async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> None:
+async def test_do_create_worktree_asks_the_backend_and_selects_the_result() -> None:
     """The command itself (custom or not) is the engine's: see
     tests/engine/test_engine.py::TestWorktreeJobs."""
     app = _make_app_with_config(create="create-worktree {branch}")
-    app.backend.engine.create_worktree = AsyncMock(
+    app.backend.create_worktree = AsyncMock(
         return_value=CreatedWorktree("/repo-feature/demo", "feature/demo", "j1")
     )
     app._queue_selection = MagicMock()
@@ -224,7 +233,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
         )
     )
 
-    app.backend.engine.create_worktree.assert_awaited_once_with(
+    app.backend.create_worktree.assert_awaited_once_with(
         "feature/demo", "main", "--no-build", env=dict(os.environ)
     )
     app._queue_selection.assert_called_once_with("/repo-feature/demo")
@@ -234,7 +243,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
 @pytest.mark.asyncio
 async def test_do_create_worktree_reports_a_failure() -> None:
     app = _make_app_with_config(create="create-worktree {branch}")
-    app.backend.engine.create_worktree = AsyncMock(
+    app.backend.create_worktree = AsyncMock(
         side_effect=WorktreeManagerError("Custom create command failed: boom")
     )
 
@@ -245,16 +254,16 @@ async def test_do_create_worktree_reports_a_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_do_remove_worktree_asks_the_engine() -> None:
+async def test_do_remove_worktree_asks_the_backend() -> None:
     app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
-    app.backend.engine.remove_worktree = AsyncMock(return_value="j1")
+    app.backend.remove_worktree = AsyncMock(return_value="j1")
     app.backend.engine.worktree_service.worktrees = [MAIN_WORKTREE]
     app._queue_selection = MagicMock()
 
     await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
     # Jobs started here run with this client's environment (D5).
-    app.backend.engine.remove_worktree.assert_awaited_once_with(
+    app.backend.remove_worktree.assert_awaited_once_with(
         "/repo-feature", True, env=dict(os.environ)
     )
     assert "Removed worktree: repo-feature" in app.notify.call_args.args[0]
@@ -332,11 +341,11 @@ def _status_paths() -> set[str]:
 class TestGitStatusRefresh:
     @pytest.mark.asyncio
     async def test_periodic_poll_only_touches_the_selected_worktree(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """The timer must not sweep every worktree — that is the expensive part."""
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             wt = await _select_worktree(app, 1)
@@ -350,11 +359,11 @@ class TestGitStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_full_rescan_still_covers_every_worktree(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """`r` / create / remove / MCP still refresh the whole sidebar."""
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -368,7 +377,7 @@ class TestGitStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_sweep_does_not_block_the_message_pump(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """The regression guard: `git status` runs off the event loop.
 
@@ -378,7 +387,7 @@ class TestGitStatusRefresh:
         the full delay and the test fails.
         """
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -403,11 +412,11 @@ class TestGitStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_selected_refresh_keeps_other_statuses(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """Merging, not replacing: the sidebar must not lose the other badges."""
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             wt = await _select_worktree(app, 1)
@@ -430,11 +439,11 @@ class TestGitStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_action_refreshes_only_git_status(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """Alt+G refreshes the badge without re-listing worktrees."""
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             wt = await _select_worktree(app, 1)
@@ -452,10 +461,10 @@ class TestGitStatusRefresh:
 
     @pytest.mark.asyncio
     async def test_action_is_a_noop_without_a_selection(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -485,13 +494,13 @@ class TestGitStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_passing_through_worktrees_only_polls_the_final_one(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         # Long window so it cannot fire mid-test: what matters is that passing
         # through *queues* nothing, not how long the window happens to be.
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -517,12 +526,12 @@ class TestGitStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_staying_on_a_worktree_polls_it(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """The timer really does fire once the selection settles."""
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 0.05)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -536,11 +545,11 @@ class TestGitStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_leaving_for_the_orchestrator_cancels_the_pending_poll(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             await _drain_workers(app)
@@ -565,12 +574,12 @@ class TestGitStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_on_demand_refresh_is_not_debounced(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         """Alt+G is an explicit request — it fires immediately."""
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
 
         async with app.run_test():
             wt = await _select_worktree(app, 1)
@@ -610,11 +619,11 @@ class TestPrStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_passing_through_worktrees_looks_up_no_pr(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         lookups = self._record_pr_lookups(monkeypatch, app)
 
         async with app.run_test():
@@ -630,11 +639,11 @@ class TestPrStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_settling_looks_up_the_pr_once(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         lookups = self._record_pr_lookups(monkeypatch, app)
 
         async with app.run_test():
@@ -652,11 +661,11 @@ class TestPrStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_leaving_for_the_orchestrator_cancels_the_pr_lookup(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         lookups = self._record_pr_lookups(monkeypatch, app)
 
         async with app.run_test():
@@ -680,25 +689,27 @@ class TestPrStatusDebounce:
 
     @pytest.mark.asyncio
     async def test_cached_badge_is_shown_without_waiting(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         lookups = self._record_pr_lookups(monkeypatch, app)
         shown: list[PrInfo | None] = []
         monkeypatch.setattr(
             PrStatusBar, "update_pr_info", lambda self, info: shown.append(info)
         )
         cached = PrInfo(number=7, title="Demo", state="OPEN", checks=[])
+        # Cached before the app starts: a remote app gets it with the
+        # engine's state when it connects.
+        app.backend.engine.worktree_service._pr_infos[FEATURE_WORKTREE.path] = cached
 
         async with app.run_test():
             await _drain_workers(app)
-            app.backend.engine.worktree_service._pr_infos[FEATURE_WORKTREE.path] = cached
 
             await _select_worktree(app, 1)
 
-            assert shown and shown[-1] is cached
+            assert shown and shown[-1] == cached
             # The badge came from the cache: the lookup is still pending.
             assert lookups == []
             assert app._selection_debounce is not None
@@ -714,11 +725,11 @@ class TestDiffRefreshDebounce:
 
     @pytest.mark.asyncio
     async def test_diff_is_not_fetched_while_scrolling(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         diffs: list[str] = []
         monkeypatch.setattr(
             DummyWorktreeManager, "get_diff",
@@ -737,11 +748,11 @@ class TestDiffRefreshDebounce:
 
     @pytest.mark.asyncio
     async def test_diff_is_fetched_once_the_selection_settles(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
     ) -> None:
         _patch_app_dependencies(monkeypatch)
         monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 0.05)
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         diffs: list[str] = []
         monkeypatch.setattr(
             DummyWorktreeManager, "get_diff",
@@ -765,7 +776,7 @@ class TestDiffRefreshDebounce:
 
 @pytest.mark.asyncio
 async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str,
 ) -> None:
     """The rebuild is asynchronous: selecting among the children before it
     settles left the index past the end of the list, and the next cursor key
@@ -776,7 +787,7 @@ async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
     new = WorktreeInfo(
         path="/repo-new", head="c" * 40, branch="new", is_main=False, is_bare=False
     )
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async def create(branch, base_branch="main", extra="", **kwargs):
         worktrees.append(new)
@@ -785,35 +796,35 @@ async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
 
     async with app.run_test() as pilot:
         await _select_worktree(app, 1)
-        await pilot.pause()
+        await settle(pilot)
         app.backend.engine.create_worktree = create
         app.notify = MagicMock()
 
         await app._do_create_worktree(CreateWorktreeResult(branch="new", base_branch="main"))
         await _drain_workers(app)
-        await pilot.pause()
+        await settle(pilot)
 
         wt_list = app.query_one(WorktreeList)
         assert len(wt_list.children) == 4
         assert wt_list.highlighted_child.worktree.path == new.path
         await pilot.press("k")
-        await pilot.pause()
+        await settle(pilot)
         assert wt_list.highlighted_child.worktree.path == FEATURE_WORKTREE.path
 
 
 @pytest.mark.asyncio
 async def test_job_output_shows_under_the_worktree_panel(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str,
 ) -> None:
     _patch_app_dependencies(monkeypatch)
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async with app.run_test(size=(120, 40)) as pilot:
         await _select_worktree(app, 1)
-        await pilot.pause()
+        await settle(pilot)
 
         await app.backend.engine.run_job("echo from the job", title="Create worktree x")
-        await pilot.pause()
+        await settle(pilot)
 
         log = app.query_one(JobLog)
         center = app.query_one(CenterPanel)
@@ -826,34 +837,34 @@ async def test_job_output_shows_under_the_worktree_panel(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("index", [0, 1])
 async def test_refresh_keeps_the_selected_worktree(
-    monkeypatch: pytest.MonkeyPatch, index: int
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str, index: int
 ) -> None:
     """``r`` rebuilds the sidebar; the selection used to be lost with it."""
     _patch_app_dependencies(monkeypatch)
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async with app.run_test() as pilot:
         selected = await _select_worktree(app, index)
-        await pilot.pause()
+        await settle(pilot)
         app.notify = MagicMock()
 
         await pilot.press("r")
         await _drain_workers(app)
-        await pilot.pause()
+        await settle(pilot)
 
         assert app._get_selected_worktree() == selected
         # The index is valid again: the cursor moves on from there.
         await pilot.press("j")
-        await pilot.pause()
+        await settle(pilot)
         assert app._get_selected_worktree() == WORKTREES[min(index + 1, len(WORKTREES) - 1)]
 
 
 @pytest.mark.asyncio
 async def test_refresh_keeps_the_orchestrator_selected(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, backend_kind: str,
 ) -> None:
     _patch_app_dependencies(monkeypatch)
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
 
     async with app.run_test() as pilot:
         wt_list = app.query_one(WorktreeList)
@@ -862,11 +873,11 @@ async def test_refresh_keeps_the_orchestrator_selected(
         )
         wt_list.index = 0
         await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orchestrator))
-        await pilot.pause()
+        await settle(pilot)
 
         app.action_refresh()
         await _drain_workers(app)
-        await pilot.pause()
+        await settle(pilot)
 
         assert isinstance(wt_list.highlighted_child, OrchestratorListItem)
         assert app._orchestrator_selected

@@ -5,6 +5,7 @@ import pytest
 from textual.widgets import TabbedContent, TabPane
 
 from lazyagent.app import LazyAgent
+from tests.tui_backends import settle, tui_app
 from lazyagent.config import Config
 from lazyagent.models import AgentState, AgentStatus
 from lazyagent.widgets.center_panel import (
@@ -89,13 +90,13 @@ def patched(monkeypatch):
 async def _spawn(app, pilot, path=FEATURE_WORKTREE.path) -> str:
     """Spawn through the engine and let the app mount the tab."""
     info = await app.backend.engine.spawn_agent(path)
-    await pilot.pause()
+    await settle(pilot)
     return info.agent_id
 
 
 async def _stop(app, pilot, agent_id, path=FEATURE_WORKTREE.path) -> None:
     app.backend.engine.stop_agent(path, agent_id)
-    await pilot.pause()
+    await settle(pilot)
 
 
 def _agent_panes(panel: WorktreePanel) -> list[str]:
@@ -108,12 +109,12 @@ def _agent_panes(panel: WorktreePanel) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_spawn_adds_a_tab_per_agent(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_spawn_adds_a_tab_per_agent(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
-        await pilot.pause()
+        await settle(pilot)
 
         a1 = await _spawn(app, pilot)
         a2 = await _spawn(app, pilot)
@@ -123,7 +124,8 @@ async def test_spawn_adds_a_tab_per_agent(patched):
         assert panel.has_agent
         session = panel.get_session("a2")
         assert session is panel.get_agent("a2").session
-        assert session is app.backend.engine.get_session(FEATURE_WORKTREE.path, "a2")
+        engine_session = app.backend.engine.get_session(FEATURE_WORKTREE.path, "a2")
+        assert session.session_id == engine_session.session_id
         assert session.worktree_path == FEATURE_WORKTREE.path
         assert session.agent_id == "a2"
         assert _agent_panes(panel) == ["agent-tab-a1", "agent-tab-a2"]
@@ -139,13 +141,13 @@ async def test_spawn_adds_a_tab_per_agent(patched):
 
 
 @pytest.mark.asyncio
-async def test_agent_ids_and_session_names_continue_after_a_restart(patched):
+async def test_agent_ids_and_session_names_continue_after_a_restart(patched, backend_kind):
     # Freed ids are not handed out again, in this run or the next.
     for expected in (["a1", "a2"], ["a3"]):
-        app = LazyAgent(repo_path="/repo")
+        app = tui_app(backend_kind)
         async with app.run_test() as pilot:
             panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
-            await pilot.pause()
+            await settle(pilot)
             ids = [await _spawn(app, pilot) for _ in expected]
             assert panel.agent_session_name(ids[-1]) == f"repo-feature-{ids[-1]}"
             for agent_id in ids:
@@ -154,10 +156,10 @@ async def test_agent_ids_and_session_names_continue_after_a_restart(patched):
             # Stopped agents are forgotten.
             assert panel.agent_session_name(ids[-1]) == ""
 
-    app = LazyAgent(repo_path="/repo")
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
-        await pilot.pause()
+        await settle(pilot)
         agent_id = await _spawn(app, pilot)
         assert agent_id == "a4"
         assert panel.agent_label(agent_id) == "Agent 4"
@@ -165,8 +167,8 @@ async def test_agent_ids_and_session_names_continue_after_a_restart(patched):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_one_agent_keeps_the_others(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_cleanup_one_agent_keeps_the_others(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
@@ -183,8 +185,8 @@ async def test_cleanup_one_agent_keeps_the_others(patched):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_last_agent_restores_placeholder(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_cleanup_last_agent_restores_placeholder(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
@@ -199,22 +201,22 @@ async def test_cleanup_last_agent_restores_placeholder(patched):
 
 
 @pytest.mark.asyncio
-async def test_active_agent_id_falls_back_to_sole_agent(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_active_agent_id_falls_back_to_sole_agent(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
         await _spawn(app, pilot)
 
         panel.switch_to_tab(_DIFF_TAB_ID)
-        await pilot.pause()
+        await settle(pilot)
         # Even with Diff active, the sole agent is the implicit target.
         assert panel.active_agent_id == "a1"
 
 
 @pytest.mark.asyncio
-async def test_active_agent_id_none_when_diff_active_and_multiple(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_active_agent_id_none_when_diff_active_and_multiple(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         center = app.query_one(CenterPanel)
         panel = await center.switch_to(FEATURE_WORKTREE.path)
@@ -222,14 +224,14 @@ async def test_active_agent_id_none_when_diff_active_and_multiple(patched):
         await _spawn(app, pilot)
 
         panel.switch_to_tab(_DIFF_TAB_ID)
-        await pilot.pause()
+        await settle(pilot)
         # Ambiguous: Diff active and more than one agent -> no implicit target.
         assert panel.active_agent_id is None
 
 
 @pytest.mark.asyncio
-async def test_spawn_then_stop_via_app_action(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_spawn_then_stop_via_app_action(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         wt_list = app.query_one(WorktreeList)
         from lazyagent.widgets.worktree_list import WorktreeListItem
@@ -237,7 +239,7 @@ async def test_spawn_then_stop_via_app_action(patched):
         item = [c for c in wt_list.children if isinstance(c, WorktreeListItem)][1]
         wt_list.index = 2  # orchestrator(0) + main(1) + feature(2)
         await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, item))
-        await pilot.pause()
+        await settle(pilot)
 
         center = app.query_one(CenterPanel)
         panel = center.get_panel(FEATURE_WORKTREE.path)
@@ -247,7 +249,7 @@ async def test_spawn_then_stop_via_app_action(patched):
         # Stop the active (newest) agent with the key action.
         app.notify = lambda *a, **k: None
         await app.action_stop_agent()
-        await pilot.pause()
+        await settle(pilot)
 
         assert panel.agent_ids == ["a1"]
         assert app.backend.engine.agent_ids(FEATURE_WORKTREE.path) == ["a1"]
@@ -261,13 +263,13 @@ async def _select_feature(app, pilot):
     item = [c for c in wt_list.children if isinstance(c, WorktreeListItem)][1]
     wt_list.index = 2  # orchestrator(0) + main(1) + feature(2)
     await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, item))
-    await pilot.pause()
+    await settle(pilot)
     return app.query_one(CenterPanel).get_panel(FEATURE_WORKTREE.path)
 
 
 @pytest.mark.asyncio
-async def test_cycle_agents_wraps_both_directions(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_cycle_agents_wraps_both_directions(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         panel = await _select_feature(app, pilot)
         await _spawn(app, pilot)  # a1
@@ -277,32 +279,32 @@ async def test_cycle_agents_wraps_both_directions(patched):
         assert panel.active_agent_id == "a3"
 
         app.action_next_agent()  # wraps a3 -> a1
-        await pilot.pause()
+        await settle(pilot)
         assert panel.active_agent_id == "a1"
 
         app.action_next_agent()  # a1 -> a2
-        await pilot.pause()
+        await settle(pilot)
         assert panel.active_agent_id == "a2"
 
         app.action_prev_agent()  # a2 -> a1
-        await pilot.pause()
+        await settle(pilot)
         assert panel.active_agent_id == "a1"
 
         app.action_prev_agent()  # wraps a1 -> a3
-        await pilot.pause()
+        await settle(pilot)
         assert panel.active_agent_id == "a3"
 
 
 @pytest.mark.asyncio
-async def test_cycle_agents_noop_with_single_agent(patched):
-    app = LazyAgent(repo_path="/repo")
+async def test_cycle_agents_noop_with_single_agent(patched, backend_kind):
+    app = tui_app(backend_kind)
     async with app.run_test() as pilot:
         panel = await _select_feature(app, pilot)
         await _spawn(app, pilot)  # a1
 
         app.action_next_agent()
         app.action_prev_agent()
-        await pilot.pause()
+        await settle(pilot)
         assert panel.active_agent_id == "a1"
 
 

@@ -60,7 +60,8 @@ def test_importing_the_whole_engine_and_ipc_loads_no_textual_or_widgets():
     modules = sorted(
         "lazyagent.engine." + path.stem
         for path in ENGINE.glob("*.py")
-        if path.stem != "__init__"
+        # __main__ runs an engine when imported.
+        if path.stem not in ("__init__", "__main__")
     )
     code = (
         "import sys, importlib\n"
