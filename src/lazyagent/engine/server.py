@@ -36,14 +36,12 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import hashlib
 import itertools
 import json
 import logging
 import os
 import socket
 import struct
-import tempfile
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
@@ -54,6 +52,13 @@ from typing import TYPE_CHECKING, Any
 from lazyagent import __version__
 from lazyagent.engine.events import EngineEvent
 from lazyagent.engine.methods import EngineMethods, check_env, classify
+from lazyagent.engine.runtime import (  # noqa: F401  (re-exported)
+    INFO_NAME,
+    SOCKET_NAME,
+    read_info,
+    runtime_dir,
+    socket_path,
+)
 from lazyagent.protocol import framing, handshake
 from lazyagent.protocol.envelope import (
     ErrorCode,
@@ -72,8 +77,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 V1_SERVER_ENV = "LAZYAGENT_V1_SERVER"
-SOCKET_NAME = "engine.sock"
-INFO_NAME = "engine.json"
 
 # Output a client may have queued per stream before the stream is dropped.
 STREAM_QUEUE_LIMIT = 1024 * 1024
@@ -104,19 +107,6 @@ STREAM_CLOSED = "stream.closed"
 def enabled(environ: Mapping[str, str] = os.environ) -> bool:
     """Whether to run the server (``LAZYAGENT_V1_SERVER=0`` turns it off)."""
     return environ.get(V1_SERVER_ENV, "1").strip() != "0"
-
-
-def runtime_dir(repo_root: str, environ: Mapping[str, str] = os.environ) -> Path:
-    """The per-repo runtime dir (§4f)."""
-    digest = hashlib.sha1(repo_root.encode()).hexdigest()[:12]
-    base = environ.get("XDG_RUNTIME_DIR")
-    if base:
-        return Path(base) / "lazyagent" / digest
-    return Path(tempfile.gettempdir()) / f"lazyagent-{os.getuid()}" / digest
-
-
-def socket_path(repo_root: str, environ: Mapping[str, str] = os.environ) -> Path:
-    return runtime_dir(repo_root, environ) / SOCKET_NAME
 
 
 def peer_uid(sock: Any) -> int | None:
@@ -164,15 +154,6 @@ def _write_atomic(path: Path, data: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
-
-
-def read_info(path: Path) -> dict[str, Any] | None:
-    """``engine.json``, or None when missing or unreadable."""
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 async def probe(path: str, timeout: float = _PROBE_TIMEOUT) -> bool:
@@ -578,6 +559,7 @@ class V1Server:
         }
         self._handlers.update(
             {
+                "list_worktrees": self.handle_list_worktrees,
                 "spawn_agent": self._spawn_agent(legacy["spawn_agent"]),
                 "list_agents": self._list_agents(legacy["list_agents"]),
                 "subscribe": self.handle_subscribe,
@@ -991,13 +973,16 @@ class V1Server:
             "size": {"rows": shell.rows, "cols": shell.cols},
         }
 
+    async def handle_list_worktrees(self, conn: _Connection, params: dict) -> Any:
+        return self.engine.worktrees_payload(v1=True)
+
     async def handle_refresh_worktrees(self, conn: _Connection, params: dict) -> Any:
         if not self.engine.refresh_worktrees():
             raise ProtocolError(
                 ErrorCode.WORKTREE_ERROR,
                 "Could not list the worktrees (see the engine.notice event)",
             )
-        return self.engine.worktrees_payload()
+        return self.engine.worktrees_payload(v1=True)
 
     async def handle_refresh_git_status(self, conn: _Connection, params: dict) -> Any:
         paths = params.get("paths")

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from lazyagent.engine import server as v1
-from lazyagent.engine.client import Client, ConnectionClosed
+from lazyagent.engine.client import Client, ConnectionClosed, discover
 from lazyagent.engine.events import EngineEvent
 from tests.contract.helpers import checked
 from tests.engine.fakes import make_engine, worktree
@@ -148,3 +148,21 @@ async def test_the_server_can_be_turned_off(tmp_path, monkeypatch):
         assert engine.socket_path is not None
     finally:
         await engine.stop()
+
+
+async def test_discover_finds_the_socket_from_the_repo_root(harness):
+    assert discover(harness.repo) == Path(harness.socket_path)
+
+
+async def test_discover_without_an_engine(harness, tmp_path):
+    assert discover(str(tmp_path / "elsewhere")) is None
+    await harness.server.stop()
+    assert discover(harness.repo) is None
+
+
+async def test_discover_ignores_an_engine_json_whose_socket_is_gone(harness):
+    info = Path(harness.socket_path).with_name("engine.json")
+    data = json.loads(info.read_text())
+    data["socket"] = str(info.with_name("gone.sock"))
+    info.write_text(json.dumps(data))
+    assert discover(harness.repo) is None

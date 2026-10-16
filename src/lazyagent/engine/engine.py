@@ -577,9 +577,10 @@ class Engine:
         self.registry.drop_worktree(path)
         self.close_shell(path)
 
-    def worktrees_payload(self) -> list[dict[str, Any]]:
+    def worktrees_payload(self, *, v1: bool = False) -> list[dict[str, Any]]:
         """The worktree list as ``list_worktrees`` / ``worktrees.changed``
-        carry it."""
+        carry it. ``v1`` adds each agent's ``session_id`` and ``kind``; the
+        legacy IPC answer stays without them."""
         result = []
         for wt in self.worktrees:
             agents = self.registry.agents(wt.path)
@@ -591,7 +592,7 @@ class Engine:
                 "is_bare": wt.is_bare,
                 # Scalar roll-up kept for back-compat; `agents` has the detail.
                 "agent_status": rollup_status(s.status for s in agents.values()).value,
-                "agents": self.agents_payload(wt.path),
+                "agents": self.agents_payload(wt.path, v1=v1),
             }
             git_status = self.git_statuses.get(wt.path)
             if git_status:
@@ -603,10 +604,12 @@ class Engine:
             result.append(entry)
         return result
 
-    def agents_payload(self, key: str) -> list[dict[str, Any]]:
-        """A worktree's agent states as the IPC responses carry them."""
-        return [
-            {
+    def agents_payload(self, key: str, *, v1: bool = False) -> list[dict[str, Any]]:
+        """A worktree's agent states as the IPC responses carry them; ``v1``
+        adds ``session_id`` and ``kind`` for the agents the engine runs."""
+        result = []
+        for aid, st in self.registry.agents(key).items():
+            entry: dict[str, Any] = {
                 "agent_id": aid,
                 "label": st.label,
                 "session_name": st.session_name,
@@ -614,12 +617,16 @@ class Engine:
                 "confidence": st.confidence.value,
                 "detail": st.detail,
             }
-            for aid, st in self.registry.agents(key).items()
-        ]
+            info = self.get_agent(key, aid) if v1 else None
+            if info is not None:
+                entry["session_id"] = info.session_id
+                entry["kind"] = info.kind
+            result.append(entry)
+        return result
 
     def _on_worktree_event(self, event: WorktreeEvent) -> None:
         if event.event == WORKTREES_CHANGED:
-            data: Any = self.worktrees_payload()
+            data: Any = self.worktrees_payload(v1=True)
         elif event.event == GIT_STATUS_UPDATED:
             data = {path: asdict(status) for path, status in event.data.items()}
         elif event.event == PR_INFO_UPDATED:
