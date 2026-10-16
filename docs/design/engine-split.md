@@ -20,7 +20,7 @@ The rest of this doc says **how** to split lazyagent. This section says **why**,
 
 ### 0a. Why change at all
 
-- **Trigger:** comparing lazyagent with Warp (warp.dev); see [competitive-analysis.md, Warp section](../research/competitive-analysis.md#competitive-analysis-warp-warpdev). Warp looks better and does more because it is a **GUI app that draws its own pixels**, not because it is written in Rust. A Rust TUI (ratatui) hits the same character-grid limits as Textual.
+- **Trigger:** comparing lazyagent with Warp (warp.dev); see the Warp comparison in the (local, uncommitted) competitive analysis. Warp looks better and does more because it is a **GUI app that draws its own pixels**, not because it is written in Rust. A Rust TUI (ratatui) hits the same character-grid limits as Textual.
 - **So the real axis is terminal app vs GUI app**, not Python vs Rust.
 
 | | Terminal app (Textual, ratatui) | GUI app (Warp, Zed, VS Code) |
