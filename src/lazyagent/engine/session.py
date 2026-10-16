@@ -676,6 +676,15 @@ class AgentSession(TerminalSession):
         self._set_status(AgentStatus.RUNNING)
         self._apply_events(self._observer.on_process_started())
 
+    def stop(self) -> None:
+        """Kill the agent and drop its observer's files (hook logs, settings).
+
+        No exit event, as for any explicit stop. Also cleans up a session
+        that was never started, so an abandoned spawn leaves nothing behind.
+        """
+        super().stop()
+        self._observer.cleanup()
+
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------

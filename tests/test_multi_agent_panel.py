@@ -79,6 +79,7 @@ def patched(monkeypatch):
     def fake_stop(self):
         self._stopped = True
         self._emulator = None
+        self._observer.cleanup()
 
     monkeypatch.setattr(AgentSession, "start", fake_start)
     monkeypatch.setattr(AgentSession, "stop", fake_stop)

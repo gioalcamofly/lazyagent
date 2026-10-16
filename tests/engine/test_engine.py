@@ -27,6 +27,8 @@ from tests.engine.fakes import (
     World,
     add_session,
     fake_agent_provider,
+    hooked_fake_agent_provider,
+    hooks_dir,
     make_engine,
     no_pty,
     worktree,
@@ -229,6 +231,65 @@ class TestExitAndStop:
             running.read_agent_output(str(feat), "a9", 5)
         with pytest.raises(ValueError, match="not ready"):
             await running.send_agent_input(str(feat), "a9", "x")
+
+
+class TestObserverFiles:
+    """An agent's hooks temp dir goes with it, however the session ends."""
+
+    @pytest.fixture
+    def hooked(self, tmp_path, repo, feat):
+        return make_engine(
+            [worktree(str(repo)), worktree(str(feat), "feat", is_main=False)],
+            repo_root=str(repo),
+            provider=hooked_fake_agent_provider(tmp_path),
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_stop_removes_the_hooks_dir(self, hooked, feat):
+        try:
+            await hooked.spawn_agent(str(feat))
+            directory = hooks_dir(hooked.get_session(str(feat), "a1"))
+            assert directory.is_dir()
+
+            hooked.stop_agent(str(feat), "a1")
+
+            assert not directory.exists()
+        finally:
+            await hooked.stop()
+
+    @pytest.mark.asyncio
+    async def test_exiting_removes_the_hooks_dir(self, hooked, feat):
+        events = Recorder(hooked)
+        try:
+            await hooked.spawn_agent(str(feat))
+            session = hooked.get_session(str(feat), "a1")
+            directory = hooks_dir(session)
+            await _until(lambda: "your turn>" in _shown(session))
+
+            await hooked.send_agent_input(str(feat), "a1", "exit 0")
+            await _until(lambda: events.named("agent.exited"))
+
+            assert not directory.exists()
+        finally:
+            await hooked.stop()
+
+    @pytest.mark.asyncio
+    async def test_stopping_the_engine_removes_every_hooks_dir(self, hooked, repo, feat):
+        await hooked.spawn_agent(str(feat))
+        await hooked.spawn_agent(str(repo))
+        directories = [
+            hooks_dir(hooked.get_session(str(feat), "a1")),
+            hooks_dir(hooked.get_session(str(repo), "a1")),
+        ]
+
+        await hooked.stop()
+
+        assert [d.exists() for d in directories] == [False, False]
+
+    def test_a_session_that_never_started_cleans_up_too(self, tmp_path):
+        observer = MagicMock()
+        AgentSession("unused", worktree_path=str(tmp_path), observer=observer).stop()
+        observer.cleanup.assert_called_once_with()
 
 
 class TestClientEnv:

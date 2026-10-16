@@ -9,6 +9,7 @@ which runs tests/engine/fake_agent.py under a real PTY.
 
 from __future__ import annotations
 
+import shlex
 import stat
 import sys
 from contextlib import contextmanager
@@ -122,6 +123,21 @@ def fake_agent_provider(directory: Path) -> AgentProvider:
     return AgentProvider(name="fake", executable=str(shim), dangerous_flag="--paste")
 
 
+def hooked_fake_agent_provider(directory: Path) -> AgentProvider:
+    """:func:`fake_agent_provider` with Claude's runtime context: each spawn
+    gets a real hooks temp dir (see :func:`hooks_dir`). The fake agent
+    ignores the ``--settings`` / ``--mcp-config`` arguments."""
+    fake = fake_agent_provider(directory)
+    return AgentProvider(name="claude", executable=fake.executable, dangerous_flag="--paste")
+
+
+def hooks_dir(session) -> Path:
+    """The hooks temp dir an agent session was started with."""
+    script = shlex.split(session.command)[2]
+    words = shlex.split(script.rpartition(" && exec ")[2])
+    return Path(words[words.index("--settings") + 1]).parent
+
+
 def _fake_start(self) -> None:
     import asyncio
 
@@ -131,6 +147,7 @@ def _fake_start(self) -> None:
 def _fake_stop(self) -> None:
     self._stopped = True
     self._emulator = None
+    self._observer.cleanup()
 
 
 def no_pty(monkeypatch) -> None:
