@@ -594,6 +594,16 @@ Decided for PR 6 as below; open for review.
 | Q9 | `list_worktrees` agents | **Resolved in H1:** the v1 `list_worktrees` / `refresh_worktrees` / `worktrees.changed` agents gain `session_id` and `kind` (legacy NDJSON unchanged), and `get_sidebar_state` gives the H2 sidebar worktrees, agents, orchestrator, PR info and view in one call | Only `list_agents` with the v1 fields (the PR 6 behaviour) |
 | Q10 | Second instance in one repo | Runs without v1 and shows a warning toast | Fail the start, or take over the socket |
 
+### Open questions (H2)
+
+Decided for H2 as below; open for review.
+
+| # | Topic | H2 behaviour | Alternative |
+|---|---|---|---|
+| Q11 | Inline styles in the host page's CSP | `style-src 'self' 'unsafe-inline'`: xterm.js writes its theme into `<style>` elements and has no nonce option. Scripts stay self-only | xterm.js's canvas/WebGL renderer, or a nonce patch, to drop `'unsafe-inline'` |
+| Q12 | PR polling scope | The host sets its interest to every worktree, so the sidebar has PR/CI for all of them; the batched GraphQL fetch (PR 3) keeps that to one `gh` call per poll | Only what the TUI shows, as without a host |
+| Q13 | TUI exit | The host stops with it; no relaunch | A relaunch button on the page |
+
 ### Decisions (2026-10-15)
 
 Giovanni answered the open questions; the sections above already reflect these.
