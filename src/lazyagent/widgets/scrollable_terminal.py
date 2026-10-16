@@ -1,15 +1,13 @@
 """ScrollableTerminal — a terminal widget with scrollback buffer.
 
-Replaces textual-terminal's ``Terminal(Widget)`` with a ``ScrollView``-based
-widget that captures lines scrolled off the top of the pyte screen into a
-deque, and uses Textual's native scrolling (``virtual_size``, ``render_line``,
-scrollbars) to let users scroll through history.
+A view of a :class:`~lazyagent.engine.session.TerminalSession`: the session
+owns the process and the screen (scrollback included); this widget renders
+that screen with Textual's native scrolling (``virtual_size``,
+``render_line``, scrollbars), and turns keys, pastes and mouse events into
+bytes for the session.
 """
 
 from __future__ import annotations
-
-import asyncio
-import os
 
 import logging
 import platform
@@ -21,7 +19,6 @@ import time
 # The patch replaces pyte.screens.Char, so it has to land before the names
 # below are bound and before any Screen is built.
 import lazyagent.pyte_patch  # noqa: F401
-import pyte
 from pyte.screens import Char
 
 from rich.color import ColorParseError
@@ -42,68 +39,37 @@ from lazyagent.engine.screen import (
     _encode_scrollback_row,
     _style_key,
 )
-from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
+from lazyagent.engine.session import (
+    BRACKETED_PASTE_END,
+    BRACKETED_PASTE_START,
+    SUBMIT_KEY,
+    TerminalSession,
+)
 from lazyagent.styles import SCROLLBAR_CSS
+
+__all__ = [
+    "BRACKETED_PASTE_END",
+    "BRACKETED_PASTE_START",
+    "SUBMIT_KEY",
+    "ScrollableTerminal",
+    "ScrollbackScreen",
+    "_encode_scrollback_row",
+    "_style_key",
+]
 
 # `log` in this module is Textual's logger, so the diagnostic logger gets its
 # own name.
 _log = logging.getLogger(__name__)
 
-__all__ = ["ScrollableTerminal", "ScrollbackScreen", "_encode_scrollback_row", "_style_key"]
-
-# When the widget is hidden (size 0×0), defer pyte.Stream.feed and coalesce
-# chunks. Hidden widgets don't need an up-to-the-millisecond screen; the
-# observer's lifecycle scan can read a slightly-stale state. Burning CPU on
-# every stdout chunk for off-screen agents was the dominant idle cost.
-_HIDDEN_FEED_INTERVAL = 0.25
-
-# ---------------------------------------------------------------------------
-# Programmatic input framing
-# ---------------------------------------------------------------------------
-#
-# Bracketed paste (DECSET 2004). A real terminal wraps pasted text in these
-# markers so the app can tell "content the user pasted" apart from "keys the
-# user pressed". That distinction is exactly what programmatic input needs:
-# without it, agent CLIs built on Ink (Claude Code, Codex, Gemini) run their
-# stdin chunk through a tokeniser that only splits control characters out as
-# their own key when the whole chunk is short (< 64 chars). A longer chunk
-# ending in CR is absorbed into one text run, so the text lands in the prompt
-# and Enter never fires — the user has to press it by hand. Framing the text
-# as a paste makes the trailing CR a token in its own right no matter how the
-# kernel batches our writes.
-BRACKETED_PASTE_START = "\x1b[200~"
-BRACKETED_PASTE_END = "\x1b[201~"
-
-# Submit key. Enter is CR; LF is Shift+Enter (newline inside the prompt) for
-# Claude Code and most line-editing TUIs.
-SUBMIT_KEY = "\r"
 
 
-def _env_seconds(name: str, default: float) -> float:
-    """Read a non-negative float from the environment, else ``default``."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
+def _sgr_mouse(button: int, x: int, y: int, *, release: bool = False) -> str:
+    """SGR (1006) mouse report for a 0-based cell; press, plus release if asked."""
+    report = f"\x1b[<{button};{x + 1};{y + 1}M"
+    if release:
+        report += f"\x1b[<{button};{x + 1};{y + 1}m"
+    return report
 
-
-# How long ``send_input`` waits for the child to show any sign of having read
-# what we just wrote before it writes the submit key. Any PTY output is the
-# acknowledgement: it means the child's input loop has run since our write, so
-# the submit key will arrive in a later read() instead of being appended to the
-# same chunk. Bounded, because a busy or silent agent must not stall the submit.
-SUBMIT_ACK_TIMEOUT = _env_seconds("LAZYAGENT_SUBMIT_ACK_TIMEOUT", 2.0)
-
-# Small floor applied after the acknowledgement. The child redraws as soon as
-# it has *parsed* the paste, which can be a beat before its input state has
-# committed; a submit key racing into the same dispatch batch would submit the
-# prompt as it was before the paste. There is no observable signal for that
-# commit, so this one is a delay by necessity — kept tiny and overridable.
-SUBMIT_SETTLE_DELAY = _env_seconds("LAZYAGENT_SUBMIT_SETTLE_DELAY", 0.05)
 
 # ---------------------------------------------------------------------------
 # ScrollableTerminal — ScrollView-based terminal widget
@@ -133,7 +99,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
 
     def __init__(
         self,
-        command: str,
+        session: TerminalSession,
         default_colors: str | None = "system",
         name: str | None = None,
         id: str | None = None,
@@ -141,41 +107,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
 
-        self.command = command
+        self.session = session
         self.default_colors = default_colors
 
-        # Default terminal dimensions — updated on resize
-        self.ncol = 80
-        self.nrow = 24
-        self.mouse_tracking = False
-        # DECSET 2004 — set once the child asks for bracketed paste. Until
-        # then we must not send paste markers; a child that never requested
-        # them would take the escape sequence for literal input.
-        self.bracketed_paste = False
-        # Set on every PTY stdout chunk; send_input waits on it to know the
-        # child has read what we wrote. See SUBMIT_ACK_TIMEOUT.
-        self._output_event = asyncio.Event()
-
-        # PTY emulator (created in start())
-        self.emulator: PtyEmulator | None = None
-        self.send_queue: asyncio.Queue | None = None
-        self.recv_queue: asyncio.Queue | None = None
-        self.recv_task: asyncio.Task | None = None
-        self._stopped = False
+        # The size this view last gave the PTY. A view only resizes the PTY
+        # when its own size really changed (see on_resize).
+        self.ncol = session.cols
+        self.nrow = session.rows
         self._follow_output = True  # tracks auto-scroll intent across visibility
+        self._detach_output = session.attach(
+            self._on_session_output, watching=self._is_watching
+        )
 
-        # Deferred pyte feed while hidden. See recv() / _flush_hidden_feed.
-        self._hidden_feed_buffer: list[str] = []
-        self._hidden_feed_handle: asyncio.TimerHandle | None = None
-
-        # Diagnostics only — see lazyagent.diagnostics. `_diag_spawn_id` is
-        # stamped by the spawn path so the log can join a Ctrl+J keypress to
-        # this terminal's first byte of output.
-        self._diag_spawn_id: str = ""
-        self._diag_started: float = 0.0
-        self._diag_first_output: bool = False
-        self._diag_chunks: int = 0
-        self._diag_chars: int = 0
+        # Diagnostics only — see lazyagent.diagnostics.
         self._diag_render_s: float = 0.0
         self._diag_render_lines: int = 0
         self._diag_repaint: str = ""
@@ -188,9 +132,8 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         self._cached_selection: Selection | None = None
         self._cached_selection_style: Style | None = None
 
-        # pyte screen + stream
-        self._screen = ScrollbackScreen(self.ncol, self.nrow)
-        self.stream = pyte.Stream(self._screen)
+        # The session's headless screen, rendered directly (shared in-process).
+        self._screen: ScrollbackScreen = session.screen
 
         # Cached resolved default colors (invalidated on theme change)
         self._cached_default_colors: tuple[str, str] | None = None
@@ -240,248 +183,77 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         }
 
     # ------------------------------------------------------------------
-    # PTY lifecycle
+    # Session lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def running(self) -> bool:
+        return self.session.running
+
+    @property
+    def mouse_tracking(self) -> bool:
+        return self.session.mouse_tracking
+
+    @property
+    def bracketed_paste(self) -> bool:
+        return self.session.bracketed_paste
 
     def start(self) -> None:
-        """Spawn the PTY subprocess and begin the recv loop."""
-        if self.emulator is not None:
-            return
-        self._stopped = False
-        self._diag_started = time.perf_counter()
-        self._diag_first_output = False
-        with diag.timed(
-            _log, "term.start", widget=self.id, spawn_id=self._diag_spawn_id
-        ) as span:
-            self.emulator = PtyEmulator(command=self.command)
-            self.emulator.start()
-            span["pid"] = self.emulator.pid
-        self.send_queue = self.emulator.recv_queue
-        self.recv_queue = self.emulator.send_queue
-        self.recv_task = asyncio.create_task(self.recv())
+        """Start the session's process (no-op if it is running)."""
+        self.session.start()
 
     def stop(self) -> None:
-        """Kill the PTY subprocess and cancel the recv loop."""
-        if self.emulator is None:
-            return
-        diag.event(
-            _log,
-            "term.stop",
-            widget=self.id,
-            spawn_id=self._diag_spawn_id,
-            chunks=self._diag_chunks,
-            chars=self._diag_chars,
-        )
-        self._stopped = True
-        self.recv_task.cancel()
-        self.emulator.stop()
-        self.emulator = None
-        if self._hidden_feed_handle is not None:
-            self._hidden_feed_handle.cancel()
-            self._hidden_feed_handle = None
-        self._hidden_feed_buffer.clear()
+        """Stop the session's process."""
+        self.session.stop()
 
-    def _flush_hidden_feed(self) -> None:
-        """Feed any chars buffered while hidden into pyte in one batch.
+    def on_unmount(self) -> None:
+        self._detach_output()
 
-        Called from the deferred timer, from ``on_show`` (immediate catch-up),
-        and from ``on_resize`` (so a pending resize doesn't reorder against
-        buffered output). Idempotent; safe to call with an empty buffer.
+    # ------------------------------------------------------------------
+    # Session output
+    # ------------------------------------------------------------------
+
+    def _is_watching(self) -> bool:
+        return self.size.height > 0
+
+    def _on_session_output(self, offset: int, data: bytes) -> None:
+        """Repaint after a chunk the session has already fed to the screen.
+
+        A hidden view does nothing: the session batches the feed, and
+        ``on_show`` catches up.
         """
-        if self._hidden_feed_handle is not None:
-            self._hidden_feed_handle.cancel()
-            self._hidden_feed_handle = None
-        if not self._hidden_feed_buffer:
+        if not self._is_watching():
             return
-        chars = "".join(self._hidden_feed_buffer)
-        buffered = len(self._hidden_feed_buffer)
-        self._hidden_feed_buffer.clear()
-        feed_start = time.perf_counter() if diag.HOT else 0.0
-        try:
-            self.stream.feed(chars)
-        except TypeError as error:
-            log.warning("could not feed:", error)
+        # Use the flag instead of is_vertical_scroll_end which returns
+        # unreliable values when the widget is hidden (e.g. after a
+        # ContentSwitcher worktree change).
+        was_at_bottom = self._follow_output
+        post_start = time.perf_counter() if diag.HOT else 0.0
+        self._update_virtual_size()
+        self._refresh_dirty_rows()
+        if was_at_bottom:
+            self.scroll_end(animate=False, immediate=True, x_axis=False)
+
         if diag.HOT:
+            # `render_*` is whatever render_line() cost since the last chunk —
+            # the actual painting happens on Textual's frame, not inside this
+            # handler, so it is attributed to the chunk that dirtied the rows.
+            # `repaint`/`dirty_rows` say which repaint path this chunk took and
+            # over how many rows.
             diag.debug_event(
                 _log,
-                "term.flush_hidden",
+                "term.chunk",
                 widget=self.id,
-                chunks=buffered,
-                chars=len(chars),
-                feed_ms=round((time.perf_counter() - feed_start) * 1000, 3),
+                bytes=len(data),
+                offset=offset,
+                post_ms=round((time.perf_counter() - post_start) * 1000, 3),
+                render_ms=round(self._diag_render_s * 1000, 3),
+                render_lines=self._diag_render_lines,
+                repaint=self._diag_repaint,
+                dirty_rows=self._diag_dirty_rows,
             )
-        # Fire the post-stdout hook once per batch (debounced scan).
-        self._after_stdout_processed()
-
-    # ------------------------------------------------------------------
-    # Recv loop — reads PTY output and updates screen + scrollback
-    # ------------------------------------------------------------------
-
-    async def recv(self) -> None:
-        try:
-            while True:
-                message = await self.recv_queue.get()
-                if self._stopped:
-                    break
-                cmd = message[0]
-
-                if cmd == "setup":
-                    await self.send_queue.put(["set_size", self.nrow, self.ncol])
-
-                elif cmd == "stdout":
-                    chars = message[1]
-
-                    if diag.ENABLED:
-                        self._diag_chunks += 1
-                        self._diag_chars += len(chars)
-                        if not self._diag_first_output:
-                            self._diag_first_output = True
-                            # Closes the Ctrl+J chain: keypress -> spawn ->
-                            # fork -> the agent actually saying something.
-                            diag.event(
-                                _log,
-                                "term.first_output",
-                                widget=self.id,
-                                spawn_id=self._diag_spawn_id,
-                                chars=len(chars),
-                                since_start_ms=round(
-                                    (time.perf_counter() - self._diag_started) * 1000, 2
-                                ),
-                            )
-
-                    # Hook for subclasses (e.g. MonitoredTerminal) — runs per
-                    # chunk so hang detection updates last_output_time
-                    # promptly even while we're hidden.
-                    self._on_stdout(chars)
-
-                    # Terminal modes and the output signal are tracked for
-                    # hidden terminals too: MCP input usually targets an agent
-                    # in a worktree the user isn't looking at, and it needs
-                    # both to frame and submit that input correctly.
-                    self._scan_terminal_modes(chars)
-                    self._output_event.set()
-
-                    if self.size.height > 0:
-                        # Visible: process immediately so the screen and any
-                        # observer scan reflect the latest output.
-                        #
-                        # Use the flag instead of is_vertical_scroll_end
-                        # which returns unreliable values when the widget is
-                        # hidden (e.g. after a ContentSwitcher worktree
-                        # change).
-                        was_at_bottom = self._follow_output
-
-                        # Feed to pyte (may trigger index() → scrollback
-                        # capture)
-                        feed_start = time.perf_counter() if diag.HOT else 0.0
-                        try:
-                            self.stream.feed(chars)
-                        except TypeError as error:
-                            log.warning("could not feed:", error)
-                        feed_end = time.perf_counter() if diag.HOT else 0.0
-
-                        self._update_virtual_size()
-                        self._refresh_dirty_rows()
-                        if was_at_bottom:
-                            self.scroll_end(
-                                animate=False, immediate=True, x_axis=False
-                            )
-
-                        if diag.HOT:
-                            # `render_*` is whatever render_line() cost since
-                            # the last chunk — the actual painting happens on
-                            # Textual's frame, not inside this handler, so it
-                            # is attributed to the chunk that dirtied the rows.
-                            # `repaint`/`dirty_rows` say which repaint path
-                            # this chunk took and over how many rows.
-                            diag.debug_event(
-                                _log,
-                                "term.chunk",
-                                widget=self.id,
-                                chars=len(chars),
-                                feed_ms=round((feed_end - feed_start) * 1000, 3),
-                                post_ms=round(
-                                    (time.perf_counter() - feed_end) * 1000, 3
-                                ),
-                                render_ms=round(self._diag_render_s * 1000, 3),
-                                render_lines=self._diag_render_lines,
-                                repaint=self._diag_repaint,
-                                dirty_rows=self._diag_dirty_rows,
-                            )
-                            self._diag_render_s = 0.0
-                            self._diag_render_lines = 0
-
-                        # Post-processing hook for subclasses (e.g. sentinel
-                        # scanning) — only runs when visible because the
-                        # hidden path coalesces and fires the hook once per
-                        # flush instead of per chunk.
-                        self._after_stdout_processed()
-                    else:
-                        # Hidden: buffer chunks and flush every
-                        # _HIDDEN_FEED_INTERVAL seconds. Avoids pyte parsing
-                        # cost per chunk for off-screen agents (e.g. running
-                        # Claude Code instances). Mouse-tracking + refresh +
-                        # scroll are all visibility-dependent, so we skip
-                        # them entirely until the flush.
-                        self._hidden_feed_buffer.append(chars)
-                        if self._hidden_feed_handle is None:
-                            loop = asyncio.get_running_loop()
-                            self._hidden_feed_handle = loop.call_later(
-                                _HIDDEN_FEED_INTERVAL,
-                                self._flush_hidden_feed,
-                            )
-
-                elif cmd == "disconnect":
-                    self._on_recv_disconnect()
-                    self.stop()
-
-        except asyncio.CancelledError:
-            pass
-
-    def _scan_terminal_modes(self, chars: str) -> None:
-        """Track the DECSET private modes we care about in a stdout chunk.
-
-        Mouse tracking (1000) decides whether clicks/scroll go to the child;
-        bracketed paste (2004) decides how ``send_input`` frames text.
-        """
-        for sep_match in re.finditer(RE_ANSI_SEQUENCE, chars):
-            sequence = sep_match.group(0)
-            if not sequence.startswith(DECSET_PREFIX):
-                continue
-            body = sequence.removeprefix(DECSET_PREFIX)
-            action = body[-1:]
-            if action not in ("h", "l"):
-                continue
-            enabled = action == "h"
-            # Only the last parameter carries the final byte: "1000;1006h"
-            # → ["1000", "1006"].
-            modes = body[:-1].split(";")
-            if "1000" in modes:
-                self.mouse_tracking = enabled
-            if "2004" in modes:
-                self.bracketed_paste = enabled
-
-    # ------------------------------------------------------------------
-    # Hooks for subclasses
-    # ------------------------------------------------------------------
-
-    def _on_stdout(self, chars: str) -> None:
-        """Called on each PTY stdout chunk, before processing.
-
-        Override in subclasses for monitoring (e.g. agent status detection).
-        """
-
-    def _on_recv_disconnect(self) -> None:
-        """Called when the PTY disconnects.
-
-        Override in subclasses for cleanup.
-        """
-
-    def _after_stdout_processed(self) -> None:
-        """Called after each stdout chunk is fed and scroll is updated.
-
-        Override in subclasses for post-processing (e.g. sentinel scanning).
-        """
+            self._diag_render_s = 0.0
+            self._diag_render_lines = 0
 
     # ------------------------------------------------------------------
     # Auto-scroll tracking
@@ -491,7 +263,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         """Catch up after being hidden: drain buffered output, sync size, scroll."""
         # Drain anything that arrived while hidden so the first paint
         # reflects the latest state.
-        self._flush_hidden_feed()
+        self.session.flush()
 
         def _restore() -> None:
             self._update_virtual_size()
@@ -941,62 +713,19 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
 
     def frame_input(self, text: str) -> str:
-        """Frame ``text`` the way a terminal delivers content, not keystrokes.
-
-        Wrapped in bracketed-paste markers when the child has enabled DECSET
-        2004, which is what stops an embedded control character (in practice
-        the submit CR that follows) from being swallowed into the same text
-        run. Exposed for tests.
-        """
-        # Content newlines are LF. A CR left in the body reads as Enter to any
-        # child that does parse it as a key, which would submit half a message.
-        body = text.replace("\r\n", "\n").replace("\r", "\n")
-        if not self.bracketed_paste:
-            return body
-        # A literal end marker inside the payload would close the paste early
-        # and let the remainder be parsed as keypresses.
-        body = body.replace(BRACKETED_PASTE_END, "")
-        return BRACKETED_PASTE_START + body + BRACKETED_PASTE_END
+        """Frame ``text`` as a paste, per the session's current modes."""
+        return self.session.frame_input(text)
 
     async def send_input(self, text: str, *, submit: bool = False) -> None:
-        """Write ``text`` into the child, optionally pressing Enter after it.
-
-        The payload and the submit key are always separate writes, and the
-        submit key is held back until the child has acknowledged the payload
-        (see ``_await_child_ack``). Two writes alone would not be enough — the
-        tty input buffer coalesces back-to-back writes into a single read on
-        the child side.
-        """
-        if self.emulator is None or self.send_queue is None:
-            raise RuntimeError("terminal is not running")
-
-        # Cleared before the write so only output produced *after* it counts
-        # as an acknowledgement.
-        self._output_event.clear()
-        await self.send_queue.put(["stdin", self.frame_input(text)])
-
-        if not submit:
-            return
-
-        await self._await_child_ack()
-        await self.send_queue.put(["stdin", SUBMIT_KEY])
-
-    async def _await_child_ack(self) -> None:
-        """Wait (briefly, and bounded) for the child to react to our write."""
-        try:
-            await asyncio.wait_for(self._output_event.wait(), SUBMIT_ACK_TIMEOUT)
-        except asyncio.TimeoutError:
-            # Silent child — submit anyway rather than drop the instruction.
-            pass
-        if SUBMIT_SETTLE_DELAY > 0:
-            await asyncio.sleep(SUBMIT_SETTLE_DELAY)
+        """Write ``text`` into the child, optionally pressing Enter after it."""
+        await self.session.send_input(text, submit=submit)
 
     # ------------------------------------------------------------------
     # Input handling
     # ------------------------------------------------------------------
 
     async def on_key(self, event: events.Key) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
 
         if event.key == "ctrl+f1":
@@ -1022,22 +751,23 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         event.stop()
         char = self.ctrl_keys.get(event.key) or event.character
         if char:
-            await self.send_queue.put(["stdin", char])
+            self.session.write(char)
 
     async def on_paste(self, event: events.Paste) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
         if event.text:
             # Re-frame as a paste for the child; it asked for the markers, and
             # forwarding raw text lets embedded newlines act as keypresses.
-            await self.send_queue.put(["stdin", self.frame_input(event.text)])
+            self.session.write(self.frame_input(event.text))
         event.stop()
 
     async def on_click(self, event: events.Click) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
         if self.mouse_tracking:
-            await self.send_queue.put(["click", event.x, event.y, event.button])
+            if event.button == 1:
+                self.session.write(_sgr_mouse(0, event.x, event.y, release=True))
             return
         if event.button != 1:
             return
@@ -1047,11 +777,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._select_line(event)
 
     async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
         if self.mouse_tracking:
             # Forward to PTY (vim, less, etc.)
-            await self.send_queue.put(["scroll", "down", event.x, event.y])
+            self.session.write(_sgr_mouse(65, event.x, event.y))
         else:
             # Default ScrollView behavior — scroll the widget
             event.stop()
@@ -1059,11 +789,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
             self._follow_output = self.is_vertical_scroll_end
 
     async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
         if self.mouse_tracking:
             # Forward to PTY
-            await self.send_queue.put(["scroll", "up", event.x, event.y])
+            self.session.write(_sgr_mouse(64, event.x, event.y))
         else:
             # Default ScrollView behavior
             event.stop()
@@ -1075,7 +805,7 @@ class ScrollableTerminal(ScrollView, can_focus=True):
     # ------------------------------------------------------------------
 
     async def on_resize(self, event: events.Resize) -> None:
-        if self.emulator is None:
+        if not self.session.running:
             return
 
         ncol = self.scrollable_content_region.width or self.size.width
@@ -1096,15 +826,11 @@ class ScrollableTerminal(ScrollView, can_focus=True):
         if self.ncol == ncol and self.nrow == nrow:
             return
 
-        # Real resize: flush any chars buffered while hidden BEFORE pyte's
-        # screen geometry changes, so the buffered output is applied at the
-        # dimensions it was produced for.
-        self._flush_hidden_feed()
-
+        # The session flushes output batched while hidden BEFORE the screen
+        # geometry changes, so it is applied at the size it was produced for.
         self.ncol = ncol
         self.nrow = nrow
-        await self.send_queue.put(["set_size", self.nrow, self.ncol])
-        self._screen.resize(self.nrow, self.ncol)
+        self.session.resize(self.nrow, self.ncol)
         self._update_virtual_size()
 
     # ------------------------------------------------------------------

@@ -1,16 +1,16 @@
 """PtyEmulator — inlined PTY emulator replacing textual-terminal.
 
-Provides PTY forking, async I/O, and incremental UTF-8 decoding.
+Provides PTY forking and async I/O. Output is queued as raw bytes; decoding
+is the consumer's job (see ``lazyagent.engine.session``).
 Based on textual-terminal's TerminalEmulator with improvements:
-- Incremental UTF-8 decoding (no data loss on multi-byte splits)
 - Robust stop() with process group kill and fd cleanup
+- The child's exit code is kept (``returncode``)
 - No ResourceWarning — fd is properly closed
 """
 
 from __future__ import annotations
 
 import asyncio
-import codecs
 import fcntl
 import logging
 import os
@@ -39,32 +39,29 @@ class PtyEmulator:
         self._command = command
         self.ncol = 80
         self.nrow = 24
-        self.data_or_disconnect: str | None = None
         self.run_task: asyncio.Task | None = None
-        self.send_task: asyncio.Task | None = None
+        # Exit code once reaped: negative for a signal, as in subprocess.
+        self.returncode: int | None = None
 
         self.fd = self._open_terminal(command)
         self.pid: int  # set by _open_terminal
         self.p_out = os.fdopen(self.fd, "w+b", 0)
+        # Inbound commands (stdin bytes, resizes) and outbound
+        # ``["stdout", bytes]`` / ``["disconnect", 1]`` messages.
         self.recv_queue: asyncio.Queue = asyncio.Queue()
         self.send_queue: asyncio.Queue = asyncio.Queue()
-        self.event = asyncio.Event()
 
     def start(self) -> None:
-        """Create the async I/O tasks."""
+        """Create the async I/O task."""
         diag.event(log, "pty.start", pid=self.pid, command=self._command)
         self.run_task = asyncio.create_task(self._run())
-        self.send_task = asyncio.create_task(self._send_data())
 
     def stop(self) -> None:
         """Cancel tasks, kill the process group, close the fd."""
         # Timed because this runs on the message pump and blocks on waitpid().
         started = time.perf_counter()
-        # Cancel async tasks
         if self.run_task is not None:
             self.run_task.cancel()
-        if self.send_task is not None:
-            self.send_task.cancel()
 
         # Kill the entire process group (pty.fork children have pgid == pid)
         try:
@@ -73,16 +70,18 @@ class PtyEmulator:
             pass
 
         # Reap the process
-        try:
-            rpid, _ = os.waitpid(self.pid, os.WNOHANG)
-            if rpid == 0:
-                try:
-                    os.killpg(self.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        if self.returncode is None:
+            try:
+                rpid, status = os.waitpid(self.pid, os.WNOHANG)
+                if rpid == 0:
+                    try:
+                        os.killpg(self.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    _, status = os.waitpid(self.pid, 0)
+                self.returncode = os.waitstatus_to_exitcode(status)
+            except ChildProcessError:
+                pass
 
         # Remove event-loop reader and close fd
         try:
@@ -100,6 +99,28 @@ class PtyEmulator:
             pid=self.pid,
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
+
+    def poll(self) -> int | None:
+        """Reap the child if it has exited; return its exit code or None."""
+        if self.returncode is None:
+            try:
+                rpid, status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                return None
+            if rpid != 0:
+                self.returncode = os.waitstatus_to_exitcode(status)
+        return self.returncode
+
+    async def wait_exit(self, timeout: float) -> int | None:
+        """Poll for the child's exit for up to ``timeout`` seconds.
+
+        The PTY reports EOF as soon as the child's side of it closes, which
+        can be a moment before the child is reapable.
+        """
+        deadline = time.monotonic() + timeout
+        while self.poll() is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        return self.returncode
 
     def _open_terminal(self, command: str) -> int:
         """Fork a PTY and exec the command in the child."""
@@ -142,8 +163,7 @@ class PtyEmulator:
             view = view[written:]
 
     async def _run(self) -> None:
-        """Main I/O loop with incremental UTF-8 decoding."""
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        """Main I/O loop: queue output as raw bytes, apply inbound commands."""
         loop = asyncio.get_running_loop()
 
         # Optional raw-stream capture for debugging terminal-rendering issues.
@@ -175,12 +195,14 @@ class PtyEmulator:
                         capture_file.write(raw)
                     except (OSError, ValueError):
                         pass
-                self.data_or_disconnect = decoder.decode(raw)
-                self.event.set()
             except Exception:
+                raw = b""
+            if raw:
+                self.send_queue.put_nowait(["stdout", raw])
+            else:
+                # EIO (Linux) or EOF: the child's side of the PTY is gone.
                 loop.remove_reader(self.p_out)
-                self.data_or_disconnect = None
-                self.event.set()
+                self.send_queue.put_nowait(["disconnect", 1])
 
         loop.add_reader(self.p_out, on_output)
         await self.send_queue.put(["setup", {}])
@@ -188,24 +210,13 @@ class PtyEmulator:
             while True:
                 msg = await self.recv_queue.get()
                 if msg[0] == "stdin":
-                    await self._write_all(msg[1].encode())
+                    data = msg[1]
+                    if isinstance(data, str):
+                        data = data.encode()
+                    await self._write_all(data)
                 elif msg[0] == "set_size":
                     winsize = struct.pack("HH", msg[1], msg[2])
                     fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsize)
-                elif msg[0] == "click":
-                    x = msg[1] + 1
-                    y = msg[2] + 1
-                    button = msg[3]
-                    if button == 1:
-                        await self._write_all(f"\x1b[<0;{x};{y}M".encode())
-                        await self._write_all(f"\x1b[<0;{x};{y}m".encode())
-                elif msg[0] == "scroll":
-                    x = msg[2] + 1
-                    y = msg[3] + 1
-                    if msg[1] == "up":
-                        await self._write_all(f"\x1b[<64;{x};{y}M".encode())
-                    if msg[1] == "down":
-                        await self._write_all(f"\x1b[<65;{x};{y}M".encode())
         except asyncio.CancelledError:
             pass
         finally:
@@ -214,16 +225,3 @@ class PtyEmulator:
                     capture_file.close()
                 except OSError:
                     pass
-
-    async def _send_data(self) -> None:
-        """Forward decoded output or disconnect signal to the send queue."""
-        try:
-            while True:
-                await self.event.wait()
-                self.event.clear()
-                if self.data_or_disconnect is not None:
-                    await self.send_queue.put(["stdout", self.data_or_disconnect])
-                else:
-                    await self.send_queue.put(["disconnect", 1])
-        except asyncio.CancelledError:
-            pass

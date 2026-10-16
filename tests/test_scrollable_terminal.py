@@ -1,14 +1,17 @@
 """Tests for ScrollbackScreen and ScrollableTerminal."""
 from __future__ import annotations
 
-import asyncio
 import gc
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pyte
+import pytest
 from pyte.screens import Char
 from rich.style import Style
 
+from textual.geometry import Size
+
+from lazyagent.engine.session import TerminalSession
 from lazyagent.widgets.scrollable_terminal import ScrollableTerminal, ScrollbackScreen
 
 
@@ -192,25 +195,17 @@ class TestScrollbackEncoding:
 def _make_scrollable_terminal() -> ScrollableTerminal:
     """Create a ScrollableTerminal without starting the emulator."""
     terminal = ScrollableTerminal.__new__(ScrollableTerminal)
-    terminal.command = "echo test"
+    terminal.session = TerminalSession("echo test", rows=5, cols=80)
     terminal.default_colors = "system"
     terminal.ncol = 80
     terminal.nrow = 5
-    terminal.mouse_tracking = False
-    terminal.bracketed_paste = False
-    terminal._output_event = asyncio.Event()
-    terminal.emulator = None
-    terminal.send_queue = None
-    terminal.recv_queue = None
-    terminal.recv_task = None
-    terminal._stopped = False
     terminal._follow_output = True
     terminal._sel_start = None
     terminal._sel_end = None
     terminal._is_selecting = False
     terminal._cached_selection = None
     terminal._cached_selection_style = None
-    terminal._screen = ScrollbackScreen(80, 5)
+    terminal._screen = terminal.session.screen
     terminal.stream = pyte.Stream(terminal._screen)
     terminal.ctrl_keys = {}
     terminal._cached_default_colors = None
@@ -241,18 +236,30 @@ class TestVirtualSizeCalculation:
         assert total == scrollback_len + 5
 
 
-class TestOnStdoutHook:
-    def test_on_stdout_default_is_noop(self):
-        """Base class _on_stdout does nothing (no error)."""
+class TestRendersTheSessionScreen:
+    @pytest.mark.asyncio
+    async def test_hidden_view_ignores_output_until_shown(self):
+        """A hidden view leaves the screen to the session's batched feed."""
         t = _make_scrollable_terminal()
-        t._on_stdout("hello world")  # Should not raise
+        t._refresh_dirty_rows = MagicMock()
+        with patch.object(
+            type(t), "size", new_callable=PropertyMock, return_value=Size(0, 0)
+        ):
+            t._on_session_output(0, b"hello")
+        t._refresh_dirty_rows.assert_not_called()
 
-
-class TestAfterStdoutProcessedHook:
-    def test_after_stdout_processed_default_is_noop(self):
-        """Base class _after_stdout_processed does nothing (no error)."""
+    @pytest.mark.asyncio
+    async def test_visible_view_repaints_per_chunk(self):
         t = _make_scrollable_terminal()
-        t._after_stdout_processed()  # Should not raise
+        t._refresh_dirty_rows = MagicMock()
+        t._update_virtual_size = MagicMock()
+        t.scroll_end = MagicMock()
+        with patch.object(
+            type(t), "size", new_callable=PropertyMock, return_value=Size(80, 5)
+        ):
+            t._on_session_output(0, b"hello")
+        t._refresh_dirty_rows.assert_called_once()
+        t.scroll_end.assert_called_once()
 
 
 def _cells(strip) -> list[tuple[str, Style]]:
@@ -583,8 +590,7 @@ class TestOnKeyCopy:
         from textual import events
 
         t = _make_scrollable_terminal()
-        t.emulator = MagicMock()
-        t.send_queue = asyncio.Queue()
+        t.session._emulator = MagicMock()
 
         mock_app = MagicMock()
 
@@ -594,8 +600,8 @@ class TestOnKeyCopy:
         with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
             asyncio.get_event_loop().run_until_complete(t.on_key(event))
 
-        # Nothing should be in the send queue
-        assert t.send_queue.empty()
+        # Nothing should have been written to the PTY
+        t.session._emulator.recv_queue.put_nowait.assert_not_called()
 
 
 class TestCursorStyle:

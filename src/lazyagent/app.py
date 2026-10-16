@@ -459,18 +459,14 @@ class LazyAgent(App):
     # --- Agent message handlers ---
 
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
-        state = self.registry.update_status(
+        self.registry.update_status(
             event.worktree_path,
             event.agent_id,
             event.status,
             event.confidence,
             event.detail,
+            last_output_time=event.last_output_time,
         )
-        if event.status == AgentStatus.RUNNING:
-            panel = self._get_any_panel(event.worktree_path)
-            terminal = panel.get_agent(event.agent_id) if panel is not None else None
-            if terminal:
-                state.last_output_time = terminal.last_output_time
         self._refresh_sidebar_agents(event.worktree_path)
 
     async def on_agent_exited(self, event: AgentExited) -> None:
@@ -497,9 +493,9 @@ class LazyAgent(App):
             if panel is None:
                 continue
             for agent_id in list(bucket):
-                terminal = panel.get_agent(agent_id)
-                if terminal is not None:
-                    terminal.poll_lifecycle()
+                session = panel.get_session(agent_id)
+                if session is not None:
+                    session.poll()
 
     def _check_hangs(self) -> None:
         """Periodic timer callback: check all active agents for hangs."""
@@ -512,9 +508,9 @@ class LazyAgent(App):
                     panel = self._get_any_panel(key)
                 if panel is None:
                     break
-                terminal = panel.get_agent(agent_id)
-                if terminal:
-                    terminal.check_hang()
+                session = panel.get_session(agent_id)
+                if session is not None:
+                    session.check_hang()
 
     # --- Actions ---
 
@@ -853,8 +849,7 @@ class LazyAgent(App):
             return
         try:
             terminal = panel.query_one("#terminal-widget")
-            # send_queue is an asyncio.Queue — must use put_nowait from sync context
-            terminal.send_queue.put_nowait(["stdin", cmd + "\n"])
+            terminal.session.write(cmd + "\n")
         except Exception:
             self.notify(f"No terminal available. Run manually:\n{cmd}", severity="warning", timeout=8)
 
