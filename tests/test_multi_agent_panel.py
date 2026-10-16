@@ -117,6 +117,29 @@ async def test_spawn_adds_a_tab_per_agent(patched):
 
 
 @pytest.mark.asyncio
+async def test_agent_ids_and_session_names_continue_after_a_restart(patched):
+    # Freed ids are not handed out again, in this run or the next.
+    for expected in (["a1", "a2"], ["a3"]):
+        app = LazyAgent(repo_path="/repo")
+        async with app.run_test() as pilot:
+            panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
+            await pilot.pause()
+            ids = [await panel.spawn_agent() for _ in expected]
+            await panel.cleanup_agent()
+            assert ids == expected
+            assert panel.agent_session_name(ids[-1]) == ""
+
+    app = LazyAgent(repo_path="/repo")
+    async with app.run_test() as pilot:
+        panel = await app.query_one(CenterPanel).switch_to(FEATURE_WORKTREE.path)
+        await pilot.pause()
+        agent_id = await panel.spawn_agent()
+        assert agent_id == "a4"
+        assert panel.agent_label(agent_id) == "Agent 4"
+        assert panel.agent_session_name(agent_id) == "repo-feature-a4"
+
+
+@pytest.mark.asyncio
 async def test_cleanup_one_agent_keeps_the_others(patched):
     app = LazyAgent(repo_path="/repo")
     async with app.run_test() as pilot:

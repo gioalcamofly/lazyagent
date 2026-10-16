@@ -16,6 +16,7 @@ from lazyagent.agent_providers import (
     env_exports,
     get_agent_provider,
 )
+from lazyagent.engine.registry import AgentRegistry
 from lazyagent.models import GitStatus
 from lazyagent.styles import SCROLLBAR_CSS
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
@@ -173,16 +174,16 @@ class WorktreePanel(Container):
     ScrollableTerminal {{ height: 1fr; width: 1fr; }}
     """
 
-    def __init__(self, worktree_path: str, **kwargs) -> None:
+    def __init__(
+        self, worktree_path: str, registry: AgentRegistry | None = None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
+        # Allocates agent ids and holds each agent's label and session name.
+        self.registry = registry if registry is not None else AgentRegistry()
         # agent_id -> terminal. Ordered by spawn order; each agent gets its
         # own TabPane to the left of the permanent Diff tab.
         self._agents: dict[str, MonitoredTerminal] = {}
-        self._labels: dict[str, str] = {}
-        # agent_id -> the session name passed to the CLI (Claude only).
-        self._session_names: dict[str, str] = {}
-        self._agent_counter = 0
 
     def compose(self):
         yield GitInfoBar(id="git-info-bar")
@@ -279,11 +280,11 @@ class WorktreePanel(Container):
 
     def agent_label(self, agent_id: str) -> str:
         """Return the human-facing tab label for an agent."""
-        return self._labels.get(agent_id, "")
+        return self.registry.label(self.worktree_path, agent_id)
 
     def agent_session_name(self, agent_id: str) -> str:
         """Return the name other Claude sessions address this agent by."""
-        return self._session_names.get(agent_id, "")
+        return self.registry.session_name(self.worktree_path, agent_id)
 
     @property
     def active_agent_id(self) -> str | None:
@@ -317,10 +318,6 @@ class WorktreePanel(Container):
         """True if any spawned agent has a live pty."""
         return any(t.emulator is not None for t in self._agents.values())
 
-    def _new_agent_id(self) -> str:
-        self._agent_counter += 1
-        return f"a{self._agent_counter}"
-
     async def _ensure_placeholder_tab(self) -> None:
         """Re-add the placeholder tab when no agents remain."""
         tabs = self.query_one("#agent-tabs", TabbedContent)
@@ -350,8 +347,7 @@ class WorktreePanel(Container):
         )
         for aid in targets:
             terminal = self._agents.pop(aid, None)
-            self._labels.pop(aid, None)
-            self._session_names.pop(aid, None)
+            self.registry.unregister(self.worktree_path, aid)
             if terminal is not None:
                 terminal.stop()
             try:
@@ -387,15 +383,18 @@ class WorktreePanel(Container):
         except Exception:
             pass
 
-        agent_id = self._new_agent_id()
+        agent_id = self.registry.new_agent_id(self.worktree_path)
         tab_label = label or f"Agent {agent_id[1:]}"
-        self._labels[agent_id] = tab_label
 
         provider = get_agent_provider(agent_provider)
-        if provider.session_name_flag:
-            self._session_names[agent_id] = agent_session_name(
-                self.worktree_path, agent_id
-            )
+        session_name = (
+            agent_session_name(self.worktree_path, agent_id)
+            if provider.session_name_flag
+            else ""
+        )
+        self.registry.register(
+            self.worktree_path, agent_id, label=tab_label, session_name=session_name
+        )
         # build_runtime_context touches the filesystem for some providers
         # (hook scripts, settings files), so it is timed separately.
         with diag.timed(
@@ -416,7 +415,7 @@ class WorktreePanel(Container):
             runtime_context=runtime_context,
             resume_mode=resume_mode,
             instruction=instruction,
-            session_name=self._session_names.get(agent_id),
+            session_name=session_name or None,
         )
 
         with diag.timed(
@@ -461,8 +460,9 @@ class CenterPanel(Container):
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, registry: AgentRegistry | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.registry = registry if registry is not None else AgentRegistry()
         # worktree_path -> panel widget. Stored by instance (not DOM id) so we
         # can reserve the slot before ContentSwitcher.add_content's await
         # completes; concurrent ensure_panel calls for the same key then
@@ -500,7 +500,7 @@ class CenterPanel(Container):
         # shell. `panels` says how many are alive by now.
         with diag.timed(log, "panel.create", worktree=worktree_path) as span:
             panel_id = _panel_id(worktree_path)
-            panel = WorktreePanel(worktree_path, id=panel_id)
+            panel = WorktreePanel(worktree_path, self.registry, id=panel_id)
             self._panels[worktree_path] = panel
             switcher = self.query_one("#panel-switcher", ContentSwitcher)
             await switcher.add_content(panel, id=panel_id)
@@ -532,7 +532,9 @@ class CenterPanel(Container):
             return existing  # type: ignore[return-value]
 
         panel_id = "wp-orchestrator"
-        panel = OrchestratorPanel(worktree_path=repo_root, id=panel_id)
+        panel = OrchestratorPanel(
+            worktree_path=repo_root, registry=self.registry, id=panel_id
+        )
         self._panels[ORCHESTRATOR_KEY] = panel
         switcher = self.query_one("#panel-switcher", ContentSwitcher)
         await switcher.add_content(panel, id=panel_id)
