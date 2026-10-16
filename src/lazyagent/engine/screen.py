@@ -1,7 +1,8 @@
 """Headless terminal screen: a pyte ``Screen`` that keeps a scrollback.
 
 The engine feeds one of these per session whatever any client shows; the TUI
-renders straight from it in-process.
+renders straight from it in-process, and :func:`ansi_snapshot` serialises it
+for a client that attaches over the protocol.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from collections import deque
 # isort: off
 import lazyagent.pyte_patch  # noqa: F401
 import pyte
+import pyte.graphics
 from pyte.screens import Char, Margins
 # isort: on
 
@@ -187,3 +189,124 @@ class ScrollbackScreen(pyte.Screen):
         if virtual_y < scrollback_len:
             return self.scrollback_text(virtual_y)
         return self.screen_text(virtual_y - scrollback_len)
+
+
+# ---------------------------------------------------------------------------
+# ANSI snapshot
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_SCROLLBACK_LINES = 2000
+
+_PRIVATE_SHIFT = 5
+_ALT_SCREEN = 1049
+_DECTCEM = 25
+_DECAWM = 7
+_DECOM = 6
+_DECCOLM = 3
+
+_FG_CODES = {name: code for code, name in pyte.graphics.FG_ANSI.items()}
+_FG_CODES.update({name: code for code, name in pyte.graphics.FG_AIXTERM.items()})
+_BG_CODES = {name: code for code, name in pyte.graphics.BG_ANSI.items()}
+_BG_CODES.update({name: code for code, name in pyte.graphics.BG_AIXTERM.items()})
+
+# Style key fields (see _style_key) after fg/bg, with their SGR set codes.
+_FLAG_CODES = (1, 3, 4, 9, 7, 5, 2)  # bold italics underscore strike reverse blink dim
+
+
+def _color(value: str, codes: dict[str, int], extended: int) -> str | None:
+    if value == "default":
+        return None
+    code = codes.get(value)
+    if code is not None:
+        return str(code)
+    if len(value) == 6:
+        try:
+            r, g, b = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return None
+        return f"{extended};2;{r};{g};{b}"
+    return None
+
+
+def _sgr(key: tuple) -> str:
+    """The SGR sequence that sets style ``key`` from scratch."""
+    parts = ["0"]
+    fg = _color(key[0], _FG_CODES, 38)
+    bg = _color(key[1], _BG_CODES, 48)
+    if fg is not None:
+        parts.append(fg)
+    if bg is not None:
+        parts.append(bg)
+    parts.extend(str(code) for flag, code in zip(key[2:], _FLAG_CODES) if flag)
+    return f"\x1b[{';'.join(parts)}m"
+
+
+def _render_line(text: str, runs: tuple) -> str:
+    out = [_sgr(key) + text[start:end] for start, end, key in runs]
+    if out:
+        out.append("\x1b[0m")
+    return "".join(out)
+
+
+def ansi_snapshot(
+    screen: ScrollbackScreen, max_scrollback: int = SNAPSHOT_SCROLLBACK_LINES
+) -> str:
+    """Serialise ``screen`` to ANSI that rebuilds it in an empty terminal of
+    the same size.
+
+    In order: a full reset, the last ``max_scrollback`` scrollback lines
+    (scrolled off into the receiving terminal's history), the alternate
+    screen (DECSET 1049) when the child is on it, every screen row at its
+    absolute position, the scroll margins, the terminal modes the child has
+    set (mouse tracking, bracketed paste, application cursor keys, cursor
+    visibility, autowrap, origin mode, insert mode), the cursor position and
+    the current pen.
+
+    Fidelity is what pyte models: no images, hyperlinks, titles, saved
+    cursor or charsets, and a cursor parked past the last column (pending
+    wrap) is restored on the last column.
+    """
+    rows, cols = screen.lines, screen.columns
+    default = screen.default_char
+    intern: dict[tuple, tuple] = {}
+    out = ["\x1bc"]
+
+    scrollback = list(screen.scrollback)[-max_scrollback:] if max_scrollback > 0 else []
+    if scrollback:
+        out.append("\r\n".join(_render_line(*line) for line in scrollback))
+        # Push every line into the history: the screen below starts blank.
+        out.append("\r\n" * rows)
+        out.append("\x1b[H")
+
+    private = {m >> _PRIVATE_SHIFT for m in screen.mode if m >> _PRIVATE_SHIFT}
+    public = {m for m in screen.mode if not m >> _PRIVATE_SHIFT}
+    if _ALT_SCREEN in private:
+        out.append(f"\x1b[?{_ALT_SCREEN}h\x1b[H\x1b[2J")
+
+    for y in range(rows):
+        line = _render_line(
+            *_encode_scrollback_row(screen.buffer[y], cols, default, intern)
+        )
+        if line:
+            out.append(f"\x1b[{y + 1};1H{line}")
+
+    margins = screen.margins
+    if margins is not None and (margins.top, margins.bottom) != (0, rows - 1):
+        out.append(f"\x1b[{margins.top + 1};{margins.bottom + 1}r")
+
+    for mode in sorted(private - {_ALT_SCREEN, _DECTCEM, _DECAWM, _DECCOLM}):
+        out.append(f"\x1b[?{mode}h")
+    for mode in sorted(public):
+        out.append(f"\x1b[{mode}h")
+    if _DECAWM not in private:
+        out.append(f"\x1b[?{_DECAWM}l")
+    if screen.cursor.hidden:
+        out.append(f"\x1b[?{_DECTCEM}l")
+
+    y = screen.cursor.y
+    if _DECOM in private and margins is not None:
+        y -= margins.top
+    x = min(screen.cursor.x, cols - 1)
+    out.append(f"\x1b[{y + 1};{x + 1}H")
+    out.append(_sgr(_style_key(screen.cursor.attrs)))
+    return "".join(out)

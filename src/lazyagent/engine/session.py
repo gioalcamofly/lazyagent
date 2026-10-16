@@ -37,7 +37,11 @@ import pyte
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_observers import AgentLifecycleEvent, AgentObserver
-from lazyagent.engine.screen import ScrollbackScreen
+from lazyagent.engine.screen import (
+    SNAPSHOT_SCROLLBACK_LINES,
+    ScrollbackScreen,
+    ansi_snapshot,
+)
 from lazyagent.models import AgentStatus, LifecycleConfidence
 from lazyagent.pty_emulator import DECSET_PREFIX, RE_ANSI_SEQUENCE, PtyEmulator
 
@@ -141,6 +145,8 @@ class SessionExited:
 SessionEvent = StatusChanged | SessionExited
 SessionListener = Callable[[SessionEvent], None]
 OutputListener = Callable[[int, bytes], None]
+# (rows, cols, offset): the new size and the output offset it applies from.
+SizeListener = Callable[[int, int, int], None]
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +282,7 @@ class TerminalSession:
 
         self._listeners: list[SessionListener] = []
         self._viewers: list[_Viewer] = []
+        self._size_listeners: list[SizeListener] = []
         self._pending_feed: list[str] = []
         self._feed_handle: asyncio.TimerHandle | None = None
 
@@ -501,6 +508,38 @@ class TerminalSession:
 
         return detach
 
+    def on_resize(self, listener: SizeListener) -> Callable[[], None]:
+        """Call ``listener(rows, cols, offset)`` after every size change;
+        returns a remover."""
+        self._size_listeners.append(listener)
+
+        def remove() -> None:
+            if listener in self._size_listeners:
+                self._size_listeners.remove(listener)
+
+        return remove
+
+    @property
+    def viewer_count(self) -> int:
+        return len(self._viewers)
+
+    def snapshot(
+        self, max_scrollback: int = SNAPSHOT_SCROLLBACK_LINES
+    ) -> tuple[int, str]:
+        """``(offset, ansi)``: the screen as ANSI (see
+        :func:`~lazyagent.engine.screen.ansi_snapshot`) and the output offset
+        it is exact at. The bytes from ``offset`` on are not in it: a client
+        that renders the snapshot then feeds the output from ``offset`` ends
+        up with this screen.
+        """
+        self.flush()
+        # A chunk that ended inside a UTF-8 sequence leaves its first bytes
+        # in the decoder, out of the screen.
+        undecoded = len(self._decoder.getstate()[0])
+        return self.ring.end_offset - undecoded, ansi_snapshot(
+            self.screen, max_scrollback
+        )
+
     def _emit(self, event: SessionEvent) -> None:
         for listener in list(self._listeners):
             try:
@@ -528,6 +567,12 @@ class TerminalSession:
         self.screen.resize(rows, cols)
         if self._emulator is not None:
             self._emulator.recv_queue.put_nowait(["set_size", rows, cols])
+        offset = self.ring.end_offset
+        for listener in list(self._size_listeners):
+            try:
+                listener(rows, cols, offset)
+            except Exception:
+                log.exception("size listener failed")
 
     def frame_input(self, text: str) -> str:
         """Frame ``text`` the way a terminal delivers content, not keystrokes.
