@@ -126,7 +126,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | `action_spawn_agent` / `_spawn_orchestrator_agent` | app.py:529-602 | **Engine** `spawn_agent` (+ `kind:"orchestrator"`); **Client** keeps the `SpawnModal` | Spawn logic is duplicated today in the IPC handler (ipc.py:365-390). Done in PR 5: both call `Engine.spawn_agent`; the TUI passes its environment (D5) |
 | `compose_orchestrator_prompt` | app.py:586; orchestrator_prompt.py:178 | **Engine** | Needs config and repo root only. Done in PR 5 |
 | `action_stop_agent` / orchestrator stop | app.py:604-637 | **Engine** `stop_agent`; **Client** chooses the target | The active tab is client state. Done in PR 5 |
-| `action_create_worktree` / `_do_create_worktree` | app.py:751-792 | **Engine** `create_worktree`; **Client** modal | The custom-create path differs between UI (types into shell, :782) and IPC (subprocess, ipc.py:253). Both paths become an engine job (subprocess) with streamed output (decision D6). Done in PR 5: `Engine.run_job` in the repo root; the TUI shows `job.*` events in a `JobLog` under the worktree view, and selects the new worktree once the job is done |
+| `action_create_worktree` / `_do_create_worktree` | app.py:751-792 | **Engine** `create_worktree`; **Client** modal | The custom-create path differs between UI (types into shell, :782) and IPC (subprocess, ipc.py:253). Both paths become an engine job (subprocess) with streamed output (decision D6). Done in PR 5: `Engine.run_job` in the repo root, with the client's env when the TUI starts it (IPC: the engine's); the TUI shows `job.*` events in a `JobLog` under the worktree view, and selects the new worktree once the job is done |
 | `action_remove_worktree` / `_do_remove_worktree` | app.py:794-851 | **Engine**; **Client** confirm modal | The "agent running" guard is duplicated (app.py:803 vs ipc.py:320). Done in PR 5: `Engine.remove_worktree` holds the guards, runs the custom remove as a job (`custom=False` for IPC, which keeps `git worktree remove`), then stops the worktree's agents and shell |
 | `_send_to_terminal` | app.py:853-868 | **Engine** `write_input` to the worktree shell session | Writes straight into a widget queue today. Gone in PR 5: its only users were the custom commands, now jobs; `Engine.write_input` remains for clients |
 | `action_refresh` / `_load_worktrees` | app.py:738, :180-199 | **Engine** `refresh_worktrees` → `worktrees.changed` | IPC calls it through `call_later` (ipc.py:268, :296, :331). Since PR 3 it calls `WorktreeService.rescan`, which still lists inline (create selects the new worktree right after) and emits `worktrees.changed`. Since PR 5 IPC calls `Engine.refresh_worktrees` directly |
@@ -142,14 +142,14 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | Provider command + runtime context build | center_panel.py:394-420; orchestrator_panel.py:96-123 | **Engine** `spawn` | Hook temp dirs, MCP config and the session name are all engine concerns. Done in PR 5 |
 | Per-worktree shell `bash -l` | center_panel.py:209-230 | **Engine** session `kind:"shell"` (D1) | Custom create/remove commands are typed into it (app.py:782, :838). It should survive the UI closing like the agents do. Since PR 4 it is a `TerminalSession` (`kind = "shell"`) rendered by a plain `ScrollableTerminal`. Since PR 5 `Engine.open_shell` creates it (get-or-create, client env), and `remove_worktree` stops it |
 | `OrchestratorPanel._agent_terminal`, `_session_name` | orchestrator_panel.py:35-132 | **Engine** (key `__orchestrator__`) | Same as for agents. Done in PR 5: `spawn_agent(kind="orchestrator")`; the panel shows the session and reads the session name from the registry |
-| `MonitoredTerminal` status/detail/`_last_output_time`/observer/scan timer | monitored_terminal.py:42-49, :88-205 | **Engine** `AgentSession` | Status detection. Done in PR 4: `engine/session.py`; `MonitoredTerminal` only re-posts the session's events as Textual messages |
+| `MonitoredTerminal` status/detail/`_last_output_time`/observer/scan timer | monitored_terminal.py:42-49, :88-205 | **Engine** `AgentSession` | Status detection. Done in PR 4: `engine/session.py`; `MonitoredTerminal` only re-posts the session's events as Textual messages. Since PR 5 it posts nothing (status and exit reach the app as engine events) and `messages.py` is gone |
 | `ScrollableTerminal.emulator`, queues, `recv` loop | scrollable_terminal.py:327-333, :411-447, :485-604 | **Engine** (PTY I/O) | The process lifetime must not depend on a widget. Done in PR 4: `TerminalSession` owns the emulator, the recv loop, a 4 MiB offset-addressed ring of raw output and the exit code |
 | Terminal modes `mouse_tracking`, `bracketed_paste` | scrollable_terminal.py:320-324, :606-631 | **Engine** (authoritative); clients derive their own | `send_input` framing for MCP needs them (:1108-1124). Since PR 4 they live on the session; the TUI view reads them from there |
 | `send_input` + child-ack + submit | scrollable_terminal.py:1126-1161 | **Engine** method (`send_agent_input`) | It is protocol semantics, not UI. Done in PR 4: `TerminalSession.send_input` |
 | `ScrollbackScreen` pyte screen + scrollback | scrollable_terminal.py:194-263, :345-346 | **Both**: engine headless (detection, `read_agent_output`, snapshot); client display emulator | See §3. Since PR 4 the class is in `engine/screen.py` and the session owns the only instance; the in-process TUI renders that same object (K2) |
 | Hidden-feed coalescing | scrollable_terminal.py:54, :449-475, :582-599 | **Client** concern (subscribe only to visible streams); the engine feeds the headless screen on its own throttle | Today detection *depends on widget visibility* (:528). Since PR 4 the session batches the feed every 0.25 s unless a viewer it was attached to reports it is watching (`attach(on_output, watching=…)`); the TUI view watches while its height is non-zero |
 | Rendering, style cache, dirty rows, selection, clipboard, key table, mouse → PTY | scrollable_terminal.py:348-406, :681-1101, :1163-1426 | **Client** | Pure display. The mouse SGR encoding moves out of pty_emulator.py:189-202, so clients send raw bytes. Done in PR 4: the view encodes SGR and calls `session.write(...)` |
-| `PtyEmulator` | pty_emulator.py (all) | **Engine** | Since PR 4 it queues raw bytes only (the session decodes incrementally for pyte and the observer), keeps the child's exit code, and no longer encodes mouse events |
+| `PtyEmulator` | pty_emulator.py (all) | **Engine** | Since PR 4 it queues raw bytes only (the session decodes incrementally for pyte and the observer), keeps the child's exit code, and no longer encodes mouse events. Since PR 5 the child is started with `posix_spawnp` + util-linux `setsid --ctty` instead of `pty.fork` (no Python runs in a child forked from a threaded process) |
 | `WorktreeList` agent/git roll-ups | worktree_list.py:160-238 | **Client** | It renders from events |
 | `PrStatusBar`, `GitInfoBar` | pr_status_bar.py:29; center_panel.py:72-115 | **Client** | They render from events |
 
@@ -161,7 +161,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 
 | # | Where | Coupling | Decoupling move |
 |---|---|---|---|
-| C1 | monitored_terminal.py:77-86, :155; messages.py | Status/exit is sent through `post_message(AgentStatusChanged/AgentExited)`, so it only reaches `App` through the DOM bubble | `AgentSession` emits to a plain listener (`Callable[[AgentEvent], None]`); the TUI adapter re-posts it as a Textual message. Fixed in PR 4: `StatusChanged` / `SessionExited` (with `exit_code`) go to `add_listener` callables; `MonitoredTerminal` is the adapter |
+| C1 | monitored_terminal.py:77-86, :155; messages.py | Status/exit is sent through `post_message(AgentStatusChanged/AgentExited)`, so it only reaches `App` through the DOM bubble | `AgentSession` emits to a plain listener (`Callable[[AgentEvent], None]`); the TUI adapter re-posts it as a Textual message. Fixed in PR 4: `StatusChanged` / `SessionExited` (with `exit_code`) go to `add_listener` callables; `MonitoredTerminal` is the adapter. PR 5: the engine is the only listener |
 | C2 | app.py:139-158 | `set_interval` drives the engine timers | Add an `engine/scheduler.py` with plain asyncio tasks, started and stopped by `Engine.start/stop`. Git status and PR timers: fixed in PR 3 (asyncio tasks in `WorktreeService.start/stop`). `check_hangs` and `poll_agents`: fixed in PR 5 (`engine/scheduler.py`). Only the client's diff timer stays in the app |
 | C3 | app.py:263, :312, :355, :383 | `@work(thread=True)` + `call_from_thread` | Use `asyncio.to_thread` inside the engine and publish the results as events; the client applies them on its own loop. Fixed in PR 3 for all four |
 | C4 | ipc.py:268, :296, :331, :390, :434 | `self._app.call_later(...)` to hop to the Textual thread | Unnecessary: the IPC server already runs on the same loop. Call `Engine` methods directly. Fixed in PR 5 |
@@ -500,6 +500,17 @@ Both orderings share the protocol and the contract suite, so choosing one doesn'
 | K7 | Snapshot fidelity is limited to pyte's model (no OSC 8 links, images, some modes) | Prefer the raw tail when it is available (§3b option C); snapshot only as a fallback |
 | K8 | Unattended boot (tmux → `lazyagent` → `/gio-planner`) changes once the TUI auto-starts a detached engine | D4: the TUI auto-starts the engine, so the boot script needs no change. PR 8 must include a test of the cold-start path |
 | K9 | Textual-coupled tests (test_app_integration, test_center_panel, test_multi_agent_panel) need fixtures for the backend | Parametrised backend fixture in PR 7 |
+
+### Open questions (PR 5)
+
+Decided for PR 5 as below; open for review.
+
+| # | Topic | PR 5 behaviour | Alternative |
+|---|---|---|---|
+| Q1 | Custom remove over IPC/MCP | `remove_worktree` from IPC keeps `git worktree remove` (`custom=False`), as before PR 5; only the TUI runs `[worktree] remove` | Run the custom command for every client (D6 read literally) |
+| Q2 | Which jobs the TUI shows | The `JobLog` shows every job, MCP/orchestrator-started ones included (they were invisible before) | Only jobs this client started |
+| Q3 | `JobLog` lifetime | Hidden 5 s after success, 30 s after a failure, or on click | Stays until dismissed with a key |
+| Q4 | Shells in the event stream | No `agent.spawned` / `agent.exited` for `kind:"shell"` sessions (the schema allows it) | Announce shells too, for clients that list every session |
 
 ### Decisions (2026-10-15)
 
