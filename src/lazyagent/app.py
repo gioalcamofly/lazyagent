@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
@@ -8,11 +9,13 @@ import time
 from collections.abc import Callable
 from functools import partial
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.timer import Timer
-from textual.widgets import Footer, Header
+from textual.widgets import Footer, Header, TabbedContent
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import AgentEventBus
@@ -29,20 +32,25 @@ from lazyagent.engine.events import (
     JOB_OUTPUT,
     JOB_STARTED,
     PR_INFO_UPDATED,
+    UI_COMMAND,
     WORKTREES_CHANGED,
     EngineEvent,
 )
 from lazyagent.engine.registry import AgentRegistry
 from lazyagent.engine.worktrees import WorktreeService
 from lazyagent.models import AgentState, GitStatus, WorktreeInfo
+from lazyagent.protocol.hosted import encode_osc, host, tmux_passthrough
 from lazyagent.widgets.center_panel import CenterPanel
+from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.job_log import JobLog
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeModal, CreateWorktreeResult
+from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeModal, RemoveWorktreeResult
 from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.prompt_modal import SpawnModal, SpawnResult
 from lazyagent.widgets.orchestrator_panel import ORCHESTRATOR_KEY
+from lazyagent.widgets.scrollable_terminal import ScrollableTerminal
 from lazyagent.widgets.worktree_list import OrchestratorListItem, WorktreeList, WorktreeListItem
 from lazyagent.worktree_manager import WorktreeManagerError
 
@@ -59,6 +67,22 @@ _SELECTION_DEBOUNCE = 0.4
 _INTEREST_CLIENT = "tui"
 
 _JOB_EVENTS = (JOB_STARTED, JOB_OUTPUT, JOB_FINISHED)
+
+# How long a host's command waits for the worktree it targets to be shown.
+_UI_SELECT_TIMEOUT = 5.0
+
+# What ui.view_changed calls each modal. Subclasses first: RemoveWorktreeModal
+# is a ConfirmModal.
+_MODAL_NAMES: tuple[tuple[type, str], ...] = (
+    (SpawnModal, "spawn"),
+    (CreateWorktreeModal, "create"),
+    (RemoveWorktreeModal, "remove"),
+    (ConfirmModal, "confirm"),
+    (HelpModal, "help"),
+)
+
+# The selection key while nothing is shown (None is the orchestrator).
+_NOTHING = object()
 
 
 class LazyAgent(App):
@@ -89,6 +113,15 @@ class LazyAgent(App):
         dock: left;
         width: 38;
         layout: vertical;
+    }
+    /* Hosted mode: the host paints the worktree list, PR and git status, and
+       has its own chrome, so only the terminals stay. The sidebar is kept in
+       the DOM, hidden, because selection still runs through it. */
+    LazyAgent.-hosted #sidebar,
+    LazyAgent.-hosted Header,
+    LazyAgent.-hosted Footer,
+    LazyAgent.-hosted GitInfoBar {
+        display: none;
     }
     """
 
@@ -124,6 +157,15 @@ class LazyAgent(App):
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
         self._selection_debounce: Timer | None = None
+        # What the center panel shows once a selection has been applied:
+        # a worktree path, None for the orchestrator, or _NOTHING.
+        self._shown: object = _NOTHING
+        # Hosted mode (LAZYAGENT_HOST): the host's identifier, opaque here.
+        self.host = host(os.environ)
+        self._detach_ui: Callable[[], None] | None = None
+        self._ui_commands: asyncio.Queue[dict] | None = None
+        if self.host is not None:
+            self.add_class("-hosted")
 
     # Views of engine state, for tests and the widgets.
 
@@ -186,12 +228,20 @@ class LazyAgent(App):
 
     async def on_mount(self) -> None:
         diag.setup()
-        # Before the start, which already reports the worktree list.
+        # Before the start, which already reports the worktree list, and
+        # which advertises the ui.* commands to v1 clients when a UI is
+        # attached.
         self._unsubscribe_engine = self.engine.subscribe(self._on_engine_event)
+        if self.host is not None:
+            self._ui_commands = asyncio.Queue()
+            self._detach_ui = self.engine.attach_ui()
+            self.run_worker(self._run_ui_commands, group="ui_commands")
         with diag.timed(log, "app.on_mount") as span:
             await self.engine.start()
             span["worktrees"] = len(self.worktrees)
             span["repo_root"] = self._repo_root
+        if self.host is not None:
+            self._announce_to_host()
         # Started last so the loop is already doing real work when it begins
         # sampling, and stopped in action_quit.
         diag.start_watchdog()
@@ -215,6 +265,9 @@ class LazyAgent(App):
         if self._unsubscribe_engine is not None:
             self._unsubscribe_engine()
             self._unsubscribe_engine = None
+        if self._detach_ui is not None:
+            self._detach_ui()
+            self._detach_ui = None
         await self.engine.stop()
 
     def _load_worktrees(self) -> None:
@@ -249,6 +302,8 @@ class LazyAgent(App):
             self.notify(data["message"], severity=data["severity"], timeout=5)
         elif name in _JOB_EVENTS:
             self.query_one(JobLog).on_job_event(event)
+        elif name == UI_COMMAND and self._ui_commands is not None:
+            self._ui_commands.put_nowait(data)
 
     async def _show_agent(self, key: str, agent_id: str, kind: str) -> None:
         """Mount the view of an agent the engine has just spawned."""
@@ -259,9 +314,11 @@ class LazyAgent(App):
         if kind == ORCHESTRATOR_KIND:
             orchestrator = await center.ensure_orchestrator_panel(self._repo_root)
             await orchestrator.show_agent(session)
+            self._publish_view()
             return
         panel = await center.ensure_panel(key)
         await panel.show_agent(session, self.registry.label(key, agent_id))
+        self._publish_view()
 
     async def _hide_agent(self, data: dict) -> None:
         """Remove the view of an agent the engine no longer runs."""
@@ -269,6 +326,7 @@ class LazyAgent(App):
         panel = self._get_any_panel(key)
         if panel is not None:
             await panel.cleanup_agent(data["agent_id"])
+        self._publish_view()
         if data.get("stopped"):
             return
         label = "Orchestrator" if key == ORCHESTRATOR_KEY else "Agent"
@@ -480,6 +538,7 @@ class LazyAgent(App):
                 self.engine.set_interest((), _INTEREST_CLIENT)
                 with diag.timed(log, "sidebar.switch_to_orchestrator"):
                     await center.switch_to_orchestrator(self._repo_root)
+                self._shown = None
             elif event.item is not None and isinstance(event.item, WorktreeListItem):
                 span["target"] = event.item.worktree.path
                 self._orchestrator_selected = False
@@ -494,6 +553,7 @@ class LazyAgent(App):
                     log, "sidebar.switch_to", worktree=event.item.worktree.path
                 ):
                     await center.switch_to(event.item.worktree.path)
+                self._shown = event.item.worktree.path
                 self._push_git_status_to_selected_panel()
                 if self.engine.has_pr_info(event.item.worktree.path):
                     self._apply_pr_info(
@@ -510,6 +570,206 @@ class LazyAgent(App):
                 self._orchestrator_selected = False
                 self._selected_worktree = None
                 self.engine.set_interest((), _INTEREST_CLIENT)
+                self._shown = _NOTHING
+        self._publish_view()
+
+    # --- View state (ui.view_changed) ---
+
+    def _view(self) -> dict:
+        """What this screen shows, as ``ui.view_changed`` carries it."""
+        worktree_path: str | None = None
+        agent_id: str | None = None
+        center = self.query_one(CenterPanel)
+        if self._orchestrator_selected:
+            orchestrator = center.get_orchestrator_panel()
+            if orchestrator is not None and orchestrator.agent_terminal is not None:
+                agent_id = ""
+        elif self._selected_worktree is not None:
+            worktree_path = self._selected_worktree.path
+            panel = center.get_panel(worktree_path)
+            if panel is not None:
+                agent_id = panel.shown_agent_id
+        focus, modal = self._focus_area()
+        return {
+            "worktree_path": worktree_path,
+            "orchestrator": self._orchestrator_selected,
+            "agent_id": agent_id,
+            "focus": focus,
+            "modal": modal,
+        }
+
+    def _focus_area(self) -> tuple[str, str | None]:
+        """Where the keyboard goes: ``(focus, modal name or None)``."""
+        if len(self.screen_stack) > 1:
+            screen = self.screen
+            name = next(
+                (n for cls, n in _MODAL_NAMES if isinstance(screen, cls)),
+                type(screen).__name__.lower(),
+            )
+            return "modal", name
+        node = self.focused
+        if node is None:
+            return "none", None
+        # Focus can linger in the panel of a worktree no longer shown.
+        center = self.query_one(CenterPanel)
+        ancestors = node.ancestors_with_self
+        if center in ancestors:
+            if self._orchestrator_selected:
+                shown = center.get_orchestrator_panel()
+            elif self._selected_worktree is not None:
+                shown = center.get_panel(self._selected_worktree.path)
+            else:
+                shown = None
+            if shown is None or shown not in ancestors:
+                return "none", None
+        while node is not None:
+            if isinstance(node, MonitoredTerminal):
+                return "agent", None
+            if isinstance(node, ScrollableTerminal):
+                return "shell", None
+            if node.id == "diff-scroll":
+                return "diff", None
+            if isinstance(node, WorktreeList):
+                return "sidebar", None
+            node = node.parent
+        return "none", None
+
+    def _publish_view(self) -> None:
+        """Tell the engine (and so every v1 client) what is shown now; a
+        view equal to the last one is not announced again."""
+        try:
+            view = self._view()
+        except NoMatches:
+            return  # torn down, or not composed yet
+        self.engine.publish_view(view)
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self._publish_view()
+
+    def push_screen(self, *args, **kwargs):
+        # A modal without a focusable widget moves no focus, so the view is
+        # published here (once the screen is up) rather than on focus alone.
+        result = super().push_screen(*args, **kwargs)
+        self.call_after_refresh(self._publish_view)
+        return result
+
+    def pop_screen(self):
+        result = super().pop_screen()
+        self.call_after_refresh(self._publish_view)
+        return result
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        self._publish_view()
+
+    # --- Hosted mode ---
+
+    def _announce_to_host(self) -> None:
+        """Write the OSC 7717 announcement (socket, engine id) to the host
+        terminal, between frames; see :mod:`lazyagent.protocol.hosted`."""
+        driver = self._driver
+        if driver is None:
+            return
+        sequence = encode_osc(
+            {
+                "socket": self.engine.v1_socket_path,
+                "engine_id": self.engine.engine_id,
+                "repo_root": self._repo_root,
+                "pid": os.getpid(),
+                "host": self.host,
+            }
+        )
+        if os.environ.get("TMUX"):
+            sequence += tmux_passthrough(sequence)
+        driver.write(sequence)
+        driver.flush()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # A host that attached late (a tmux client) gets the announcement on
+        # its first resize.
+        if self.host is not None and self.engine.v1_socket_path is not None:
+            self._announce_to_host()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "focus_sidebar":
+            # Hidden in hosted mode; the key then goes to the terminal.
+            return self.host is None
+        return True
+
+    async def _run_ui_commands(self) -> None:
+        """Carry out the host's ``ui.command`` events, one at a time."""
+        assert self._ui_commands is not None
+        while True:
+            data = await self._ui_commands.get()
+            try:
+                await self._carry_out(data)
+            except Exception:
+                log.exception("ui.command %r failed", data)
+
+    async def _carry_out(self, data: dict) -> None:
+        command = data.get("command")
+        path = data.get("worktree_path")
+        if len(self.screen_stack) > 1:
+            self.notify(
+                "Close the dialog first", severity="warning", timeout=3
+            )
+            return
+        if command == "open_modal" and data.get("modal") == "create":
+            self.action_create_worktree()
+            return
+        if command not in (
+            "select_worktree",
+            "select_orchestrator",
+            "focus_agent",
+            "open_shell",
+            "show_diff",
+            "open_modal",
+        ):
+            log.info("ignoring unknown ui.command %r", command)
+            return
+        if not await self._show(path):
+            return
+        if command == "focus_agent":
+            self._focus_agent(data.get("agent_id"))
+        elif command == "open_shell":
+            self.action_focus_terminal()
+        elif command == "show_diff":
+            self.action_focus_diff()
+            self._refresh_selected_diff()
+        elif command == "open_modal":
+            modal = data.get("modal")
+            if modal == "spawn":
+                self.action_spawn_agent()
+            elif modal == "remove":
+                self.action_remove_worktree()
+        self._publish_view()
+
+    async def _show(self, path: str | None) -> bool:
+        """Select ``path`` (None: the orchestrator) as the sidebar would and
+        wait until its panel is shown."""
+        if self._shown != path:
+            self._queue_selection(path)
+        deadline = time.monotonic() + _UI_SELECT_TIMEOUT
+        while self._shown != path:
+            if time.monotonic() > deadline:
+                log.warning("ui.command: %r was not shown in time", path)
+                return False
+            await asyncio.sleep(0.02)
+        return True
+
+    def _focus_agent(self, agent_id: str | None) -> None:
+        if agent_id is None or self._orchestrator_selected:
+            self.action_focus_agent()
+            return
+        wt = self._selected_worktree
+        panel = self.query_one(CenterPanel).get_panel(wt.path) if wt else None
+        terminal = panel.get_agent(agent_id) if panel is not None else None
+        if terminal is None:
+            self.notify(f"Agent {agent_id} is not shown", severity="warning")
+            return
+        panel.switch_to_tab(f"agent-tab-{agent_id}")
+        terminal.focus()
 
     # --- Actions ---
 
