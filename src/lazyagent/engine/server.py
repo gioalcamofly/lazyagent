@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 from lazyagent import __version__
 from lazyagent.engine.events import EngineEvent
 from lazyagent.engine.methods import EngineMethods, check_env, classify
+from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.engine.runtime import (  # noqa: F401  (re-exported)
     INFO_NAME,
     SOCKET_NAME,
@@ -59,7 +60,7 @@ from lazyagent.engine.runtime import (  # noqa: F401  (re-exported)
     runtime_dir,
     socket_path,
 )
-from lazyagent.protocol import framing, handshake
+from lazyagent.protocol import UI_COMMAND_METHODS, framing, handshake
 from lazyagent.protocol.envelope import (
     ErrorCode,
     ErrorInfo,
@@ -69,6 +70,7 @@ from lazyagent.protocol.envelope import (
     Response,
     parse_message,
 )
+from lazyagent.protocol.hosted import HOST_ENV
 
 if TYPE_CHECKING:
     from lazyagent.engine.engine import Engine
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 V1_SERVER_ENV = "LAZYAGENT_V1_SERVER"
+UI_MODALS = ("spawn", "create", "remove")
 
 # Output a client may have queued per stream before the stream is dropped.
 STREAM_QUEUE_LIMIT = 1024 * 1024
@@ -575,6 +578,14 @@ class V1Server:
                 "get_pr_info": self.handle_get_pr_info,
                 "set_interest": self.handle_set_interest,
                 "get_config": self.handle_get_config,
+                "get_sidebar_state": self.handle_get_sidebar_state,
+                "ui.get_view": self.handle_ui_get_view,
+                "ui.select_worktree": self.handle_ui_select_worktree,
+                "ui.select_orchestrator": self.handle_ui_select_orchestrator,
+                "ui.focus_agent": self.handle_ui_focus_agent,
+                "ui.open_shell": self.handle_ui_open_shell,
+                "ui.show_diff": self.handle_ui_show_diff,
+                "ui.open_modal": self.handle_ui_open_modal,
             }
         )
 
@@ -677,18 +688,27 @@ class V1Server:
                 self._prune(state)
 
     def hello_result(self) -> dict[str, Any]:
+        methods = self.methods
+        if not self.engine.ui_attached:
+            methods = [m for m in methods if m not in UI_COMMAND_METHODS]
         return handshake.HelloReply(
             protocol=handshake.PROTOCOL_VERSION,
             engine_version=_engine_version(),
             repo_root=self.engine.repo_root,
             engine_id=self.engine_id,
-            capabilities=(*self.methods, *FEATURES),
+            capabilities=(*methods, *FEATURES),
         ).to_result()
 
     async def dispatch(self, conn: _Connection, method: str, params: dict) -> Any:
         handler = self._handlers.get(method)
         if handler is None:
             raise ProtocolError(ErrorCode.UNKNOWN_METHOD, f"Unknown method: {method}")
+        if method in UI_COMMAND_METHODS and not self.engine.ui_attached:
+            raise ProtocolError(
+                ErrorCode.NO_HOSTED_UI,
+                "No hosted UI is attached to this engine: start the TUI with "
+                f"{HOST_ENV} set to carry out {method}",
+            )
         return await handler(conn, params)
 
     # ------------------------------------------------------------------
@@ -1025,6 +1045,111 @@ class V1Server:
 
     async def handle_get_config(self, conn: _Connection, params: dict) -> Any:
         return asdict(self.engine.get_config())
+
+    async def handle_get_sidebar_state(self, conn: _Connection, params: dict) -> Any:
+        engine = self.engine
+        pr_info = {}
+        for wt in engine.worktrees:
+            if engine.has_pr_info(wt.path):
+                info = engine.get_pr_info(wt.path)
+                pr_info[wt.path] = asdict(info) if info is not None else None
+        return {
+            "worktrees": engine.worktrees_payload(v1=True),
+            "orchestrator": {
+                "agents": engine.agents_payload(ORCHESTRATOR_KEY, v1=True)
+            },
+            "pr_info": pr_info,
+            "view": engine.ui_view,
+            "cursor": engine.events.cursor,
+        }
+
+    # ------------------------------------------------------------------
+    # Hosted UI
+    # ------------------------------------------------------------------
+
+    async def handle_ui_get_view(self, conn: _Connection, params: dict) -> Any:
+        return {"view": self.engine.ui_view}
+
+    def _ui_target(self, params: dict, *, orchestrator: bool = True) -> str | None:
+        """The worktree a ui command is about: ``worktree_path``, the
+        orchestrator (None) when ``orchestrator`` is true, else whatever the
+        UI shows."""
+        if (
+            params.get("orchestrator") is not None
+            and type(params["orchestrator"]) is not bool
+        ):
+            raise ValueError("orchestrator must be a boolean")
+        if params.get("orchestrator"):
+            if "worktree_path" in params:
+                raise ValueError("pass worktree_path or orchestrator, not both")
+            if not orchestrator:
+                raise ValueError("The orchestrator has no shell or diff")
+            return None
+        if "worktree_path" in params:
+            return self._worktree(params)
+        view = self.engine.ui_view or {}
+        if view.get("orchestrator"):
+            if not orchestrator:
+                raise ValueError("The orchestrator has no shell or diff")
+            return None
+        path = view.get("worktree_path")
+        if not path:
+            raise ValueError("The UI shows no worktree; pass worktree_path")
+        return path
+
+    def _ui_command(self, command: str, **args: Any) -> dict[str, Any]:
+        event = self.engine.ui_command(command, **args)
+        return {"seq": event.seq, **event.data}
+
+    async def handle_ui_select_worktree(self, conn: _Connection, params: dict) -> Any:
+        return self._ui_command("select_worktree", worktree_path=self._worktree(params))
+
+    async def handle_ui_select_orchestrator(
+        self, conn: _Connection, params: dict
+    ) -> Any:
+        return self._ui_command("select_orchestrator", worktree_path=None)
+
+    async def handle_ui_focus_agent(self, conn: _Connection, params: dict) -> Any:
+        path = self._ui_target(params)
+        key = ORCHESTRATOR_KEY if path is None else path
+        agent_ids = self.engine.agent_ids(key)
+        if not agent_ids:
+            where = "the orchestrator" if path is None else path
+            raise ValueError(f"No running agent in {where}")
+        agent_id = params.get("agent_id")
+        if agent_id is not None:
+            if not isinstance(agent_id, str):
+                raise ValueError("agent_id must be a string")
+            if agent_id not in agent_ids:
+                raise ValueError(f"No agent {agent_id!r} there. Available: {agent_ids}")
+        return self._ui_command("focus_agent", worktree_path=path, agent_id=agent_id)
+
+    async def handle_ui_open_shell(self, conn: _Connection, params: dict) -> Any:
+        path = self._ui_target(params, orchestrator=False)
+        return self._ui_command("open_shell", worktree_path=path)
+
+    async def handle_ui_show_diff(self, conn: _Connection, params: dict) -> Any:
+        path = self._ui_target(params, orchestrator=False)
+        return self._ui_command("show_diff", worktree_path=path)
+
+    async def handle_ui_open_modal(self, conn: _Connection, params: dict) -> Any:
+        modal = params.get("modal")
+        if modal not in UI_MODALS:
+            raise ValueError(f"modal must be one of {', '.join(UI_MODALS)}")
+        view = self.engine.ui_view or {}
+        if view.get("focus") == "modal":
+            raise ValueError(f"The {view.get('modal')} modal is already open")
+        if modal == "create":
+            path = None
+        else:
+            path = self._ui_target(params, orchestrator=modal == "spawn")
+        if modal == "remove":
+            wt = self.engine.worktree(path)
+            if wt is not None and wt.is_main:
+                raise ValueError("Cannot remove the main worktree")
+            if self.engine.has_active_agents(path):
+                raise ValueError("An agent is running in this worktree; stop it first")
+        return self._ui_command("open_modal", worktree_path=path, modal=modal)
 
 
 def _is_int(value: Any) -> bool:

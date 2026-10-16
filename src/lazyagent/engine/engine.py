@@ -45,6 +45,9 @@ from lazyagent.engine.events import (
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
+    UI_COMMAND,
+    UI_VIEW_CHANGED,
+    EngineEvent,
     EventBus,
 )
 from lazyagent.engine.registry import (
@@ -221,6 +224,11 @@ class Engine:
         self.v1_socket_path: str | None = None
         self._v1_server: V1Server | None = None
 
+        # Hosted UIs that carry out ui.command, and the last view a UI
+        # announced (ui.view_changed).
+        self._ui_hosts = 0
+        self.ui_view: dict[str, Any] | None = None
+
         self._agents: dict[str, dict[str, _Agent]] = {}
         self._shells: dict[str, TerminalSession] = {}
         self._session_ids = itertools.count(1)
@@ -361,6 +369,45 @@ class Engine:
     ) -> Callable[[], None]:
         """Shorthand for ``self.events.subscribe``."""
         return self.events.subscribe(callback, events)
+
+    @property
+    def engine_id(self) -> str | None:
+        """The v1 server's ``engine_id``; None while it does not run."""
+        return self._v1_server.engine_id if self._v1_server is not None else None
+
+    # ------------------------------------------------------------------
+    # Hosted UI
+    # ------------------------------------------------------------------
+
+    def attach_ui(self) -> Callable[[], None]:
+        """Register a UI that carries out ``ui.command`` events (a TUI in
+        hosted mode); returns the function that unregisters it."""
+        self._ui_hosts += 1
+        attached = True
+
+        def detach() -> None:
+            nonlocal attached
+            if attached:
+                attached = False
+                self._ui_hosts -= 1
+
+        return detach
+
+    @property
+    def ui_attached(self) -> bool:
+        return self._ui_hosts > 0
+
+    def ui_command(self, command: str, **args: Any) -> EngineEvent:
+        """Ask the hosted UI to change what it shows."""
+        return self.events.emit(UI_COMMAND, {"command": command, **args})
+
+    def publish_view(self, view: dict[str, Any]) -> bool:
+        """Announce what a UI shows (``ui.view_changed``), unless unchanged."""
+        if view == self.ui_view:
+            return False
+        self.ui_view = dict(view)
+        self.events.emit(UI_VIEW_CHANGED, dict(view))
+        return True
 
     async def wait_idle(self) -> None:
         """Wait for the background work started so far (git sweeps)."""

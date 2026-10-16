@@ -38,6 +38,8 @@ ENGINE_SHUTDOWN = "engine.shutdown"
 JOB_STARTED = "job.started"
 JOB_OUTPUT = "job.output"
 JOB_FINISHED = "job.finished"
+UI_COMMAND = "ui.command"
+UI_VIEW_CHANGED = "ui.view_changed"
 
 _DEFAULT_LOG_MAXLEN = 1000
 

@@ -166,6 +166,22 @@
       "properties": {
         "reason": {"type": "string"}
       }
-    }
+    },
+    "ui_command_name": {
+      "type": "string",
+      "description": "Open set: a hosted UI ignores a command it does not know.",
+      "x-known-values": ["select_worktree", "select_orchestrator", "focus_agent", "open_shell", "show_diff", "open_modal"]
+    },
+    "ui.command": {
+      "type": "object",
+      "required": ["command", "worktree_path"],
+      "properties": {
+        "command": {"$ref": "#/$defs/ui_command_name"},
+        "worktree_path": {"type": ["string", "null"], "description": "The resolved target; null is the orchestrator."},
+        "agent_id": {"type": ["string", "null"], "description": "focus_agent: the agent, or null for the active one."},
+        "modal": {"type": "string", "description": "open_modal: spawn, create or remove."}
+      }
+    },
+    "ui.view_changed": {"$ref": "methods.json#/$defs/ui_view"}
   }
 }

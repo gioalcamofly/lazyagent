@@ -432,6 +432,102 @@
       }
     },
 
+    "get_sidebar_state.params": {"type": "object", "properties": {}},
+    "get_sidebar_state.result": {
+      "type": "object",
+      "required": ["worktrees", "orchestrator", "pr_info", "view", "cursor"],
+      "properties": {
+        "worktrees": {"$ref": "#/$defs/list_worktrees.result"},
+        "orchestrator": {
+          "type": "object",
+          "required": ["agents"],
+          "properties": {
+            "agents": {"type": "array", "items": {"$ref": "#/$defs/agent"}, "description": "Empty or the one orchestrator agent (agent_id \"\")."}
+          }
+        },
+        "pr_info": {
+          "type": "object",
+          "additionalProperties": {"anyOf": [{"$ref": "events.json#/$defs/pr_info"}, {"type": "null"}]},
+          "description": "Worktree path -> PR info (null: no PR), for the worktrees fetched so far."
+        },
+        "view": {"anyOf": [{"$ref": "#/$defs/ui_view"}, {"type": "null"}]},
+        "cursor": {"type": "integer", "minimum": 0, "description": "subscribe {since: cursor} continues from this state without a gap."}
+      }
+    },
+
+    "ui_view": {
+      "type": "object",
+      "required": ["worktree_path", "orchestrator", "agent_id", "focus", "modal"],
+      "properties": {
+        "worktree_path": {"type": ["string", "null"], "description": "The worktree shown; null when the orchestrator or nothing is."},
+        "orchestrator": {"type": "boolean"},
+        "agent_id": {"type": ["string", "null"], "description": "The agent whose terminal is the active tab (the orchestrator's is \"\"); null when none is."},
+        "focus": {
+          "type": "string",
+          "description": "Open set: clients must tolerate values they do not know.",
+          "x-known-values": ["agent", "shell", "diff", "sidebar", "modal", "none"]
+        },
+        "modal": {"type": ["string", "null"], "description": "The open modal (spawn, create, remove, help, …) while focus is modal; else null."}
+      }
+    },
+    "ui_command": {
+      "type": "object",
+      "required": ["seq", "command", "worktree_path"],
+      "properties": {
+        "seq": {"type": "integer", "minimum": 0, "description": "seq of the ui.command event the hosted UI acts on."},
+        "command": {"$ref": "events.json#/$defs/ui_command_name"},
+        "worktree_path": {"type": ["string", "null"], "description": "The resolved target; null is the orchestrator."},
+        "agent_id": {"type": ["string", "null"]},
+        "modal": {"type": "string"}
+      }
+    },
+    "ui_target": {"type": "boolean", "description": "true targets the orchestrator instead of a worktree."},
+    "ui.get_view.params": {"type": "object", "properties": {}},
+    "ui.get_view.result": {
+      "type": "object",
+      "required": ["view"],
+      "properties": {
+        "view": {"anyOf": [{"$ref": "#/$defs/ui_view"}, {"type": "null"}], "description": "null until a UI has announced one."}
+      }
+    },
+    "ui.select_worktree.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {"worktree_path": {"$ref": "#/$defs/worktree_path"}}
+    },
+    "ui.select_worktree.result": {"$ref": "#/$defs/ui_command"},
+    "ui.select_orchestrator.params": {"type": "object", "properties": {}},
+    "ui.select_orchestrator.result": {"$ref": "#/$defs/ui_command"},
+    "ui.focus_agent.params": {
+      "type": "object",
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path", "description": "Default: the worktree the UI shows."},
+        "orchestrator": {"$ref": "#/$defs/ui_target"},
+        "agent_id": {"type": "string", "description": "Omitted: the active agent tab, or the last one."}
+      }
+    },
+    "ui.focus_agent.result": {"$ref": "#/$defs/ui_command"},
+    "ui.open_shell.params": {
+      "type": "object",
+      "properties": {"worktree_path": {"$ref": "#/$defs/worktree_path", "description": "Default: the worktree the UI shows."}}
+    },
+    "ui.open_shell.result": {"$ref": "#/$defs/ui_command"},
+    "ui.show_diff.params": {
+      "type": "object",
+      "properties": {"worktree_path": {"$ref": "#/$defs/worktree_path", "description": "Default: the worktree the UI shows."}}
+    },
+    "ui.show_diff.result": {"$ref": "#/$defs/ui_command"},
+    "ui.open_modal.params": {
+      "type": "object",
+      "required": ["modal"],
+      "properties": {
+        "modal": {"enum": ["spawn", "create", "remove"]},
+        "worktree_path": {"$ref": "#/$defs/worktree_path", "description": "Default: the worktree the UI shows. create ignores it and answers worktree_path null."},
+        "orchestrator": {"$ref": "#/$defs/ui_target"}
+      }
+    },
+    "ui.open_modal.result": {"$ref": "#/$defs/ui_command"},
+
     "list_events.params": {
       "type": "object",
       "properties": {

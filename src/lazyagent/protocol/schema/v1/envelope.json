@@ -44,7 +44,7 @@
       "properties": {
         "code": {
           "type": "string",
-          "description": "Open set. Legacy: UNKNOWN_METHOD, WORKTREE_ERROR, VALIDATION_ERROR, TIMEOUT, INTERNAL_ERROR. v1: UNAUTHORIZED, UNSUPPORTED_VERSION, NOT_SIZE_OWNER, PROTOCOL_ERROR."
+          "description": "Open set. Legacy: UNKNOWN_METHOD, WORKTREE_ERROR, VALIDATION_ERROR, TIMEOUT, INTERNAL_ERROR. v1: UNAUTHORIZED, UNSUPPORTED_VERSION, NOT_SIZE_OWNER, NO_HOSTED_UI, PROTOCOL_ERROR."
         },
         "message": {"type": "string"},
         "data": {"description": "Optional structured detail."}
