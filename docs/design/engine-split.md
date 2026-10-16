@@ -10,6 +10,89 @@
 - **Proposed split:** the engine owns PTYs, a headless emulator (used for detection and `read_agent_output` only), the agent registry, the event log, the worktree/git/PR caches and pollers, config, and the servers. Clients own display emulation, layout, selection, modals and keys→bytes.
 - **Protocol:** the existing `{id, method, params}` IPC envelope plus events, plus binary PTY frames that carry byte offsets. On attach the client gets a snapshot (ANSI) and then the live stream. Resize follows a single-owner policy: the most recently active client owns the PTY size.
 - **Migration:** about 9 strangler PRs to `develop`. The engine is first extracted **in-process** (same loop, direct calls), then moved behind the protocol, then out of process. Each step keeps `lazyagent` working, and the legacy `ipc.sock` and the `lazyagent.mcp_server` module path stay valid throughout.
+- **Why (§0):** the real axis is terminal app vs GUI app, not Python vs Rust. The split keeps the TUI's SSH/tmux strengths and makes a GUI just another client. The roadmap (§0e) ranks the features that make the engine worth it: shared resources, GitHub/CI triggers, phone approvals.
+
+---
+
+## 0. Motivation & roadmap
+
+The rest of this doc says **how** to split lazyagent. This section says **why**, and what the split is for once it lands.
+
+### 0a. Why change at all
+
+- **Trigger:** comparing lazyagent with Warp (warp.dev); see [competitive-analysis.md, Warp section](../research/competitive-analysis.md#competitive-analysis-warp-warpdev). Warp looks better and does more because it is a **GUI app that draws its own pixels**, not because it is written in Rust. A Rust TUI (ratatui) hits the same character-grid limits as Textual.
+- **So the real axis is terminal app vs GUI app**, not Python vs Rust.
+
+| | Terminal app (Textual, ratatui) | GUI app (Warp, Zed, VS Code) |
+|---|---|---|
+| Layout | Fixed cell grid, one font size | Free layout, any font and size |
+| Images | Only via kitty/sixel | Native |
+| Input | Poor hover, no rich input | Hover, rich editors, drag and drop |
+| Notifications | OSC escapes / `notify-send` | Native |
+| Reach | ✅ SSH, tmux, unattended boot, any terminal | ❌ needs a display |
+
+- **Terminal emulation never goes away.** Agents (claude, codex, gemini) are terminal programs whatever the UI is. The only question is who renders them: pyte in a TUI today, xterm.js in a GUI.
+- **Goal:** GUI-level possibilities without losing the terminal-native strengths. Separating the engine from the screens gives both: the TUI stays for SSH/tmux/boot, a GUI is just another client.
+
+### 0b. Options considered
+
+| Option | Verdict |
+|---|---|
+| Stay pure TUI and polish (themes, notifications, textual-serve) | Do the cheap parts anyway; it doesn't lift the grid ceiling |
+| Full Rust GUI rewrite (GPUI/egui/iced + `alacritty_terminal`, like Warp or Zed) | **Rejected.** Best performance, but months of rebuilding UI (diff viewer, editor, markdown) that HTML gives for free |
+| **Engine + clients; GUI = web (xterm.js), optionally wrapped in Tauri** | **Chosen.** Stack details stay deferred to Phase 2 (D7) |
+
+Performance notes:
+
+- **xterm.js is the VS Code terminal.** Its WebGL renderer handles tens of MB/s, far above an agent's output rate (human reading speed).
+- **Tauri is small** (system webview, a few MB), but on Linux that webview is **WebKitGTK**, weaker than Chromium at WebGL, scrolling and fonts. Linux is the only platform (D9), so this matters. Fallbacks: Electron, or the engine serving the page and opening it with `chrome --app=`.
+- **Today's bottleneck is pyte** (pure Python) doing both emulation and display. After the split, display moves to each client and the engine keeps only a headless emulator for status detection (§3a, K1).
+- **Rust stays possible later** behind the same protocol and contract suite (Phase 5), with no big-bang rewrite.
+
+### 0c. Engine vs Claude Code
+
+| | Claude Code | Engine |
+|---|---|---|
+| What it is | **An agent:** an LLM loop with tools | **Not an agent:** no LLM. A supervisor |
+| Scope | One session, one directory | Worktrees, N agent PTYs from any provider, status detection, events, MCP |
+| Analogy | A worker | tmux plus a git-aware foreman |
+
+- **Risk, stated honestly:** Claude Code keeps absorbing coordination features (subagents, worktree isolation, cross-session SendMessage, cloud sessions). Each release narrows the gap.
+- **The engine earns its place** only with what Claude Code doesn't do:
+  - multiple providers (claude, codex, gemini) under one roof;
+  - visible, interactive terminals, not background workers;
+  - a single board across all worktrees;
+  - a durable worktree lifecycle (create, PR, retarget, remove);
+  - the workflow rules in §0e.
+
+### 0d. Value the engine delivers
+
+| Value | Today | With the engine |
+|---|---|---|
+| Agents survive the screen | Closing or crashing the TUI kills them | Detach and reattach like tmux (D4) |
+| Several screens | One TUI | TUI + web + phone, at the same time |
+| One API for everything | The orchestrator, planner skills and scripts need the TUI open | Any tool talks to the engine via the protocol (§4) |
+| Provider-neutral status | A different mechanism per provider (Claude hooks, Codex app-server log, Gemini telemetry + screen scan), delivered as Textual messages to the TUI only | Structured, uniform events (§4e) for every client |
+| GUI foundation | Rewrite needed | New screens are just clients |
+| Rust option | Full rewrite | Swap the engine only, gated by the contract suite |
+
+### 0e. Roadmap: features that make the engine worth it
+
+Ranked by value for Giovanni's workflow. The top three replace skill-based workarounds that **poll**. Each row has its own proposal under [`docs/proposals/`](../proposals/README.md) (problem, today's workaround, protocol additions, risks); "Fits after" maps it onto §6/§6b.
+
+| # | Feature | Value | Fits after |
+|---|---|---|---|
+| 1 | [Shared resource slots](../proposals/0001-shared-resource-slots.md) (exclusive dev-DB slot, "at most N agents" cap) | ★★★ | PR 5 (engine owns spawn); exposed by PR 6 |
+| 2 | [GitHub/CI event triggers](../proposals/0002-github-ci-triggers.md) (merged → retarget; CI red / review → wake agent) | ★★★ | PRs 2, 3, 6 |
+| 3 | [Phone notifications and approvals](../proposals/0003-phone-notifications-approvals.md) | ★★★ | H2 or the web phase (PR 10+) |
+| 4 | [Per-agent CPU budget](../proposals/0004-cpu-budget-per-agent.md) | ★★ | PRs 4-5 |
+| 5 | [Hook-driven status, no screen scan for Claude](../proposals/0005-claude-status-from-hooks.md) | ★★ | PR 4 |
+| 6 | [Cost/tokens per agent and task](../proposals/0006-cost-tokens-per-agent.md) | ★★ | PR 2; shown by H2 / web |
+| 7 | [Persistent history](../proposals/0007-persistent-history.md) ("what happened overnight") | ★★ | PRs 2 and 8 |
+| 8 | [Diff review with comments](../proposals/0008-diff-review-comments.md) | ★★ (needs the GUI) | Phase 3, after H2 or PR 10+ |
+| 9 | [Restore after reboot](../proposals/0009-restore-after-reboot.md) | ★ | PR 9 (largely the same item) |
+
+- **Items 1-3 turn the engine from "tmux with statuses" into the place where workflow rules live.** That is the differentiator against Claude Code and Warp.
 
 ---
 
