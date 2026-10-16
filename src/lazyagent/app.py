@@ -311,14 +311,15 @@ class LazyAgent(App):
             self._selection_debounce = None
 
     def _schedule_selection_refresh(self) -> None:
-        """Refresh git status and the diff once the selection settles.
+        """Refresh git status, the diff and PR info once the selection settles.
 
         Debounced rather than immediate: scrolling the sidebar with j/k would
-        otherwise launch a ``git status`` *and* a ``git diff`` for every
-        worktree passed through, and those subprocesses are the expensive
-        part. ``exclusive=True`` on the workers cancels *waiting* on a
-        superseded fetch but cannot stop a subprocess already running, so the
-        throttle has to happen before they are spawned.
+        otherwise launch a ``git status``, a ``git diff`` *and* a ``gh`` call
+        for every worktree passed through, and those subprocesses are the
+        expensive part — a burst of ``gh`` calls also ties up the thread pool
+        the git fetches share. ``exclusive=True`` on the workers cancels
+        *waiting* on a superseded fetch but cannot stop a subprocess already
+        running, so the throttle has to happen before they are spawned.
         """
         self._cancel_selection_debounce()
         self._selection_debounce = self.set_timer(
@@ -331,6 +332,7 @@ class LazyAgent(App):
         self._selection_debounce = None
         self._refresh_selected_git_status()
         self._refresh_selected_diff()
+        self._refresh_pr_status()
 
     def _refresh_selected_git_status(self) -> None:
         """Fetch git status for the selected worktree only, off the message pump.
@@ -442,13 +444,12 @@ class LazyAgent(App):
                     self._apply_pr_info(
                         self.worktree_service.pr_info(event.item.worktree.path)
                     )
-                # Show the cached badge immediately, then refresh the status and
-                # the diff once the selection settles: the periodic poll only
-                # covers whichever worktree was selected at the time, so the one
-                # we just moved to may be holding stale content.
+                # Show the cached badge immediately, then refresh the status, the
+                # diff and the PR once the selection settles: the periodic poll
+                # only covers whichever worktree was selected at the time, so the
+                # one we just moved to may be holding stale content.
                 self._schedule_selection_refresh()
-                self._refresh_pr_status()
-                span["triggered"] = "selection_refresh(debounced),pr_status"
+                span["triggered"] = "selection_refresh(debounced)"
             else:
                 span["target"] = None
                 self._orchestrator_selected = False

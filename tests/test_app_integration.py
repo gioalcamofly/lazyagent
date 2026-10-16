@@ -12,9 +12,10 @@ from textual.worker import WorkerState
 
 from lazyagent.app import LazyAgent
 from lazyagent.config import Config, WorktreeConfig
-from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, AgentStatus, GitStatus, PrInfo, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
 from lazyagent.widgets.create_worktree_modal import CreateWorktreeResult
+from lazyagent.widgets.pr_status_bar import PrStatusBar
 from lazyagent.widgets.remove_worktree_modal import RemoveWorktreeResult
 from lazyagent.widgets.worktree_list import (
     OrchestratorListItem,
@@ -40,6 +41,9 @@ FEATURE_WORKTREE = WorktreeInfo(
 )
 
 WORKTREES = [MAIN_WORKTREE, FEATURE_WORKTREE]
+
+# Captured before any test stubs it out in _patch_app_dependencies.
+_REAL_REFRESH_PR_STATUS = LazyAgent._refresh_pr_status
 
 
 def _make_app_with_config(
@@ -640,6 +644,122 @@ class TestGitStatusDebounce:
             assert _status_paths() == {wt.path}
             # The pending selection refresh is left alone: it also refreshes
             # the diff, which this shortcut deliberately does not.
+            assert app._selection_debounce is not None
+
+
+class TestPrStatusDebounce:
+    """The ``gh`` lookup on selection is throttled like git status.
+
+    A burst of them would also hold the ``asyncio.to_thread`` pool the git
+    fetches run on.
+    """
+
+    @staticmethod
+    def _record_pr_lookups(
+        monkeypatch: pytest.MonkeyPatch, app: LazyAgent
+    ) -> list[list[str]]:
+        monkeypatch.setattr(LazyAgent, "_refresh_pr_status", _REAL_REFRESH_PR_STATUS)
+        lookups: list[list[str]] = []
+
+        async def refresh_pr_info(paths) -> None:
+            lookups.append(list(paths))
+
+        monkeypatch.setattr(app.worktree_service, "refresh_pr_info", refresh_pr_info)
+        return lookups
+
+    @pytest.mark.asyncio
+    async def test_passing_through_worktrees_looks_up_no_pr(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+        lookups = self._record_pr_lookups(monkeypatch, app)
+
+        async with app.run_test():
+            await _drain_workers(app)
+
+            await _select_worktree(app, 1)
+            await _select_worktree(app, 0)
+            await _select_worktree(app, 1)
+            await _drain_workers(app)
+
+            assert lookups == []
+            assert app._selection_debounce is not None
+
+    @pytest.mark.asyncio
+    async def test_settling_looks_up_the_pr_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+        lookups = self._record_pr_lookups(monkeypatch, app)
+
+        async with app.run_test():
+            await _drain_workers(app)
+
+            await _select_worktree(app, 1)
+            await _select_worktree(app, 0)
+            final = await _select_worktree(app, 1)
+
+            # Firing what the timer would call looks up only where we landed.
+            app._run_selection_refresh()
+            await _drain_workers(app)
+
+        assert lookups == [[final.path]]
+
+    @pytest.mark.asyncio
+    async def test_leaving_for_the_orchestrator_cancels_the_pr_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+        lookups = self._record_pr_lookups(monkeypatch, app)
+
+        async with app.run_test():
+            await _drain_workers(app)
+
+            await _select_worktree(app, 1)
+            worktree_list = app.query_one(WorktreeList)
+            orchestrator = next(
+                child
+                for child in worktree_list.children
+                if isinstance(child, OrchestratorListItem)
+            )
+            await app.on_list_view_highlighted(
+                WorktreeList.Highlighted(worktree_list, orchestrator)
+            )
+            await _drain_workers(app)
+
+            assert app._selection_debounce is None
+
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_cached_badge_is_shown_without_waiting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_app_dependencies(monkeypatch)
+        monkeypatch.setattr("lazyagent.app._SELECTION_DEBOUNCE", 30.0)
+        app = LazyAgent(repo_path="/repo")
+        lookups = self._record_pr_lookups(monkeypatch, app)
+        shown: list[PrInfo | None] = []
+        monkeypatch.setattr(
+            PrStatusBar, "update_pr_info", lambda self, info: shown.append(info)
+        )
+        cached = PrInfo(number=7, title="Demo", state="OPEN", checks=[])
+
+        async with app.run_test():
+            await _drain_workers(app)
+            app.worktree_service._pr_infos[FEATURE_WORKTREE.path] = cached
+
+            await _select_worktree(app, 1)
+
+            assert shown and shown[-1] is cached
+            # The badge came from the cache: the lookup is still pending.
+            assert lookups == []
             assert app._selection_debounce is not None
 
 
