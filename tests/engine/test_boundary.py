@@ -31,7 +31,7 @@ def test_engine_imports_no_textual_or_widgets():
 def test_importing_engine_loads_no_textual_or_widgets():
     code = (
         "import sys\n"
-        "import lazyagent.engine, lazyagent.engine.registry\n"
+        "import lazyagent.engine, lazyagent.engine.registry, lazyagent.engine.worktrees\n"
         "print('\\n'.join(sorted(sys.modules)))\n"
     )
     out = subprocess.run(

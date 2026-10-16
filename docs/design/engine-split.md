@@ -103,24 +103,24 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | State / logic | Where | Goes to | Why |
 |---|---|---|---|
 | `repo_path`, `_repo_root` | app.py:99, :112, :180-186 | **Engine** | Defines the engine's identity: one engine per repo root |
-| `worktrees: list[WorktreeInfo]` | app.py:100, :188 | **Engine** (cache) + client mirror | IPC `list_worktrees` reads it (ipc.py:172); clients render it from `worktrees.changed` |
+| `worktrees: list[WorktreeInfo]` | app.py:100, :188 | **Engine** (cache) + client mirror | IPC `list_worktrees` reads it (ipc.py:172); clients render it from `worktrees.changed`. Since PR 3 it lives in `WorktreeService` (rescan included) and `app.worktrees` is a property over it |
 | `_agent_states` (2-level registry) | app.py:104, :218-248 | **Engine** (`AgentRegistry`) + client mirror | This is the source of truth for MCP, the sidebar and events |
 | `agent_events: AgentEventBus` | app.py:107; agent_events.py:123 | **Engine** | The cursor log behind `list_events` and `send_agent_input` confirmation (ipc.py:596) |
-| `_git_statuses` cache | app.py:108, :332-340 | **Engine** | Shared by every client and by MCP `list_worktrees` (ipc.py:174) |
-| `_selected_worktree`, `_orchestrator_selected` | app.py:109-110, :417-450 | **Client** | Pure view state. The engine only learns an *interest set* (see `set_interest`, §4) that it uses to scope polling |
-| `_selection_debounce` timer | app.py:116, :284-310 | **Client** | UX throttling. Becomes a debounced `set_interest` / `refresh_git_status` call |
+| `_git_statuses` cache | app.py:108, :332-340 | **Engine** | Shared by every client and by MCP `list_worktrees` (ipc.py:174). Since PR 3: `WorktreeService.git_statuses`, merged there; `app._git_statuses` is a property over it |
+| `_selected_worktree`, `_orchestrator_selected` | app.py:109-110, :417-450 | **Client** | Pure view state. The engine only learns an *interest set* (see `set_interest`, §4) that it uses to scope polling. Since PR 3 the TUI sets its interest to the selected worktree (empty for the orchestrator or no selection) |
+| `_selection_debounce` timer | app.py:116, :284-310 | **Client** | UX throttling. Becomes a debounced `set_interest` / `refresh_git_status` call. PR 3 keeps it in the app: interest is set at once, the debounced refresh calls the service |
 | `_config: Config` | app.py:111, :174-178 | **Engine**, with a read-only copy for clients | Spawn/create/remove need it (ipc.py:227, :373). Modals need `default_branch` and `has_custom_create` (app.py:759-760) through `get_config` |
-| `_gh_available` | app.py:113, :390-394 | **Engine** | Belongs to the PR poller |
+| `_gh_available` | app.py:113, :390-394 | **Engine** | Belongs to the PR poller. Moved to `WorktreeService` in PR 3 |
 | `_ipc_server`, `_ipc_socket_path` | app.py:114-115, :167-172, :733-735 | **Engine** | It is the engine's server. `LAZYAGENT_SOCKET` is injected into agents (agent_providers.py:438-441) |
 | Timer `check_hangs` 60 s | app.py:139, :512-525 | **Engine** | Agent liveness |
 | Timer `poll_agents` 1 s | app.py:143, :501-510 | **Engine** | Hook-log tailing, which feeds status |
-| Timer `git_status` 60 s (selected only) | app.py:149-152 | **Engine**, scoped to the union of clients' interest sets | Today it is tied to UI selection |
-| Timer `diff` 30 s (selected only) | app.py:153-155 | **Engine** on request; the client polls while the diff tab is visible | Diff is large and only wanted when it is shown |
-| Timer `pr_status` 60 s (selected only) | app.py:156-158 | **Engine**, scoped by interest | `gh` network calls should be deduplicated across clients |
-| Worker `_refresh_git_statuses` (all) | app.py:263-282 | **Engine** (`asyncio.to_thread`) | Triggered by rescan/create/remove |
-| Worker `_refresh_selected_git_status` | app.py:312-330 | **Engine** | Same as above, for one path |
-| Worker `_refresh_selected_diff` | app.py:355-370 | **Engine** method `get_diff` | Request/response |
-| Worker `_refresh_pr_status` | app.py:383-405 | **Engine**, pushed as `pr_info.updated` events | Not exclusive today, so concurrent `gh` calls are possible; the engine can deduplicate per path |
+| Timer `git_status` 60 s (selected only) | app.py:149-152 | **Engine**, scoped to the union of clients' interest sets | Done in PR 3: a `WorktreeService` asyncio poller over the interest set |
+| Timer `diff` 30 s (selected only) | app.py:153-155 | **Engine** on request; the client polls while the diff tab is visible | Diff is large and only wanted when it is shown. Since PR 3 the timer stays in the app and calls `WorktreeService.get_diff` |
+| Timer `pr_status` 60 s (selected only) | app.py:156-158 | **Engine**, scoped by interest | `gh` network calls should be deduplicated across clients. Done in PR 3: a `WorktreeService` poller; a worktree whose fetch is in flight is not fetched again, and the interest set is fetched in one batched `gh api graphql` call ([proposal 0002](../proposals/0002-github-ci-triggers.md#polling-strategy)) |
+| Worker `_refresh_git_statuses` (all) | app.py:263-282 | **Engine** (`asyncio.to_thread`) | Triggered by rescan/create/remove. PR 3: `WorktreeService.refresh_git_status()`, which the app runs as an exclusive async worker |
+| Worker `_refresh_selected_git_status` | app.py:312-330 | **Engine** | Same as above, for one path. PR 3: `refresh_git_status([path])` |
+| Worker `_refresh_selected_diff` | app.py:355-370 | **Engine** method `get_diff` | Request/response. PR 3: `WorktreeService.get_diff`, which also keeps the last diff per worktree |
+| Worker `_refresh_pr_status` | app.py:383-405 | **Engine**, pushed as `pr_info.updated` events | Was not exclusive, so concurrent `gh` calls were possible. PR 3: `refresh_pr_info(paths)` deduplicates per path and emits `pr_info.updated` only on change |
 | `on_agent_status_changed` (registry update, label/session pull from panel, event publish) | app.py:454-482 | **Engine** | Pulling label and session from the panel (:461-468) goes away, because the engine sets them at spawn |
 | `on_agent_exited` | app.py:484-497 | **Engine** (drop + event); **Client** (toast, tab cleanup) | Split by concern |
 | `action_spawn_agent` / `_spawn_orchestrator_agent` | app.py:529-602 | **Engine** `spawn_agent` (+ `kind:"orchestrator"`); **Client** keeps the `SpawnModal` | Spawn logic is duplicated today in the IPC handler (ipc.py:365-390) |
@@ -129,7 +129,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | `action_create_worktree` / `_do_create_worktree` | app.py:751-792 | **Engine** `create_worktree`; **Client** modal | The custom-create path differs between UI (types into shell, :782) and IPC (subprocess, ipc.py:253). Both paths become an engine job (subprocess) with streamed output (decision D6) |
 | `action_remove_worktree` / `_do_remove_worktree` | app.py:794-851 | **Engine**; **Client** confirm modal | The "agent running" guard is duplicated (app.py:803 vs ipc.py:320) |
 | `_send_to_terminal` | app.py:853-868 | **Engine** `write_input` to the worktree shell session | Writes straight into a widget queue today |
-| `action_refresh` / `_load_worktrees` | app.py:738, :180-199 | **Engine** `refresh_worktrees` → `worktrees.changed` | IPC calls it through `call_later` (ipc.py:268, :296, :331) |
+| `action_refresh` / `_load_worktrees` | app.py:738, :180-199 | **Engine** `refresh_worktrees` → `worktrees.changed` | IPC calls it through `call_later` (ipc.py:268, :296, :331). Since PR 3 it calls `WorktreeService.rescan`, which still lists inline (create selects the new worktree right after) and emits `worktrees.changed` |
 | Focus/tab actions, keybindings, CSS, `compose` | app.py:51-95, :639-728 | **Client** | Pure UI |
 | `diag` watchdog/log | app.py:127-138; diagnostics.py | **Both** (separate log files) | Each process needs its own loop watchdog |
 | `main()` argparse | app.py:877-899 | **CLI** module, with subcommands | See §5 |
@@ -162,11 +162,11 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | # | Where | Coupling | Decoupling move |
 |---|---|---|---|
 | C1 | monitored_terminal.py:77-86, :155; messages.py | Status/exit is sent through `post_message(AgentStatusChanged/AgentExited)`, so it only reaches `App` through the DOM bubble | `AgentSession` emits to a plain listener (`Callable[[AgentEvent], None]`); the TUI adapter re-posts it as a Textual message |
-| C2 | app.py:139-158 | `set_interval` drives the engine timers | Add an `engine/scheduler.py` with plain asyncio tasks, started and stopped by `Engine.start/stop` |
-| C3 | app.py:263, :312, :355, :383 | `@work(thread=True)` + `call_from_thread` | Use `asyncio.to_thread` inside the engine and publish the results as events; the client applies them on its own loop |
+| C2 | app.py:139-158 | `set_interval` drives the engine timers | Add an `engine/scheduler.py` with plain asyncio tasks, started and stopped by `Engine.start/stop`. Git status and PR timers: fixed in PR 3 (asyncio tasks in `WorktreeService.start/stop`). `check_hangs` and `poll_agents` remain |
+| C3 | app.py:263, :312, :355, :383 | `@work(thread=True)` + `call_from_thread` | Use `asyncio.to_thread` inside the engine and publish the results as events; the client applies them on its own loop. Fixed in PR 3 for all four |
 | C4 | ipc.py:268, :296, :331, :390, :434 | `self._app.call_later(...)` to hop to the Textual thread | Unnecessary: the IPC server already runs on the same loop. Call `Engine` methods directly |
 | C5 | ipc.py:365-383, :414-429, :480-490, :535-543 | Handlers do `query_one(CenterPanel)` and `panel.spawn_agent / get_agent / cleanup_agent` | Handlers take an `Engine` and never import widgets |
-| C6 | ipc.py:172-174, :227, :330 | Reads private `_app.worktrees`, `_git_statuses`, `_config`, `_drop_worktree_agents` | Use the engine's public API |
+| C6 | ipc.py:172-174, :227, :330 | Reads private `_app.worktrees`, `_git_statuses`, `_config`, `_drop_worktree_agents` | Use the engine's public API. Since PR 3 `worktrees`, `_git_statuses` and `_repo_root` are app properties over `WorktreeService`; the handlers still go through the app until PR 5 |
 | C7 | center_panel.py:365-444; orchestrator_panel.py:79-132 | Process spawn is interleaved with `TabbedContent.add_pane`/`mount` | Split into `Engine.spawn_agent(...) → AgentInfo` and a TUI reaction to `agent.spawned` that mounts the tab |
 | C8 | app.py:461-472 | The registry pulls `label`, `session_name` and `last_output_time` back from widgets | `label` and `session_name`: fixed in PR 2, the panel registers them with the registry at spawn. `last_output_time` is still copied from the terminal on RUNNING and becomes an `AgentSession` field in PR 4 |
 | C9 | app.py:493, :172, :190 | Engine paths call `self.notify` | Publish an `engine.notice` event that clients show as a toast |
@@ -181,7 +181,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | R2 | monitored_terminal.py:105-112 | Detection joins `self._screen.buffer`, the *display* screen | Engine headless screen |
 | R3 | ipc.py:544-575 | `send_agent_input` checks `terminal.emulator/send_queue` and calls widget `send_input` | Use `AgentSession.send_input` |
 | R4 | app.py:866 | `terminal.send_queue.put_nowait(["stdin", …])` on the shell widget | Use `Engine.write_input(shell_session, bytes)` |
-| R5 | app.py:194, :252, :339 | The app pushes `_agent_states` and `_git_statuses` dicts by reference into `WorktreeList` | The client store is built from events |
+| R5 | app.py:194, :252, :339 | The app pushes `_agent_states` and `_git_statuses` dicts by reference into `WorktreeList` | The client store is built from events. Git statuses: since PR 3 the sidebar is updated from `git_status.updated` / `worktrees.changed` |
 | R6 | center_panel.py:318; orchestrator_panel.py:61-65 | `has_agent` is derived from `terminal.emulator is not None` | Comes from the registry |
 | R7 | agent_providers.py:254-267 (`env_exports`) | Agents inherit the env **of the process that spawns them** | The spawning client sends its env with `spawn_agent`; the engine uses that instead of its own `os.environ` (D5) |
 | R8 | mcp_server.py:85-150 | Socket discovery walks ancestor PIDs to `/tmp/lazyagent-<pid>/ipc.sock` | Still works, because agents are children of the engine. Add a stable per-repo path later (§4f) |
@@ -368,7 +368,7 @@ src/lazyagent/
     registry.py          # AgentRegistry, AgentIdStore, ORCHESTRATOR_KEY (from app.py:104, :218-248)
     session.py           # AgentSession/ShellSession: PtyEmulator + headless screen + observer + ring
     screen.py            # ScrollbackScreen (moved from widgets/scrollable_terminal.py:194-263) + ANSI snapshot
-    worktrees.py         # WorktreeService: list/git/pr/diff caches + interest-scoped pollers
+    worktrees.py         # WorktreeService: list/git/pr/diff caches + interest-scoped pollers (from app.py:139-158, :263-413)
     events.py            # generalised AgentEventBus
     scheduler.py
     server.py            # v1 server (unix + ws)
@@ -434,7 +434,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 |---|---|---|---|---|
 | 1 | **protocol: envelope + schemas** | `lazyagent/protocol/` (envelope, framing, handshake, v1 JSON schemas for the 10 existing methods and the §4e events). Stdlib only, relative imports. No runtime use | Golden fixtures of today's IPC responses (taken from test_ipc.py cases), validated against the schemas; framing round-trip and fuzz | 0 |
 | 2 | **engine: AgentRegistry + event log** | Move app.py:104-107, :218-248, :454-482 logic into `engine/registry.py`. The app delegates | Unit tests on the registry (status → event publish, rollup, drop → EXITED); monotonic agent ids persisted in the state dir and surviving a registry reload (D8) | 1 |
-| 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop | Service tests with a fake `WorktreeManager`; the poller respects the interest set | 1 |
+| 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop; its interest is the selected worktree, so polling is unchanged. PR info is fetched in one batched `gh api graphql` call for the whole interest set, with `gh pr view` per worktree as the fallback | Service tests with a fake `WorktreeManager`: the pollers respect the interest set, batching and its fallback, change-only events, caches dropped with their worktree; parse tests of the GraphQL response, and parity with the `gh pr view` parse | 1 |
 | 4 | **engine: AgentSession** | `PtyEmulator` + observer + scan/hang logic + modes + `send_input` + ring buffer in `engine/session.py`. `MonitoredTerminal` becomes a *view* that renders from the session's screen (shared in-process, so there is no double parse yet). Fixes C1, C10, R1-R3 | Session tests with the fake-agent PTY: status transitions, send_input framing/ack, `tail_lines`, ring offsets | 1 |
 | 5 | **engine: Engine facade, IPC rewired** | `Engine.spawn/stop/create/remove/open_shell` absorb center_panel.py:365-444, orchestrator_panel.py:79-132 and the app actions. `ipc.py` handlers call `Engine` only (removes C4-C6). The TUI reacts to `agent.spawned/exited` | Existing test_ipc against `Engine` without the Textual app; **boundary test** (engine imports no textual) | 1 |
 | 6 | **engine: v1 server (unix)** | `engine/server.py` speaking §4: hello, req/res, subscribe, attach_stream with snapshot, input frames, resize/claim. Runs in-process alongside the legacy socket | **Contract suite** (black-box over the socket): every method, event ordering, snapshot + live has no gap, offsets, version mismatch, slow-client reset, size-owner rules | 0/1 |

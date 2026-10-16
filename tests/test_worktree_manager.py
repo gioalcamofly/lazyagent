@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import patch
 
 import pytest
 
-from lazyagent.models import GitStatus
-from lazyagent.worktree_manager import WorktreeManager, WorktreeManagerError
+from lazyagent.models import GitStatus, WorktreeInfo
+from lazyagent.worktree_manager import GithubRepo, WorktreeManager, WorktreeManagerError
 
 
 SAMPLE_PORCELAIN = """\
@@ -704,3 +705,281 @@ class TestGetDiffCaps:
 
         assert "blob.bin" in result
         assert "Binary file" in result
+
+
+# --- Batched PR lookup (gh api graphql) ---
+
+
+def _check_run(name, status="COMPLETED", conclusion="SUCCESS"):
+    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
+
+
+def _status_context(context, state="SUCCESS"):
+    return {"__typename": "StatusContext", "context": context, "state": state}
+
+
+def _pr_node(number, state="OPEN", *, contexts=None, cross=False, rollup=True, **extra):
+    commit = {"statusCheckRollup": {"contexts": {"nodes": contexts or []}} if rollup else None}
+    node = {
+        "number": number,
+        "title": f"PR {number}",
+        "state": state,
+        "url": f"https://github.com/o/r/pull/{number}",
+        "reviewDecision": None,
+        "mergeable": "MERGEABLE",
+        "isCrossRepository": cross,
+        "commits": {"nodes": [{"commit": commit}]},
+    }
+    node.update(extra)
+    return node
+
+
+def _batch_response(*connections, default_branch="main"):
+    repo = {"defaultBranchRef": {"name": default_branch}}
+    for i, nodes in enumerate(connections):
+        repo[f"pr{i}"] = {"nodes": nodes}
+    return json.dumps({"data": {"repository": repo}})
+
+
+class TestParsePrBatch:
+    def test_open_pr_with_checks(self):
+        raw = _batch_response([
+            _pr_node(7, contexts=[
+                _check_run("build"),
+                _check_run("lint", status="IN_PROGRESS", conclusion=None),
+                _status_context("ci/legacy", state="FAILURE"),
+            ], reviewDecision="APPROVED"),
+        ])
+        result = WorktreeManager._parse_pr_batch(raw, [("/wt", "feat")])
+        pr = result["/wt"]
+        assert pr is not None
+        assert (pr.number, pr.state, pr.review_decision, pr.mergeable) == (
+            7, "OPEN", "APPROVED", "MERGEABLE",
+        )
+        assert pr.url == "https://github.com/o/r/pull/7"
+        assert [(c.name, c.status, c.conclusion) for c in pr.checks] == [
+            ("build", "COMPLETED", "SUCCESS"),
+            ("lint", "IN_PROGRESS", ""),
+            ("ci/legacy", "", "FAILURE"),
+        ]
+
+    def test_merged_and_closed_prs(self):
+        raw = _batch_response([_pr_node(5, "MERGED")], [_pr_node(6, "CLOSED")])
+        result = WorktreeManager._parse_pr_batch(raw, [("/a", "a"), ("/b", "b")])
+        assert result["/a"].state == "MERGED"
+        assert result["/b"].state == "CLOSED"
+
+    def test_no_pr_for_branch(self):
+        raw = _batch_response([])
+        assert WorktreeManager._parse_pr_batch(raw, [("/wt", "feat")]) == {"/wt": None}
+
+    def test_missing_status_check_rollup(self):
+        raw = _batch_response(
+            [_pr_node(8, rollup=False)],
+            [_pr_node(9, commits={"nodes": []})],
+        )
+        result = WorktreeManager._parse_pr_batch(raw, [("/a", "a"), ("/b", "b")])
+        assert result["/a"].checks == []
+        assert result["/b"].checks == []
+
+    def test_open_pr_wins_over_newer_closed_one(self):
+        # Nodes come newest first; gh pr view still prefers the open one.
+        raw = _batch_response([_pr_node(12, "CLOSED"), _pr_node(10, "OPEN")])
+        result = WorktreeManager._parse_pr_batch(raw, [("/wt", "feat")])
+        assert result["/wt"].number == 10
+
+    def test_newest_wins_among_closed(self):
+        raw = _batch_response([_pr_node(12, "MERGED"), _pr_node(10, "CLOSED")])
+        result = WorktreeManager._parse_pr_batch(raw, [("/wt", "feat")])
+        assert result["/wt"].number == 12
+
+    def test_fork_prs_with_the_same_branch_name_are_ignored(self):
+        raw = _batch_response([_pr_node(30, cross=True), _pr_node(20, "MERGED")])
+        result = WorktreeManager._parse_pr_batch(raw, [("/wt", "fix-typo")])
+        assert result["/wt"].number == 20
+
+    def test_default_branch_only_matches_an_open_pr(self):
+        raw = _batch_response([_pr_node(3, "MERGED")], default_branch="main")
+        assert WorktreeManager._parse_pr_batch(raw, [("/wt", "main")]) == {"/wt": None}
+
+    def test_response_without_repository_raises(self):
+        raw = json.dumps({"data": {"repository": None}, "errors": [{"message": "nope"}]})
+        with pytest.raises(TypeError):
+            WorktreeManager._parse_pr_batch(raw, [("/wt", "feat")])
+
+    def test_response_missing_an_alias_raises(self):
+        raw = _batch_response([])
+        with pytest.raises(TypeError):
+            WorktreeManager._parse_pr_batch(raw, [("/a", "a"), ("/b", "b")])
+
+    def test_matches_gh_pr_view_parse_for_the_same_data(self):
+        """Batched and single-branch lookups must yield identical PrInfo."""
+        node = _pr_node(
+            42,
+            contexts=[
+                _check_run("build"),
+                _check_run("e2e", status="QUEUED", conclusion=None),
+                _status_context("ci/jenkins", state="PENDING"),
+            ],
+            reviewDecision="CHANGES_REQUESTED",
+            mergeable="CONFLICTING",
+        )
+        # What `gh pr view --json ...` exports for the same pull request.
+        view = json.dumps({
+            "number": 42,
+            "title": "PR 42",
+            "state": "OPEN",
+            "url": "https://github.com/o/r/pull/42",
+            "reviewDecision": "CHANGES_REQUESTED",
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "build", "workflowName": "CI",
+                 "status": "COMPLETED", "conclusion": "SUCCESS",
+                 "startedAt": "2026-10-01T00:00:00Z", "completedAt": "2026-10-01T00:01:00Z",
+                 "detailsUrl": "https://x"},
+                {"__typename": "CheckRun", "name": "e2e", "workflowName": "CI",
+                 "status": "QUEUED", "conclusion": "",
+                 "startedAt": "0001-01-01T00:00:00Z", "completedAt": "0001-01-01T00:00:00Z",
+                 "detailsUrl": "https://y"},
+                {"__typename": "StatusContext", "context": "ci/jenkins", "state": "PENDING",
+                 "targetUrl": "https://z", "startedAt": "2026-10-01T00:00:00Z"},
+            ],
+        })
+        batched = WorktreeManager._parse_pr_batch(_batch_response([node]), [("/wt", "feat")])
+        assert batched["/wt"] == WorktreeManager._parse_pr_info(view)
+
+    def test_query_has_one_alias_per_branch_and_no_inlined_names(self):
+        query = WorktreeManager._pr_batch_query(3)
+        assert [f"pr{i}: pullRequests(headRefName: $h{i}," in query for i in range(3)] == [True] * 3
+        assert "pr3:" not in query
+        assert "states: [OPEN, CLOSED, MERGED]" in query
+
+
+def _wt(path, branch, *, is_bare=False):
+    return WorktreeInfo(path=path, head="0" * 40, branch=branch, is_main=False, is_bare=is_bare)
+
+
+def _manager(tmp_path) -> WorktreeManager:
+    (tmp_path / ".git").mkdir()
+    return WorktreeManager(tmp_path)
+
+
+def _completed(stdout="", returncode=0, stderr=""):
+    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+REPO = GithubRepo(owner="acme", name="widgets")
+
+
+class TestPrHeadRefs:
+    def _heads(self, tmp_path, config, worktrees):
+        manager = _manager(tmp_path)
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            return_value=_completed(config, returncode=0 if config else 1),
+        ):
+            return manager.pr_head_refs(worktrees, REPO)
+
+    def test_untracked_branch_uses_its_own_name(self, tmp_path):
+        assert self._heads(tmp_path, "", [_wt("/a", "feat")]) == {"/a": "feat"}
+
+    def test_same_named_upstream_on_the_repo_owner(self, tmp_path):
+        config = (
+            "remote.origin.url git@github.com:Acme/widgets.git\n"
+            "branch.feat.remote origin\n"
+            "branch.feat.merge refs/heads/feat\n"
+        )
+        assert self._heads(tmp_path, config, [_wt("/a", "feat")]) == {"/a": "feat"}
+
+    def test_branch_names_with_dots(self, tmp_path):
+        config = (
+            "remote.origin.url https://github.com/acme/widgets\n"
+            "branch.release.1.2.remote origin\n"
+            "branch.release.1.2.merge refs/heads/release.1.2\n"
+        )
+        assert self._heads(tmp_path, config, [_wt("/a", "release.1.2")]) == {"/a": "release.1.2"}
+
+    @pytest.mark.parametrize("config", [
+        # tracks a differently named upstream branch
+        (
+            "remote.origin.url git@github.com:acme/widgets.git\n"
+            "branch.feat.remote origin\nbranch.feat.merge refs/heads/other\n"
+        ),
+        # pushed to a fork
+        (
+            "remote.fork.url git@github.com:someone/widgets.git\n"
+            "branch.feat.remote fork\nbranch.feat.merge refs/heads/feat\n"
+        ),
+        # checked out from a PR ref
+        "branch.feat.remote origin\nbranch.feat.merge refs/pull/12/head\n",
+        # explicit push remote
+        "branch.feat.pushremote fork\n",
+    ])
+    def test_unusual_tracking_is_left_to_gh_pr_view(self, tmp_path, config):
+        assert self._heads(tmp_path, config, [_wt("/a", "feat")]) == {}
+
+    def test_push_default_remote_disables_batching(self, tmp_path):
+        assert self._heads(tmp_path, "remote.pushdefault fork\n", [_wt("/a", "feat")]) == {}
+
+    def test_detached_and_bare_worktrees_are_left_out(self, tmp_path):
+        worktrees = [_wt("/a", None), _wt("/b", None, is_bare=True), _wt("/c", "feat")]
+        assert self._heads(tmp_path, "", worktrees) == {"/c": "feat"}
+
+
+class TestGetPrInfos:
+    def test_one_request_for_all_branches(self, tmp_path):
+        manager = _manager(tmp_path)
+        response = _batch_response([_pr_node(1)], [], [_pr_node(3, "MERGED")])
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=[_completed(returncode=1), _completed(response)],
+        ) as run:
+            result = manager.get_pr_infos(
+                [_wt("/a", "a"), _wt("/b", "b"), _wt("/c", "c")], REPO,
+            )
+        assert {p: (i.number if i else None) for p, i in result.items()} == {
+            "/a": 1, "/b": None, "/c": 3,
+        }
+        graphql = run.call_args_list[1].args[0]
+        assert graphql[:3] == ["gh", "api", "graphql"]
+        assert "owner=acme" in graphql and "name=widgets" in graphql
+        assert ["h0=a", "h1=b", "h2=c"] == [a for a in graphql if a.startswith("h")]
+
+    def test_failed_request_raises(self, tmp_path):
+        manager = _manager(tmp_path)
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=[_completed(returncode=1), _completed(returncode=1, stderr="HTTP 502")],
+            ),
+            pytest.raises(WorktreeManagerError, match="HTTP 502"),
+        ):
+            manager.get_pr_infos([_wt("/a", "a")], REPO)
+
+    def test_large_sets_are_split(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("lazyagent.worktree_manager._PR_BATCH_SIZE", 2)
+        manager = _manager(tmp_path)
+        with patch(
+            "lazyagent.worktree_manager.subprocess.run",
+            side_effect=[
+                _completed(returncode=1),
+                _completed(_batch_response([], [])),
+                _completed(_batch_response([])),
+            ],
+        ) as run:
+            result = manager.get_pr_infos([_wt(f"/{c}", c) for c in "abc"], REPO)
+        assert result == {"/a": None, "/b": None, "/c": None}
+        assert run.call_count == 3
+
+
+class TestGetGithubRepo:
+    def test_parses_owner_and_name(self, tmp_path):
+        manager = _manager(tmp_path)
+        out = json.dumps({"owner": {"id": "x", "login": "acme"}, "name": "widgets"})
+        with patch("lazyagent.worktree_manager.subprocess.run", return_value=_completed(out)):
+            assert manager.get_github_repo() == REPO
+
+    def test_none_on_failure(self, tmp_path):
+        manager = _manager(tmp_path)
+        with patch("lazyagent.worktree_manager.subprocess.run", return_value=_completed(returncode=1)):
+            assert manager.get_github_repo() is None
