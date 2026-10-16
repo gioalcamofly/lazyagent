@@ -215,7 +215,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
     app.engine.create_worktree = AsyncMock(
         return_value=CreatedWorktree("/repo-feature/demo", "feature/demo", "j1")
     )
-    app._select_worktree_by_path = AsyncMock()
+    app._queue_selection = MagicMock()
 
     await app._do_create_worktree(
         CreateWorktreeResult(
@@ -224,7 +224,7 @@ async def test_do_create_worktree_asks_the_engine_and_selects_the_result() -> No
     )
 
     app.engine.create_worktree.assert_awaited_once_with("feature/demo", "main", "--no-build")
-    app._select_worktree_by_path.assert_awaited_once_with("/repo-feature/demo")
+    app._queue_selection.assert_called_once_with("/repo-feature/demo")
     assert "Created worktree: demo" in app.notify.call_args.args[0]
 
 
@@ -245,13 +245,15 @@ async def test_do_create_worktree_reports_a_failure() -> None:
 async def test_do_remove_worktree_asks_the_engine() -> None:
     app = _make_app_with_config(remove="remove-worktree {name} {path} {force}")
     app.engine.remove_worktree = AsyncMock(return_value="j1")
-    app.query_one = MagicMock()
-    app.query_one.return_value.wait_rebuilt = AsyncMock()
+    app.worktree_service.worktrees = [MAIN_WORKTREE]
+    app._queue_selection = MagicMock()
 
     await app._do_remove_worktree(FEATURE_WORKTREE, force=True)
 
     app.engine.remove_worktree.assert_awaited_once_with("/repo-feature", True)
     assert "Removed worktree: repo-feature" in app.notify.call_args.args[0]
+    # The first item: removing the selected worktree leaves nothing to keep.
+    app._queue_selection.assert_called_once_with(None)
 
 
 @pytest.mark.parametrize("status", [AgentStatus.RUNNING, AgentStatus.WAITING])
@@ -782,6 +784,7 @@ async def test_a_created_worktree_is_selected_once_the_sidebar_is_rebuilt(
         app.notify = MagicMock()
 
         await app._do_create_worktree(CreateWorktreeResult(branch="new", base_branch="main"))
+        await _drain_workers(app)
         await pilot.pause()
 
         wt_list = app.query_one(WorktreeList)
@@ -812,3 +815,52 @@ async def test_job_output_shows_under_the_worktree_panel(
         assert "from the job" in "\n".join(log.lines)
         # Inside the center panel, not pushed below it by the worktree panel.
         assert center.region.contains_region(log.region)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [0, 1])
+async def test_refresh_keeps_the_selected_worktree(
+    monkeypatch: pytest.MonkeyPatch, index: int
+) -> None:
+    """``r`` rebuilds the sidebar; the selection used to be lost with it."""
+    _patch_app_dependencies(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test() as pilot:
+        selected = await _select_worktree(app, index)
+        await pilot.pause()
+        app.notify = MagicMock()
+
+        await pilot.press("r")
+        await _drain_workers(app)
+        await pilot.pause()
+
+        assert app._get_selected_worktree() == selected
+        # The index is valid again: the cursor moves on from there.
+        await pilot.press("j")
+        await pilot.pause()
+        assert app._get_selected_worktree() == WORKTREES[min(index + 1, len(WORKTREES) - 1)]
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_the_orchestrator_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_app_dependencies(monkeypatch)
+    app = LazyAgent(repo_path="/repo")
+
+    async with app.run_test() as pilot:
+        wt_list = app.query_one(WorktreeList)
+        orchestrator = next(
+            c for c in wt_list.children if isinstance(c, OrchestratorListItem)
+        )
+        wt_list.index = 0
+        await app.on_list_view_highlighted(WorktreeList.Highlighted(wt_list, orchestrator))
+        await pilot.pause()
+
+        app.action_refresh()
+        await _drain_workers(app)
+        await pilot.pause()
+
+        assert isinstance(wt_list.highlighted_child, OrchestratorListItem)
+        assert app._orchestrator_selected
