@@ -38,3 +38,17 @@ def test_importing_engine_loads_no_textual_or_widgets():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.split()
     assert [m for m in out if _banned(m) or m.split(".")[0] == "pyte"] == []
+
+
+def test_importing_the_session_loads_no_textual_or_widgets():
+    """The session owns the headless pyte screen, so pyte is allowed here."""
+    code = (
+        "import sys\n"
+        "import lazyagent.engine.session, lazyagent.engine.screen\n"
+        "print('\\n'.join(sorted(sys.modules)))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert "pyte" in out
+    assert [m for m in out if _banned(m) or m.split(".")[0] == "rich"] == []
