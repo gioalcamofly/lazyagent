@@ -45,6 +45,7 @@ EVENT_SAMPLES = {
     },
     "stream.resized": {"stream_id": 1, "rows": 50, "cols": 200, "offset": 4096},
     "stream.reset": {"stream_id": 1, "rows": 50, "cols": 200, "offset": 8192},
+    "stream.closed": {"stream_id": 1, "session_id": "s3", "offset": 9000, "exit_code": 0},
     "engine.notice": {"severity": "warning", "message": "gh is not installed"},
     "job.started": {"job_id": "j1", "title": "Create worktree feat", "command": "make wt"},
     "job.output": {"job_id": "j1", "text": "Preparing worktree\n"},
