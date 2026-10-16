@@ -248,6 +248,8 @@ class TerminalSession:
         self.command = command
         self.worktree_path = worktree_path
         self.agent_id = agent_id
+        # Engine-wide handle, assigned by whoever registers the session.
+        self.session_id = ""
         self.rows = rows
         self.cols = cols
         # Diagnostics only: joins the keypress that spawned this to its output.

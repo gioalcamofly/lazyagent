@@ -8,6 +8,8 @@ screen, prints ``working``, then ``got: <text> paste=<bool>`` and prompts
 again. Submitting ``exit N`` exits with code N.
 
 ``--paste`` turns bracketed paste (DECSET 2004) on at startup.
+``--env=NAME`` prints ``env NAME=<value>`` (``<unset>`` when it is not set)
+before the banner, to show which environment the agent was started with.
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ def main() -> int:
     tty.setraw(0)
     if "--paste" in sys.argv:
         out("\x1b[?2004h")
+    for arg in sys.argv[1:]:
+        if arg.startswith("--env="):
+            name = arg.removeprefix("--env=")
+            out(f"env {name}={os.environ.get(name, '<unset>')}\r\n")
     out("fake agent ready\r\nyour turn> ")
 
     pending = b""

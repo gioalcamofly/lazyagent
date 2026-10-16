@@ -1,4 +1,4 @@
-"""Tests for the agent event bus and the app's publishing of it."""
+"""Tests for the agent event bus and its publishers."""
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ from lazyagent.agent_events import (
     resolve_statuses,
 )
 from lazyagent.app import LazyAgent
+from lazyagent.engine.session import SessionExited, StatusChanged
 from lazyagent.messages import AgentExited, AgentStatusChanged
-from lazyagent.models import AgentStatus
+from lazyagent.models import AgentStatus, LifecycleConfidence
+from tests.engine.fakes import make_engine, no_pty, worktree
 
 
 def _publish(bus, status, *, path="/wt", agent_id="a1", previous="running"):
@@ -155,6 +157,52 @@ class TestAppPublishesEvents:
         # A second drop (stop racing the exit) must not publish again.
         app._drop_agent_state("/wt", "a1")
         events, _ = app.agent_events.since(0)
+        assert [(e.previous_status, e.status) for e in events] == [
+            ("no_agent", "waiting"),
+            ("waiting", EXITED),
+        ]
+
+
+class TestEnginePublishesEvents:
+    """Session reports reach the event log through the engine."""
+
+    @staticmethod
+    async def _engine_with_agent(monkeypatch):
+        no_pty(monkeypatch)
+        engine = make_engine([worktree("/wt", "feat", is_main=False)])
+        await engine.spawn_agent("/wt")
+        return engine, engine.get_session("/wt", "a1")
+
+    @staticmethod
+    def _report(session, status, detail=""):
+        session._emit(
+            StatusChanged("/wt", "a1", status, LifecycleConfidence.LOW, detail, None)
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_change_is_published_once(self, monkeypatch):
+        engine, session = await self._engine_with_agent(monkeypatch)
+        self._report(session, AgentStatus.RUNNING)
+        # Detail-only update: same status, no new event.
+        self._report(session, AgentStatus.RUNNING, "using Bash")
+        self._report(session, AgentStatus.WAITING, "waiting")
+        events, _ = engine.events.since(0)
+        assert [(e.previous_status, e.status) for e in events] == [
+            ("no_agent", "running"),
+            ("running", "waiting"),
+        ]
+        assert events[1].detail == "waiting"
+
+    @pytest.mark.asyncio
+    async def test_exit_is_published_once(self, monkeypatch):
+        engine, session = await self._engine_with_agent(monkeypatch)
+        self._report(session, AgentStatus.WAITING)
+        session._emit(SessionExited("/wt", "a1", 0))
+        # A stop racing the exit must not publish again.
+        with pytest.raises(ValueError):
+            engine.stop_agent("/wt", "a1")
+        engine.registry.drop("/wt", "a1")
+        events, _ = engine.events.since(0)
         assert [(e.previous_status, e.status) for e in events] == [
             ("no_agent", "waiting"),
             ("waiting", EXITED),
