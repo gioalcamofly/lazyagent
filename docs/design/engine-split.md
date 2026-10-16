@@ -171,7 +171,7 @@ Ranked by value for Giovanni's workflow. The top three replace skill-based worka
 | C8 | app.py:461-472 | The registry pulls `label`, `session_name` and `last_output_time` back from widgets | `label` and `session_name`: fixed in PR 2, the panel registers them with the registry at spawn. `last_output_time`: fixed in PR 4, it is an `AgentSession` field carried on each `StatusChanged` event into `registry.update_status` |
 | C9 | app.py:493, :172, :190 | Engine paths call `self.notify` | Publish an `engine.notice` event that clients show as a toast. Fixed in PR 5 for the rescan failure and the IPC start failure; the "agent exited" toast is the client's reaction to `agent.exited` |
 | C10 | scrollable_terminal.py:528 (`if self.size.height > 0`) | The pyte feed and screen scan run only while the widget is visible; hidden agents rely on the 0.25 s coalesced flush | Feed the headless screen in the engine regardless of clients. Fixed in PR 4: the session feeds and scans with or without a view (per chunk while one watches, ≤4 Hz otherwise) |
-| C11 | scrollable_terminal.py:1242-1273 | **PTY size = widget size.** A hidden widget never resizes | Resize ownership policy, §3c. PR 4 keeps the policy (the view calls `session.resize`, with the same no-SIGWINCH-on-show guard); `latest` lands in PRs 6/7 |
+| C11 | scrollable_terminal.py:1242-1273 | **PTY size = widget size.** A hidden widget never resizes | Resize ownership policy, §3c. PR 4 keeps the policy (the view calls `session.resize`, with the same no-SIGWINCH-on-show guard). PR 6: `latest` among v1 clients; the TUI view counts as a client that claims by resizing and by typing (it resizes the PTY back to itself on a key or paste). The display-pyte-at-PTY-size change lands in PR 7 |
 
 ### 2b. Widgets / IPC reaching into engine state
 
@@ -220,6 +220,12 @@ PTY master ──bytes──► Engine AgentSession
   - The snapshot and the start of the live stream are generated in one loop step, so there is no gap.
   - Every data frame carries `offset`. A client that sees a gap re-attaches.
   - Scrollback in the snapshot is capped (e.g. 2,000 lines). A client-side `fetch_scrollback(session, before_line, n)` can page further back later.
+- **As landed (PR 6):**
+  - `attach_stream` answers `mode: "tail"` when `from_offset` is still in the ring **and** at most 512 KiB behind (half the per-stream queue); otherwise `mode: "snapshot"` with the ANSI in the JSON result (`snapshot`, a string). `offset` in the result is where the output frames that follow start; the client renders the snapshot into an empty terminal of `size` and then feeds the frames.
+  - The snapshot (`engine/screen.py` `ansi_snapshot`) is: RIS, the last 2,000 scrollback lines with SGR (scrolled into the receiver's history), DECSET 1049 when the child is on the alternate screen, every row at its absolute position, DECSTBM margins, every private mode pyte recorded (2004, 1000/1002/1006, 1 = application cursor keys, …) plus IRM/LNM, `?7l` / `?25l` when autowrap is off / the cursor is hidden, the cursor position (relative under DECOM) and the current pen. Unit tests rebuild each case in a clean pyte and compare every cell, the scrollback, the cursor, the modes and the margins.
+  - The snapshot offset excludes bytes the UTF-8 decoder still holds (a character split across chunks); those bytes are sent as the first output frame. Known limit: a chunk that ends inside an escape sequence leaves pyte's parser mid-sequence, which the snapshot cannot express, so the receiver may draw the tail of that sequence as text. It is rare (the child writes whole sequences per write in practice) and fixes itself on the next redraw.
+  - Output frames are at most 64 KiB; offsets are contiguous per stream (the reference client records gaps in `Stream.gaps`).
+  - New per-connection event **`stream.closed {stream_id, session_id, offset, exit_code?}`**: the PTY is gone (exited or stopped) and the stream is detached. Shells otherwise have no exit event (Q4).
 
 ### 3c. Resize ownership when several clients have different sizes
 
@@ -239,6 +245,11 @@ A PTY has one size, and the headless screen must match it.
   - MCP never claims.
   - With no clients attached, the last size is kept.
   - Every size change emits `stream.resized {rows, cols, offset}`.
+- **As landed (PR 6):**
+  - The server keeps one owner per session: the v1 connection that last sent `claim_size` (optionally with `rows`/`cols`, claim + resize in one step) or **any** input frame on one of its streams. `resize` from anyone else is `NOT_SIZE_OWNER`, including when nobody owns it yet: a client claims first.
+  - The in-process TUI is not a v1 client and keeps resizing the session directly. A direct resize counts as the TUI claiming the size: the v1 owner is cleared and has to claim again. The TUI claims when its view's size really changes (today's guard, so a worktree switch never SIGWINCHes) and when the user types or pastes into a view whose size differs from the PTY's (it resizes the PTY back first). Until PR 7 sizes the TUI's display at the PTY size, a TUI view shows a smaller PTY padded and a bigger one cropped, which is what the manual test saw.
+  - An owner that disconnects leaves the size as it is, with no owner.
+  - `stream.resized` and `stream.reset` carry `session_id` too and go to every stream attached to the session, on its own connection.
 
 ---
 
@@ -248,7 +259,7 @@ A PTY has one size, and the headless screen must match it.
 
 | Transport | Used by | Framing |
 |---|---|---|
-| Unix socket `engine.sock` (0600, dir 0700 as today, ipc.py:735-753) | TUI, MCP (later), CLI | `u32 length` + `u8 kind` + payload. `kind=1` is JSON control, `kind=2` is a binary stream frame |
+| Unix socket `engine.sock` (0600, dir 0700 as today, ipc.py:735-753). **Done in PR 6:** `engine/server.py`, in-process next to the legacy socket | TUI, MCP (later), CLI, the H2 host | `u32 length` + `u8 kind` + payload. `kind=1` is JSON control, `kind=2` is a binary stream frame |
 | WebSocket `ws://127.0.0.1:<port>/v1` | Web UI, Tauri | Text frames = JSON control; binary frames = stream frames |
 | **Legacy** `ipc.sock`, NDJSON (ipc.py:6-10) | Existing `mcp_server.py` and running agents | Unchanged until the MCP moves to v1; kept for at least one release afterwards |
 
@@ -257,17 +268,20 @@ Binary stream frame payload: `u8 type` (1 = output, 2 = input) · `u32 stream_id
 - All integers are big-endian. The `u32 length` counts the payload only, not the 5-byte header. Frames over 16 MiB are rejected.
 - `offset` is the position of the frame's first data byte in the session's output since the session started.
 - A bad header (unknown `kind`, oversized length) is unrecoverable and closes the connection. A bad payload inside a well-delimited frame (invalid JSON, short stream header) is reported and skipped.
+  - As landed: a bad payload, a message that is not a request, an output frame from a client or input for an unknown stream is answered with an error response whose `id` is `""` (`PROTOCOL_ERROR`); the connection carries on. The reference client keeps those in `Client.errors`.
 
 ### 4b. Envelope
 
 - **Request:** `{"type":"req","id":"…","method":"…","params":{…}}`. This is the IPC shape plus `type`.
 - **Response:** `{"type":"res","id":"…","result":…}` or `{"type":"res","id":"…","error":{"code","message","data?"}}`. Codes are the existing ones (ipc.py:148-161): `UNKNOWN_METHOD`, `WORKTREE_ERROR`, `VALIDATION_ERROR`, `TIMEOUT`, `INTERNAL_ERROR`. New: `UNAUTHORIZED`, `UNSUPPORTED_VERSION`, `NOT_SIZE_OWNER`, and `PROTOCOL_ERROR` (malformed envelope). Codes are an open set: a peer must handle one it does not know.
 - **Event:** `{"type":"evt","seq":123,"event":"agent.status","data":{…}}`.
+- **As landed (PR 6):** requests on one connection run concurrently (a `send_agent_input` waiting for its confirmation does not hold back the next request or the input frames); responses are matched by `id`. Only `hello` is handled in order, before anything else.
 
 ### 4c. Handshake and versioning
 
 - The first frame is an ordinary request with method `hello` and params `{protocol: 1, client: "tui"|"web"|"mcp"|"cli", client_version, token?}`. The result is `{protocol: 1, engine_version, capabilities: [...], repo_root, engine_id}`.
 - **Major version** is an integer; a mismatch returns an `UNSUPPORTED_VERSION` error response with `data: {supported: [1], requested}`. The client checks the reply's `protocol` the same way.
+- **As landed (PR 6):** any request before `hello` is a `PROTOCOL_ERROR` (input frames too); a failed `hello` leaves the connection open so the client can retry. `engine_id` is random per engine instance, `engine_version` is the package version, and `capabilities` lists every method the server answers plus the features `events.replay`, `stream.snapshot`, `stream.tail`, `stream.input`, `stream.closed`, `size.latest`.
 - **Additive changes** (new methods, fields or events) need no bump and are advertised in `capabilities`. Both sides **ignore unknown fields and events**.
 - **JSON Schemas** are kept in `protocol/schema/v1/`: `envelope.json`, `handshake.json`, `methods.json` (`<method>.params` / `<method>.result`) and `events.json` (one definition per event). Contract tests validate both directions against them (§6). Python validates them with a small stdlib validator for the keyword subset they use (`protocol/validation.py`), so the package has no dependencies; a non-Python engine can use any JSON Schema validator.
 - Schemas are lenient on the wire (unknown fields allowed). Tests validate in a strict mode that rejects undeclared fields, which is how the golden fixtures prove that every field the legacy server sends is described.
@@ -275,29 +289,31 @@ Binary stream frame payload: `u8 type` (1 = output, 2 = input) · `u32 stream_id
 
 ### 4d. Methods
 
+Done in PR 6: every row except `shutdown`. The ten legacy methods are answered by `engine/methods.py` (`EngineMethods`), which both the legacy NDJSON server and the v1 server call, so their semantics cannot drift; the v1 server only adds fields. Params and results of every method are in `protocol/schema/v1/methods.json`.
+
 | Method | Origin | Notes |
 |---|---|---|
 | `list_worktrees` | ipc.py:167 | unchanged |
 | `create_worktree` | ipc.py:195 | Custom create always runs as an engine job; its output is streamed via `job.output` / `job.finished` events (D6). `remove_worktree` custom commands likewise |
-| `remove_worktree` | ipc.py:302 | unchanged |
-| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"`, `system_prompt` composed by the engine, `env` from the calling client (D5; MCP forwards the requesting agent's env); returns `session_id` + `cursor` |
+| `remove_worktree` | ipc.py:302 | unchanged (keeps `git worktree remove`, Q1) |
+| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"` (`worktree_path` is then optional and ignored), `system_prompt` composed by the engine, `env` from the calling client (D5; MCP forwards the requesting agent's env); returns `session_id` + `cursor` |
 | `stop_agent` | ipc.py:403 | unchanged |
 | `get_agent_status` | ipc.py:442 | unchanged |
 | `read_agent_output` | ipc.py:470 | Reads the engine headless screen |
 | `send_agent_input` | ipc.py:523 | unchanged semantics (framing, ack, delivery) |
-| `list_agents` | ipc.py:651 | + `session_id`, `kind`, `size`, `attached_clients` |
+| `list_agents` | ipc.py:651 | + `session_id`, `kind`, `size`, `attached_clients` (connections with a stream on it) |
 | `list_events` | ipc.py:624 | unchanged (agent status events only, for MCP compatibility) |
-| `subscribe {since?, events?}` / `unsubscribe` | new | Push events. `since` replays from the event log (as `list_events`) |
-| `attach_stream {session_id, from_offset?}` / `detach_stream` | new | §3b. Returns `stream_id`, `size`, `snapshot?` |
-| `resize {session_id, rows, cols}` / `claim_size` | new | §3c |
-| `open_shell {worktree_path}` | new | Gets or creates the worktree `bash -l` session |
-| `refresh_worktrees` | new | Replaces `call_later(_load_worktrees)` |
-| `refresh_git_status {paths?}` | new | Alt+G (app.py:742) |
+| `subscribe {since?, events?}` / `unsubscribe` | new | Push events. `since` replays from the event log (the last 1,000 events of every kind, not only `agent.status`) right after the response; the result is `{cursor, replayed, truncated}`. `events` filters by name; a new `subscribe` replaces the previous one |
+| `attach_stream {session_id, from_offset?}` / `detach_stream {stream_id}` | new | §3b. Returns `stream_id`, `session_id`, `size`, `mode`, `offset`, `snapshot?`. Works for agents, the orchestrator and shells |
+| `resize {session_id, rows, cols}` / `claim_size {session_id, rows?, cols?}` | new | §3c. Both return `{session_id, rows, cols, owner}` |
+| `open_shell {worktree_path, env?}` | new | Gets or creates the worktree `bash -l` session; returns its `session_id` and `size` |
+| `refresh_worktrees` | new | Replaces `call_later(_load_worktrees)`; returns the new list (`WORKTREE_ERROR` when listing fails) |
+| `refresh_git_status {paths?}` | new | Alt+G (app.py:742); returns `{statuses: {path: git_status}}` and also emits `git_status.updated` |
 | `get_diff {worktree_path}` | new | app.py:355; capped as worktree_manager.py:48-50 |
-| `get_pr_info {worktree_path}` | new | Cached, deduplicated |
-| `set_interest {worktree_paths}` | new | Scopes the git/PR pollers to what some client shows |
-| `get_config` | new | Read-only subset for modals |
-| `shutdown {stop_agents: bool}` | new | `lazyagent engine stop` |
+| `get_pr_info {worktree_path, refresh?}` | new | Cached, deduplicated; fetches when nothing is cached yet or `refresh`. `fetched: false` means no answer (no `gh`) |
+| `set_interest {worktree_paths}` | new | Scopes the git/PR pollers to what some client shows. Per connection, dropped on disconnect; the pollers use the union of every connection's set and the TUI's. Returns the client's set and the union |
+| `get_config` | new | Read-only subset for modals (`ConfigView`) |
+| `shutdown {stop_agents: bool}` | new | `lazyagent engine stop`. **Not in PR 6:** `UNKNOWN_METHOD` until PR 8 gives the engine a life of its own |
 
 Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, which avoids base64 for keystrokes.
 
@@ -312,18 +328,30 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `worktrees.changed` | full list (same shape as `list_worktrees`) | `_load_worktrees` → `set_worktrees` |
 | `git_status.updated` | `{path: GitStatus}` | `_apply_git_statuses` |
 | `pr_info.updated` | `{path, pr_info\|null}` | `_apply_pr_info` |
-| `stream.resized` / `stream.reset` | `{stream_id, rows, cols, offset}` | — (reset = slow client dropped, so re-attach) |
+| `stream.resized` / `stream.reset` | `{stream_id, session_id, rows, cols, offset}` | — (reset = slow client dropped, so re-attach from `offset`) |
+| `stream.closed` | `{stream_id, session_id, offset, exit_code?}` | — (PR 6: the session's PTY is gone) |
 | `engine.notice` | `{severity, message}` | `self.notify` from engine paths |
 | `job.started` / `job.output` / `job.finished` | `{job_id, title, command}` / `{job_id, text}` (UTF-8 decoded with replacement) / `{job_id, exit_code\|null}` | Custom create/remove typed into the shell (app.py:782, :838) (D6). `job.started` added in PR 5 so a client can label the output |
 | `engine.shutdown` | `{reason}` | — |
 
 - **Event log:** one engine-wide `seq`. `AgentEventBus` (agent_events.py:123) generalises to typed events; `list_events` keeps filtering to `agent.status` so the MCP cursors stay valid. Done in PR 5: `engine/events.py` `EventBus` (`emit`, `subscribe(callback, events)`, `history(cursor)`); a gap in `seq` between two `list_events` entries is another event, not truncation.
 - **Backpressure:** each client has a bounded output queue (e.g. 1 MiB per stream). On overflow the engine drops that client's stream and sends `stream.reset`; the engine itself never blocks on a slow client.
+- **As landed (PR 6):**
+  - `stream.*` events are per connection, not in the event log: their `seq` is the engine's latest `seq` (not a new one) and `since` never replays them.
+  - Per stream, the server counts the output bytes queued or not yet drained by the socket. Over 1 MiB the stream is detached, its unsent frames are discarded, and `stream.reset` says the offset of the first byte the client did not get, so it can re-attach with `from_offset` (tail if still close enough, snapshot otherwise). Control messages are never dropped; a connection with more than 16 MiB of them queued is closed.
+  - v1 viewers do not count as watching: an attached v1 stream does not make the headless screen parse per chunk (K1); a snapshot flushes it first.
+  - `Engine.stop` emits `engine.shutdown {reason: "stopped"}` on the bus, and the server flushes every connection (up to 0.5 s) before closing it.
 
 ### 4f. Auth and discovery
 
 - **Runtime dir:** `$XDG_RUNTIME_DIR/lazyagent/<sha1(repo_root)[:12]>/` (falls back to `/tmp/lazyagent-<uid>/…`). It holds `engine.sock`, `ipc.sock`, `token` (0600, 32 random bytes), `engine.json` (pid, port, version) and `engine.lock` (flock = single instance per repo).
 - **Unix socket:** filesystem permissions as today, plus an optional `SO_PEERCRED` uid check. A token is not needed.
+- **As landed (PR 6):**
+  - `$XDG_RUNTIME_DIR/lazyagent/<sha1(repo_root)[:12]>/` (else `$TMPDIR` or `/tmp` + `lazyagent-<uid>/<hash>/`). Both dirs are created 0700 and must be owned by us. It holds `engine.sock` (0600) and `engine.json` (`pid`, `version`, `protocol`, `socket`, `engine_id`, `repo_root`), written with temp file + `os.replace`. On stop the socket and `engine.json` are removed only if they are still this process's (socket inode, `pid`), then the repo dir and the per-user dir if empty. The legacy `ipc.sock` stays at `/tmp/lazyagent-<pid>/` (agents' MCP configs point there) and `token` / `engine.lock` wait for the web phase and PR 8.
+  - The `SO_PEERCRED` check is always on: a peer with another uid (or none) is closed before it can send anything.
+  - Two lazyagent instances in one repo: the second finds a live `engine.sock` (a connect succeeds), leaves it and `engine.json` alone, runs without a v1 server and shows an `engine.notice` warning naming the other pid. A socket file nobody listens on is replaced. The real single-instance lock is PR 8.
+  - `LAZYAGENT_V1_SERVER=0` turns the server off (`Engine(v1_server=False)` in code); the legacy socket is unaffected.
+- **Reference client:** `lazyagent.engine.client.Client` (stdlib asyncio; it imports only `lazyagent.protocol`): `connect(path)` with the hello, `request(method, **params)` (raises `RequestError`), `call` (raw `Response`), `events()` / `next_event()`, `attach(session_id, on_output, from_offset=)` → `Stream` (registered before its first frame is read), `detach`, `send_input`. §5a placed it at `protocol/client.py`; it lives next to the server because the protocol package stays free of transports (and of the asyncio socket code a non-Python engine would not share).
 - **WebSocket:** bind `127.0.0.1` only.
   - **Token is required.** The client sends it in `hello`; the browser takes it from a URL fragment (`/#token=…`) that `lazyagent web` prints.
   - **Origin and Host headers are checked** against `http://127.0.0.1:<port>` and `localhost`. This defends against DNS rebinding and against cross-site WebSocket hijacking from any open browser tab. **Not optional:** the API can spawn shells.
@@ -362,7 +390,6 @@ src/lazyagent/
     framing.py           # u32-len frames, stream frame pack/unpack
     handshake.py         # PROTOCOL_VERSION, hello / version checks
     validation.py        # stdlib validator for schema/v1
-    client.py            # asyncio client (unix + ws), later
     schema/v1/*.json     # contract schemas
   engine/                # NO Textual imports (enforced by test)
     engine.py            # Engine facade: start/stop, public API
@@ -372,7 +399,9 @@ src/lazyagent/
     worktrees.py         # WorktreeService: list/git/pr/diff caches + interest-scoped pollers (from app.py:139-158, :263-413)
     events.py            # generalised AgentEventBus
     scheduler.py
-    server.py            # v1 server (unix + ws)
+    methods.py           # the legacy method set, shared by both servers (PR 6)
+    server.py            # v1 server (unix since PR 6; ws later)
+    client.py            # reference asyncio client (unix since PR 6; ws later)
     ipc_legacy.py        # today's ipc.py, handlers rewired to Engine
     providers/           # agent_providers.py, agent_observers.py, orchestrator_prompt.py
     pty.py               # pty_emulator.py, pyte_patch.py
@@ -438,7 +467,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 | 3 | **engine: WorktreeService** | Move list/git/diff/PR caches and pollers (app.py:139-158, :263-413) to asyncio + `to_thread`, with interest scoping. The app subscribes and applies on its loop; its interest is the selected worktree, so polling is unchanged. PR info is fetched in one batched `gh api graphql` call for the whole interest set, with `gh pr view` per worktree as the fallback | Service tests with a fake `WorktreeManager`: the pollers respect the interest set, batching and its fallback, change-only events, caches dropped with their worktree; parse tests of the GraphQL response, and parity with the `gh pr view` parse | 1 |
 | 4 | **engine: AgentSession** | `PtyEmulator` + observer + scan/hang logic + modes + `send_input` + ring buffer in `engine/session.py`. `MonitoredTerminal` becomes a *view* that renders from the session's screen (shared in-process, so there is no double parse yet). Fixes C1, C10, R1-R3. As landed: the worktree shell and the orchestrator also run on sessions (`TerminalSession` / `AgentSession`); panels still create them until PR 5 | Session tests with the fake-agent PTY: status transitions, send_input framing/ack, `tail_lines`, ring offsets | 1 |
 | 5 | **engine: Engine facade, IPC rewired** | `Engine.spawn/stop/create/remove/open_shell` absorb center_panel.py:365-444, orchestrator_panel.py:79-132 and the app actions. `ipc.py` handlers call `Engine` only (removes C4-C6). The TUI reacts to `agent.spawned/exited`. As landed: `engine/engine.py` (`Engine`), `engine/events.py` (one-`seq` `EventBus`), `engine/scheduler.py`; custom create/remove are engine jobs (D6) shown in a TUI `JobLog`; agents and shells take the client's env (D5) | Existing test_ipc and the golden cases against `Engine` without the Textual app (only the custom-create fixture changed: it gains `job_id`); tests/engine/test_engine.py with the fake agent (spawn/exit/stop, remove cleanup, jobs incl. failure, client env, one `seq`); **boundary test** (the whole engine and `lazyagent.ipc` import no Textual or widget) | 1 |
-| 6 | **engine: v1 server (unix)** | `engine/server.py` speaking §4: hello, req/res, subscribe, attach_stream with snapshot, input frames, resize/claim. Runs in-process alongside the legacy socket | **Contract suite** (black-box over the socket): every method, event ordering, snapshot + live has no gap, offsets, version mismatch, slow-client reset, size-owner rules | 0/1 |
+| 6 | **engine: v1 server (unix)** ✅ | `engine/server.py` speaking §4: hello, req/res, subscribe, attach_stream with snapshot, input frames, resize/claim. Runs in-process alongside the legacy socket. As landed: the legacy handlers moved to `engine/methods.py`, shared by both servers; `engine/screen.py` `ansi_snapshot`; `engine/client.py` reference client; the per-repo runtime dir with `engine.json`; the TUI view claims the PTY size when typed into; `LAZYAGENT_V1_SERVER=0` | **Contract suite** `tests/contract/` (black-box over the socket, parametrised by engine implementation × transport through a `Harness`): every method validated strictly against the schemas, event ordering and `since`, unknown events, snapshot + live has no gap (rendered in a clean pyte = `read_agent_output`), offsets, raw-tail and snapshot reattach, binary input, version mismatch, malformed frames, slow-client reset, size-owner rules, peer uid, live/dead socket, `engine.json`. Plus snapshot round-trip unit tests | 0/1 |
 | 7 | **tui: RemoteBackend** | The TUI talks to the engine only through a `Backend` interface (InProcess / Remote). The terminal widget gets a display pyte fed by stream frames, sized to the PTY. Behind `LAZYAGENT_ENGINE=remote` | TUI pilot tests run against both backends (parametrised fixture) | 1 |
 | 8 | **cli: `lazyagent engine` + auto-start** | Subcommands, runtime dir, lock, detach (setsid), logs, discovery; legacy `ipc.sock` path kept. Default stays `--embedded` until soaked, then flips in a follow-up PR | Subprocess tests: start, attach, quit TUI and the agent survives, reattach and the snapshot matches, `engine stop` | 1 |
 | 9 | **engine: restart manifest** | Persist registry metadata (session names, worktree, provider) so that after an engine restart it can offer `resume_mode=last` re-spawns. The per-worktree id counters were already persisted in PR 2 (D8) | Unit tests | 1 |
@@ -511,6 +540,19 @@ Decided for PR 5 as below; open for review.
 | Q2 | Which jobs the TUI shows | The `JobLog` shows every job, MCP/orchestrator-started ones included (they were invisible before) | Only jobs this client started |
 | Q3 | `JobLog` lifetime | Hidden 5 s after success, 30 s after a failure, or on click | Stays until dismissed with a key |
 | Q4 | Shells in the event stream | No `agent.spawned` / `agent.exited` for `kind:"shell"` sessions (the schema allows it) | Announce shells too, for clients that list every session |
+
+### Open questions (PR 6)
+
+Decided for PR 6 as below; open for review.
+
+| # | Topic | PR 6 behaviour | Alternative |
+|---|---|---|---|
+| Q5 | Who may `resize` when nobody owns the size | Nobody: `claim_size` first (or type) | The first `resize` claims implicitly |
+| Q6 | The TUI as a size client | It claims by resizing (its real size changes) and by typing/pasting; it does not claim on focus or on becoming visible, so switching worktrees never SIGWINCHes a session a v1 client sized | Also claim on focus, which is closer to §3c's "visible and focused" but resizes on every tab switch while a GUI shares the session |
+| Q7 | Snapshot transport | A JSON string in the `attach_stream` result | A binary frame type 3 (`snapshot`), which avoids JSON escaping of ESC (`\u001b`, 6 bytes each) for big screens |
+| Q8 | Raw tail size | Up to 512 KiB behind; further back gets a snapshot even if the ring (4 MiB) still has it | Stream the whole ring tail through the queue in pieces |
+| Q9 | `list_worktrees` agents | Legacy shape; only `list_agents` gains `session_id` / `kind` / `size` / `attached_clients` | Add the v1 fields to `list_worktrees` / `worktrees.changed` too (one call for the H2 sidebar) |
+| Q10 | Second instance in one repo | Runs without v1 and shows a warning toast | Fail the start, or take over the socket |
 
 ### Decisions (2026-10-15)
 
