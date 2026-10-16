@@ -169,7 +169,9 @@ class Host:
         try:
             client = await Client.connect(socket, client="host")
         except (OSError, ConnectionClosed, asyncio.TimeoutError) as e:
-            self._print(f"cannot connect to the engine: {e}")
+            # Gone already when the TUI is quitting: nothing to report.
+            if not self._stop.is_set() and self.tui.running:
+                self._print(f"cannot connect to the engine: {e}")
             return
         try:
             state = await client.request("get_sidebar_state")
