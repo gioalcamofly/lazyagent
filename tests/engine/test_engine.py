@@ -751,3 +751,28 @@ class TestLifecycle:
             socket_path = engine.socket_path
             await engine.stop()
         assert not os.path.exists(socket_path)
+
+
+@pytest.mark.asyncio
+async def test_wait_idle_returns_while_a_finished_task_is_still_listed(monkeypatch):
+    """A finished task leaves the set in a done callback that has not run
+    yet; gathering it completes without yielding, so waiting on it again
+    would spin forever."""
+    engine = make_engine([worktree()])
+    real_gather = asyncio.gather
+    calls = []
+
+    def gather(*args, **kwargs):
+        calls.append(args)
+        assert len(calls) < 100, "wait_idle is spinning"
+        return real_gather(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", gather)
+
+    async def nothing() -> None:
+        return None
+
+    task = asyncio.get_running_loop().create_task(nothing())
+    await task
+    engine._tasks.add(task)
+    await asyncio.wait_for(engine.wait_idle(), 1.0)

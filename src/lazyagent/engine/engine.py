@@ -380,8 +380,11 @@ class Engine:
 
     async def wait_idle(self) -> None:
         """Wait for the background work started so far (git sweeps)."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        # Only the unfinished ones: a finished task leaves the set in a
+        # done callback, and gathering finished tasks completes without
+        # yielding to the loop that would run it.
+        while pending := [t for t in self._tasks if not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
         await self.worktree_service.wait_idle()
 
     def _spawn(
