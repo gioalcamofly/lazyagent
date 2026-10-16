@@ -14,6 +14,12 @@
 - **The TUI stays** for SSH, tmux and the unattended weekday boot. It is never deprecated; it just stops being the only screen.
 - **Stack (proposal, D7 stays Giovanni's call):** keep H2's no-build-step approach and vendor **Preact + htm + signals** as ES modules (~15 KB), JSDoc types, Chrome `--app` window as the shell. Tauri, a build step and TypeScript are deferred until something forces them (§6).
 - **Protocol:** most screens run on existing v1 methods; the host's method whitelist widens step by step. New engine methods are listed in §5 and are all additive.
+- **Performance (§7d, measured 2026-10-16):** budgets come first (keystroke → glyph ≤ 8/16 ms p50/p95, ≤ 25/50 ms p95/p99 with 8 busy hidden agents, idle ≤ 2% of a core, attach ≤ 50 ms p95). The baseline shows the GUI side already fits. **The engine's headless pyte is the bottleneck**: 77% of the engine's busy CPU, 1.7-3.0 MB/s, and up to 3.9 s loop stalls after a burst. It sets the tail latency of every client (U2 prototype: p95 1.9 ms idle → 30-46 ms with 8 chatty hidden agents). Three changes follow from the data:
+  - an **engine track** E1 (cheap Python fixes, with U2) and E2 (native emulator: C emulators measured 26-38× faster than pyte; brought forward from Phase 5 to right after U2);
+  - **WebGL for every visible terminal** when the GPU is real (2-2.5× DOM in a grid), not "WebGL for the focused one only";
+  - **native terminals must not go through the hosted TUI**: the H2 path is TUI-bound at 0.8-2.1 MB/s with the TUI at 94-100% CPU.
+
+  The host hop costs 1.4 ms p50, so it stays (Q1).
 
 ---
 
@@ -112,7 +118,7 @@ H2 today        U2                    U3                 U5            U7 (after
 
 | Step | Moves to native | Criterion to start | Criterion to call it done |
 |---|---|---|---|
-| U2 | Agent + shell terminals | U1 store in place | A spawned agent is usable (type, scroll, resize, reattach) without the TUI pane in view |
+| U2 | Agent + shell terminals | U1 store in place | A spawned agent is usable (type, scroll, resize, reattach) without the TUI pane in view, **and the hosted TUI no longer renders a session the GUI shows natively** (it shows an empty view instead). Measured: the TUI rendering the visible agent pins it at 94-100% CPU and caps output at 0.8-2.1 MB/s (§7d-2) |
 | U3 | Spawn/create/remove/stop forms, job log | U2 | Every TUI modal has a form; the TUI pane is no longer needed for any mutation |
 | U4 | Attention queue, PR/CI panel, notifications | U2 | Waiting agents can be answered from the queue |
 | U5 | Diff viewer | U1 | Diff tab of the TUI no longer needed |
@@ -174,7 +180,7 @@ H2 today        U2                    U3                 U5            U7 (after
 - **Layouts:** auto grid (1, 2, 2×2, 3×2), or a pinned split (one large + a column of small). Tiles are chosen by filter: "all running", "this worktree", "pinned", "needs attention".
 - **Tile:** header (worktree, agent, status, elapsed), the live terminal, a footer with the last detail and quick actions (focus, stop, diff).
 - **Size policy (D3, §3c of engine-split):** only the **focused** tile claims the PTY size. Other tiles render at the PTY size and scale down with CSS `transform: scale()`, so a grid never SIGWINCHes every agent. Pressing Enter on a tile opens it full size (claims).
-- **Limits:** above ~6 live tiles (or with the page hidden), tiles fall back to a text preview from `read_agent_output` every 2-5 s and detach their stream (§7d).
+- **Limits (measured, §7d-4):** up to **9 live tiles** with the WebGL renderer: frame p95 16.8 ms while all 9 receive output, against 50 ms with DOM. Above 9, or with the page hidden, tiles fall back to a text preview from `read_agent_output` every 2-5 s and detach their stream. 16 live tiles still hold p50 16.7 / p95 33.5 ms on WebGL, so 9 leaves headroom for a slower GPU.
 
 ### 3d. Diff review
 
@@ -341,7 +347,7 @@ Status: **exists** = in v1 today (`protocol/schema/v1/`). **host** = exists in t
 
 | Change | Why | U-PR |
 |---|---|---|
-| Multiplex engine stream frames on the page WebSocket | Today binary page frames are TUI keystrokes. Proposal: page binary frame = `u8 type · u32 stream_id · u64 offset? · bytes`, i.e. **the v1 stream frame unchanged**, with `stream_id 0` reserved for the hosted TUI PTY | U2 |
+| Multiplex engine stream frames on the page WebSocket | Today binary page frames are TUI keystrokes. Proposal: page binary frame = `u8 type · u32 stream_id · u64 offset? · bytes`, i.e. **the v1 stream frame unchanged**, with `stream_id 0` reserved for the hosted TUI PTY. The host copies output frames from the unix socket into WS frames **without decoding them** (it decodes only control frames, to enforce the whitelist), and checks only `stream_id` ownership on input frames. Measured: a Python hop costs ~1.4 ms p50 / ~0.8 ms p95 and ~6 ms CPU per MB, the same whether it splices, re-frames or wraps in WS (§7d-3) | U2 |
 | Widen `ALLOWED_METHODS` per U-PR | Keep the whitelist; each PR adds what its screen needs (table above) | U2-U5 |
 | Pass the host env to `spawn_agent` / `open_shell` | D5: the host is the client | U3 |
 | `--allow-origin` and per-origin method sets | Phone (§4e) | U9 |
@@ -364,10 +370,13 @@ Status: **exists** = in v1 today (`protocol/schema/v1/`). **host** = exists in t
 | Svelte | **Yes** (compiler) | small output | ✅ | Needs Node in CI and a built-asset story (engine-split §5c) |
 | React + JSX | **Yes** | ~45 KB | ✅ | Heaviest; ecosystem not needed here |
 
+- **Runtime cost is not what separates these options.** The bytes that matter (PTY output, keystrokes) **never go through the framework**: WS message → `Uint8Array` view (no copy) → `term.write` directly, and `term.onData` → `ws.send`. The framework only renders chrome (sidebar, queue, forms) at event rates. So Preact+signals vs Solid's finer-grained updates comes down to a sidebar re-render, which gets a budget (B12: 100 worktrees re-render ≤ 4 ms) and a test in U1, not a framework switch. No framework benchmark was run; if B12 fails, the fix is narrower signals or virtualisation before a different library.
+- **Lists:** virtualise any list over ~200 rows (sidebar with many worktrees, the event feed, a diff file over 2,000 lines). Store updates from events are applied once per animation frame.
 - **TypeScript:** JSDoc annotations + `// @ts-check`, checked by `tsc --noEmit` in an optional CI job. No transpile step, so the wheel ships the same files the tests run.
 - **Build step trigger:** introduce Vite (engine-split §5c) only if one of these happens: the code passes ~8-10k lines, a dependency ships only as CommonJS, or bundle size matters on the phone. Until then, vendored ES modules with hashes in `VENDOR.md`, exactly like xterm.js in H2.
 - **Diff rendering:** own component over a small unified-diff parser (~150 lines) first; `diff2html` is an option but brings its own CSS and HTML injection surface.
-- **Terminal:** xterm.js 6 (vendored, as H2), `addon-fit`, `addon-webgl` for the focused terminal only (WebGL contexts are capped at ~16 per page in Chrome), DOM renderer for grid tiles, `addon-search`, `addon-web-links` later.
+- **Terminal (revised with data, §7d-4):** xterm.js 6 (vendored, as H2) + `addon-fit` + **`addon-webgl` 0.19.0 for every visible terminal** when the GPU is real. Fall back to the DOM renderer when the WebGL renderer string names a software rasteriser (SwiftShader, llvmpipe: measured 10× slower than DOM, with 2 s of long tasks per 2 MB) or on `onContextLoss`. There is no canvas renderer to fall back to: `@xterm/addon-canvas` stopped at 0.7.0 (peer `@xterm/xterm ^5`, released with 5.5.0), and 6.0.0 shipped with only DOM and WebGL. `addon-search`, `addon-web-links` later.
+- **Writes:** output frames arrive as `ArrayBuffer` (`binaryType = "arraybuffer"`, as H2) and go to `term.write(new Uint8Array(buf))`, a view with no copy and no text decoding. Write a chunk immediately when no write is in flight. While one is pending, coalesce chunks and write them once per animation frame. Per-chunk writes give the lowest echo (DOM: send→DOM 2.8 ms p50); per-frame batching costs up to one frame of latency but cut Chrome's CPU during a 5 MB burst (40% batched + WebGL vs 58% per-chunk + DOM; renderer and batching changed together in that run, so the split between them is not measured).
 
 ### 6b. Shell
 
@@ -376,7 +385,7 @@ Status: **exists** = in v1 today (`protocol/schema/v1/`). **host** = exists in t
 | Browser tab | Chrome (Blink) | Zero install, best xterm.js perf | Ctrl+W/T/N/L conflicts; mixed with other tabs | Works (H2 today) |
 | **Chrome `--app=<url>` window** | Blink | Own window and icon, no address bar, most shortcuts reach the page | Needs Chrome/Chromium installed (it is); not a real "app" | **Recommended default** for `--open` |
 | PWA (installed) | Blink | Dock icon, standalone window, badging API for the attention count | Needs a **stable origin**: today the port is random (0), and the token lives in `sessionStorage` per window | Later, if a stable port per repo is added (Q8) |
-| Tauri | **WebKitGTK** | Small, native menus/tray, system notifications | WebKitGTK is weaker for WebGL/xterm.js scrolling and fonts (engine-split §0b); a Rust toolchain in CI; a second packaging path | Phase 4, only if tray/global shortcuts are wanted |
+| Tauri | **WebKitGTK** | Small, native menus/tray, system notifications | The GUI's performance rests on GPU WebGL (§7d-4: 2-2.5× DOM in a grid; a software GL path is 10× slower). Chrome's GPU path is measured here; WebKitGTK's is not (`libwebkit2gtk-4.0` is installed, but measuring it needs a GTK window on the desktop). A Rust toolchain in CI; a second packaging path | Phase 4, only if tray/global shortcuts are wanted, **and only if a spike runs the same xterm bench (§7d-6) in WebKitGTK within the budgets** |
 | Electron | Blink | Full control | ~100 MB, its own update story | No |
 
 ### 6c. Security (keeps H2's model)
@@ -570,22 +579,24 @@ cProfile of the engine with 8 hidden agents printing ~1,000 lines/s plus a 5 MB 
 
 Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `tests/host/test_browser.py`-style Playwright tests (headless Chromium, falling back to `channel="chrome"`; fake agent from the host fixtures).
 
-| # | PR | Scope | Done when | Tests |
-|---|---|---|---|---|
-| U0 | **docs: UI plan** (this) | Plan + mockups | Reviewed; Q1-Q10 answered | — |
-| U1 | **ui: component foundation** | Vendor Preact + htm + signals; `store.js` built from `get_sidebar_state` + events; port the H2 sidebar, toasts and top bar to components; theme tokens incl. light; help sheet from a keymap table. **No behaviour change** | The existing browser test passes unchanged; light theme renders | Existing test_browser; new: theme toggle, `?` sheet lists every TUI binding (asserted against `LazyAgent.BINDINGS`) |
-| U2 | **host+ui: native terminals** | Host multiplexes v1 stream frames (`stream_id 0` = TUI PTY) and forwards `attach_stream`, `detach_stream`, `claim_size`, `resize`, `open_shell`, `list_agents`. Page: agent tabs + shell split as xterm.js per session; TUI pane becomes a toggle | A fake agent spawned through the TUI shows in a native tab; typing reaches it; resize claims; detach/reattach (hide/show) keeps the screen; a reconnect resumes with `tail` | test_server: frame mux, whitelist; test_browser: agent tab, input, reattach after reload, `stream.closed` closes the tab |
-| U3 | **ui: native actions** | Forms for spawn (with instruction), create (+ launch), remove, stop; job drawer; refresh keys; host forwards the mutating methods and passes its env | Every TUI modal has a native equivalent; §4a works end to end | test_browser: create + launch with a fake agent and a fake custom create (job output); remove guard; stop confirm. test_server: env forwarding |
-| U4 | **ui: attention queue + PR/CI panel** | Attention view derived client-side (§3b); reply box (`send_agent_input`), preview (`read_agent_output`); PR/CI right panel with every check; title/favicon badge; notification settings | A fake agent going `waiting_for_user` appears in the queue, a reply reaches it and clears the item | test_browser: queue ordering, reply, auto-clear, notification body; PR panel from a fake `pr_info` |
-| U5 | **ui: diff viewer** | Client-side unified-diff parser, file tree, unified/split, page-local comments, "submit review" via `send_agent_input` | Diff tab of the TUI not needed for daily review | Parser unit tests (run in the browser page via Playwright `evaluate`, no Node), test_browser: comment + submit reaches the fake agent |
-| U6 | **ui: grid + orchestrator views** | Grid with size policy (§3c), text-preview fallback; orchestrator board + event feed | 4 agents watched at once without SIGWINCH storms | test_browser: tiles don't claim size (PTY size unchanged), focus claims |
-| U7 | **host: no-TUI mode** (after **PR 8**) | `lazyagent ui` connects to the detached engine via `discover`; no hosted TUI; engine stop/start from the page | Closing the page and the host leaves agents running; reopening shows them | test_host_integration with a detached engine (PR 8 fixtures) |
-| U8 | **engine+ui: review comments (0008)** | Structured diff, stored threads, `submit_review` | Comments survive reload and show in two pages | Contract tests for the new methods; test_browser two pages |
-| U9 | **engine+host+ui: phone (0003)** | `answer_prompt`, `agent.attention`, ntfy notifier, `--allow-origin`, phone whitelist, mobile layout | Approve a fake agent's prompt from a phone-size viewport through an allowed origin | Contract tests; test_server origin sets; test_browser at 390×844 |
-| U10 | **engine+ui: usage + history (0006, 0007)** | Usage chips and totals; "since you left" digest; timeline strip | Numbers match a scripted transcript | Contract + browser |
-| U11 | **ui: restore banner (0009)** | Banner and flow on top of PR 9 | Restore after an engine restart from the page | Needs PR 9 fixtures |
+| # | PR | Scope | Done when | Tests | Performance |
+|---|---|---|---|---|---|
+| U0 | **docs: UI plan** (this) | Plan + mockups + performance baseline | Reviewed; Q1-Q17 answered | — | Budgets B1-B13 agreed (§7d-1) |
+| U1 | **ui: component foundation** | Vendor Preact + htm + signals; `store.js` built from `get_sidebar_state` + events; port the H2 sidebar, toasts and top bar to components; theme tokens incl. light; help sheet from a keymap table. **No behaviour change** | The existing browser test passes unchanged; light theme renders | Existing test_browser; new: theme toggle, `?` sheet lists every TUI binding (asserted against `LazyAgent.BINDINGS`) | Adds `tests/perf/` (echo, emulator throughput) and the B12 sidebar test (100 worktrees ≤ 4 ms). Page idle CPU ≤ 1.3% (H2 today) with Preact loaded |
+| U2 | **host+ui: native terminals** | Host multiplexes v1 stream frames (`stream_id 0` = TUI PTY) and forwards `attach_stream`, `detach_stream`, `claim_size`, `resize`, `open_shell`, `list_agents`. Page: agent tabs + shell split as xterm.js per session; TUI pane becomes a toggle | A fake agent spawned through the TUI shows in a native tab; typing reaches it; resize claims; detach/reattach (hide/show) keeps the screen; a reconnect resumes with `tail` | test_server: frame mux, whitelist; test_browser: agent tab, input, reattach after reload, `stream.closed` closes the tab | **B1** key→DOM p95 ≤ 16 ms (prototype: 8.7); **B4** frames p95 ≤ 17 ms during `spew`; B6 idle ≤ 2%; WebGL on a real GPU, DOM fallback tested; the hosted TUI renders no natively shown session; host splices output frames. Adds `test_browser_perf.py` and the nightly job |
+| E1 | **engine: cheap emulation fixes** (alongside U2, independent of the UI) | Lazy scrollback-row encoding at snapshot time; backlog fed in ≤ 64 KiB slices with a yield between them; [0005](../proposals/0005-claude-status-from-hooks.md) skip-scan for hook-driven agents | B8 met even right after a burst; B2 p95 at least halved | `tests/perf/test_attach.py`; snapshot round-trip tests unchanged | **B8** ≤ 50 ms p95 / ≤ 100 ms worst; the engine loop is never blocked > 5 ms by a flush |
+| E2 | **engine: native emulator** (after U2, before U6; spike first) | pyo3 extension over the Rust `vt100` crate (or `alacritty_terminal`), maturin manylinux wheels; `ScrollbackScreen` behind an interface with pyte as the fallback | The engine runs on the native emulator by default; pyte stays importable as a fallback | Spike gate: ≥ 20× pyte on `agent.bin`; the snapshot contract tests pass against both emulators | **B5** ≥ 10 MB/s, **B7** ≤ 1% per chatty hidden agent, **B2** p95 ≤ 25 ms |
+| U3 | **ui: native actions** | Forms for spawn (with instruction), create (+ launch), remove, stop; job drawer; refresh keys; host forwards the mutating methods and passes its env | Every TUI modal has a native equivalent; §4a works end to end | test_browser: create + launch with a fake agent and a fake custom create (job output); remove guard; stop confirm. test_server: env forwarding | Forms open ≤ 50 ms after the key; no new work on the stream path (B1 unchanged) |
+| U4 | **ui: attention queue + PR/CI panel** | Attention view derived client-side (§3b); reply box (`send_agent_input`), preview (`read_agent_output`); PR/CI right panel with every check; title/favicon badge; notification settings | A fake agent going `waiting_for_user` appears in the queue, a reply reaches it and clears the item | test_browser: queue ordering, reply, auto-clear, notification body; PR panel from a fake `pr_info` | Queue updates batched per frame; B6 holds with 10 agents and the queue open |
+| U5 | **ui: diff viewer** | Client-side unified-diff parser, file tree, unified/split, page-local comments, "submit review" via `send_agent_input` | Diff tab of the TUI not needed for daily review | Parser unit tests (run in the browser page via Playwright `evaluate`, no Node), test_browser: comment + submit reaches the fake agent | A 5,000-line diff renders its first screen ≤ 100 ms and scrolls at ≤ 17 ms frames (virtualised); parsing runs off the input path |
+| U6 | **ui: grid + orchestrator views** | Grid with size policy (§3c), text-preview fallback; orchestrator board + event feed | 4 agents watched at once without SIGWINCH storms | test_browser: tiles don't claim size (PTY size unchanged), focus claims | **B11** 9 live tiles at frame p95 ≤ 17 ms (prototype: 16.8 with WebGL); tiles never claim size; above 9 tiles text previews; B2 checked with E1 in place |
+| U7 | **host: no-TUI mode** (after **PR 8**) | `lazyagent ui` connects to the detached engine via `discover`; no hosted TUI; engine stop/start from the page | Closing the page and the host leaves agents running; reopening shows them | test_host_integration with a detached engine (PR 8 fixtures) | **B10** cold start ≤ 1.5 s to an interactive page against a detached engine; reattach to every visible stream ≤ 50 ms (B8) |
+| U8 | **engine+ui: review comments (0008)** | Structured diff, stored threads, `submit_review` | Comments survive reload and show in two pages | Contract tests for the new methods; test_browser two pages | Comment threads add ≤ 1 ms per diff re-render; `review.updated` batched |
+| U9 | **engine+host+ui: phone (0003)** | `answer_prompt`, `agent.attention`, ntfy notifier, `--allow-origin`, phone whitelist, mobile layout | Approve a fake agent's prompt from a phone-size viewport through an allowed origin | Contract tests; test_server origin sets; test_browser at 390×844 | Phone page: first paint ≤ 2 s over Tailscale; permessage-deflate on the phone origin only (P8); no change to the desktop path |
+| U10 | **engine+ui: usage + history (0006, 0007)** | Usage chips and totals; "since you left" digest; timeline strip | Numbers match a scripted transcript | Contract + browser | Usage/history events throttled (≤ 1 Hz per agent); B6 and B7 unchanged |
+| U11 | **ui: restore banner (0009)** | Banner and flow on top of PR 9 | Restore after an engine restart from the page | Needs PR 9 fixtures | Restoring 10 agents keeps the page at B4 frames |
 
-- **Order rationale:** U1 pays for itself before any new screen (H2's app.js is already at the size where hand DOM updates get brittle). U2 is the hinge: once terminals are native, every other piece is "just a form". U4 before U5 because waiting agents cost more time than reviewing diffs. U8-U11 wait for their engine proposals.
+- **Order rationale:** U1 pays for itself before any new screen (H2's app.js is already at the size where hand DOM updates get brittle), and it puts the performance tests in place before anything they guard. U2 is the hinge: once terminals are native, every other piece is "just a form". E1 ships with U2 because U2 is the first client that keeps several streams attached. E2 comes before U6 because the grid multiplies visible streams, and pyte is what fails B2/B5/B7. U4 before U5 because waiting agents cost more time than reviewing diffs. U8-U11 wait for their engine proposals.
 
 ### 8b. Fit with PRs 7-9 and §6's web phase
 
@@ -596,6 +607,7 @@ Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `t
 | **PR 9** (restart manifest) | **Gates U11** (restore) |
 | **§6 PR 10+ "web"** (WS in the engine, `lazyagent web`, Vite) | **Proposal: fold it into the host.** The host is already the web server and a v1 client; keeping WS, auth and the whitelist in the host keeps the engine a unix-socket-only process with one security boundary. `lazyagent web` becomes the U7 no-TUI mode of the host. Engine-side WS stays possible (contract suite over WS) but is not needed (Q1) |
 | Phase 3 (diff review, notifications) | = U5/U8 and U4/U9 |
+| Phase 5 (Rust engine / native emulator) | **The emulator part moves up to E2** (after U2, before U6), measured as the engine's bottleneck (§7d-5). Swapping the whole engine stays Phase 5 |
 | Phase 4 (Tauri) | Optional after U7 (§6b) |
 
 ---
@@ -604,15 +616,20 @@ Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `t
 
 | # | Question | Recommendation |
 |---|---|---|
-| Q1 | Where does the web server live long term: the host (a v1 client proxying with a whitelist) or the engine (WS transport, engine-split PR 10+)? | **The host.** One security boundary, engine stays unix-only and smaller; the contract suite can still run over WS later if a Rust engine wants it |
+| Q1 | Where does the web server live long term: the host (a v1 client proxying with a whitelist) or the engine (WS transport, engine-split PR 10+)? | **The host**, now with data (§7d-3): the hop costs 1.4 ms p50 / 0.8 ms p95 and ~6 ms CPU per MB on its own core, with no throughput loss. Serving WS from the engine would save that but add HTTP/WS/auth work to the engine loop, which pyte already saturates. One security boundary; the engine stays unix-only |
 | Q2 | Drop H2's "mutations only through the TUI modals" rule and forward `spawn_agent` / `create_worktree` / `remove_worktree` / `stop_agent` / `send_agent_input` / input frames from the page? | **Yes, from U2/U3.** The page can already type into the TUI, so it adds no capability; the token/Origin/CSP boundary is unchanged |
 | Q3 | Command name for the GUI: keep `lazyagent host`, or add `lazyagent ui` / `lazyagent web`? | Keep `host` until U7; then **`lazyagent ui`** for the no-TUI mode, `host` as the hosted variant. Drop the separate `web` name from engine-split §5d |
 | Q4 | Edit config from the GUI? | **No.** Read-only `get_config` + "open in editor"; avoids a `set_config` with validation and file-format round trips |
-| Q5 | Front-end stack (D7) | **Preact + htm + signals, vendored, no build step, JSDoc types**; Chrome `--app` window; Tauri only for tray/global shortcuts later. Revisit a build step at ~8-10k lines |
+| Q5 | Front-end stack (D7) | **Preact + htm + signals, vendored, no build step, JSDoc types**; Chrome `--app` window. The terminal byte path bypasses the framework, so its runtime cost only touches chrome (B12 guards it). Tauri only after a WebKitGTK spike passes the §7d benches. Revisit a build step at ~8-10k lines |
 | Q6 | Phone reach | **Tailscale Serve** to the loopback host + `--allow-origin` + a narrower per-origin method set; ntfy for push with no screen excerpt. Never bind beyond loopback |
 | Q7 | `Ctrl+L` / `Ctrl+D` / `Ctrl+K` are stolen from the shell (as in the TUI). Keep parity? | **Keep parity** by default, plus a setting to pass a key through when the shell has focus |
 | Q8 | Stable port per repo (needed for an installable PWA and bookmarks)? | **Not yet.** Random port + `--app` window is enough; revisit with U9 (phone) where Tailscale gives a stable URL anyway |
 | Q9 | Attention dismiss/snooze: per page or shared in the engine? | **Per page** in U4; shared (`agent.attention` + ack) with U9, when the phone makes it a multi-client problem |
-| Q10 | Grid tiles: scale the PTY-size render down, or let tiles claim their own size? | **Scale down, never claim** unless focused (D3); a tile claiming would SIGWINCH every agent on each layout change |
+| Q10 | Grid tiles: scale the PTY-size render down, or let tiles claim their own size? | **Scale down, never claim** unless focused (D3); a tile claiming would SIGWINCH every agent on each layout change. Up to 9 live WebGL tiles (§7d-4) |
 | Q11 | Should `q` exist in the GUI? | **No key.** Before PR 8 it kills every agent; a menu item with a confirm. After PR 8 "close" only detaches, so the window close button is enough |
 | Q12 | Diff stage 1 comments are page-local. Acceptable until U8? | **Yes**; the value is the send-back flow, not storage. Warn in the UI that comments live in this browser |
+| Q13 | Bring the native emulator (engine-split Phase 5) forward to E2, right after U2? | **Yes** (§7d-6 P1). pyte is 77% of the engine's busy CPU and the reason B2/B5/B7/B8 fail; C emulators are 26-38× faster on the same input. It needs a Rust toolchain in CI and manylinux wheels; gate it with a spike (≥ 20×, snapshot contract tests pass) |
+| Q14 | Rust `vt100` vs `alacritty_terminal` for E2 | **Spike both on `agent.bin` and the snapshot tests**; prefer `vt100` (smaller, has formatted-contents and scrollback APIs) unless the numbers say otherwise. Neither crate was measured here |
+| Q15 | WebGL as the default renderer | **Yes, on a real GPU** for every visible terminal; DOM on software GL (10× slower measured) or context loss (§7d-6 P3) |
+| Q16 | Budgets as CI gates | **Yes for B1/B3/B4/B8** on every PR with 2× (engine) or 1.5× (browser) headroom over the budget, median of 3; B2/B6/B7/B11 nightly only, non-blocking (§7d-7) |
+| Q17 | Budget values (§7d-1) | **Adopt as proposed**: B1 ≤ 8/16 ms, B2 ≤ 25/50 ms, B5 ≥ 10 MB/s, B6 ≤ 2% idle, B8 ≤ 50 ms. The tightest one, B1 p95 = one frame, is already met by the U2 prototype (8.7 ms to DOM) |
