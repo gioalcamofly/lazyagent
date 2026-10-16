@@ -9,9 +9,11 @@ from lazyagent.agent_providers import (
     ResumeMode,
     get_agent_provider,
 )
+from lazyagent.engine.registry import ORCHESTRATOR_KEY, AgentRegistry
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
 
-ORCHESTRATOR_KEY = "__orchestrator__"
+__all__ = ["ORCHESTRATOR_KEY", "OrchestratorPanel"]
+
 _PLACEHOLDER_TEXT = "Press [bold]s[/bold] to spawn orchestrator"
 
 
@@ -32,9 +34,12 @@ class OrchestratorPanel(Container):
     }
     """
 
-    def __init__(self, worktree_path: str, **kwargs) -> None:
+    def __init__(
+        self, worktree_path: str, registry: AgentRegistry | None = None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self.worktree_path = worktree_path
+        self.registry = registry if registry is not None else AgentRegistry()
         self._agent_terminal: MonitoredTerminal | None = None
         self._session_name = ""
 
@@ -105,6 +110,7 @@ class OrchestratorPanel(Container):
             if provider.session_name_flag
             else ""
         )
+        self.registry.register(ORCHESTRATOR_KEY, "", session_name=self._session_name)
         runtime_context = provider.build_runtime_context(
             self.worktree_path,
             socket_path=socket_path,

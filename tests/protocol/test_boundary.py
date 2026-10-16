@@ -45,17 +45,31 @@ def test_importing_protocol_loads_no_textual_or_app_modules():
         "import lazyagent.protocol, lazyagent.protocol.framing, "
         "lazyagent.protocol.handshake, lazyagent.protocol.validation\n"
         "mods = sorted(m for m in sys.modules if m.split('.')[0] in "
-        "('textual', 'lazyagent', 'mcp'))\n"
+        "('textual', 'lazyagent', 'mcp', 'pyte'))\n"
         "print('\\n'.join(mods))\n"
     )
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.split()
-    # lazyagent/__init__ imports pyte_patch; that is the package's own
-    # concern, not the protocol's.
-    allowed = {"lazyagent", "lazyagent.pyte_patch"}
-    unexpected = [m for m in out if m not in allowed and not m.startswith("lazyagent.protocol")]
+    unexpected = [m for m in out if m != "lazyagent" and not m.startswith("lazyagent.protocol")]
     assert unexpected == []
+
+
+def test_the_pyte_patch_is_applied_wherever_pyte_screens_are_built():
+    # The widgets and the MCP server entry point are the paths that run in
+    # production; the patch must be in place after importing either.
+    code = (
+        "import sys\n"
+        "import lazyagent.mcp_server\n"
+        "print('pyte' in sys.modules)\n"
+        "import lazyagent.widgets.scrollable_terminal\n"
+        "from pyte.screens import Char\n"
+        "print('dim' in Char._fields)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert out == ["False", "True"]
 
 
 def test_nothing_imports_protocol_yet():

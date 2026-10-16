@@ -19,6 +19,9 @@ import subprocess
 import time
 from collections import deque
 
+# The patch replaces pyte.screens.Char, so it has to land before the names
+# below are bound and before any Screen is built.
+import lazyagent.pyte_patch  # noqa: F401
 import pyte
 from pyte.screens import Char, Margins
 

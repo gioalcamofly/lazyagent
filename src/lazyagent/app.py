@@ -17,7 +17,8 @@ from lazyagent import diagnostics as diag
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
 from lazyagent.ipc import IpcServer, start_ipc_server
-from lazyagent.agent_events import EXITED, AgentEventBus
+from lazyagent.agent_events import AgentEventBus
+from lazyagent.engine.registry import AgentIdStore, AgentRegistry, default_id_store_path
 from lazyagent.messages import AgentExited, AgentStatusChanged
 from lazyagent.models import AgentState, AgentStatus, GitStatus, WorktreeInfo
 from lazyagent.widgets.center_panel import CenterPanel
@@ -98,13 +99,7 @@ class LazyAgent(App):
         super().__init__()
         self.repo_path = repo_path
         self.worktrees: list[WorktreeInfo] = []
-        # Two-level registry: outer key is a worktree path (or ORCHESTRATOR_KEY),
-        # inner maps agent id -> state. The orchestrator (and any single-agent
-        # caller) uses agent id "".
-        self._agent_states: dict[str, dict[str, AgentState]] = {}
-        # Every status transition recorded in _agent_states, for the MCP
-        # wait/event tools.
-        self.agent_events = AgentEventBus()
+        self.registry = AgentRegistry(id_store=AgentIdStore(default_id_store_path()))
         self._git_statuses: dict[str, GitStatus] = {}
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
@@ -115,12 +110,26 @@ class LazyAgent(App):
         self._ipc_socket_path: str | None = None
         self._selection_debounce: Timer | None = None
 
+    @property
+    def _agent_states(self) -> dict[str, dict[str, AgentState]]:
+        """The registry's worktree key -> agent id -> state map."""
+        return self.registry.states
+
+    @_agent_states.setter
+    def _agent_states(self, states: dict[str, dict[str, AgentState]]) -> None:
+        self.registry.states = states
+
+    @property
+    def agent_events(self) -> AgentEventBus:
+        """Every agent status transition, for the MCP wait/event tools."""
+        return self.registry.events
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="sidebar"):
             yield WorktreeList()
             yield PrStatusBar(id="pr-status-bar")
-        yield CenterPanel()
+        yield CenterPanel(registry=self.registry)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -217,35 +226,19 @@ class LazyAgent(App):
 
     def _get_agent_state(self, key: str, agent_id: str = "") -> AgentState:
         """Get or create the AgentState for one agent in a worktree/orchestrator."""
-        bucket = self._agent_states.setdefault(key, {})
-        if agent_id not in bucket:
-            bucket[agent_id] = AgentState(agent_id=agent_id)
-        return bucket[agent_id]
+        return self.registry.get(key, agent_id)
 
     def _worktree_agent_states(self, key: str) -> dict[str, AgentState]:
         """All agent states for a worktree path / ORCHESTRATOR_KEY (may be empty)."""
-        return self._agent_states.get(key, {})
+        return self.registry.agents(key)
 
     def _drop_agent_state(self, key: str, agent_id: str) -> None:
-        """Remove a single agent from the registry, pruning empty buckets."""
-        bucket = self._agent_states.get(key)
-        if bucket is not None:
-            state = bucket.pop(agent_id, None)
-            if not bucket:
-                self._agent_states.pop(key, None)
-            if state is not None:
-                self.agent_events.publish(
-                    worktree_path=key,
-                    agent_id=agent_id,
-                    label=state.label,
-                    status=EXITED,
-                    previous_status=state.status.value,
-                )
+        """Remove a single agent from the registry, publishing EXITED."""
+        self.registry.drop(key, agent_id)
 
     def _drop_worktree_agents(self, key: str) -> None:
         """Drop every agent of a worktree that is going away."""
-        for agent_id in list(self._worktree_agent_states(key)):
-            self._drop_agent_state(key, agent_id)
+        self.registry.drop_worktree(key)
 
     def _refresh_sidebar_agents(self, key: str) -> None:
         """Push the worktree's current agent roll-up to the sidebar."""
@@ -452,33 +445,18 @@ class LazyAgent(App):
     # --- Agent message handlers ---
 
     def on_agent_status_changed(self, event: AgentStatusChanged) -> None:
-        state = self._get_agent_state(event.worktree_path, event.agent_id)
-        previous = state.status
-        state.status = event.status
-        state.confidence = event.confidence
-        state.detail = event.detail
-        panel = self._get_any_panel(event.worktree_path)
-        if panel is not None and not state.label:
-            label_fn = getattr(panel, "agent_label", None)
-            if label_fn is not None:
-                state.label = label_fn(event.agent_id)
-        if panel is not None and not state.session_name:
-            name_fn = getattr(panel, "agent_session_name", None)
-            if name_fn is not None:
-                state.session_name = name_fn(event.agent_id)
-        if event.status == AgentStatus.RUNNING and panel is not None:
-            terminal = panel.get_agent(event.agent_id)
+        state = self.registry.update_status(
+            event.worktree_path,
+            event.agent_id,
+            event.status,
+            event.confidence,
+            event.detail,
+        )
+        if event.status == AgentStatus.RUNNING:
+            panel = self._get_any_panel(event.worktree_path)
+            terminal = panel.get_agent(event.agent_id) if panel is not None else None
             if terminal:
                 state.last_output_time = terminal.last_output_time
-        if event.status != previous:
-            self.agent_events.publish(
-                worktree_path=event.worktree_path,
-                agent_id=event.agent_id,
-                label=state.label,
-                status=event.status.value,
-                previous_status=previous.value,
-                detail=event.detail,
-            )
         self._refresh_sidebar_agents(event.worktree_path)
 
     async def on_agent_exited(self, event: AgentExited) -> None:
@@ -565,9 +543,7 @@ class LazyAgent(App):
                         cross_session_inbound=self._config.agent.cross_session_inbound,
                         _diag_spawn_id=spawn_id,
                     )
-                    state = self._get_agent_state(worktree.path, agent_id)
-                    state.label = panel.agent_label(agent_id)
-                    state.session_name = panel.agent_session_name(agent_id)
+                    self._get_agent_state(worktree.path, agent_id)
                     self._refresh_sidebar_agents(worktree.path)
                     span["agent_id"] = agent_id
 
