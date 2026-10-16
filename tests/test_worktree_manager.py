@@ -901,11 +901,15 @@ class TestPrHeadRefs:
 
     @pytest.mark.parametrize("config", [
         # tracks a differently named upstream branch
-        "remote.origin.url git@github.com:acme/widgets.git\n"
-        "branch.feat.remote origin\nbranch.feat.merge refs/heads/other\n",
+        (
+            "remote.origin.url git@github.com:acme/widgets.git\n"
+            "branch.feat.remote origin\nbranch.feat.merge refs/heads/other\n"
+        ),
         # pushed to a fork
-        "remote.fork.url git@github.com:someone/widgets.git\n"
-        "branch.feat.remote fork\nbranch.feat.merge refs/heads/feat\n",
+        (
+            "remote.fork.url git@github.com:someone/widgets.git\n"
+            "branch.feat.remote fork\nbranch.feat.merge refs/heads/feat\n"
+        ),
         # checked out from a PR ref
         "branch.feat.remote origin\nbranch.feat.merge refs/pull/12/head\n",
         # explicit push remote
@@ -943,12 +947,14 @@ class TestGetPrInfos:
 
     def test_failed_request_raises(self, tmp_path):
         manager = _manager(tmp_path)
-        with patch(
-            "lazyagent.worktree_manager.subprocess.run",
-            side_effect=[_completed(returncode=1), _completed(returncode=1, stderr="HTTP 502")],
+        with (
+            patch(
+                "lazyagent.worktree_manager.subprocess.run",
+                side_effect=[_completed(returncode=1), _completed(returncode=1, stderr="HTTP 502")],
+            ),
+            pytest.raises(WorktreeManagerError, match="HTTP 502"),
         ):
-            with pytest.raises(WorktreeManagerError, match="HTTP 502"):
-                manager.get_pr_infos([_wt("/a", "a")], REPO)
+            manager.get_pr_infos([_wt("/a", "a")], REPO)
 
     def test_large_sets_are_split(self, tmp_path, monkeypatch):
         monkeypatch.setattr("lazyagent.worktree_manager._PR_BATCH_SIZE", 2)
