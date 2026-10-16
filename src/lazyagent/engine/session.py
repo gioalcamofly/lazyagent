@@ -228,11 +228,17 @@ class ByteRing:
 
 
 class _Viewer:
-    __slots__ = ("on_output", "watching")
+    __slots__ = ("on_close", "on_output", "watching")
 
-    def __init__(self, on_output: OutputListener, watching: Callable[[], bool]):
+    def __init__(
+        self,
+        on_output: OutputListener,
+        watching: Callable[[], bool],
+        on_close: Callable[[], None] | None,
+    ):
         self.on_output = on_output
         self.watching = watching
+        self.on_close = on_close
 
 
 class TerminalSession:
@@ -348,6 +354,12 @@ class TerminalSession:
             self.exit_code = emulator.returncode
         self._cancel_feed_timer()
         self._before_close()
+        for viewer in list(self._viewers):
+            if viewer.on_close is not None:
+                try:
+                    viewer.on_close()
+                except Exception:
+                    log.exception("viewer close callback failed")
 
     async def _recv(self) -> None:
         emulator = self._emulator
@@ -492,14 +504,16 @@ class TerminalSession:
         on_output: OutputListener,
         *,
         watching: Callable[[], bool] = lambda: True,
+        on_close: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
-        """Call ``on_output(offset, data)`` for every output chunk.
+        """Call ``on_output(offset, data)`` for every output chunk, and
+        ``on_close()`` once the PTY is gone (stopped or exited).
 
         While any viewer's ``watching()`` is true the screen is fed before
         the call, so the viewer can render it right away. Returns a detach
         function.
         """
-        viewer = _Viewer(on_output, watching)
+        viewer = _Viewer(on_output, watching, on_close)
         self._viewers.append(viewer)
 
         def detach() -> None:

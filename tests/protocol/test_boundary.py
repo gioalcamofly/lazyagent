@@ -1,5 +1,5 @@
 """lazyagent.protocol stays standalone: stdlib only, no Textual, no other
-lazyagent modules, and nothing in the app uses it yet."""
+lazyagent modules, and only the v1 server and client use it."""
 
 from __future__ import annotations
 
@@ -72,15 +72,15 @@ def test_the_pyte_patch_is_applied_wherever_pyte_screens_are_built():
     assert out == ["False", "True"]
 
 
-def test_nothing_imports_protocol_yet():
-    users = []
+def test_only_the_v1_server_and_client_import_protocol():
+    users = set()
     for path in sorted(PACKAGE.rglob("*.py")):
         if PROTOCOL in path.parents:
             continue
         for module, _ in _imports(path):
             if module.startswith("lazyagent.protocol"):
-                users.append(str(path.relative_to(PACKAGE)))
-    assert users == []
+                users.add(str(path.relative_to(PACKAGE)))
+    assert users == {"engine/server.py", "engine/client.py"}
 
 
 def test_schemas_ship_inside_the_package():
