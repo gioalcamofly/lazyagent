@@ -43,10 +43,15 @@
 
 ### Polling strategy
 
-1. **One call per repo, not per worktree:** `gh pr list --author @me --state open --json number,headRefName,baseRefName,state,statusCheckRollup,reviewDecision,mergeable` (GraphQL under the hood). Map PRs to worktrees by `headRefName`. 10 watched worktrees: 10 subprocesses per minute become 1.
-   - Merged/closed PRs drop out of `--state open`: when a tracked PR disappears, confirm with one `gh pr view <n>` for that PR only, then emit `pr.merged` / `pr.closed`.
-   - Hand-written `gh api graphql` only when needed (several repos in one query, review comments).
-   - Belongs in **PR 3** (`WorktreeService`), where polling widens beyond the selected worktree. As a standalone TUI change it buys little today, since only the selected worktree is polled.
+1. **One call per repo, not per worktree:** one `gh api graphql` query with an aliased `pullRequests(headRefName: $h<i>, states: [OPEN, CLOSED, MERGED], first: 30, orderBy: {field: CREATED_AT, direction: DESC})` per watched branch, plus `defaultBranchRef`. The owner and name come from `gh repo view --json owner,name`, cached until the next rescan. 10 watched worktrees: 10 subprocesses per minute become 1. **Shipped in PR 3** (`WorktreeManager.get_pr_infos`, used by `WorktreeService`).
+   - **Why not `gh pr list --author @me`** (the earlier idea): `gh pr view`, which the TUI ran per worktree, shows the PR whose head is that branch **by any author**, so `--author @me` would drop teammates' PRs on shared branches; it also lists every PR of the user and paginates on a busy repo, while the per-branch query returns only the branches asked for. Querying by `headRefName` gives **exact parity with `gh pr view`**, which is what keeps the PR badge and the IPC output unchanged.
+   - **Parity rules**, taken from `gh pr view`'s own branch lookup: it asks for up to 30 PRs per branch (so `first: 30`, not 1), prefers an open PR, otherwise the newest; skips cross-repository PRs (a fork's `fix-typo` is not ours); and on the default branch only an open PR counts. Branches whose tracking config `gh` resolves differently (an upstream with another name, a fork remote, a `refs/pull/*` merge ref, `pushRemote` / `remote.pushDefault`) and detached worktrees are not batched: they keep one `gh pr view` each. If the batched call fails, every branch falls back to `gh pr view`.
+   - Checks come from `commits(last: 1) { … statusCheckRollup { contexts(first: 100) } }`, reshaped into what `gh pr view --json statusCheckRollup` exports, so one parser serves both paths.
+   - Large interest sets are split into requests of 25 branches to stay under GitHub's per-query node limit.
+   - Measured on a repo with 26 worktrees, 21 of them batchable: 3.8 s for one batched call against 27 s for 21 sequential `gh pr view`, with identical `PrInfo` for every branch.
+   - Merged/closed PRs stay in the result (`states` covers them), so `pr.merged` / `pr.closed` can be emitted from the diff of two snapshots with no extra call.
+   - Hand-written GraphQL beyond this only when needed (several repos in one query, review comments).
+   - With interest = the selected worktree, as the TUI sets it today, this is still one call per poll; the batching pays off once rules or clients widen the interest set.
 2. **Conditional "anything new?":** REST `/notifications` with `If-Modified-Since` / `Last-Modified`. A `304` doesn't count against the rate limit; honour `X-Poll-Interval`. One call covers review requests, comments and mentions across repos. GraphQL has no 304 equivalent: batching vs conditional is the trade-off.
 3. **Adaptive interval:** 30-60 s while an agent waits on something specific (CI running, review requested); 5-10 min at rest; nothing for PRs no client is interested in and no rule covers.
 4. **Diffs only:** keep the last snapshot per PR, emit events only on change. No change, no event, nobody wakes.
