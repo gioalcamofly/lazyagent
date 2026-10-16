@@ -7,7 +7,12 @@ not any client shows it:
   of a byte in everything the child has written since the session started);
 - a headless :class:`ScrollbackScreen`, fed from every chunk. While a viewer
   is watching, each chunk is fed as it arrives; otherwise chunks are batched
-  and fed at most every :data:`UNWATCHED_FEED_INTERVAL` seconds;
+  for :data:`UNWATCHED_FEED_INTERVAL` seconds and then fed by the loop's
+  :class:`_Feeder` in slices, a few milliseconds of parsing at a time, so a
+  burst of hidden output never holds the event loop (keys, frames and
+  requests go between the slices). A session the feeder falls more than
+  :data:`PENDING_FEED_LIMIT` characters behind on keeps only the newest
+  :data:`PENDING_FEED_KEEP` (see :meth:`TerminalSession._bound_pending`);
 - the terminal modes the child has set (mouse tracking, bracketed paste),
   which programmatic input needs to frame text correctly;
 - :meth:`~TerminalSession.send_input`, which frames text as a paste and
@@ -30,6 +35,7 @@ import logging
 import os
 import re
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -54,6 +60,21 @@ DEFAULT_RING_CAPACITY = 4 * 1024 * 1024
 # both tolerate a fraction of a second of staleness. Parsing every chunk of
 # every hidden agent was the dominant idle cost.
 UNWATCHED_FEED_INTERVAL = 0.25
+
+# Parsing done in one go before the feeder yields to the loop, the size of
+# each pyte.feed call within it, and the rest the feeder takes after a full
+# slice: hidden output gets at most about half of the loop, whatever its
+# rate, and keys and frames never wait more than a slice.
+FEED_BUDGET = 0.004
+FEED_SLICE = 1024
+FEED_REST = 0.004
+
+# A hidden session whose unparsed output passes the limit keeps only the
+# newest part: its screen is only read by the status scan (which wants the
+# latest screen) and read_agent_output (the last lines). Nobody waits on the
+# rest, and parsing it would cost far more than the output it explains.
+PENDING_FEED_LIMIT = 1024 * 1024
+PENDING_FEED_KEEP = 256 * 1024
 
 # How long the session waits for an exited child to become reapable after the
 # PTY reports EOF, before it falls back to killing it.
@@ -289,8 +310,13 @@ class TerminalSession:
         self._listeners: list[SessionListener] = []
         self._viewers: list[_Viewer] = []
         self._size_listeners: list[SizeListener] = []
-        self._pending_feed: list[str] = []
+        self._pending_feed: deque[str] = deque()
+        self._pending_chars = 0
         self._feed_handle: asyncio.TimerHandle | None = None
+        # Characters dropped unparsed because the feeder was too far behind.
+        self.feed_dropped = 0
+        # The feeder this session is queued on, if any.
+        self._queued_on: _Feeder | None = None
 
         self._diag_started = 0.0
         self._diag_chunks = 0
@@ -353,6 +379,7 @@ class TerminalSession:
         if emulator.returncode is not None:
             self.exit_code = emulator.returncode
         self._cancel_feed_timer()
+        self._unqueue()
         self._before_close()
         for viewer in list(self._viewers):
             if viewer.on_close is not None:
@@ -416,17 +443,75 @@ class TerminalSession:
         if text:
             self._scan_terminal_modes(text)
             self._pending_feed.append(text)
+            self._pending_chars += len(text)
         self._output_event.set()
 
         if any(viewer.watching() for viewer in self._viewers):
             self.flush()
-        elif self._pending_feed and self._feed_handle is None:
-            self._feed_handle = asyncio.get_running_loop().call_later(
-                UNWATCHED_FEED_INTERVAL, self.flush
-            )
+        elif self._pending_feed:
+            self._bound_pending()
+            if self._feed_handle is None and self._queued_on is None:
+                self._feed_handle = asyncio.get_running_loop().call_later(
+                    UNWATCHED_FEED_INTERVAL, self._feed_later
+                )
 
         for viewer in list(self._viewers):
             viewer.on_output(offset, data)
+
+    def _feed_later(self) -> None:
+        """The batching interval is over: let the loop's feeder parse it."""
+        self._feed_handle = None
+        if self._pending_feed:
+            _feeder().add(self)
+
+    def _unqueue(self) -> None:
+        if self._queued_on is not None:
+            self._queued_on.discard(self)
+
+    def _bound_pending(self) -> None:
+        """Keep at most :data:`PENDING_FEED_KEEP` characters of a backlog
+        that passed :data:`PENDING_FEED_LIMIT`, starting at a line.
+
+        What is dropped never reaches the screen or the scrollback; a
+        full-screen program's next redraw repairs whatever the cut left.
+        """
+        if self._pending_chars <= PENDING_FEED_LIMIT:
+            return
+        text = "".join(self._pending_feed)
+        cut = len(text) - PENDING_FEED_KEEP
+        newline = text.find("\n", cut)
+        if newline != -1:
+            cut = newline + 1
+        kept = text[cut:]
+        self.feed_dropped += cut
+        log.info(
+            "%s: %d characters of output left unparsed (too far behind)",
+            self._diag_name,
+            cut,
+        )
+        self._pending_feed = deque([kept]) if kept else deque()
+        self._pending_chars = len(kept)
+
+    def _feed_slice(self, limit: int) -> bool:
+        """Feed up to ``limit`` batched characters; False once nothing is
+        left."""
+        pending = self._pending_feed
+        if not pending:
+            return False
+        piece = pending[0]
+        if len(piece) <= limit:
+            pending.popleft()
+        else:
+            pending[0] = piece[limit:]
+            piece = piece[:limit]
+        self._pending_chars -= len(piece)
+        try:
+            self._stream.feed(piece)
+        except TypeError as error:
+            log.warning("could not feed: %s", error)
+        if not pending:
+            self._after_feed()
+        return bool(pending)
 
     def flush(self) -> None:
         """Feed any batched output into the screen now.
@@ -436,11 +521,13 @@ class TerminalSession:
         the size it was produced for.
         """
         self._cancel_feed_timer()
+        self._unqueue()
         if not self._pending_feed:
             return
         text = "".join(self._pending_feed)
         batched = len(self._pending_feed)
         self._pending_feed.clear()
+        self._pending_chars = 0
         feed_start = time.perf_counter() if diag.HOT else 0.0
         try:
             self._stream.feed(text)
@@ -885,6 +972,66 @@ def frame_paste(text: str, bracketed_paste: bool) -> str:
     # and let the remainder be parsed as keypresses.
     body = body.replace(BRACKETED_PASTE_END, "")
     return BRACKETED_PASTE_START + body + BRACKETED_PASTE_END
+
+
+class _Feeder:
+    """Parses hidden sessions' batched output in slices of a few
+    milliseconds, yielding to the loop between them and resting after a full
+    slice, so parsing takes at most about half the loop's time.
+
+    Sessions somebody is attached to go first (their screen may be read for
+    a snapshot); the others take turns. Status detection reads the screen a
+    little later, which it tolerates.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        # An ordered set: dict keys keep insertion order.
+        self._queue: dict[TerminalSession, None] = {}
+        self._task: asyncio.Task | None = None
+
+    def add(self, session: TerminalSession) -> None:
+        self._queue[session] = None
+        session._queued_on = self
+        if self._task is None or self._task.done():
+            self._task = self._loop.create_task(self._run())
+
+    def discard(self, session: TerminalSession) -> None:
+        self._queue.pop(session, None)
+        session._queued_on = None
+
+    async def _run(self) -> None:
+        clock = time.perf_counter
+        while self._queue:
+            deadline = clock() + FEED_BUDGET
+            order = sorted(self._queue, key=lambda s: s.viewer_count == 0)
+            for session in order:
+                if session not in self._queue:
+                    continue
+                more = True
+                while more and clock() < deadline:
+                    more = session._feed_slice(FEED_SLICE)
+                # Take turns: whoever was fed goes to the back.
+                self.discard(session)
+                if more:
+                    self.add(session)
+                if clock() >= deadline:
+                    break
+            await asyncio.sleep(FEED_REST if clock() >= deadline else 0)
+
+
+_feeders: dict[asyncio.AbstractEventLoop, _Feeder] = {}
+
+
+def _feeder() -> _Feeder:
+    """The running loop's feeder."""
+    loop = asyncio.get_running_loop()
+    feeder = _feeders.get(loop)
+    if feeder is None:
+        for old in [lp for lp in _feeders if lp.is_closed()]:
+            del _feeders[old]
+        feeder = _feeders[loop] = _Feeder(loop)
+    return feeder
 
 
 def _current_task() -> asyncio.Task | None:

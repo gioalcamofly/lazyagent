@@ -193,6 +193,57 @@ class TestOutput:
         assert session.screen.screen_text(0) == "first second"
 
     @pytest.mark.asyncio
+    async def test_a_burst_of_hidden_output_does_not_hold_the_loop(self):
+        """Batched output is parsed in slices: the loop keeps turning."""
+        session, _, _ = _agent()
+        line = b"x" * 78 + b"\r\n"
+        for _ in range(40):
+            session._on_chunk(line * 100)  # 320 kB in all
+        gaps = []
+
+        async def tick() -> None:
+            last = time.perf_counter()
+            while session._pending_feed or session._queued_on is not None:
+                await asyncio.sleep(0)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        await asyncio.sleep(UNWATCHED_FEED_INTERVAL + 0.01)
+        await asyncio.wait_for(tick(), 30)
+        assert session.screen.screen_text(0).startswith("x" * 78)
+        assert len(gaps) > 10
+        assert max(gaps) < 0.05, max(gaps)
+        assert session.feed_dropped == 0
+
+    @pytest.mark.asyncio
+    async def test_a_backlog_past_the_limit_keeps_only_its_newest_lines(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(session_mod, "PENDING_FEED_LIMIT", 1000)
+        monkeypatch.setattr(session_mod, "PENDING_FEED_KEEP", 300)
+        session, _, _ = _agent()
+        for i in range(60):
+            session._on_chunk(f"line {i:02d} ".encode() + b"y" * 30 + b"\r\n")
+        assert 0 < session.feed_dropped
+        assert session._pending_chars <= 1000
+        session.flush()
+        lines = session.tail_lines(100)
+        assert any("line 59" in text for text in lines)
+        assert not any("line 00" in text for text in lines)
+        # The kept part starts at a line: no half line at the top.
+        kept = [text for text in lines if text.strip()]
+        assert kept[0].startswith("line ")
+
+    @pytest.mark.asyncio
+    async def test_flush_still_feeds_everything_at_once(self):
+        session, _, _ = _agent()
+        session._on_chunk(b"a" * 5000)
+        session.flush()
+        assert session._pending_chars == 0
+        assert session.screen.screen_text(0) == "a" * 80
+
+    @pytest.mark.asyncio
     async def test_a_watching_viewer_gets_a_fed_screen_per_chunk(self):
         session, _, _ = _agent()
         seen = []
