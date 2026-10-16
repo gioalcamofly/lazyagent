@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from lazyagent import diagnostics as diag
@@ -48,6 +50,53 @@ def _run(cmd, **kwargs):
 _MAX_DIFF_BYTES = 64 * 1024
 _MAX_UNTRACKED_FILE_BYTES = 32 * 1024
 _DIFF_TRUNCATED = "… diff truncated (too large to display)"
+
+
+# Branches per ``gh api graphql`` request. Each one asks for up to
+# _PR_NODES_PER_BRANCH pull requests with their checks, and GitHub caps the
+# nodes a single query may touch, so a large interest set is split up.
+_PR_BATCH_SIZE = 25
+# What ``gh pr view`` itself fetches for a branch before choosing one PR. A
+# smaller page could miss the open PR behind newer closed ones, or one from
+# this repo behind PRs from forks that use the same branch name.
+_PR_NODES_PER_BRANCH = 30
+
+_PR_FIELDS = """
+fragment pr on PullRequest {
+  number title state url reviewDecision mergeable isCrossRepository
+  commits(last: 1) {
+    nodes {
+      commit {
+        statusCheckRollup {
+          contexts(first: 100) {
+            nodes {
+              __typename
+              ... on CheckRun { name status conclusion }
+              ... on StatusContext { context state }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_REMOTE_OWNER_RE = re.compile(r"[:/]([^/:]+)/[^/]+?/?$")
+
+
+@dataclass(frozen=True)
+class GithubRepo:
+    """The repository ``gh`` resolves pull requests against."""
+
+    owner: str
+    name: str
+
+
+def _remote_owner(url: str) -> str | None:
+    """Owner part of a GitHub remote URL (ssh, scp-like or https)."""
+    match = _REMOTE_OWNER_RE.search(url.strip())
+    return match.group(1) if match else None
 
 
 def _format_size(num_bytes: int) -> str:
@@ -344,7 +393,11 @@ class WorktreeManager:
             data = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             return None
+        return WorktreeManager._pr_info_from_view(data)
 
+    @staticmethod
+    def _pr_info_from_view(data: dict) -> PrInfo:
+        """Build a :class:`PrInfo` from ``gh pr view --json`` shaped data."""
         checks: list[CiCheck] = []
         for item in data.get("statusCheckRollup", []) or []:
             name = item.get("name") or item.get("context", "")
@@ -361,6 +414,211 @@ class WorktreeManager:
             review_decision=data.get("reviewDecision") or "",
             mergeable=data.get("mergeable") or "",
         )
+
+    @staticmethod
+    def _graphql_pr_to_view(node: dict) -> dict:
+        """Reshape a GraphQL ``PullRequest`` node the way ``gh pr view --json``
+        exports it, so both paths share one parser."""
+        commits = (node.get("commits") or {}).get("nodes") or []
+        rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
+        contexts = ((rollup or {}).get("contexts") or {}).get("nodes") or []
+        checks = []
+        for ctx in contexts:
+            if ctx.get("__typename") == "CheckRun":
+                checks.append({
+                    "name": ctx.get("name") or "",
+                    "status": ctx.get("status") or "",
+                    "conclusion": ctx.get("conclusion") or "",
+                })
+            else:
+                checks.append({
+                    "context": ctx.get("context") or "",
+                    "state": ctx.get("state") or "",
+                })
+        return {
+            "number": node.get("number", 0),
+            "title": node.get("title", ""),
+            "state": node.get("state", ""),
+            "statusCheckRollup": checks,
+            "url": node.get("url", ""),
+            "reviewDecision": node.get("reviewDecision") or "",
+            "mergeable": node.get("mergeable") or "",
+        }
+
+    @staticmethod
+    def _select_pr(nodes: list[dict], default_branch: str, head: str) -> dict | None:
+        """Pick the PR ``gh pr view`` would show for a same-repo branch.
+
+        Open PRs win over closed and merged ones, newest first otherwise;
+        PRs from forks that happen to use the same branch name never match;
+        and on the default branch only an open PR counts.
+        """
+        ordered = sorted(nodes, key=lambda n: n.get("state") != "OPEN")
+        for node in ordered:
+            if node.get("isCrossRepository"):
+                continue
+            if head == default_branch and node.get("state") != "OPEN":
+                continue
+            return node
+        return None
+
+    @staticmethod
+    def _parse_pr_batch(raw: str, heads: list[tuple[str, str]]) -> dict[str, PrInfo | None]:
+        """Parse a batched ``gh api graphql`` response.
+
+        ``heads`` lists ``(worktree_path, head_ref)`` in alias order: alias
+        ``pr<i>`` answers ``heads[i]``. Raises ``TypeError`` when the
+        response does not cover every alias.
+        """
+        data = json.loads(raw)
+        repo = (data.get("data") or {}).get("repository")
+        if not isinstance(repo, dict):
+            raise TypeError(f"no repository in response: {data.get('errors')}")
+        default_branch = (repo.get("defaultBranchRef") or {}).get("name") or ""
+        result: dict[str, PrInfo | None] = {}
+        for i, (path, head) in enumerate(heads):
+            conn = repo.get(f"pr{i}")
+            if not isinstance(conn, dict):
+                raise TypeError(f"missing pr{i} in response")
+            node = WorktreeManager._select_pr(conn.get("nodes") or [], default_branch, head)
+            result[path] = (
+                None if node is None
+                else WorktreeManager._pr_info_from_view(WorktreeManager._graphql_pr_to_view(node))
+            )
+        return result
+
+    @staticmethod
+    def _pr_batch_query(count: int) -> str:
+        variables = ", ".join(f"$h{i}: String!" for i in range(count))
+        aliases = "\n".join(
+            f"    pr{i}: pullRequests(headRefName: $h{i}, "
+            f"states: [OPEN, CLOSED, MERGED], first: {_PR_NODES_PER_BRANCH}, "
+            "orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...pr } }"
+            for i in range(count)
+        )
+        return (
+            f"query($owner: String!, $name: String!, {variables}) {{\n"
+            "  repository(owner: $owner, name: $name) {\n"
+            "    defaultBranchRef { name }\n"
+            f"{aliases}\n"
+            "  }\n"
+            "}\n"
+            f"{_PR_FIELDS}"
+        )
+
+    def get_github_repo(self) -> GithubRepo | None:
+        """The repository ``gh pr view`` resolves against, via ``gh repo view``."""
+        try:
+            result = _run(
+                ["gh", "repo", "view", "--json", "owner,name"],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_path,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            data = json.loads(result.stdout)
+            return GithubRepo(owner=data["owner"]["login"], name=data["name"])
+        except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def pr_head_refs(
+        self, worktrees: list[WorktreeInfo], repo: GithubRepo,
+    ) -> dict[str, str]:
+        """Head ref to look up for each worktree a batched query can answer.
+
+        ``gh pr view`` maps the current branch to a PR head through the
+        branch's tracking config. Only the plain case is reproduced here: a
+        branch that tracks nothing, or a same-named branch on a remote owned
+        by ``repo``'s owner, with no push remote configured. Worktrees left
+        out (detached, forks, renamed upstreams, ``refs/pull/*`` merges) are
+        for the caller to look up one by one with :meth:`get_pr_info`.
+        """
+        try:
+            result = _run(
+                ["git", "config", "--get-regexp", r"^(branch|remote)\."],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_path,
+            )
+        except OSError:
+            return {}
+        # Exit 1 just means no key matched.
+        if result.returncode not in (0, 1):
+            return {}
+        branch_cfg: dict[str, dict[str, str]] = {}
+        remote_urls: dict[str, str] = {}
+        push_default = False
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(" ")
+            section, _, rest = key.partition(".")
+            sub, _, var = rest.rpartition(".")
+            if section == "remote" and not sub and var == "pushdefault":
+                push_default = True
+            elif section == "remote" and var == "url":
+                remote_urls.setdefault(sub, value)
+            elif section == "branch" and sub:
+                branch_cfg.setdefault(sub, {})[var] = value
+        if push_default:
+            return {}
+
+        heads: dict[str, str] = {}
+        for wt in worktrees:
+            if not wt.branch or wt.is_bare:
+                continue
+            cfg = branch_cfg.get(wt.branch, {})
+            if "pushremote" in cfg:
+                continue
+            merge = cfg.get("merge")
+            if merge is not None and merge != f"refs/heads/{wt.branch}":
+                continue
+            remote = cfg.get("remote")
+            if remote is not None:
+                owner = _remote_owner(remote_urls.get(remote, remote))
+                if owner is None or owner.lower() != repo.owner.lower():
+                    continue
+            heads[wt.path] = wt.branch
+        return heads
+
+    def get_pr_infos(
+        self, worktrees: list[WorktreeInfo], repo: GithubRepo,
+    ) -> dict[str, PrInfo | None]:
+        """PR info for many worktrees in one ``gh api graphql`` call per
+        :data:`_PR_BATCH_SIZE` branches.
+
+        Gives the PR ``gh pr view`` would show in each worktree, whoever
+        opened it. Worktrees missing from the result need :meth:`get_pr_info`
+        (see :meth:`pr_head_refs`). Raises :class:`WorktreeManagerError` if a
+        request fails.
+        """
+        heads = list(self.pr_head_refs(worktrees, repo).items())
+        result: dict[str, PrInfo | None] = {}
+        for start in range(0, len(heads), _PR_BATCH_SIZE):
+            chunk = heads[start:start + _PR_BATCH_SIZE]
+            cmd = [
+                "gh", "api", "graphql",
+                "-f", f"query={self._pr_batch_query(len(chunk))}",
+                "-f", f"owner={repo.owner}",
+                "-f", f"name={repo.name}",
+            ]
+            for i, (_, head) in enumerate(chunk):
+                cmd += ["-f", f"h{i}={head}"]
+            try:
+                proc = _run(
+                    cmd, capture_output=True, text=True, cwd=self.repo_path, timeout=20,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                raise WorktreeManagerError(f"PR batch query failed: {e}") from e
+            if proc.returncode != 0:
+                raise WorktreeManagerError(
+                    f"PR batch query failed: {proc.stderr.strip() or proc.returncode}"
+                )
+            try:
+                result.update(self._parse_pr_batch(proc.stdout, chunk))
+            except (ValueError, AttributeError, TypeError) as e:
+                raise WorktreeManagerError(f"PR batch query: bad response: {e}") from e
+        return result
 
     @staticmethod
     def get_pr_info(worktree_path: str | Path) -> PrInfo | None:
