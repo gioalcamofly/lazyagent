@@ -1,0 +1,16 @@
+{
+  "case": "create_worktree/plain_with_ignored_extra",
+  "method": "create_worktree",
+  "params": {
+    "branch": "feat",
+    "extra": "--fast"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "branch": "feat",
+      "path": "/tmp/repo-feat",
+      "warning": "extra= was provided but this repo has no custom create command configured; the value was ignored."
+    }
+  }
+}

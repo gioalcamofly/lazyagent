@@ -1,0 +1,22 @@
+{
+  "case": "send_agent_input/unconfirmed",
+  "method": "send_agent_input",
+  "params": {
+    "text": "go",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "cursor": 1,
+      "delivery": "unconfirmed",
+      "status": "sent",
+      "status_before": "waiting",
+      "warnings": [
+        "The agent did not start working within 0s. The text may be sitting unsent in its prompt \u2014 check read_agent_output."
+      ],
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

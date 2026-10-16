@@ -1,0 +1,20 @@
+{
+  "case": "send_agent_input/unchecked",
+  "method": "send_agent_input",
+  "params": {
+    "confirm": false,
+    "text": "go",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "cursor": 1,
+      "delivery": "unchecked",
+      "status": "sent",
+      "status_before": "waiting",
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

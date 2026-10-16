@@ -1,0 +1,14 @@
+{
+  "case": "spawn_agent/error_timeout",
+  "method": "spawn_agent",
+  "params": {
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "error": {
+      "code": "TIMEOUT",
+      "message": "Operation timed out"
+    },
+    "id": "req-1"
+  }
+}

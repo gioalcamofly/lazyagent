@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lazyagent/protocol/v1/events.json",
+  "title": "lazyagent protocol v1 event payloads",
+  "description": "Each definition whose name contains a dot is an event name and describes that event's 'data'. Clients ignore events they do not know.",
+  "$defs": {
+    "git_status": {
+      "type": "object",
+      "required": ["dirty_count", "ahead", "behind"],
+      "properties": {
+        "dirty_count": {"type": "integer", "minimum": 0},
+        "ahead": {"type": "integer", "minimum": 0},
+        "behind": {"type": "integer", "minimum": 0},
+        "has_upstream": {"type": "boolean"},
+        "last_commit_subject": {"type": "string"}
+      }
+    },
+    "ci_check": {
+      "type": "object",
+      "required": ["name", "status", "conclusion"],
+      "properties": {
+        "name": {"type": "string"},
+        "status": {"type": "string"},
+        "conclusion": {"type": "string"}
+      }
+    },
+    "pr_info": {
+      "type": "object",
+      "required": ["number", "title", "state", "checks"],
+      "properties": {
+        "number": {"type": "integer"},
+        "title": {"type": "string"},
+        "state": {"type": "string", "description": "OPEN, CLOSED or MERGED"},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/ci_check"}},
+        "url": {"type": "string"},
+        "review_decision": {"type": "string"},
+        "mergeable": {"type": "string"}
+      }
+    },
+    "stream_geometry": {
+      "type": "object",
+      "required": ["stream_id", "rows", "cols", "offset"],
+      "properties": {
+        "stream_id": {"type": "integer", "minimum": 0},
+        "rows": {"type": "integer", "minimum": 1},
+        "cols": {"type": "integer", "minimum": 1},
+        "offset": {"type": "integer", "minimum": 0, "description": "Output offset at which the change applies."}
+      }
+    },
+
+    "agent.status": {
+      "type": "object",
+      "description": "An agent status transition; AgentEvent.to_dict(). 'seq' here is the list_events cursor, distinct from the envelope seq.",
+      "required": ["seq", "time", "worktree_path", "agent_id", "label", "status", "previous_status", "detail"],
+      "properties": {
+        "seq": {"type": "integer", "minimum": 1},
+        "time": {"type": "number", "description": "Unix wall-clock seconds."},
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "label": {"type": "string"},
+        "status": {"anyOf": [{"$ref": "methods.json#/$defs/agent_status"}, {"const": "exited"}]},
+        "previous_status": {"anyOf": [{"$ref": "methods.json#/$defs/agent_status"}, {"const": "exited"}]},
+        "detail": {"type": "string"}
+      }
+    },
+    "agent.spawned": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "session_id", "label", "session_name", "kind"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "label": {"type": "string"},
+        "session_name": {"type": "string"},
+        "kind": {"enum": ["agent", "orchestrator", "shell"]}
+      }
+    },
+    "agent.exited": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "session_id"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]}
+      }
+    },
+    "worktrees.changed": {"$ref": "methods.json#/$defs/list_worktrees.result"},
+    "git_status.updated": {
+      "type": "object",
+      "description": "Map of worktree path to its git status.",
+      "additionalProperties": {"$ref": "#/$defs/git_status"}
+    },
+    "pr_info.updated": {
+      "type": "object",
+      "required": ["path", "pr_info"],
+      "properties": {
+        "path": {"type": "string"},
+        "pr_info": {"anyOf": [{"$ref": "#/$defs/pr_info"}, {"type": "null"}]}
+      }
+    },
+    "stream.resized": {"$ref": "#/$defs/stream_geometry"},
+    "stream.reset": {"$ref": "#/$defs/stream_geometry"},
+    "engine.notice": {
+      "type": "object",
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": {"enum": ["information", "warning", "error"]},
+        "message": {"type": "string"}
+      }
+    },
+    "job.output": {
+      "type": "object",
+      "required": ["job_id", "text"],
+      "properties": {
+        "job_id": {"type": "string"},
+        "text": {"type": "string", "description": "Output chunk, UTF-8 decoded with replacement."}
+      }
+    },
+    "job.finished": {
+      "type": "object",
+      "required": ["job_id", "exit_code"],
+      "properties": {
+        "job_id": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"], "description": "null when the job was killed by a signal."}
+      }
+    },
+    "engine.shutdown": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "reason": {"type": "string"}
+      }
+    }
+  }
+}

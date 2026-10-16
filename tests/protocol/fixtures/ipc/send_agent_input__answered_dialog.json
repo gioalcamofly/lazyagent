@@ -1,0 +1,23 @@
+{
+  "case": "send_agent_input/answered_dialog",
+  "method": "send_agent_input",
+  "params": {
+    "agent_id": "a1",
+    "text": "1",
+    "worktree_path": "/tmp/repo"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "cursor": 1,
+      "delivery": "confirmed",
+      "status": "sent",
+      "status_before": "waiting_for_approval",
+      "warnings": [
+        "The agent was waiting_for_approval (detail: 'needs approval'), so the text answered that dialog instead of starting a new prompt."
+      ],
+      "worktree_path": "/tmp/repo"
+    }
+  }
+}

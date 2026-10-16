@@ -1,0 +1,27 @@
+{
+  "case": "list_events/exited_agent",
+  "method": "list_events",
+  "params": {
+    "agent_id": "a1",
+    "since": 1
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "cursor": 2,
+      "events": [
+        {
+          "agent_id": "a1",
+          "detail": "",
+          "label": "",
+          "previous_status": "running",
+          "seq": 2,
+          "status": "exited",
+          "time": 1700000000.0,
+          "worktree_path": "/tmp/repo"
+        }
+      ],
+      "truncated": false
+    }
+  }
+}

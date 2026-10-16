@@ -1,0 +1,20 @@
+{
+  "case": "spawn_agent/spawned",
+  "method": "spawn_agent",
+  "params": {
+    "instruction": "fix the bug",
+    "label": "fixer",
+    "resume_mode": "new",
+    "skip_permissions": true,
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a2",
+      "cursor": 0,
+      "status": "spawned",
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

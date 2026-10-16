@@ -1,0 +1,15 @@
+{
+  "case": "create_worktree/plain",
+  "method": "create_worktree",
+  "params": {
+    "base_branch": "main",
+    "branch": "feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "branch": "feat",
+      "path": "/tmp/repo-feat"
+    }
+  }
+}

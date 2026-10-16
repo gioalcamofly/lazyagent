@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lazyagent/protocol/v1/methods.json",
+  "title": "lazyagent protocol v1 method params and results",
+  "description": "Definitions named '<method>.params' and '<method>.result' for the ten methods inherited from the legacy IPC server. Fields marked 'v1' are additions the legacy server does not send.",
+  "$defs": {
+    "agent_status": {
+      "enum": ["no_agent", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
+    },
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "worktree_path": {"type": "string", "minLength": 1},
+    "agent_id": {"type": "string", "description": "Optional selector: may be omitted when the worktree has exactly one agent."},
+    "git_status": {
+      "type": "object",
+      "required": ["dirty_count", "ahead", "behind"],
+      "properties": {
+        "dirty_count": {"type": "integer", "minimum": 0},
+        "ahead": {"type": "integer", "minimum": 0},
+        "behind": {"type": "integer", "minimum": 0}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["agent_id", "label", "session_name", "status", "confidence", "detail"],
+      "properties": {
+        "agent_id": {"type": "string"},
+        "label": {"type": "string"},
+        "session_name": {"type": "string"},
+        "status": {"$ref": "#/$defs/agent_status"},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "detail": {"type": "string"},
+        "session_id": {"type": "string", "description": "v1"},
+        "kind": {"enum": ["agent", "orchestrator"], "description": "v1"},
+        "size": {
+          "type": "object",
+          "description": "v1: current PTY size",
+          "required": ["rows", "cols"],
+          "properties": {
+            "rows": {"type": "integer", "minimum": 1},
+            "cols": {"type": "integer", "minimum": 1}
+          }
+        },
+        "attached_clients": {"type": "integer", "minimum": 0, "description": "v1"}
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "required": ["path", "branch", "head", "is_main", "is_bare", "agent_status", "agents"],
+      "properties": {
+        "path": {"type": "string"},
+        "branch": {"type": ["string", "null"], "description": "null for a detached HEAD"},
+        "head": {"type": "string"},
+        "is_main": {"type": "boolean"},
+        "is_bare": {"type": "boolean"},
+        "agent_status": {"$ref": "#/$defs/agent_status", "description": "Roll-up over agents, kept for back-compat."},
+        "agents": {"type": "array", "items": {"$ref": "#/$defs/agent"}},
+        "git_status": {"$ref": "#/$defs/git_status", "description": "Present once the status has been computed."}
+      }
+    },
+
+    "list_worktrees.params": {"type": "object", "properties": {}},
+    "list_worktrees.result": {"type": "array", "items": {"$ref": "#/$defs/worktree"}},
+
+    "create_worktree.params": {
+      "type": "object",
+      "required": ["branch"],
+      "properties": {
+        "branch": {"type": "string", "minLength": 1},
+        "base_branch": {"type": "string", "default": "main"},
+        "extra": {"type": "string", "description": "Only used by a configured custom create command."}
+      }
+    },
+    "create_worktree.result": {
+      "type": "object",
+      "required": ["path", "branch"],
+      "properties": {
+        "path": {"type": "string"},
+        "branch": {"type": "string"},
+        "custom_command": {"type": "boolean", "description": "True when a custom create command ran; path is then predicted."},
+        "warning": {"type": "string"},
+        "job_id": {"type": "string", "description": "v1: custom create runs as an engine job (job.output / job.finished)."}
+      }
+    },
+
+    "remove_worktree.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "force": {"type": "boolean", "default": false}
+      }
+    },
+    "remove_worktree.result": {
+      "type": "object",
+      "required": ["removed"],
+      "properties": {
+        "removed": {"type": "string"},
+        "job_id": {"type": "string", "description": "v1: custom remove runs as an engine job."}
+      }
+    },
+
+    "spawn_agent.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "instruction": {"type": ["string", "null"]},
+        "initial_prompt": {"type": ["string", "null"], "description": "Deprecated alias of instruction."},
+        "skip_permissions": {"type": "boolean", "default": true},
+        "label": {"type": ["string", "null"]},
+        "resume_mode": {"enum": ["new", "pick", "last"], "default": "new"},
+        "kind": {"enum": ["agent", "orchestrator"], "default": "agent", "description": "v1"},
+        "env": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "v1: environment of the calling client; the agent inherits it."
+        }
+      }
+    },
+    "spawn_agent.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "status", "cursor"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "status": {"const": "spawned"},
+        "cursor": {"type": "integer", "minimum": 0, "description": "list_events cursor taken before the spawn."},
+        "session_id": {"type": "string", "description": "v1"}
+      }
+    },
+
+    "stop_agent.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "agent_id": {"$ref": "#/$defs/agent_id"}
+      }
+    },
+    "stop_agent.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "status"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "status": {"const": "stopped"}
+      }
+    },
+
+    "get_agent_status.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "agent_id": {"$ref": "#/$defs/agent_id"}
+      }
+    },
+    "get_agent_status.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "status", "detail"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string", "description": "Empty when status is no_agent."},
+        "status": {"$ref": "#/$defs/agent_status"},
+        "confidence": {"$ref": "#/$defs/confidence", "description": "Absent when status is no_agent."},
+        "detail": {"type": "string"}
+      }
+    },
+
+    "read_agent_output.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "lines": {"type": "integer", "minimum": 0, "default": 50}
+      }
+    },
+    "read_agent_output.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "lines", "total_lines"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "lines": {"type": "array", "items": {"type": "string"}, "description": "Oldest first."},
+        "total_lines": {"type": "integer", "minimum": 0}
+      }
+    },
+
+    "send_agent_input.params": {
+      "type": "object",
+      "required": ["worktree_path", "text"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "text": {"type": "string", "minLength": 1},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "confirm": {"type": "boolean", "default": true}
+      }
+    },
+    "send_agent_input.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "status", "status_before", "cursor", "delivery"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "status": {"const": "sent"},
+        "status_before": {"$ref": "#/$defs/agent_status"},
+        "cursor": {"type": "integer", "minimum": 0},
+        "delivery": {"enum": ["confirmed", "unconfirmed", "busy", "unchecked"]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+
+    "list_agents.params": {
+      "type": "object",
+      "required": ["worktree_path"],
+      "properties": {
+        "worktree_path": {"$ref": "#/$defs/worktree_path"}
+      }
+    },
+    "list_agents.result": {
+      "type": "object",
+      "required": ["worktree_path", "agents"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agents": {"type": "array", "items": {"$ref": "#/$defs/agent"}}
+      }
+    },
+
+    "list_events.params": {
+      "type": "object",
+      "properties": {
+        "since": {"type": ["integer", "null"], "minimum": 0, "description": "Cursor; omitted or null means from now."},
+        "worktree_path": {"type": ["string", "null"]},
+        "agent_id": {"type": ["string", "null"]},
+        "statuses": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "null"}
+          ],
+          "description": "Status values or group names (idle, blocked, finished, not_running)."
+        }
+      }
+    },
+    "list_events.result": {
+      "type": "object",
+      "required": ["events", "cursor", "truncated"],
+      "properties": {
+        "events": {"type": "array", "items": {"$ref": "events.json#/$defs/agent.status"}},
+        "cursor": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean", "description": "True when events after since were already evicted."}
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "case": "create_worktree/error_worktree_manager",
+  "method": "create_worktree",
+  "params": {
+    "branch": "feat"
+  },
+  "response": {
+    "error": {
+      "code": "WORKTREE_ERROR",
+      "message": "branch exists"
+    },
+    "id": "req-1"
+  }
+}
