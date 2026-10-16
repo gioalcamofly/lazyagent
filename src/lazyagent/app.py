@@ -221,7 +221,10 @@ class LazyAgent(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="sidebar"):
-            yield WorktreeList()
+            worktree_list = WorktreeList()
+            # Hidden in hosted mode: it must not hold the keyboard either.
+            worktree_list.can_focus = self.host is None
+            yield worktree_list
             yield PrStatusBar(id="pr-status-bar")
         yield CenterPanel(engine=self.engine)
         yield Footer()
@@ -691,12 +694,6 @@ class LazyAgent(App):
         if self.host is not None and self.engine.v1_socket_path is not None:
             self._announce_to_host()
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "focus_sidebar":
-            # Hidden in hosted mode; the key then goes to the terminal.
-            return self.host is None
-        return True
-
     async def _run_ui_commands(self) -> None:
         """Carry out the host's ``ui.command`` events, one at a time."""
         assert self._ui_commands is not None
@@ -730,7 +727,9 @@ class LazyAgent(App):
             return
         if not await self._show(path):
             return
-        if command == "focus_agent":
+        if command in ("select_worktree", "select_orchestrator"):
+            self._focus_shown()
+        elif command == "focus_agent":
             self._focus_agent(data.get("agent_id"))
         elif command == "open_shell":
             self.action_focus_terminal()
@@ -757,6 +756,27 @@ class LazyAgent(App):
                 return False
             await asyncio.sleep(0.02)
         return True
+
+    def _focus_shown(self) -> None:
+        """Give the keyboard to what a selection shows: the active agent,
+        else the worktree shell. The host's selection is the click it
+        stands for."""
+        center = self.query_one(CenterPanel)
+        if self._orchestrator_selected:
+            orchestrator = center.get_orchestrator_panel()
+            if orchestrator is not None and orchestrator.agent_terminal is not None:
+                orchestrator.agent_terminal.focus()
+            return
+        wt = self._selected_worktree
+        panel = center.get_panel(wt.path) if wt is not None else None
+        if panel is None:
+            return
+        terminal = panel.agent_terminal
+        if terminal is not None:
+            panel.switch_to_tab(f"agent-tab-{terminal.session.agent_id}")
+            terminal.focus()
+        else:
+            self.action_focus_terminal()
 
     def _focus_agent(self, agent_id: str | None) -> None:
         if agent_id is None or self._orchestrator_selected:
@@ -879,6 +899,12 @@ class LazyAgent(App):
         self.notify("Orchestrator agent stopped")
 
     def action_focus_sidebar(self) -> None:
+        if self.host is not None:
+            # No sidebar to go to: leave the terminal, so q, s, x, c and d
+            # reach the app again.
+            self.set_focus(None)
+            self._publish_view()
+            return
         self.query_one(WorktreeList).focus()
 
     def action_focus_agent(self) -> None:

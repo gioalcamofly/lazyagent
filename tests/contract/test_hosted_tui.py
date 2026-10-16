@@ -59,8 +59,11 @@ async def test_host_selects_a_worktree_and_opens_its_shell(tmp_path, monkeypatch
         try:
             assert set(UI_COMMAND_METHODS) <= set(client.hello.capabilities)
             await checked(client, "ui.select_worktree", worktree_path=app.feat)
-            await _view(client, worktree_path=app.feat, orchestrator=False)
+            # No agent yet: the keyboard goes to the shell.
+            await _view(client, worktree_path=app.feat, focus="shell")
             assert app._selected_worktree.path == app.feat
+
+            app.action_focus_diff()
 
             await checked(client, "ui.open_shell")
             await _view(client, worktree_path=app.feat, focus="shell")

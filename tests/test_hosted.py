@@ -65,15 +65,20 @@ async def test_plain_layout_is_unchanged(tmp_path, monkeypatch):
         assert not app.engine.ui_attached
 
 
-async def test_ctrl_k_does_not_focus_the_hidden_sidebar(tmp_path, monkeypatch):
+async def test_ctrl_k_leaves_the_terminal_instead_of_focusing_the_sidebar(
+    tmp_path, monkeypatch
+):
     app = make_app(tmp_path, monkeypatch, hosted=True)
     async with app.run_test() as pilot:
         await _show(app, pilot, app.feat)
         app.query_one("#terminal-widget").focus()
         await pilot.press("ctrl+k")
-        assert not isinstance(app.focused, WorktreeList)
-        assert app.check_action("focus_sidebar", ()) is False
+        assert app.focused is None
+        assert not app.query_one(WorktreeList).can_focus
+        assert app.engine.ui_view["focus"] == "none"
         assert app.engine.ui_attached
+        await pilot.press("q")
+        await until(lambda: not app.engine.ui_attached)  # q quit: engine stopped
 
 
 def _announcement(app) -> str:
