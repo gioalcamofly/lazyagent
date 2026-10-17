@@ -870,7 +870,15 @@ class V1Server:
             offset = from_offset
             result["mode"] = "tail"
         else:
-            offset, snapshot = session.snapshot()
+            # The screen as parsed so far, exact at its offset; the backlog the
+            # engine has not parsed yet follows as output frames, for the
+            # client to parse (nothing is parsed here, so an attach right
+            # after a burst costs no more than any other). A backlog further
+            # behind than a raw tail may reach is cut first, as the feeder
+            # cuts one it falls far behind on: the snapshot's scrollback would
+            # not have reached back that far anyway.
+            session.bound_pending(min(TAIL_LIMIT, self.stream_queue_limit // 2))
+            offset, snapshot = session.snapshot(flush=False)
             result["mode"] = "snapshot"
             result["snapshot"] = snapshot
         result["offset"] = offset
@@ -972,6 +980,10 @@ class V1Server:
 
     async def handle_resize(self, conn: _Connection, params: dict) -> Any:
         session = self._session(params)
+        # The backlog is parsed at the size it was produced for, in slices,
+        # before anything is decided: nothing awaits between the ownership
+        # check and the resize.
+        await session.catch_up()
         state = self._sessions.get(session.session_id)
         if state is None or state.owner is not conn:
             raise ProtocolError(
@@ -985,6 +997,8 @@ class V1Server:
         session = self._session(params)
         if ("rows" in params) != ("cols" in params):
             raise ValueError("rows and cols go together")
+        if "rows" in params:
+            await session.catch_up()  # as for resize
         self.claim(session, conn)
         if "rows" in params:
             self._apply_size(session, conn, params)

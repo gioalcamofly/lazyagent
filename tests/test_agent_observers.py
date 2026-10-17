@@ -392,3 +392,20 @@ class TestJsonlPollIsCheap:
         with log_path.open("a") as handle:
             handle.write(json.dumps({"hook_event_name": "UserPromptSubmit"}) + "\n")
         assert [e.detail for e in observer.poll()] == ["prompt submitted"]
+
+
+def test_only_screen_reading_observers_need_the_screen(tmp_path):
+    claude = ClaudeHooksObserver(str(tmp_path / "hooks.jsonl"))
+    assert AgentObserver().needs_screen is False
+    assert claude.needs_screen is False
+    assert GeminiPromptObserver().needs_screen is True
+    assert CompositeObserver([claude]).needs_screen is False
+    assert CompositeObserver([claude, GeminiPromptObserver()]).needs_screen is True
+
+
+def test_a_composite_reports_its_childs_conversation_id(tmp_path):
+    claude = ClaudeHooksObserver(str(tmp_path / "hooks.jsonl"))
+    composite = CompositeObserver([AgentObserver(), claude])
+    assert composite.conversation_id is None
+    claude.conversation_id = "c-1"
+    assert composite.conversation_id == "c-1"

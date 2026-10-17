@@ -24,6 +24,11 @@ class AgentObserver:
     #: (Claude's ``session_id``); a restore resumes exactly that one.
     conversation_id: str | None = None
 
+    #: Whether :meth:`on_screen_update` reads the screen. Those that get
+    #: their status from hooks or logs do not, and the session then skips
+    #: rendering the screen to text for them (proposal 0005).
+    needs_screen: bool = False
+
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return []
 
@@ -54,6 +59,16 @@ class CompositeObserver(AgentObserver):
 
     def __init__(self, observers: list[AgentObserver]) -> None:
         self._observers = observers
+
+    @property
+    def needs_screen(self) -> bool:  # type: ignore[override]
+        return any(observer.needs_screen for observer in self._observers)
+
+    @property
+    def conversation_id(self) -> str | None:  # type: ignore[override]
+        return next(
+            (o.conversation_id for o in self._observers if o.conversation_id), None
+        )
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return _flatten(observer.on_process_started() for observer in self._observers)
@@ -336,6 +351,8 @@ class GeminiTelemetryObserver(JsonlTailObserver):
 
 class GeminiPromptObserver(AgentObserver):
     """Observer that detects the Gemini CLI prompt (e.g., 'gemini >') on the screen."""
+
+    needs_screen = True
 
     def on_screen_update(
         self,

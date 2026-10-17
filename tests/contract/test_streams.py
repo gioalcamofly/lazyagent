@@ -175,3 +175,28 @@ async def test_the_stream_closes_with_its_session(harness, client):
 async def test_attach_unknown_session(client):
     response = await client.call("attach_stream", {"session_id": "nope"})
     assert response.error.code == "VALIDATION_ERROR"
+
+
+async def test_a_snapshot_right_after_a_hidden_burst_is_exact(harness, client):
+    """Nobody watches while the agent prints; the attach that follows may
+    get a screen the engine has not caught up on, at the offset it is exact
+    at, and the rest as frames: rendered together they are the engine's
+    screen, with no gap."""
+    agent = await spawn(client, harness.feat)
+    driver = await harness.connect()
+    raw = Output()
+    shell = await driver.attach(agent["session_id"], raw)
+    driver.send_input(shell.stream_id, b"spew 400000\r")
+    await until(lambda: b"done" in raw.data[-4096:], timeout=60)
+    output = Output()
+    stream = await client.attach(agent["session_id"], output)
+    assert _attach_result(stream)["mode"] == "snapshot"
+    await until(lambda: b"done" in output.data[-4096:] or b"done" in (
+        stream.snapshot or ""
+    ).encode(), timeout=60)
+    await wait_for_text(client, agent, "your turn>", timeout=60)
+    await asyncio.sleep(0.2)
+    assert output.contiguous_from(stream.offset) and stream.gaps == []
+    rendered = text_lines(render(stream, output))
+    engine = await screen_lines(client, agent, lines=24)
+    assert rendered[-len(engine) :] == engine
