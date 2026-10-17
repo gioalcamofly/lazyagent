@@ -478,8 +478,9 @@ a { color: var(--primary); }
 
 /* Diff view */
 .diff-view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
-.diff-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+.diff-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
 .diff-head .spacer { flex: 1; }
+.diff-head > * { white-space: nowrap; }
 .diff-head input.base { font-family: var(--mono); padding: 2px 6px; }
 .diff-head label.inline { display: flex; gap: 6px; align-items: center; }
 .seg { display: flex; }
@@ -488,7 +489,7 @@ a { color: var(--primary); }
 .seg button:last-child { border-radius: 0 4px 4px 0; }
 .seg button.on { background: var(--primary); border-color: var(--primary); color: #fff; }
 .diff-body { flex: 1; display: flex; min-height: 0; }
-.diff-files { width: 260px; flex: none; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); padding: 4px 0; }
+.diff-files { width: clamp(150px, 22%, 260px); flex: none; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); padding: 4px 0; }
 .dfile { display: flex; gap: 6px; align-items: baseline; width: 100%; border: none; border-radius: 0; background: none; padding: 3px 10px; text-align: left; font-size: 12px; }
 .dfile:hover { background: var(--panel); }
 .dname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); }
