@@ -1,6 +1,6 @@
 # 0005. Hook-driven status: skip the screen scan where it isn't needed
 
-- **Status:** Proposed
+- **Status:** Partly landed in E1 (ui-plan §8a): observers declare `needs_screen` and the scan skips the screen render for hook- and log-driven agents. The lazy headless emulator is not done (E2 makes parsing cheap instead)
 - **Design refs:** [engine-split.md](../design/engine-split.md) §0e, §3a, K1, §6 (PR 4)
 
 ## Problem

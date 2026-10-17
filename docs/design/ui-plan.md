@@ -639,6 +639,25 @@ Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `t
   B5 meets the budget because the PR 7 feeder keeps only the newest 256 KiB of a backlog it is more than 1 MiB behind on, so the engine's pyte no longer throttles the agent; B8's first attach pays the flush of that bounded backlog.
 - **Not done here:** the nightly perf job (Q16: local only), the multi-agent grid (U6), E1/E2 (the engine side already holds B5/B8 well enough after PR 7).
 
+#### E1: cheap engine emulation fixes (2026-10-17)
+
+- **Attach parses nothing (B8).** The feeder's backlog is kept as raw bytes, and a session knows the exact output offset its screen has reached (`parsed_offset`: bytes handed to the screen's own incremental decoder, minus a UTF-8 sequence it still holds). `attach_stream` answers with a snapshot of the screen **as parsed so far**, at that offset, and the unparsed backlog follows as ordinary output frames, which the client parses (xterm.js at 42-52 MB/s). Snapshot plus frames stay gap-free and render the engine's screen (new contract test; session tests with sequences split across chunks and slices, mutation-checked). A backlog further behind than a raw tail may reach (512 KiB, half the stream queue) is first cut at a line, as the PR 7 feeder already cuts one it falls 1 MiB behind on: the snapshot's 2,000 lines of scrollback would not have reached back that far.
+- **No blocking flush on the request paths:** `read_agent_output` (MCP), `resize` and `claim_size` with a size first **catch up** in the feeder's slices, yielding between them, up to the output there was when called (a chatty child cannot keep it going). In-process paths (a TUI view watching, a local resize) still flush synchronously; their backlog is small because a watching viewer is fed per chunk.
+- **Shorter feeder turns (B2):** `FEED_BUDGET` 4 → 1 ms, `FEED_SLICE` 1,024 → 512 bytes, `FEED_REST` 4 → 1 ms (the same 50% duty). A key's echo crosses the loop several times and could wait behind a 4 ms turn at each. Hidden-output throughput is unchanged (1.3-1.4 MB/s wall either way, agent-like output, one session).
+- **Skip-scan ([0005](../proposals/0005-claude-status-from-hooks.md), the cheap half):** observers declare `needs_screen` (only `GeminiPromptObserver`); for hook- or log-driven agents (Claude, Codex) the scan no longer renders the screen to text, and keeps the hook poll. The lazy headless emulator (the other half) is not done: E2 makes parsing cheap instead.
+- **Not done:** lazy scrollback-row encoding. Rows are encoded at scroll time on purpose (screen.py: encoded rows are GC-untracked; raw ones cost 583 MB RSS and ~560 ms GC pauses with six full terminals), and attach no longer pays for parsing, which was the cost.
+- **Measured** (`pytest -m perf`, this laptop; before = develop 0f7b3e7 with the new benches, 3 alternating runs each):
+
+  | | before | after |
+  |---|---|---|
+  | B8 first attach right after a 5 MB hidden burst (`tests/perf/test_attach.py`) | 304-1,613 ms, the loop blocked as long | **3.4-5.1 ms** |
+  | B8 attach, the 20 rounds after it, p95 | 3.2-5.4 ms | 3.1-3.8 ms |
+  | Loop stall around that first attach | = the attach (0.3-1.6 s) | 7-8 ms, the same as during the burst itself (reading and framing 64 KiB PTY chunks for the stream that watches it), so the attach adds nothing |
+  | B2 at the engine: echo next to 5 hidden agents at 200 kB/s, p50 / p95 (`tests/perf/test_echo_busy.py`) | 0.6-0.7 / 5.4-5.8 ms | 0.6-0.7 / **2.0-2.5 ms** (quiet machine); 1.5-1.6 / 2.0-2.1 ms at load 26 |
+  | B3 echo, idle, p95 | 0.7-1.5 ms | 0.6-1.5 ms |
+
+  B8 is met with a wide margin even right after a burst; B2's engine share is more than halved. The browser-side B2 (§7d-1: 10 agents, 8 printing ~1,000 lines/s hidden, ≤ 25 ms p95) was not re-measured end to end here.
+
 ### 8b. Fit with PRs 7-9 and §6's web phase
 
 | Engine-split item | Relation |
