@@ -300,3 +300,48 @@ async def test_an_unchanged_worktree_keeps_its_object(page):
         [wt("/r/a", [agent("1")]), wt("/r/b", [agent("2")]), wt("/r/b", [agent("2", "waiting")])],
     )
     assert result == {"same": True, "keptA": True, "newB": True, "status": "waiting"}
+
+
+async def test_remove_guard_and_default_base(page):
+    result = await page.evaluate(
+        """async () => {
+        const d = await import('/components/dialogs.js');
+        const wt = (extra) => ({path: '/r/x', branch: 'x', is_main: false, agents: [], ...extra});
+        return {
+          none: d.removeGuard(undefined),
+          main: d.removeGuard(wt({is_main: true})),
+          running: d.removeGuard(wt({agents: [{status: 'running'}]})),
+          waiting: d.removeGuard(wt({agents: [{status: 'waiting_for_user'}]})),
+          done: d.removeGuard(wt({agents: [{status: 'completed'}, {status: 'failed'}]})),
+          ok: d.removeGuard(wt()),
+          base: [
+            d.defaultBase({default_branch: 'master'}, [{is_main: true, branch: 'main'}]),
+            d.defaultBase({default_branch: 'develop'}, [{is_main: true, branch: 'main'}, {branch: 'develop'}]),
+            d.defaultBase(null, []),
+          ],
+        };
+    }"""
+    )
+    assert result["none"] and "main worktree" in result["main"]
+    assert "stop it first" in result["running"] and "stop it first" in result["waiting"]
+    assert result["done"] is None and result["ok"] is None
+    assert result["base"] == ["main", "develop", "main"]
+
+
+async def test_job_events(page):
+    result = await page.evaluate(
+        "async () => {" + STORE + """
+        const { JOB_OUTPUT_LIMIT } = await import('/lib/store.js');
+        store.applyEvent('job.started', {job_id: 'j1', title: 'Create worktree x', command: 'make'});
+        const opened = store.drawerOpen.value;
+        store.applyEvent('job.output', {job_id: 'j1', text: 'a'.repeat(JOB_OUTPUT_LIMIT)});
+        store.applyEvent('job.output', {job_id: 'j1', text: 'END'});
+        store.applyEvent('job.finished', {job_id: 'j1', exit_code: 2});
+        const job = store.jobs.value[0];
+        return {opened, length: job.text.length, tail: job.text.slice(-3), exit: job.exitCode, toasts};
+    }"""
+    )
+    assert result["opened"] is True
+    assert result["length"] == 256 * 1024 and result["tail"] == "END"
+    assert result["exit"] == 2
+    assert result["toasts"] == [["Create worktree x: failed (2)", "error"]]
