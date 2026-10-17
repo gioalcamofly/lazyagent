@@ -734,12 +734,21 @@ class LazyAgent(App):
             self._view_hold += 1
             try:
                 await self._carry_out(data)
+                # Widget.focus only queues the move on the app, while the
+                # settle timer runs in its own task: a busy app would let it
+                # announce the view before the focus lands.
+                await self._drain_messages()
             except Exception:
                 log.exception("ui.command %r failed", data)
             finally:
                 self._view_hold -= 1
-            # The focus moves the command asked for land after it returns.
             self._publish_view()
+
+    async def _drain_messages(self) -> None:
+        """Wait until the app has handled the messages queued so far."""
+        drained = asyncio.Event()
+        if self.call_later(drained.set):
+            await drained.wait()
 
     async def _carry_out(self, data: dict) -> None:
         command = data.get("command")
