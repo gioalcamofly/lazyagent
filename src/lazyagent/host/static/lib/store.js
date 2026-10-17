@@ -7,8 +7,36 @@
 // is then one re-render, and a get_sidebar_state answer can never be applied
 // on top of events that came after it.
 
-import { signal, batch } from "./html.js";
-import { ORCHESTRATOR_KEY, agentLabel, placeName } from "./format.js";
+import { signal, computed, batch } from "./html.js";
+import { ORCHESTRATOR_KEY, agentLabel, ciSummary, placeName } from "./format.js";
+import { attentionItems, kindOfStatus } from "./attention.js";
+
+function loadJson(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return value && typeof value === "object" ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Not persisted: it holds for this page load.
+  }
+}
+
+// Desktop notifications per queue kind (settings; on unless turned off).
+export const NOTIFY_KINDS = {
+  approval: "Needs approval",
+  question: "Asks a question",
+  hanged: "May be hanged",
+  failed: "Failed or exited",
+  done: "Finished its turn",
+  ci: "CI failed",
+};
 
 export const SIDEBAR_EVENTS = [
   "worktrees.changed",
@@ -92,7 +120,81 @@ export function createStore() {
     // {id, title, command, text, exitCode (undefined while running)}.
     jobs: signal([]),
     drawerOpen: signal(false),
+    // Unexpected exits seen by this page: {key, agent_id, label, exit_code, at}.
+    exits: signal([]),
+    // Queue items dismissed (by occurrence) or snoozed (by id, until a time).
+    dismissed: signal(loadJson("lazyagent-dismissed", {})),
+    snoozed: signal(loadJson("lazyagent-snoozed", {})),
+    // The queue item shown on the right of the attention view.
+    attentionPick: signal(null),
+    notifySettings: signal(loadJson("lazyagent-notify", {})),
+    // Bumped by a timer so snoozes run out without an event.
+    clock: signal(Date.now()),
+    // The PR/CI panel of the worktree view, and get_pr_info's "fetched".
+    prPanel: signal(false),
+    prFetched: signal({}),
+    // True once a sidebar state has been applied.
+    loaded: signal(false),
   };
+
+  // When each queue condition was first seen: kept while it holds, dropped
+  // when it clears, so a later return is a new occurrence (a dismiss of the
+  // old one does not hide it).
+  // Kept in this browser too, so a dismissed item stays dismissed after a
+  // reload (its occurrence is the same).
+  const since = loadJson("lazyagent-since", {});
+  let saveTimer = null;
+  // At most once a second: localStorage writes are synchronous.
+  const scheduleSaveSince = () => {
+    if (saveTimer !== null) return;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      saveJson("lazyagent-since", since);
+    }, 1000);
+  };
+  store.attention = computed(() => {
+    // Nothing is known before the first sidebar (and an empty world would
+    // forget every first-seen time).
+    if (!store.loaded.value) return [];
+    store.clock.value; // re-derived on its tick, for snoozes running out
+    const now = Date.now();
+    const items = attentionItems({
+      worktrees: store.worktrees.value,
+      orchestrator: store.orchestrator.value,
+      prInfo: store.prInfo.value,
+      exits: store.exits.value,
+      jobs: store.jobs.value,
+      since,
+      dismissed: store.dismissed.value,
+      snoozed: store.snoozed.value,
+      now,
+    });
+    scheduleSaveSince();
+    return items;
+  });
+  store.attentionSince = since;
+
+  store.dismiss = (item) => {
+    const dismissed = { ...store.dismissed.value, [item.occurrence]: Date.now() };
+    // Keep the newest 500.
+    const keys = Object.keys(dismissed);
+    if (keys.length > 500) for (const k of keys.slice(0, keys.length - 500)) delete dismissed[k];
+    store.dismissed.value = dismissed;
+    saveJson("lazyagent-dismissed", dismissed);
+    if (item.kind === "exited") store.exits.value = store.exits.value.filter((e) => e !== item.exit);
+  };
+  store.snooze = (item, ms) => {
+    const now = Date.now();
+    const snoozed = Object.fromEntries(Object.entries(store.snoozed.value).filter(([, until]) => until > now));
+    snoozed[item.id] = now + ms;
+    store.snoozed.value = snoozed;
+    saveJson("lazyagent-snoozed", snoozed);
+  };
+  store.setNotify = (kind, on) => {
+    store.notifySettings.value = { ...store.notifySettings.value, [kind]: on };
+    saveJson("lazyagent-notify", store.notifySettings.value);
+  };
+  store.notifies = (kind) => store.notifySettings.value[kind] !== false;
 
   // ------------------------------------------------------------ queue
 
@@ -141,6 +243,7 @@ export function createStore() {
     store.orchestrator.value = sidebar.orchestrator.agents;
     store.prInfo.value = { ...store.prInfo.value, ...sidebar.pr_info };
     store.view.value = sidebar.view;
+    store.loaded.value = true;
   };
 
   /** The agents of the selected worktree (or the orchestrator). */
@@ -185,10 +288,10 @@ export function createStore() {
     );
   }
 
-  function alert(agent, path, message, severity) {
+  function alert(agent, path, message, severity, kind) {
     const text = `${agentLabel(agent)} (${placeName(path)}) ${message}`;
     store.toast(text, severity);
-    store.notify("lazyagent", text);
+    if (store.notifies(kind)) store.notify("lazyagent", text);
   }
 
   /** Apply one engine event. Returns true when the page should reload the
@@ -203,9 +306,17 @@ export function createStore() {
           w.path in data ? { ...w, git_status: data[w.path] } : w,
         );
         return false;
-      case "pr_info.updated":
+      case "pr_info.updated": {
+        const before = store.prInfo.value[data.path];
         store.prInfo.value = { ...store.prInfo.value, [data.path]: data.pr_info };
+        // Green (or pending) to red is worth an interruption.
+        if (data.pr_info && ciSummary(data.pr_info.checks) === "fail" && before && ciSummary(before.checks) !== "fail") {
+          const text = `CI failed on #${data.pr_info.number} (${placeName(data.path)})`;
+          store.toast(text, "error");
+          if (store.notifies("ci")) store.notify("lazyagent", text);
+        }
         return false;
+      }
       case "agent.updated":
         if (!findAgent(data.worktree_path, data.agent_id)) return true;
         patchAgent(data.worktree_path, data.agent_id, {
@@ -222,7 +333,7 @@ export function createStore() {
               : data.status.startsWith("waiting")
                 ? "warning"
                 : "error";
-          alert(data, data.worktree_path, message, severity);
+          alert(data, data.worktree_path, message, severity, kindOfStatus(data.status));
         }
         return false;
       }
@@ -230,7 +341,17 @@ export function createStore() {
         if (!data.stopped) {
           const agent = findAgent(data.worktree_path, data.agent_id);
           const code = data.exit_code ?? "?";
-          alert(agent || data, data.worktree_path, `exited (code ${code})`, code === 0 ? "information" : "error");
+          alert(agent || data, data.worktree_path, `exited (code ${code})`, code === 0 ? "information" : "error", "failed");
+          if (data.exit_code !== 0) {
+            const exit = {
+              key: data.worktree_path,
+              agent_id: data.agent_id,
+              label: agentLabel(agent || data),
+              exit_code: data.exit_code ?? null,
+              at: Date.now(),
+            };
+            store.exits.value = [...store.exits.value.slice(-19), exit];
+          }
         }
         return true;
       }

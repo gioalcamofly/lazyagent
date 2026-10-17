@@ -734,6 +734,20 @@ class TestCreateDialogBase:
             app.action_create_worktree()
             await pilot.pause()
             assert app.screen.query_one("#base-input", Input).value == "main"
+class TestLateDiff:
+    @pytest.mark.asyncio
+    async def test_a_diff_that_outlives_the_screen_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
+    ) -> None:
+        """A diff fetch that returns while the app shuts down (its screen
+        already gone) must not fail the worker, which fails the app's exit."""
+        _patch_app_dependencies(monkeypatch)
+        app = tui_app(backend_kind)
+        async with app.run_test():
+            await _drain_workers(app)
+            wt = await _select_worktree(app, 1)
+            await app.query_one(CenterPanel).remove()
+            app._apply_diff(wt.path, "diff --git a/x b/x")  # no NoMatches
 
 
 class TestDiffRefreshDebounce:

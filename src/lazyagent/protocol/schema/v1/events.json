@@ -21,7 +21,8 @@
       "properties": {
         "name": {"type": "string"},
         "status": {"type": "string"},
-        "conclusion": {"type": "string"}
+        "conclusion": {"type": "string"},
+        "details_url": {"type": "string", "description": "U4: the check's page; empty when GitHub gave none."}
       }
     },
     "pr_info": {

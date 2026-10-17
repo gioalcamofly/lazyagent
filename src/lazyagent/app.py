@@ -535,7 +535,13 @@ class LazyAgent(App):
             or self._selected_worktree.path != worktree_path
         ):
             return  # selection changed; drop the stale result
-        panel = self.query_one(CenterPanel).get_panel(worktree_path)
+        try:
+            center = self.query_one(CenterPanel)
+        except NoMatches:
+            # The fetch outlived the screen: the app is shutting down. The
+            # worker would otherwise fail and fail the app's exit with it.
+            return
+        panel = center.get_panel(worktree_path)
         if panel:
             panel.update_diff(diff_text)
 

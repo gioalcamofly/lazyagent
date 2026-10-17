@@ -345,3 +345,72 @@ async def test_job_events(page):
     assert result["length"] == 256 * 1024 and result["tail"] == "END"
     assert result["exit"] == 2
     assert result["toasts"] == [["Create worktree x: failed (2)", "error"]]
+
+
+ATTENTION = """
+const a = await import('/lib/attention.js');
+const wt = (path, agents, extra) => ({path, branch: 'b', head: '0', is_main: false, agents, ...extra});
+const ag = (id, status, extra) => ({agent_id: id, status, detail: status, label: '', session_id: 's' + id, ...extra});
+const base = {worktrees: [], orchestrator: [], prInfo: {}, exits: [], jobs: [], dismissed: {}, snoozed: {}};
+"""
+
+
+async def test_attention_ranks_and_clears(page):
+    result = await page.evaluate(
+        "async () => {" + ATTENTION + """
+        const since = {};
+        const world = {...base, since, now: 1000,
+          worktrees: [wt('/r/a', [ag('1', 'running'), ag('2', 'waiting_for_user')]),
+                      wt('/r/b', [ag('3', 'completed'), ag('4', 'waiting_for_approval')])],
+          orchestrator: [ag('9', 'possibly_hanged')],
+          prInfo: {'/r/a': {number: 7, title: 'T', state: 'OPEN', checks: [{name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE', details_url: 'https://ci/1'}],
+                            review_decision: 'CHANGES_REQUESTED', mergeable: 'CONFLICTING'},
+                   '/r/b': {number: 8, title: 'M', state: 'MERGED', checks: [{name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE'}]}},
+          exits: [{key: '/r/a', agent_id: '5', label: 'Agent 5', exit_code: 2, at: 900}],
+          jobs: [{id: 'j', title: 'Create x', exitCode: 1, text: ''}, {id: 'k', title: 'ok', exitCode: 0, text: ''}]};
+        const first = a.attentionItems(world).map(i => i.kind + ':' + i.where);
+        // Later, the question was answered and the approval granted.
+        world.now = 5000;
+        world.worktrees = [wt('/r/a', [ag('1', 'running'), ag('2', 'running')]), wt('/r/b', [ag('3', 'completed'), ag('4', 'waiting_for_approval')])];
+        const later = a.attentionItems(world);
+        const prompt = a.ciFailurePrompt(later.find(i => i.kind === 'ci'));
+        return {first, later: later.map(i => i.kind), kept: since['approval:/r/b/4'], gone: 'question:/r/a/2' in since, prompt};
+    }"""
+    )
+    assert result["first"] == [
+        "approval:b",
+        "question:a",
+        "hanged:orchestrator",
+        "exited:a",
+        "ci:a",
+        "review:a",
+        "conflict:a",
+        "done:b",
+        "job:job",
+    ]
+    assert "question" not in result["later"] and result["later"][0] == "approval"
+    assert result["kept"] == 1000 and result["gone"] is False
+    assert "PR #7" in result["prompt"] and "- ci: https://ci/1" in result["prompt"]
+
+
+async def test_attention_dismiss_and_snooze(page):
+    result = await page.evaluate(
+        "async () => {" + ATTENTION + """
+        const since = {};
+        const world = {...base, since, now: 1000, worktrees: [wt('/r/a', [ag('1', 'waiting_for_user'), ag('2', 'failed')])]};
+        const [q, f] = a.attentionItems(world).sort((x, y) => x.rank - y.rank);
+        world.dismissed = {[q.occurrence]: 1};
+        world.snoozed = {[f.id]: 2000};
+        const hidden = a.attentionItems(world).length;
+        world.now = 2500;                      // the snooze ran out
+        const back = a.attentionItems(world).map(i => i.kind);
+        // The question clears, then comes back: a new occurrence shows again.
+        world.worktrees = [wt('/r/a', [ag('1', 'running'), ag('2', 'failed')])];
+        a.attentionItems(world);
+        world.now = 3000;
+        world.worktrees = [wt('/r/a', [ag('1', 'waiting_for_user'), ag('2', 'failed')])];
+        const again = a.attentionItems(world).map(i => i.kind);
+        return {hidden, back, again};
+    }"""
+    )
+    assert result == {"hidden": 0, "back": ["failed"], "again": ["question", "failed"]}

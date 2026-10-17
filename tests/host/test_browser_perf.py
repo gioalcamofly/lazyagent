@@ -256,3 +256,105 @@ async def test_spew_frames_and_the_tui_at_rest(fake_claude, host, browser, recor
         return
     assert frames["p95"] <= 17 * 1.5
     assert sum(result["longTasks"]) <= 100 * 1.5
+
+
+QUEUE_BENCH = """async ({ count, changed }) => {
+  const { html, render } = await import('/lib/html.js');
+  const { createStore } = await import('/lib/store.js');
+  const { AttentionView } = await import('/components/attention.js');
+  const { TerminalManager } = await import('/lib/terminals.js');
+  const store = createStore();
+  const statuses = ['running', 'waiting_for_user', 'waiting_for_approval', 'completed', 'running'];
+  // Burst n moves the first `changed` worktrees' agents to the next status.
+  const make = (i, n) => ({ path: `/r/wt-${i}`, branch: `b${i}`, head: '0', is_main: false,
+    agents: [0, 1].map((k) => ({ agent_id: `${i}${k}`, session_id: `s${i}${k}`, label: '',
+      // The first agent keeps asking for approval: the picked item (and its
+      // terminal) stays put, so this measures the queue, not a new xterm.js.
+      status: i + k === 0 ? 'waiting_for_approval' : statuses[(i + k + (i < changed ? n : 0)) % statuses.length],
+      detail: 'x' })) });
+  store.applySidebar({ worktrees: Array.from({ length: count }, (_, i) => make(i, 0)),
+                       orchestrator: { agents: [] }, pr_info: {}, view: null, cursor: 0 });
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;inset:0;display:flex';
+  document.body.append(host);
+  const manager = new TerminalManager({ request: async () => ({}), send() {} });
+  const actions = { queueKey() {}, pickAttention() {} };
+  render(html`<${AttentionView} store=${store} actions=${actions} manager=${manager} />`, host);
+  const settle = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = r; c.port2.postMessage(0); });
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  await frame();
+  const times = [];
+  for (let n = 1; n <= 30; n++) {
+    await frame();
+    const t = performance.now();
+    store.enqueue(() => store.applyEvent('worktrees.changed', Array.from({ length: count }, (_, i) => make(i, n))));
+    store.flush();
+    await settle();
+    times.push(performance.now() - t);
+  }
+  return { times, items: store.attention.value.length };
+}"""
+
+
+async def test_attention_queue_rerender(browser, record):
+    """U4: a burst of events re-derives and re-renders the queue. Asserted
+    at a real size (20 agents, every one changing); reported at 200 agents
+    (20 changing, and every one changing kind, which rebuilds each row)."""
+    problems = []
+
+    async def bench(count: int, changed: int) -> dict:
+        # A page each: each bench has its own terminal manager (and WebGL
+        # context).
+        page, seen = await module_page(browser)
+        result = await page.evaluate(QUEUE_BENCH, {"count": count, "changed": changed})
+        await page.context.close()
+        problems.extend(seen)
+        return result
+
+    real = await bench(10, 10)
+    some = await bench(100, 10)
+    every = await bench(100, 100)
+    real_stats = summary(real["times"][5:])
+    record("U4 queue of 20 agents, all changed (ms)", items=real["items"], **real_stats)
+    record("U4 queue of 200 agents, 20 changed (ms)", items=some["items"], **summary(some["times"][5:]))
+    record("U4 queue of 200 agents, all changed kind (ms)", items=every["items"], **summary(every["times"][5:]))
+    assert real_stats["p95"] <= 16
+    assert list(problems) == []
+
+
+async def test_idle_with_ten_agents_and_the_queue_open(fake_claude, host, browser, record, tmp_path):
+    """B6 with 10 agents and the attention view in front."""
+    from lazyagent.engine.client import Client
+    from tests.contract.helpers import wait_for_text
+
+    feat = str(tmp_path / "repo-feat")
+    driver = await Client.connect(host.server.engine_socket, client="cli")
+    try:
+        for n in range(10):
+            agent = await driver.request("spawn_agent", worktree_path=feat, label=f"a{n}")
+        await wait_for_text(driver, agent, "your turn>")
+    finally:
+        await driver.close()
+    page = await browser.new_page(viewport={"width": 1400, "height": 820})
+    problems = Problems()
+    problems.watch(page)
+    await page.goto(host.server.url)
+    await page.wait_for_selector("#conn.ok", timeout=30000)
+    await page.locator("li.wt", has_text="repo-feat").click()
+    await page.click("#view-attention")
+    await page.locator("#engine-state").click()
+    await asyncio.sleep(3)
+    pids = descendants(os.getpid())
+    before, start = cpu_seconds(pids), time.monotonic()
+    await asyncio.sleep(10)
+    after, elapsed = cpu_seconds(pids), time.monotonic() - start
+    usage: dict[str, float] = {}
+    for pid, seconds in after.items():
+        if pid in before:
+            usage[group(pid)] = usage.get(group(pid), 0) + seconds - before[pid]
+    percent = {name: round(100 * s / elapsed, 2) for name, s in sorted(usage.items())}
+    total = sum(v for k, v in percent.items() if k.startswith("chrome") or k.startswith("lazyagent"))
+    record("B6 idle, 10 agents, queue open (% of a core)", total=round(total, 2), **percent)
+    await page.close()
+    assert total <= 2.0 * 1.5
+    assert list(problems) == []
