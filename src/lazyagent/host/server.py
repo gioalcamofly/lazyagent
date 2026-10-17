@@ -57,16 +57,23 @@ from lazyagent.protocol import UI_COMMAND_METHODS, framing
 
 log = logging.getLogger(__name__)
 
-# What a page may ask the engine: views, read-only data and its own
-# terminals (streams, sizes, worktree shells). Creating, removing, spawning
-# and stopping still go through the TUI's modals.
+# What a page may ask the engine: views, read-only data, its own terminals
+# (streams, sizes, worktree shells), and the actions of the TUI's dialogs
+# (ui-plan Q2: the page could already type them into the TUI).
 ALLOWED_METHODS = frozenset(
     {
         "get_sidebar_state",
+        "get_config",
         "list_worktrees",
         "list_agents",
+        "refresh_worktrees",
+        "refresh_git_status",
         "get_pr_info",
         "get_diff",
+        "create_worktree",
+        "remove_worktree",
+        "spawn_agent",
+        "stop_agent",
         "subscribe",
         "unsubscribe",
         "attach_stream",
@@ -78,6 +85,11 @@ ALLOWED_METHODS = frozenset(
         *UI_COMMAND_METHODS,
     }
 )
+
+# Methods that start processes: the host puts its own environment in them
+# (D5: the host is the client, started from the user's shell, exactly as
+# the TUI passes its own), whatever the page sent.
+ENV_METHODS = frozenset({"spawn_agent", "create_worktree", "remove_worktree", "open_shell"})
 
 CSP = (
     "default-src 'none'; script-src 'self'; connect-src 'self'; "
@@ -161,8 +173,10 @@ class HostServer:
         repo_root: str,
         host_id: str,
         port: int = 0,
+        client_env: dict[str, str] | None = None,
     ) -> None:
         self.tui = tui
+        self.client_env = dict(client_env) if client_env is not None else None
         self.token = token
         self.files = static_files(static_root)
         self.repo_root = repo_root
@@ -494,6 +508,10 @@ class HostServer:
         self, peer: Peer, request_id: str, method: str, params: dict
     ) -> None:
         assert peer.engine is not None
+        if method in ENV_METHODS:
+            params = {k: v for k, v in params.items() if k != "env"}
+            if self.client_env is not None:
+                params["env"] = self.client_env
         try:
             response = await peer.engine.call(method, params)
         except EngineClosed:

@@ -97,18 +97,16 @@ async def test_page_in_a_real_browser(fake_claude, host, browser, tmp_path):
     await page.keyboard.press("Enter")
     await native_has(page, shell_id, "U2_SHELL_42")
 
-    # Spawn goes through the TUI's dialog (until U3), then back to native.
+    # Spawn from the page's own dialog; the TUI stays blank.
     await page.click("#toolbar button[data-action=spawn]")
-    await _terminal_has(page, "Spawn agent in feat")
-    await page.keyboard.press("n")
+    await page.wait_for_selector("#spawn-dialog")
+    await page.click("#spawn-dialog button[type=submit]")
     tab = page.locator(".tabs .tab[data-agent]")
     await tab.wait_for()
-    await page.wait_for_selector(".center:not(.tui-shown)")
     agent = await shown_session(page)
     await native_has(page, agent, "your turn>")
     assert "running" in await page.locator("li.wt.current li.agent").inner_text()
-    # The hosted TUI went blank again: it renders no agent.
-    await _terminal_has(page, "Shown in the browser")
+    assert await page.evaluate("() => window.lazyagent.store.centerView.value") == "native"
 
     # Typing claims the size: the agent sees the terminal's own size.
     await page.locator(".agent-slot").click()

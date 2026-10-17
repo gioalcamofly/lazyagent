@@ -3,6 +3,7 @@
 import { html, Component } from "../lib/html.js";
 import { KEYMAP, SCOPES } from "../lib/keymap.js";
 import { theme, cycleTheme } from "../lib/theme.js";
+import { JobsButton } from "./jobs.js";
 
 const THEME_TEXT = { dark: "Dark", light: "Light", system: "System" };
 
@@ -11,12 +12,13 @@ function NotifyButton() {
   return html`<button
     id="notify"
     type="button"
+    title="Enable desktop notifications"
     onClick=${async (event) => {
       await Notification.requestPermission();
       event.target.hidden = Notification.permission !== "default";
     }}
   >
-    Enable notifications
+    Notifications
   </button>`;
 }
 
@@ -26,6 +28,7 @@ export function TopBar({ store }) {
     <span class="brand">lazyagent</span>
     <span id="repo" class="muted">${store.repoRoot.value}</span>
     <span class="spacer"></span>
+    <${JobsButton} store=${store} />
     <span id="conn" class=${`pill ${conn.kind}`}>${conn.text}</span>
     <${NotifyButton} />
     <button

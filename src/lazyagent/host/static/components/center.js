@@ -5,6 +5,7 @@
 
 import { html, Component } from "../lib/html.js";
 import { ORCHESTRATOR_KEY, STATUS_TEXT, agentLabel, basename } from "../lib/format.js";
+import { GitBadges } from "./sidebar.js";
 
 /** Shows one session's terminal in its box; hides it when another session
  * takes the slot or the slot goes away. */
@@ -91,9 +92,26 @@ function EmptyState({ store, actions }) {
     <p>No agent in ${where}.</p>
     <p>
       <button type="button" class="primary" data-empty-action="spawn" onClick=${() => actions.toolbar("spawn")}>
-        Spawn an agent
+        Spawn an agent <kbd>s</kbd>
       </button>
     </p>
+  </div>`;
+}
+
+function WorktreeHeader({ store, actions }) {
+  const path = store.selected.value;
+  if (path === undefined) return null;
+  if (path === null) {
+    return html`<div class="wt-header"><strong>Orchestrator</strong><span class="muted">${store.repoRoot.value}</span></div>`;
+  }
+  const wt = store.worktrees.value.find((w) => w.path === path);
+  if (!wt) return null;
+  return html`<div class="wt-header">
+    <strong>${basename(wt.path)}</strong>
+    <span class="wt-branch">${wt.branch || `(detached ${wt.head.slice(0, 7)})`}</span>
+    <${GitBadges} git=${wt.git_status} pr=${store.prInfo.value[wt.path]} />
+    <span class="spacer"></span>
+    <button type="button" class="link" title="Refresh git status (Alt+G)" onClick=${actions.refreshGit}>↻ git</button>
   </div>`;
 }
 
@@ -105,6 +123,7 @@ export function Center({ store, actions, manager, tuiPane }) {
   const shellId = path ? store.shells.value[path] : undefined;
   const shellOpen = store.shellOpen.value && Boolean(path);
   return html`<div class=${`center${tui ? " tui-shown" : ""}`}>
+    <${WorktreeHeader} store=${store} actions=${actions} />
     <${AgentTabs} store=${store} actions=${actions} agents=${agents} shown=${shown} />
     <div class="views">
       <${TerminalSlot}

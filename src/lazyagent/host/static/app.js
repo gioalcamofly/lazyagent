@@ -13,6 +13,8 @@ import { resolvedTheme, terminalTheme } from "./lib/theme.js";
 import { Sidebar } from "./components/sidebar.js";
 import { Center } from "./components/center.js";
 import { TopBar, Toasts, HelpSheet, TuiPane, Overlay } from "./components/chrome.js";
+import { SpawnDialog, CreateDialog, RemoveDialog, StopDialog } from "./components/dialogs.js";
+import { JobDrawer } from "./components/jobs.js";
 
 const store = createStore();
 
@@ -81,23 +83,44 @@ function tuiBlank() {
   command("ui.blank");
 }
 
-let returnFromModal = false;
+// The latest focus request; an older one still retrying gives up.
+let focusRequest = 0;
+
+/** Give the keyboard to a session's terminal once it is on screen: tried
+ * each frame (a busy page may not have shown it yet), for up to a second,
+ * and dropped as soon as the keyboard goes anywhere else meanwhile. */
+function focusTerminal(sessionId) {
+  const request = ++focusRequest;
+  const from = document.activeElement;
+  let tries = 0;
+  const step = () => {
+    if (request !== focusRequest) return;
+    const now = document.activeElement;
+    const terminal = terminals.sessions.get(sessionId);
+    if (now !== from && now !== document.body && !terminal?.element.contains(now)) return;
+    if (terminal?.visible && terminal.opened) {
+      terminal.focus();
+      if (terminal.element.contains(document.activeElement)) return;
+    }
+    if (++tries < 60) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
 
 function focusShown() {
-  requestAnimationFrame(() => {
-    if (store.centerView.value === "tui") tui.focus();
-    else {
-      const agent = store.shownAgent();
-      if (agent) terminals.sessions.get(agent.session_id)?.focus();
-      else if (store.shellOpen.value) focusShell();
-    }
-  });
+  if (store.centerView.value === "tui") {
+    requestAnimationFrame(() => tui.focus());
+    return;
+  }
+  const agent = store.shownAgent();
+  if (agent) focusTerminal(agent.session_id);
+  else if (store.shellOpen.value) focusShell();
 }
 
 function focusShell() {
   const path = store.selected.value;
   const id = path ? store.shells.value[path] : undefined;
-  if (id) requestAnimationFrame(() => terminals.sessions.get(id)?.focus());
+  if (id) focusTerminal(id);
 }
 
 async function ensureShell(path) {
@@ -167,23 +190,150 @@ const actions = {
   async toolbar(action) {
     const path = store.selected.value;
     if (action === "shell") return actions.toggleShell();
-    // Until U3/U5 these are the TUI's dialogs and diff: show the TUI tab,
-    // and come back to the native view once the dialog closes.
-    store.centerView.value = "tui";
-    if (!(await tuiFollow())) return;
-    requestAnimationFrame(() => {
-      tui.announce();
-      tui.focus();
-    });
     if (action === "diff") {
+      // Until U5 the diff is the TUI's.
+      if (!path) return;
+      store.centerView.value = "tui";
+      if (!(await tuiFollow())) return;
+      requestAnimationFrame(() => {
+        tui.announce();
+        tui.focus();
+      });
       command("ui.show_diff", { worktree_path: path });
       return;
     }
-    returnFromModal = true;
-    const target = path === null ? { orchestrator: true } : path ? { worktree_path: path } : {};
-    command("ui.open_modal", { modal: action, ...(action === "create" ? {} : target) });
+    actions.openDialog(action);
+  },
+  openDialog(kind) {
+    if (store.dialog.value || !store.engine.value) return;
+    const path = store.selected.value;
+    if (kind === "spawn") {
+      if (path === undefined) return;
+      if (path === null && store.orchestrator.value.length) {
+        store.toast("The orchestrator agent is already running", "warning");
+        return;
+      }
+    }
+    if (kind === "stop" && !store.shownAgent()) {
+      store.toast("No agent to stop here", "warning");
+      return;
+    }
+    if (kind === "remove" && !path) {
+      store.toast(path === null ? "The orchestrator is not a worktree" : "Select a worktree first", "warning");
+      return;
+    }
+    store.dialog.value = { kind, path, agent: kind === "stop" ? store.shownAgent() : null };
+  },
+  closeDialog() {
+    store.dialog.value = null;
+  },
+  /** A dialog that started something closes and the shown terminal gets
+   * the keyboard (after the dialog gave it back to its opener). */
+  dialogDone() {
+    store.dialog.value = null;
+    requestAnimationFrame(() => requestAnimationFrame(focusShown));
+  },
+  async spawn({ path, instruction, skipPermissions, resumeMode, label }) {
+    const params =
+      path === null
+        ? { kind: "orchestrator", worktree_path: store.repoRoot.value }
+        : { worktree_path: path };
+    Object.assign(params, { skip_permissions: skipPermissions, resume_mode: resumeMode });
+    if (instruction) params.instruction = instruction;
+    if (label) params.label = label;
+    if (store.centerView.value === "tui") actions.showNative();
+    const result = await conn.request("spawn_agent", params);
+    const key = path === null ? ORCHESTRATOR_KEY : result.worktree_path;
+    expectAgent(key, result.agent_id);
+    // Listed (so its tab exists) before the dialog closes and the
+    // terminal takes the keyboard.
+    await until(() => store.agentsOf(key).some((a) => a.agent_id === result.agent_id), 15000, "The new agent").catch(() => {});
+    return result;
+  },
+  async create({ branch, base, extra, launch }) {
+    const params = { branch, base_branch: base || undefined };
+    if (extra) params.extra = extra;
+    const created = await conn.request("create_worktree", params);
+    if (created.job_id) {
+      const exitCode = await jobFinished(created.job_id);
+      if (exitCode !== 0) throw new Error(`The create command failed (${exitCode ?? "killed"}); see the job log`);
+    }
+    await worktreeListed(created.path);
+    actions.select(created.path, { focus: !launch });
+    store.toast(`Created worktree ${basename(created.path)}`, "success");
+    if (launch) {
+      try {
+        await actions.spawn({ path: created.path, instruction: launch.instruction, skipPermissions: launch.skipPermissions, resumeMode: "new", label: "" });
+      } catch (e) {
+        store.toast(`Worktree created, but the agent did not start: ${e.message}`, "error", 10000);
+      }
+    }
+  },
+  async remove(path, force) {
+    const result = await conn.request("remove_worktree", { worktree_path: path, force, custom: true });
+    if (result.job_id) {
+      const exitCode = await jobFinished(result.job_id);
+      if (exitCode !== 0) throw new Error(`The remove command failed (${exitCode ?? "killed"}); see the job log`);
+    }
+    if (store.selected.value === path) store.selected.value = store.worktrees.value.find((w) => w.is_main)?.path;
+    store.toast(`Removed worktree ${basename(path)}`, "success");
+  },
+  async stop(path, agentId) {
+    await conn.request("stop_agent", { worktree_path: path === null ? ORCHESTRATOR_KEY : path, agent_id: agentId });
+  },
+  refreshGit() {
+    const path = store.selected.value;
+    if (!path) return;
+    conn.request("refresh_git_status", { paths: [path] }).catch((e) => store.toast(e.message, "warning"));
+    store.toast("Refreshing git status…", "information", 2000);
+  },
+  refreshList() {
+    conn
+      .request("refresh_worktrees")
+      .then(() => store.toast("Refreshed worktrees", "information", 2000))
+      .catch((e) => store.toast(e.message, "warning"));
   },
 };
+
+// ---------------------------------------------------------------- waits
+
+const waiters = new Set();
+
+/** Resolves once ``test()`` holds after a store update (or rejects after
+ * ``timeout`` ms). */
+function until(test, timeout, what) {
+  if (test()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const waiter = () => {
+      if (!test()) return;
+      waiters.delete(waiter);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      waiters.delete(waiter);
+      reject(new Error(`${what}: no answer in ${timeout / 1000} s`));
+    }, timeout);
+    waiters.add(waiter);
+  });
+}
+
+async function jobFinished(jobId) {
+  const done = () => store.jobs.value.find((j) => j.id === jobId && j.exitCode !== undefined);
+  await until(() => Boolean(done()), 30 * 60 * 1000, "The job");
+  return done().exitCode;
+}
+
+function worktreeListed(path) {
+  if (store.worktrees.value.some((w) => w.path === path)) return Promise.resolve();
+  conn.request("refresh_worktrees").catch(() => {});
+  return until(() => store.worktrees.value.some((w) => w.path === path), 15000, "The new worktree");
+}
+
+/** A spawned agent's tab becomes the shown one as soon as it is listed. */
+function expectAgent(key, agentId) {
+  pendingAgent = { worktree_path: key, agent_id: agentId };
+}
 
 // ---------------------------------------------------------------- engine
 
@@ -222,6 +372,7 @@ async function loadSidebar() {
 
 async function onEngineReady() {
   store.engine.value = true;
+  conn.request("get_config").then((config) => (store.config.value = config), () => {});
   store.conn.value = { text: "connected", kind: "ok" };
   store.overlay.value = null;
   try {
@@ -251,25 +402,20 @@ function onEvent(name, data) {
     if (name === "agent.spawned") {
       const selected = store.selected.value;
       if (data.worktree_path === (selected === null ? ORCHESTRATOR_KEY : selected)) pendingAgent = data;
-      // Back from the TUI's spawn dialog. Not from ui.view_changed alone: a
-      // dialog closed within the TUI's 50 ms settle is never announced.
-      if (returnFromModal) {
-        returnFromModal = false;
-        actions.showNative();
-      }
     }
     if (store.applyEvent(name, data)) refreshSoon();
     if (name === "worktrees.changed") afterSidebar();
-    if (pendingAgent && store.selectedAgents().some((a) => a.agent_id === pendingAgent.agent_id)) {
+    if (pendingAgent && store.agentsOf(pendingAgent.worktree_path).some((a) => a.agent_id === pendingAgent.agent_id)) {
       store.activeAgent.value = { ...store.activeAgent.value, [pendingAgent.worktree_path]: pendingAgent.agent_id };
+      const key = pendingAgent.worktree_path;
       pendingAgent = null;
-      if (store.centerView.value === "native") focusShown();
+      if (store.centerView.value === "native" && keyOf(store.selected.value) === key) focusShown();
     }
+    for (const waiter of [...waiters]) waiter();
   });
 }
 
 function onViewChanged(view) {
-  const previous = store.view.value;
   if (store.centerView.value !== "tui") return;
   // On the TUI tab the page follows what the TUI shows.
   if (view.orchestrator) store.selected.value = null;
@@ -277,10 +423,6 @@ function onViewChanged(view) {
   if (view.focus === "agent" && view.agent_id !== null) {
     const key = view.orchestrator ? ORCHESTRATOR_KEY : view.worktree_path;
     if (key) store.activeAgent.value = { ...store.activeAgent.value, [key]: view.agent_id };
-  }
-  if (returnFromModal && previous?.focus === "modal" && view.focus !== "modal") {
-    returnFromModal = false;
-    actions.showNative();
   }
 }
 
@@ -336,6 +478,11 @@ const inside = (target, selector) => target instanceof Element && target.closest
 const inField = (target) => inside(target, "input, textarea:not(.xterm-helper-textarea), select, [contenteditable]");
 
 function focusSidebar() {
+  focusRequest++;
+  focusCurrentRow();
+}
+
+function focusCurrentRow() {
   const list = document.getElementById("worktrees");
   const current = list?.querySelector("li.wt.current") || list?.querySelector("li.wt");
   current?.focus();
@@ -346,7 +493,10 @@ function moveSelection(step) {
   const at = keys.indexOf(store.selected.value);
   const next = keys[Math.min(keys.length - 1, Math.max(0, at + step))];
   actions.select(next, { focus: false });
-  requestAnimationFrame(focusSidebar);
+  // The row is re-rendered: keep the keyboard on it, unless something
+  // asked for the keyboard since (Enter right after j).
+  const request = focusRequest;
+  requestAnimationFrame(() => request === focusRequest && focusCurrentRow());
 }
 
 /** Keys the page takes before a native terminal sees them (the TUI's
@@ -364,10 +514,20 @@ function globalKey(event) {
     return true;
   }
   if (mod && key === "d") return actions.toolbar("diff"), true;
+  if (alt && key === "g") return actions.refreshGit(), true;
   if (alt && (event.code === "BracketRight" || key === "n")) return actions.cycleAgent(1), true;
   if (alt && (event.code === "BracketLeft" || key === "p")) return actions.cycleAgent(-1), true;
   return false;
 }
+
+// Single keys outside a terminal, as in the TUI.
+const OUTSIDE_KEYS = {
+  s: () => actions.openDialog("spawn"),
+  x: () => actions.openDialog("stop"),
+  c: () => actions.openDialog("create"),
+  d: () => actions.openDialog("remove"),
+  r: () => actions.refreshList(),
+};
 
 function sidebarKey(event) {
   if (event.ctrlKey || event.altKey || event.metaKey) return false;
@@ -386,13 +546,24 @@ document.addEventListener(
       event.preventDefault();
       return;
     }
-    if (store.help.value || inField(target)) return;
+    if (event.key === "Escape" && store.dialog.value && !inside(target, "[role=dialog]")) {
+      actions.closeDialog();
+      event.preventDefault();
+      return;
+    }
+    if (store.help.value || store.dialog.value || inField(target)) return;
     if (inside(target, "#terminal-pane")) return;
     let handled = globalKey(event);
     if (!handled && inside(target, "#worktrees")) handled = sidebarKey(event);
-    if (!handled && !inside(target, ".xterm") && event.key === "?" && !event.ctrlKey && !event.altKey) {
-      store.help.value = true;
-      handled = true;
+    const plain = !event.ctrlKey && !event.altKey && !event.metaKey;
+    if (!handled && !inside(target, ".xterm") && plain) {
+      if (event.key === "?") {
+        store.help.value = true;
+        handled = true;
+      } else if (OUTSIDE_KEYS[event.key]) {
+        OUTSIDE_KEYS[event.key]();
+        handled = true;
+      }
     }
     if (handled) {
       event.preventDefault();
@@ -416,9 +587,35 @@ function App() {
         <${Overlay} store=${store} />
       </div>
     </main>
+    <${JobDrawer} store=${store} />
     <${Toasts} store=${store} />
     ${store.help.value && html`<${HelpSheet} onClose=${() => (store.help.value = false)} />`}
+    <${Dialogs} />
   `;
+}
+
+function Dialogs() {
+  const dialog = store.dialog.value;
+  if (!dialog) return null;
+  const close = actions.closeDialog;
+  const config = store.config.value;
+  switch (dialog.kind) {
+    case "spawn":
+      return html`<${SpawnDialog} path=${dialog.path} provider=${config?.agent_provider} actions=${actions} onClose=${close} onDone=${actions.dialogDone} />`;
+    case "create":
+      return html`<${CreateDialog} config=${config} worktrees=${store.worktrees.value} actions=${actions} onClose=${close} onDone=${actions.dialogDone} />`;
+    case "remove":
+      return html`<${RemoveDialog}
+        worktree=${store.worktrees.value.find((w) => w.path === dialog.path)}
+        config=${config}
+        actions=${actions}
+        onClose=${close}
+      />`;
+    case "stop":
+      return html`<${StopDialog} path=${dialog.path} agent=${dialog.agent} actions=${actions} onClose=${close} />`;
+    default:
+      return null;
+  }
 }
 
 render(html`<${App} />`, document.body);

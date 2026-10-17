@@ -21,7 +21,13 @@ export const SIDEBAR_EVENTS = [
   "ui.view_changed",
   "engine.notice",
   "engine.shutdown",
+  "job.started",
+  "job.output",
+  "job.finished",
 ];
+
+// Output kept per job in the drawer (the tail).
+export const JOB_OUTPUT_LIMIT = 256 * 1024;
 
 // Transitions worth interrupting the user for.
 export const ALERT_STATUSES = {
@@ -78,6 +84,14 @@ export function createStore() {
     shellOpen: signal(false),
     // Worktree path → its shell's session_id, once open_shell answered.
     shells: signal({}),
+    // get_config, once known.
+    config: signal(null),
+    // The open dialog: {kind: "spawn" | "create" | "remove" | "stop", ...}.
+    dialog: signal(null),
+    // Engine jobs (custom create/remove), oldest first:
+    // {id, title, command, text, exitCode (undefined while running)}.
+    jobs: signal([]),
+    drawerOpen: signal(false),
   };
 
   // ------------------------------------------------------------ queue
@@ -231,6 +245,31 @@ export function createStore() {
       case "engine.shutdown":
         store.toast("The engine is shutting down", "warning");
         return false;
+      case "job.started":
+        store.jobs.value = [
+          ...store.jobs.value.filter((j) => j.id !== data.job_id),
+          { id: data.job_id, title: data.title, command: data.command, text: "", exitCode: undefined },
+        ];
+        store.drawerOpen.value = true;
+        return false;
+      case "job.output":
+        store.jobs.value = store.jobs.value.map((j) => {
+          if (j.id !== data.job_id) return j;
+          const text = j.text + data.text;
+          return { ...j, text: text.length > JOB_OUTPUT_LIMIT ? text.slice(-JOB_OUTPUT_LIMIT) : text };
+        });
+        return false;
+      case "job.finished": {
+        const job = store.jobs.value.find((j) => j.id === data.job_id);
+        store.jobs.value = store.jobs.value.map((j) =>
+          j.id === data.job_id ? { ...j, exitCode: data.exit_code } : j,
+        );
+        if (job) {
+          const ok = data.exit_code === 0;
+          store.toast(`${job.title}: ${ok ? "done" : `failed (${data.exit_code ?? "killed"})`}`, ok ? "success" : "error");
+        }
+        return false;
+      }
       default:
         return false;
     }
