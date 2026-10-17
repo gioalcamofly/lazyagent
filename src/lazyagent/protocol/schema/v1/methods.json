@@ -72,7 +72,7 @@
       "required": ["branch"],
       "properties": {
         "branch": {"type": "string", "minLength": 1},
-        "base_branch": {"type": "string", "default": "main"},
+        "base_branch": {"type": "string", "description": "Default: the configured default_branch when a worktree has it checked out, else the main worktree's branch."},
         "extra": {"type": "string", "description": "Only used by a configured custom create command."},
         "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment of a custom command this call runs (the client's, D5); the engine's own when omitted."}
       }

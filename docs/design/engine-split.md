@@ -558,7 +558,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 
   `lazyagent engine start` takes 0.21 s and `stop` 0.16 s end to end. Starting the engine before importing Textual saves about 170 ms: the engine's boot (Python, the engine imports, `git worktree list`, both sockets) overlaps the TUI's imports.
 - **Tests:** tests/test_engine_cli.py (real processes, a `claude` shim on PATH running the fake agent, each test's runtime dir as the marker of its processes; the fixture kills what is left and fails the test if anything was): start/status/stop/logs (own session, stdin `/dev/null`, stderr to the log, files and dir gone after stop), three concurrent starts → one engine, a SIGKILLed engine's stale socket/json/lock replaced, `stop --if-idle` refused with an agent and `stop` taking it down, an embedded TUI's engine refusing `stop` and blocking a second start, the K8 cold start + MCP, quit → agent keeps working → a second TUI reattaches with a snapshot equal to the engine's screen at the size the first TUI set, a failing auto-start keeping the notice, no restart after a deliberate stop. tests/engine/test_launcher.py (log cap with stderr following the rotation, start failure message, `find`), the lock and stale-file tests in tests/contract/test_discovery.py, and the `shutdown` contract tests in tests/contract/test_methods.py (the harness gained `detach()`).
-- **Found on the way:** pyte's `resize` to fewer rows drops lines from the top, so a remote view that claims a smaller PTY loses what a program that does not repaint on SIGWINCH printed (real agents repaint). Left as is; the reattach test takes it into account.
+- **Found on the way:** pyte's `resize` to fewer rows drops lines from the top, so a remote view that claims a smaller PTY loses what a program that does not repaint on SIGWINCH printed. **Fixed in the soak (§6f):** `ScrollbackScreen.resize` keeps them as a terminal does.
 
 ### 6e. PR 9 as built: the restart manifest
 
@@ -572,6 +572,29 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 - **CLI:** `lazyagent engine restore [repo]` lists; `--all` or `--id ID` (repeatable) restores, from the caller's env; `--dismiss` forgets; `--json`. `status` shows how many agents are restorable.
 - **Config:** `[engine] restore_on_start = true` restores everything at engine start (default false: offered only). The unattended boot (K8) can do either: set the option, or run `lazyagent engine start && lazyagent engine restore --all` before the planner, which then reads `engine.restored` or `list_restorable` instead of rebuilding state.
 - **Tests:** tests/engine/test_manifest.py (11: file format, atomic 0600 write, corrupt file, unknown fields, take-over and pruning, cap, debounce off the loop thread, close flushes, take/prune, a failed write logged), tests/engine/test_restore.py (10, real PTYs: restart offers and restores with the same id, label and session name and `--resume <id>` / `--continue`, a crash leaves the last write, exited and stopped agents not offered, removed worktree pruned, failed restore kept, dismiss, id in use, `restore_on_start`, no manifest, only the lock holder keeps it), tests/contract/test_restore.py (5, across a restart), and in tests/test_engine_cli.py a real-process cycle: an agent on a detached engine, a hook event naming its conversation, SIGKILL of the engine, `engine start`, `status` showing 1 restorable, `restore --all` bringing back the fake agent with `--resume <id>` and the same `--name`, then a deliberate stop keeping it restorable and `--dismiss` forgetting it.
+
+### 6f. Remote-mode soak and the flip-to-remote checklist (2026-10-17)
+
+The default stays embedded; flipping it is Giovanni's call. This is what a realistic session in `--remote` showed, against the same session in `--embedded`.
+
+- **Session:** `lazyagent repo --remote` in tmux on a scratch repo with two worktrees; fake agents (a `claude` shim) and, for redraws, the real `claude` (its onboarding screen, run with an isolated HOME so no account is used) and a shell. Spawn an agent and the orchestrator, type, Ctrl+L shell, Ctrl+D diff, create and remove a worktree, stop an agent (`x`), resize the window through six sizes, `q` and relaunch, `lazyagent engine stop` while attached, a manual `engine start`, `engine restore`, a SIGKILLed engine.
+- **The same in both modes:** every action above; the selection after a remove (the orchestrator); the PTY size following the view; agent ids (shared by both modes, D8).
+- **Different by design:** `q` leaves the agents running (remote) or stops them (embedded; they become restorable, §6e); the first remote launch toasts "Started an engine…"; a stopped engine is not restarted and the TUI reconnects to one started by hand; a vanished engine is restarted (its agents restorable); results that need the engine (diff, create, a shell's first view) take one more round trip, which shows on a loaded machine as the diff appearing a moment later.
+- **Fixed in the soak branch:**
+  - a screen that shrank lost its rows (pyte drops the top rows and keeps none): an agent's screen came back blank after quit + reattach, and any shrink erased history, in both modes. `ScrollbackScreen.resize` now keeps them as a terminal does (rows below the cursor go first, the rest scroll into the history). This also settles the caveat noted in §6d and in ui-plan U2;
+  - the restorable list kept one entry per stop (three orchestrators after a few sessions): deduplicated per worktree and agent id, newest wins;
+  - a remote TUI on an engine of another lazyagent version (a detached engine keeps its code after an upgrade) now warns, with how to restart it and restore the agents.
+- **Checklist before flipping the default** (open):
+  1. ~~**Restorable agents are invisible in the TUI** (Q30)~~ **Done:** on connecting to an engine (once per engine) the TUI toasts "N agents from an earlier session can be brought back: press R"; `R` and the command palette's "Restore agents" call `restore_agents` (from the TUI's env) and toast what came back or failed. Both modes (embedded quits feed the same list).
+  2. **The engine's environment is the first TUI's** (Q22, K4): agents spawned from a TUI get that TUI's env (D5), but MCP spawns, restores from MCP and `restore_on_start` get the engine's, frozen at its start (a stale `SSH_AUTH_SOCK`, `DISPLAY`, PATH after a profile change).
+  3. **Upgrades:** the engine keeps running the old code until restarted (now warned). Restarting it stops the agents (they are restorable, each into its conversation for Claude). An "upgrade when idle" restart could automate it.
+  4. **Unattended boot (K8):** the boot script needs `--remote` until the flip, and a choice between `[engine] restore_on_start` and `lazyagent engine restore --all` before `/gio-planner`.
+  5. ~~**`lazyagent host`** with a detached engine~~ **Done:** `lazyagent host --remote` runs the hosted TUI on the repo's engine (starting it); the page spawns and types into agents, quitting the host leaves them running (the host says so), and a new host's page shows them with their screen (tests/host/test_host_remote.py, plus a headless-Chrome pass). Agents and shells no longer inherit `LAZYAGENT_HOST` (`ENV_SKIP`): with a detached engine they outlive the host, and a lazyagent started inside one would have thought it was hosted. U7 (a host with no TUI) remains.
+  6. **Two TUIs on one engine** both work; the latest one to type owns the size (D3), so switching between differently sized TUIs SIGWINCHes the agent.
+  7. **Width changes and Ink:** pyte does not reflow wrapped lines, so an Ink program's erase-by-line-count after a width change leaves a stale line above its redraw (seen with `claude`; tmux reflows and does not). Both modes; E2's native emulator is the fix.
+  8. **Growing a screen** does not pull rows back from the history (VTE does, xterm does not): after a shrink and a grow, the rows that scrolled off stay in the scrollback.
+  9. **No way to stop the engine from the TUI** (Q15): `lazyagent engine stop` only.
+  10. **MCP servers outside lazyagent** find a socket by ancestry, else the newest live `ipc.sock`: with a detached engine for one repo and an embedded TUI for another, one may reach the wrong repo (as before PR 8).
 
 ### 6b. Alternative ordering: hosted mode first
 
@@ -722,7 +745,7 @@ Decided for PR 9 as below; open for review.
 | Q27 | Which conversation | The exact one from Claude's hooks (`--resume <id>`), else the provider's last in that directory (`--continue`), which two agents in one worktree would share | Always `--continue`, as the plan said |
 | Q28 | Interrupted turn | Resumed as is; no "you were interrupted" prompt is typed (proposal 0009's risk) | Send a short note after the resume |
 | Q29 | `engine.restored` for MCP | **Resolved (MCP follow-up):** MCP tools `list_restorable`, `restore_agents`, `dismiss_restorable` over the legacy socket, and the legacy `list_events` carries `restores` (each `engine.restored` after `since`, with its `seq`; absent when none) next to the `agent.status` events, so /gio-planner can restore and see the result over MCP | Leave restores to the CLI and v1 |
-| Q30 | The TUI | No restore UI: the CLI, v1 and the config cover the boot | A toast with "restore" when a TUI connects to an engine with restorable agents |
+| Q30 | The TUI | **Resolved:** a toast when a TUI connects to an engine with restorable agents, and `R` / the palette's "Restore agents" (§6f) | — |
 
 ### Decisions (2026-10-15)
 

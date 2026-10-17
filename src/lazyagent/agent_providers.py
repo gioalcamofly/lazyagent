@@ -50,7 +50,10 @@ def agent_session_name(worktree_path: str, agent_id: str = "") -> str:
     return re.sub(r"[^A-Za-z0-9._]+", "-", name).strip("-") or "agent"
 
 # Vars that the PTY emulator already sets or that may cause issues if overridden.
-ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_"})
+# LAZYAGENT_HOST tells a lazyagent TUI it runs inside a host: the agents
+# and shells it (or its engine) starts are not hosted, and with a detached
+# engine they outlive the host.
+ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_", "LAZYAGENT_HOST"})
 
 
 @dataclass(frozen=True)

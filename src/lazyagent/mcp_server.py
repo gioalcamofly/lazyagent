@@ -187,7 +187,7 @@ async def list_worktrees() -> list[dict]:
 
 @mcp.tool()
 async def create_worktree(
-    branch: str, base_branch: str = "main", extra: str = ""
+    branch: str, base_branch: str | None = None, extra: str = ""
 ) -> dict:
     """Create a new git worktree with a new branch.
 
@@ -211,7 +211,9 @@ async def create_worktree(
 
     Args:
         branch: Name for the new branch.
-        base_branch: Branch to base the new worktree on. Defaults to "main".
+        base_branch: Branch to base the new worktree on. Default: the repo's
+            configured default branch when a worktree has it checked out,
+            else the branch of the main worktree.
         extra: Optional string substituted for the ``{extra}`` placeholder
             in the custom create command template. Ignored (with a warning)
             when no custom command is configured. Note: this value is
@@ -223,7 +225,9 @@ async def create_worktree(
         ``job_id`` (the engine job that ran the custom command), and
         optional ``warning`` describing any caveats.
     """
-    params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}
+    params: dict[str, Any] = {"branch": branch}
+    if base_branch:
+        params["base_branch"] = base_branch
     if extra:
         params["extra"] = extra
     return await _get_client().call("create_worktree", params)

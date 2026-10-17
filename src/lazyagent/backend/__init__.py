@@ -188,6 +188,18 @@ class Backend(ABC):
     async def get_diff(self, path: str) -> str: ...
 
     @abstractmethod
+    async def list_restorable(self) -> list[dict[str, Any]]:
+        """The agents an earlier engine ran when it ended (§6e); empty when
+        the engine keeps no restart manifest."""
+
+    @abstractmethod
+    async def restore_agents(
+        self, ids: list[str] | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Bring them back (all without ``ids``), from this client's
+        environment: ``{restored, failed}``."""
+
+    @abstractmethod
     async def refresh_pr_info(self, paths: Collection[str]) -> None: ...
 
     @abstractmethod
@@ -198,7 +210,7 @@ class Backend(ABC):
     async def create_worktree(
         self,
         branch: str,
-        base_branch: str = "main",
+        base_branch: str | None = None,
         extra: str = "",
         *,
         env: Mapping[str, str] | None = None,

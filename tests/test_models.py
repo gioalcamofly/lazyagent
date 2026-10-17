@@ -226,3 +226,26 @@ class TestGitStatus:
         assert gs.behind == 1
         assert gs.has_upstream is True
         assert gs.last_commit_subject == "Fix bug"
+
+
+def _wt(path: str, branch: str | None, is_main: bool = False):
+    from lazyagent.models import WorktreeInfo
+
+    return WorktreeInfo(
+        path=path, head="0" * 40, branch=branch, is_main=is_main, is_bare=False
+    )
+
+
+def test_default_base_prefers_a_configured_branch_that_is_checked_out():
+    from lazyagent.models import default_base
+
+    worktrees = [_wt("/r", "main", is_main=True), _wt("/r-dev", "develop")]
+    assert default_base("develop", worktrees) == "develop"
+    # The built-in default, "master", is not a branch here: the main
+    # worktree's branch is.
+    assert default_base("master", worktrees) == "main"
+    # A detached main worktree: the configured one, else "main".
+    detached = [_wt("/r", None, is_main=True)]
+    assert default_base("trunk", detached) == "trunk"
+    assert default_base("", detached) == "main"
+    assert default_base(None, []) == "main"

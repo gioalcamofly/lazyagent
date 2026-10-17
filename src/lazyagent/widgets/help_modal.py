@@ -21,6 +21,7 @@ _HELP_TEXT = """\
   [bold]Ctrl+J[/bold]          Focus the active agent tab
   [bold]Alt+] / Alt+n[/bold]    Next agent tab
   [bold]Alt+[ / Alt+p[/bold]    Previous agent tab
+  [bold]R[/bold]               Restore the agents an earlier session ran
 
 [bold cyan]Worktrees[/bold cyan]
   [bold]c[/bold]               Create new worktree

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.binding import Binding
-from textual.widgets import TabbedContent
+from textual.widgets import Input, TabbedContent
 from textual.worker import WorkerState
 
 from lazyagent.app import LazyAgent
@@ -718,6 +718,36 @@ class TestPrStatusDebounce:
             # The badge came from the cache: the lookup is still pending.
             assert lookups == []
             assert app._selection_debounce is not None
+
+
+class TestCreateDialogBase:
+    @pytest.mark.asyncio
+    async def test_the_base_is_prefilled_with_the_main_branch(
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
+    ) -> None:
+        """No default branch configured (the built-in "master" is not a
+        branch of this repo): the dialog offers the main worktree's branch."""
+        _patch_app_dependencies(monkeypatch)
+        app = tui_app(backend_kind)
+        async with app.run_test() as pilot:
+            await _drain_workers(app)
+            app.action_create_worktree()
+            await pilot.pause()
+            assert app.screen.query_one("#base-input", Input).value == "main"
+class TestLateDiff:
+    @pytest.mark.asyncio
+    async def test_a_diff_that_outlives_the_screen_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
+    ) -> None:
+        """A diff fetch that returns while the app shuts down (its screen
+        already gone) must not fail the worker, which fails the app's exit."""
+        _patch_app_dependencies(monkeypatch)
+        app = tui_app(backend_kind)
+        async with app.run_test():
+            await _drain_workers(app)
+            wt = await _select_worktree(app, 1)
+            await app.query_one(CenterPanel).remove()
+            app._apply_diff(wt.path, "diff --git a/x b/x")  # no NoMatches
 
 
 class TestDiffRefreshDebounce:

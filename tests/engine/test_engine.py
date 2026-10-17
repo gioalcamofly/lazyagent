@@ -634,6 +634,27 @@ class TestWorktreeJobs:
         assert events.named("job.finished") == [{"job_id": "j1", "exit_code": None}]
 
 
+class TestDefaultBase:
+    @pytest.mark.asyncio
+    async def test_a_create_without_a_base_starts_from_the_main_branch(self, tmp_path):
+        """The built-in default branch (master) is not checked out here: the
+        new branch starts from the main worktree's branch, as the host page
+        prefills it."""
+        repo = str(tmp_path / "repo")
+        engine = make_engine([worktree(repo, "main")], repo_root=repo)
+        await engine.create_worktree("feat")
+        engine.config = Config(default_branch="develop")
+        engine.world.worktrees.append(worktree(repo + "-dev", "develop", is_main=False))
+        engine.refresh_worktrees()
+        await engine.create_worktree("feat2")
+        await engine.create_worktree("feat3", "release")
+        assert engine.world.created == [
+            ("feat", "main"),
+            ("feat2", "develop"),
+            ("feat3", "release"),
+        ]
+
+
 class TestEvents:
     @pytest.mark.asyncio
     async def test_one_global_seq_and_list_events_sees_agent_status_only(

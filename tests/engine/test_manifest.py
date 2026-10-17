@@ -199,3 +199,26 @@ async def test_flush_waits_for_a_write_already_under_way(tmp_path):
     await flushing
     assert done == [1]
     assert len(mf.read(path)[0]) == 1
+
+
+def test_each_agent_is_offered_once_the_newest_wins(tmp_path):
+    """Every stop leaves an entry; an agent (worktree, id; the orchestrator
+    is "") is offered once, as it was last."""
+    path = tmp_path / "m.json"
+    old_orch = _entry("__orchestrator__", "", kind="orchestrator", ended_at=1.0)
+    new_orch = _entry("__orchestrator__", "", kind="orchestrator", ended_at=2.0)
+    a1_old = _entry("/r/feat", "a1", ended_at=1.0, instruction="old")
+    a1_running = _entry("/r/feat", "a1", instruction="new")  # ended at load
+    a2 = _entry("/r/feat", "a2", ended_at=1.5)
+    mf.write(
+        path,
+        {
+            "agents": [a1_running.to_dict()],
+            "restorable": [
+                e.to_dict() for e in (old_orch, new_orch, a1_old, a2)
+            ],
+        },
+    )
+    manifest = Manifest(path, repo_root="/r")
+    manifest.load(lambda e: True)
+    assert set(manifest.restorable) == {new_orch.id, a1_running.id, a2.id}

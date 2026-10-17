@@ -432,6 +432,15 @@ class RemoteBackend(Backend):
             BACKEND_CONNECTED, {"first": first, "engine_changed": engine_changed}
         )
         self._announce_launch()
+        if (first or engine_changed) and hello.engine_version != __version__:
+            # A detached engine keeps running the code it started with: after
+            # an upgrade it is the old one until it is restarted.
+            self._notice(
+                "warning",
+                f"The engine runs lazyagent {hello.engine_version}, this TUI "
+                f"{__version__}. Restart it to update: lazyagent engine stop, "
+                "then lazyagent engine restore brings the agents back",
+            )
         if self._view is not None:
             self.fire("publish_view", view=self._view)
         # Re-list and sweep git status, as an in-process engine does at start.
@@ -720,6 +729,20 @@ class RemoteBackend(Backend):
     async def get_diff(self, path: str) -> str:
         return (await self.request("get_diff", worktree_path=path))["diff"]
 
+    async def list_restorable(self) -> list[dict[str, Any]]:
+        try:
+            return (await self.request("list_restorable"))["agents"]
+        except ValueError:
+            return []  # an engine without a restart manifest
+
+    async def restore_agents(
+        self, ids: list[str] | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        params: dict[str, Any] = {"env": dict(os.environ)}
+        if ids is not None:
+            params["ids"] = ids
+        return await self.request("restore_agents", **params)
+
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         for path in paths:
             try:
@@ -739,12 +762,14 @@ class RemoteBackend(Backend):
     async def create_worktree(
         self,
         branch: str,
-        base_branch: str = "main",
+        base_branch: str | None = None,
         extra: str = "",
         *,
         env: Mapping[str, str] | None = None,
     ) -> CreatedWorktree:
-        params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}
+        params: dict[str, Any] = {"branch": branch}
+        if base_branch:
+            params["base_branch"] = base_branch
         if extra:
             params["extra"] = extra
         if env is not None:

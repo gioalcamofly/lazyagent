@@ -92,6 +92,10 @@ class Entry:
         return entry
 
 
+def _ended(entry: Entry) -> float:
+    return entry.started_at if entry.ended_at is None else entry.ended_at
+
+
 def clip_instruction(text: str | None) -> str | None:
     if text is None:
         return None
@@ -189,7 +193,12 @@ class Manifest:
             if entry.ended_at is None:
                 entry.ended_at = now
         merged = {e.id: e for e in (*restorable, *agents)}
-        self.restorable = {k: e for k, e in merged.items() if exists(e)}
+        # One entry per agent (worktree, id; the orchestrator's id is ""):
+        # every stop leaves one, and restoring an agent twice cannot work.
+        newest: dict[tuple[str, str], Entry] = {}
+        for entry in sorted(merged.values(), key=_ended):
+            newest[(entry.worktree_path, entry.agent_id)] = entry
+        self.restorable = {e.id: e for e in newest.values() if exists(e)}
         self._cap()
         if merged:
             self.mark_dirty()
@@ -205,11 +214,9 @@ class Manifest:
 
     def _cap(self) -> None:
         if len(self.restorable) > RESTORABLE_LIMIT:
-            newest = sorted(
-                self.restorable.values(),
-                key=lambda e: e.started_at if e.ended_at is None else e.ended_at,
-                reverse=True,
-            )[:RESTORABLE_LIMIT]
+            newest = sorted(self.restorable.values(), key=_ended, reverse=True)[
+                :RESTORABLE_LIMIT
+            ]
             self.restorable = {e.id: e for e in newest}
 
     # ------------------------------------------------------------------

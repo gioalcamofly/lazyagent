@@ -108,7 +108,9 @@ class EngineMethods:
 
         Params:
             branch: required, non-empty branch name.
-            base_branch: optional, defaults to "main".
+            base_branch: optional; default: the configured default branch
+                when a worktree has it checked out, else the main
+                worktree's branch.
             extra: optional, only used when a custom create command is
                 configured.
 
@@ -129,7 +131,7 @@ class EngineMethods:
         branch = params.get("branch", "").strip()
         if not branch:
             raise ValueError("branch is required and must not be empty")
-        base_branch = params.get("base_branch", "main")
+        base_branch = params.get("base_branch") or None
         extra = params.get("extra", "")
         env = check_env(params.get("env"))
 

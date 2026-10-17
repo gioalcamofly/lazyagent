@@ -40,6 +40,7 @@ export const KEYMAP = [
   { keys: ["C"], tui: ["c"], action: "Create a worktree (and launch an agent)", scope: "outside", where: "page" },
   { keys: ["D"], tui: ["d"], action: "Remove the worktree", scope: "outside", where: "page" },
   { keys: ["R"], tui: ["r"], action: "Refresh the worktree list", scope: "outside", where: "page" },
+  { keys: ["Shift+R"], tui: ["R"], action: "Restore the agents an earlier session ran", scope: "outside", where: "tui" },
   { keys: ["?"], tui: ["question_mark"], action: "This help (the TUI has its own)", scope: "outside", where: "page" },
   {
     keys: ["Q"],

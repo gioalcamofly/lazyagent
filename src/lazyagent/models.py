@@ -187,3 +187,19 @@ class PrInfo:
         ):
             return "pending"
         return "pass"
+
+
+def default_base(
+    default_branch: str | None, worktrees: Iterable[WorktreeInfo]
+) -> str:
+    """The branch a new worktree starts from when none is given: the
+    configured default branch when a worktree has it checked out, else the
+    main worktree's branch (the built-in default, ``master``, is often not a
+    branch at all), else the configured one, else ``main``. The host page's
+    ``defaultBase`` (host/static/components/dialogs.js) follows the same
+    rule."""
+    worktrees = list(worktrees)
+    if default_branch and any(wt.branch == default_branch for wt in worktrees):
+        return default_branch
+    main = next((wt.branch for wt in worktrees if wt.is_main and wt.branch), None)
+    return main or default_branch or "main"

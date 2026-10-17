@@ -95,6 +95,7 @@ from lazyagent.models import (
     LifecycleConfidence,
     PrInfo,
     WorktreeInfo,
+    default_base,
     rollup_status,
 )
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
@@ -556,7 +557,7 @@ class Engine:
     async def create_worktree(
         self,
         branch: str,
-        base_branch: str = "main",
+        base_branch: str | None = None,
         extra: str = "",
         *,
         env: Mapping[str, str] | None = None,
@@ -565,12 +566,16 @@ class Engine:
         custom command (run as a job, waited for), then re-list.
 
         ``extra`` and ``env`` (the environment the job runs with; ``None``
-        means the engine's) only reach a custom command. Raises
-        :class:`WorktreeManagerError` when the creation fails.
+        means the engine's) only reach a custom command. Without a
+        ``base_branch`` the new branch starts from :func:`default_base`.
+        Raises :class:`WorktreeManagerError` when the creation fails.
         """
         branch = branch.strip()
         if not branch:
             raise ValueError("branch is required and must not be empty")
+        base_branch = base_branch or default_base(
+            self.config.default_branch, self.worktrees
+        )
         repo_root = self.repo_root
         template = self.config.worktree.create
         if template is not None:
