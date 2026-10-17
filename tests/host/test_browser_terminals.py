@@ -86,7 +86,7 @@ async def test_keys_move_between_sidebar_tabs_and_shell(fake_claude, host, brows
     shown = "() => window.lazyagent.store.shownAgent()?.session_id"
 
     await page.locator(".agent-slot").click()
-    assert await page.evaluate(focused) == second["session_id"]
+    await page.wait_for_function(f"() => ({focused})() === '{second['session_id']}'")
     # Alt+N / Alt+P cycle the agent tabs and keep the keyboard in them.
     await page.keyboard.press("Alt+n")
     await page.wait_for_function(f"() => ({shown})() === '{first['session_id']}'")
@@ -98,8 +98,10 @@ async def test_keys_move_between_sidebar_tabs_and_shell(fake_claude, host, brows
     await page.keyboard.press("Control+k")
     await page.wait_for_function("() => document.activeElement?.matches('li.wt.current')")
     await page.keyboard.press("k")
-    await page.wait_for_selector("li.wt.current:has-text('repo') >> nth=0")
-    assert await page.evaluate("() => window.lazyagent.store.selected.value") != feat
+    await page.wait_for_function(
+        f"() => window.lazyagent.store.selected.value !== {feat!r}"
+        " && document.activeElement?.matches('li.wt.current')"
+    )
     await page.keyboard.press("j")
     await page.wait_for_function(f"() => window.lazyagent.store.selected.value === {feat!r}")
     await page.keyboard.press("Enter")

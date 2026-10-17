@@ -83,6 +83,8 @@ class Host:
             repo_root=root,
             host_id=self.host_id,
             port=port,
+            # What the TUI passes as its own environment.
+            client_env=self.tui.env,
         )
         self._announced: asyncio.Future[str | None] | None = None
         self._stop = asyncio.Event()

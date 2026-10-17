@@ -30,7 +30,7 @@ function AgentList({ agents, path, currentAgent, onAgent }) {
   </ul>`;
 }
 
-function GitBadges({ git, pr }) {
+export function GitBadges({ git, pr }) {
   const badges = [];
   if (git) {
     if (git.dirty_count) badges.push(html`<span class="dirty">●${git.dirty_count}</span>`);
@@ -117,10 +117,11 @@ export function WorktreeList({ store, actions }) {
 
 const TOOLBAR = [
   ["spawn", "Spawn", "Spawn an agent (s)"],
+  ["stop", "Stop", "Stop the agent shown (x)"],
   ["create", "New", "New worktree (c)"],
   ["remove", "Remove", "Remove worktree (d)"],
-  ["shell", "Shell", "Worktree shell"],
-  ["diff", "Diff", "Diff"],
+  ["shell", "Shell", "Worktree shell (Ctrl+L)"],
+  ["diff", "Diff", "Diff (Ctrl+D)"],
 ];
 
 function Toolbar({ store, actions }) {
@@ -129,11 +130,13 @@ function Toolbar({ store, actions }) {
   const path = store.selected.value;
   const onWorktree = Boolean(path);
   const wt = onWorktree ? store.worktrees.value.find((w) => w.path === path) : null;
-  const modalOpen = Boolean(view && view.focus === "modal");
+  const busy = Boolean(store.dialog.value) || Boolean(view && view.focus === "modal");
+  const orchestratorBusy = path === null && store.orchestrator.value.length > 0;
   const allowed = {
-    spawn: enabled && !modalOpen,
-    create: enabled && !modalOpen,
-    remove: enabled && !modalOpen && Boolean(wt) && !wt.is_main,
+    spawn: enabled && !busy && path !== undefined && !orchestratorBusy,
+    stop: enabled && !busy && Boolean(store.shownAgent()),
+    create: enabled && !busy,
+    remove: enabled && !busy && Boolean(wt) && !wt.is_main,
     shell: enabled && onWorktree,
     diff: enabled && onWorktree,
   };
