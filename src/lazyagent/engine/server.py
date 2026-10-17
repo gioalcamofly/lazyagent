@@ -591,6 +591,9 @@ class V1Server:
                 "detach_ui": self.handle_detach_ui,
                 "publish_view": self.handle_publish_view,
                 "shutdown": self.handle_shutdown,
+                "list_restorable": self.handle_list_restorable,
+                "restore_agents": self.handle_restore_agents,
+                "dismiss_restorable": self.handle_dismiss_restorable,
                 "ui.get_view": self.handle_ui_get_view,
                 "ui.select_worktree": self.handle_ui_select_worktree,
                 "ui.select_orchestrator": self.handle_ui_select_orchestrator,
@@ -1127,6 +1130,31 @@ class V1Server:
                 "stopping the engine would stop them too"
             )
         return _Reply({"stopping": True, "agents": agents}, handler)
+
+    @staticmethod
+    def _ids(params: dict) -> list[str] | None:
+        ids = params.get("ids")
+        if ids is not None and not (
+            isinstance(ids, list) and all(isinstance(i, str) for i in ids)
+        ):
+            raise ValueError("ids must be a list of strings")
+        return ids
+
+    async def handle_list_restorable(self, conn: _Connection, params: dict) -> Any:
+        """Agents earlier engines ran when they ended (restart manifest)."""
+        return {"agents": [e.to_dict() for e in self.engine.list_restorable()]}
+
+    async def handle_restore_agents(self, conn: _Connection, params: dict) -> Any:
+        """Spawn restorable agents again (all of them without ``ids``)."""
+        ids = self._ids(params)
+        env = check_env(params.get("env"))
+        return await self.engine.restore_agents(ids, env=env)
+
+    async def handle_dismiss_restorable(
+        self, conn: _Connection, params: dict
+    ) -> Any:
+        """Stop offering restorable agents (all of them without ``ids``)."""
+        return {"dismissed": self.engine.dismiss_restorable(self._ids(params))}
 
     async def handle_ui_get_view(self, conn: _Connection, params: dict) -> Any:
         return {"view": self.engine.ui_view}

@@ -51,6 +51,16 @@ EVENT_SAMPLES = {
     "job.output": {"job_id": "j1", "text": "Preparing worktree\n"},
     "job.finished": {"job_id": "j1", "exit_code": None},
     "engine.shutdown": {"reason": "lazyagent engine stop"},
+    "engine.restored": {
+        "restored": [
+            {
+                "id": "3f2a9c1d0b7e", "worktree_path": "/r", "agent_id": "a2",
+                "session_id": "s1", "label": "Agent 2", "session_name": "r-a2",
+                "kind": "agent", "resumed": "conversation",
+            },
+        ],
+        "failed": [{"id": "9d8c7b6a5f4e", "reason": "Unknown worktree: /gone"}],
+    },
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",
