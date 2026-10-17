@@ -71,8 +71,8 @@ fragment pr on PullRequest {
           contexts(first: 100) {
             nodes {
               __typename
-              ... on CheckRun { name status conclusion }
-              ... on StatusContext { context state }
+              ... on CheckRun { name status conclusion detailsUrl }
+              ... on StatusContext { context state targetUrl }
             }
           }
         }
@@ -403,7 +403,12 @@ class WorktreeManager:
             name = item.get("name") or item.get("context", "")
             status = item.get("status", "")
             conclusion = item.get("conclusion") or item.get("state", "") or ""
-            checks.append(CiCheck(name=name, status=status, conclusion=conclusion))
+            details_url = item.get("detailsUrl") or item.get("targetUrl") or ""
+            checks.append(
+                CiCheck(
+                    name=name, status=status, conclusion=conclusion, details_url=details_url
+                )
+            )
 
         return PrInfo(
             number=data.get("number", 0),
@@ -429,11 +434,13 @@ class WorktreeManager:
                     "name": ctx.get("name") or "",
                     "status": ctx.get("status") or "",
                     "conclusion": ctx.get("conclusion") or "",
+                    "detailsUrl": ctx.get("detailsUrl") or "",
                 })
             else:
                 checks.append({
                     "context": ctx.get("context") or "",
                     "state": ctx.get("state") or "",
+                    "targetUrl": ctx.get("targetUrl") or "",
                 })
         return {
             "number": node.get("number", 0),

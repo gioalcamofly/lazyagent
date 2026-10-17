@@ -148,6 +148,7 @@ class CiCheck:
     name: str
     status: str       # "COMPLETED", "IN_PROGRESS", "QUEUED", etc.
     conclusion: str   # "success", "failure", "neutral", etc.
+    details_url: str = ""  # the check's page (CheckRun detailsUrl / StatusContext targetUrl)
 
 
 @dataclass

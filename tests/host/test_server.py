@@ -308,8 +308,6 @@ async def test_resize_and_redraw(server, tui):
 @pytest.mark.parametrize(
     "method",
     [
-        "send_agent_input",
-        "read_agent_output",
         "set_interest",
         "attach_ui",
         "publish_view",
@@ -340,6 +338,8 @@ async def test_whitelist():
         "remove_worktree",
         "spawn_agent",
         "stop_agent",
+        "send_agent_input",
+        "read_agent_output",
         "subscribe",
         "unsubscribe",
         "attach_stream",

@@ -6,7 +6,7 @@
 import { html, render, effect } from "./lib/html.js";
 import { Connection, takeToken } from "./lib/conn.js";
 import { createStore, SIDEBAR_EVENTS } from "./lib/store.js";
-import { ORCHESTRATOR_KEY, basename } from "./lib/format.js";
+import { ORCHESTRATOR_KEY, agentLabel, basename } from "./lib/format.js";
 import { createTui } from "./lib/tui.js";
 import { TerminalManager, parseFrame } from "./lib/terminals.js";
 import { resolvedTheme, terminalTheme } from "./lib/theme.js";
@@ -15,6 +15,8 @@ import { Center } from "./components/center.js";
 import { TopBar, Toasts, HelpSheet, TuiPane, Overlay } from "./components/chrome.js";
 import { SpawnDialog, CreateDialog, RemoveDialog, StopDialog } from "./components/dialogs.js";
 import { JobDrawer } from "./components/jobs.js";
+import { AttentionView, PrPanel } from "./components/attention.js";
+import { ciFailurePrompt } from "./lib/attention.js";
 
 const store = createStore();
 
@@ -136,6 +138,7 @@ async function ensureShell(path) {
 const actions = {
   select(path, { focus = true } = {}) {
     store.selected.value = path;
+    if (store.centerView.value === "attention") store.centerView.value = "native";
     if (store.centerView.value === "tui") tuiFollow();
     if (store.shellOpen.value && path) ensureShell(path);
     if (focus) focusShown();
@@ -293,6 +296,99 @@ const actions = {
       .then(() => store.toast("Refreshed worktrees", "information", 2000))
       .catch((e) => store.toast(e.message, "warning"));
   },
+
+  // ------------------------------------------------ attention (U4)
+
+  showAttention() {
+    if (store.centerView.value === "tui") tuiBlank();
+    store.centerView.value = "attention";
+    requestAnimationFrame(() => document.getElementById("attention-list")?.focus());
+  },
+  pickAttention(item) {
+    store.attentionPick.value = item.id;
+  },
+  queueKey(event) {
+    const items = store.attention.value;
+    if (items.length === 0) return;
+    const at = Math.max(0, items.findIndex((i) => i.id === store.attentionPick.value));
+    const move = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 }[event.key];
+    if (move && !event.ctrlKey && !event.altKey) {
+      store.attentionPick.value = items[Math.min(items.length - 1, Math.max(0, at + move))].id;
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === "Enter") {
+      const item = items[at];
+      if (item.agent) focusTerminal(item.agent.session_id);
+      else document.querySelector(".att-pane button.primary")?.focus();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  },
+  openItem(item) {
+    const path = item.key === ORCHESTRATOR_KEY ? null : item.key;
+    if (item.agent) store.activeAgent.value = { ...store.activeAgent.value, [item.key]: item.agent.agent_id };
+    store.centerView.value = "native";
+    actions.select(path);
+  },
+  stopItem(item) {
+    store.dialog.value = { kind: "stop", path: item.key === ORCHESTRATOR_KEY ? null : item.key, agent: item.agent };
+  },
+  dismiss(item) {
+    store.dismiss(item);
+  },
+  snooze(item) {
+    store.snooze(item, 15 * 60 * 1000);
+    store.toast(`${item.label}: snoozed for 15 minutes`, "information", 3000);
+  },
+  /** send_agent_input: the text, then Enter, as the MCP tool does. */
+  async reply(item, text) {
+    const result = await conn.request("send_agent_input", {
+      worktree_path: item.key,
+      agent_id: item.agent.agent_id,
+      text,
+    });
+    const note = result.delivery === "confirmed" ? "sent" : `sent (${result.delivery})`;
+    store.toast(`${item.label}: ${note}`, "success", 3000);
+    return result;
+  },
+  async sendFailures(item, agent) {
+    try {
+      await conn.request("send_agent_input", {
+        worktree_path: item.path,
+        agent_id: agent.agent_id,
+        text: ciFailurePrompt(item),
+      });
+      store.toast(`Sent the CI failures to ${agentLabel(agent)}`, "success", 3000);
+    } catch (e) {
+      store.toast(e.message, "error");
+    }
+  },
+  async respawn(item) {
+    const path = item.key === ORCHESTRATOR_KEY ? null : item.key;
+    try {
+      await actions.spawn({ path, instruction: "", skipPermissions: false, resumeMode: "last", label: item.exit.label });
+      store.dismiss(item);
+    } catch (e) {
+      store.toast(e.message, "error");
+    }
+  },
+
+  // ------------------------------------------------ PR panel (U4)
+
+  togglePrPanel() {
+    const path = store.selected.value;
+    store.prPanel.value = !store.prPanel.value;
+    if (store.prPanel.value && path) actions.refreshPr(path, false);
+  },
+  async refreshPr(path, refresh = true) {
+    try {
+      const result = await conn.request("get_pr_info", { worktree_path: path, refresh });
+      store.prFetched.value = { ...store.prFetched.value, [path]: result.fetched };
+      store.prInfo.value = { ...store.prInfo.value, [path]: result.pr_info };
+    } catch (e) {
+      store.toast(`PR: ${e.message}`, "warning");
+    }
+  },
 };
 
 // ---------------------------------------------------------------- waits
@@ -430,7 +526,6 @@ function onControl(message) {
   switch (message.type) {
     case "hello":
       store.repoRoot.value = message.repo_root;
-      document.title = `lazyagent — ${basename(message.repo_root)}`;
       reconnectDelay = 250;
       tui.announce();
       break;
@@ -514,11 +609,19 @@ function globalKey(event) {
     return true;
   }
   if (mod && key === "d") return actions.toolbar("diff"), true;
+  if (mod && key === ".") return actions.togglePrPanel(), true;
   if (alt && key === "g") return actions.refreshGit(), true;
   if (alt && (event.code === "BracketRight" || key === "n")) return actions.cycleAgent(1), true;
   if (alt && (event.code === "BracketLeft" || key === "p")) return actions.cycleAgent(-1), true;
   return false;
 }
+
+// "g" then a letter, outside a terminal: switch views (§3a).
+let pendingG = 0;
+const G_KEYS = {
+  a: () => actions.showAttention(),
+  w: () => actions.showNative(),
+};
 
 // Single keys outside a terminal, as in the TUI.
 const OUTSIDE_KEYS = {
@@ -557,7 +660,15 @@ document.addEventListener(
     if (!handled && inside(target, "#worktrees")) handled = sidebarKey(event);
     const plain = !event.ctrlKey && !event.altKey && !event.metaKey;
     if (!handled && !inside(target, ".xterm") && plain) {
-      if (event.key === "?") {
+      const g = performance.now() - pendingG < 1000;
+      pendingG = 0;
+      if (g && G_KEYS[event.key]) {
+        G_KEYS[event.key]();
+        handled = true;
+      } else if (event.key === "g") {
+        pendingG = performance.now();
+        handled = true;
+      } else if (event.key === "?") {
         store.help.value = true;
         handled = true;
       } else if (OUTSIDE_KEYS[event.key]) {
@@ -579,11 +690,13 @@ const tuiPane = html`<div class="tui-wrap"><${TuiPane} tui=${tui} /></div>`;
 
 function App() {
   return html`
-    <${TopBar} store=${store} />
+    <${TopBar} store=${store} actions=${actions} />
     <main>
       <${Sidebar} store=${store} actions=${actions} />
       <div class="center-wrap">
         <${Center} store=${store} actions=${actions} manager=${terminals} tuiPane=${tuiPane} />
+        ${store.centerView.value === "attention" && html`<${AttentionView} store=${store} actions=${actions} manager=${terminals} />`}
+        ${store.centerView.value === "native" && html`<${PrPanel} store=${store} actions=${actions} />`}
         <${Overlay} store=${store} />
       </div>
     </main>
@@ -619,6 +732,53 @@ function Dialogs() {
 }
 
 render(html`<${App} />`, document.body);
+
+// ---------------------------------------------------------------- badge
+
+// The attention count in the tab title and on the favicon (§3b).
+setInterval(() => (store.clock.value = Date.now()), 15000);
+const favicon = document.querySelector('link[rel="icon"]');
+const plainIcon = favicon?.getAttribute("href");
+let iconImage = null;
+function badgeIcon(count) {
+  if (!favicon) return;
+  if (!count) {
+    favicon.setAttribute("href", plainIcon);
+    return;
+  }
+  const draw = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 32;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(iconImage, 0, 0, 32, 32);
+    ctx.fillStyle = "#e5534b";
+    ctx.beginPath();
+    ctx.arc(22, 10, 10, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(count > 9 ? "9+" : String(count), 22, 11);
+    favicon.setAttribute("href", canvas.toDataURL("image/png"));
+  };
+  if (iconImage?.complete) draw();
+  else {
+    iconImage = new Image();
+    iconImage.onload = draw;
+    iconImage.src = plainIcon;
+  }
+}
+let lastBadge = -1;
+effect(() => {
+  const count = store.attention.value.length;
+  const repo = store.repoRoot.value;
+  document.title = `${count ? `(${count}) ` : ""}lazyagent${repo ? ` — ${basename(repo)}` : ""}`;
+  if (count !== lastBadge) {
+    lastBadge = count;
+    badgeIcon(count);
+  }
+});
 
 const token = takeToken();
 if (token) conn.open(token);
