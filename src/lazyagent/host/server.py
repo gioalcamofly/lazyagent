@@ -58,8 +58,9 @@ from lazyagent.protocol import UI_COMMAND_METHODS, framing
 log = logging.getLogger(__name__)
 
 # What a page may ask the engine: views, read-only data, its own terminals
-# (streams, sizes, worktree shells), and the actions of the TUI's dialogs
-# (ui-plan Q2: the page could already type them into the TUI).
+# (streams, sizes, worktree shells), the actions of the TUI's dialogs, and
+# replying to an agent (ui-plan Q2: the page could already type all of it
+# into the TUI).
 ALLOWED_METHODS = frozenset(
     {
         "get_sidebar_state",
@@ -74,6 +75,8 @@ ALLOWED_METHODS = frozenset(
         "remove_worktree",
         "spawn_agent",
         "stop_agent",
+        "send_agent_input",
+        "read_agent_output",
         "subscribe",
         "unsubscribe",
         "attach_stream",

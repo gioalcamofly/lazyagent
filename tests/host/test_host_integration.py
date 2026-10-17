@@ -203,8 +203,8 @@ async def test_page_drives_the_hosted_tui(host, repo, tmp_path):
         await page.request("ui.show_diff")
         await page.event("ui.view_changed", worktree_path=feat, focus="diff")
         for method, params in [
-            ("send_agent_input", {"worktree_path": feat, "agent_id": "1", "text": "x"}),
             ("set_interest", {"worktree_paths": []}),
+            ("attach_ui", {}),
         ]:
             reply = await page.call(method, **params)
             assert reply["error"]["code"] == "FORBIDDEN"
