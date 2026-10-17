@@ -13,11 +13,15 @@ from lazyagent.engine.screen import ScrollbackScreen
 from lazyagent.protocol import validation
 
 
-async def until(predicate, timeout: float = 10.0, interval: float = 0.02) -> None:
+async def until(
+    predicate, timeout: float = 10.0, interval: float = 0.02, what: str = ""
+) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() > deadline:
-            raise AssertionError("condition not met in time")
+            raise AssertionError(
+                f"{what or 'condition'} not met within {timeout:g}s"
+            )
         await asyncio.sleep(interval)
 
 

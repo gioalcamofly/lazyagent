@@ -7,6 +7,7 @@ Unit tests drive a session through a fake emulator (no process); the
 from __future__ import annotations
 
 import asyncio
+import gc
 import shlex
 import sys
 import time
@@ -220,7 +221,15 @@ class TestOutput:
                 last, last_wall = now, wall
 
         await asyncio.sleep(UNWATCHED_FEED_INTERVAL + 0.01)
-        await asyncio.wait_for(tick(), 30)
+        # A full collection of a heap that earlier tests grew (a long run,
+        # one xdist worker) is tens of ms on this thread, and not the
+        # feeder's: collect first, and keep the collector out of the turns.
+        gc.collect()
+        gc.disable()
+        try:
+            await asyncio.wait_for(tick(), 30)
+        finally:
+            gc.enable()
         assert session.screen.screen_text(0).startswith("x" * 78)
         assert len(gaps) > 10
         assert max(gaps) < 0.012, (  # 3 x the 4 ms turn budget (FEED_BUDGET)

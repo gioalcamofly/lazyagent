@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
+from textual.css.query import NoMatches
 
 from lazyagent.app import LazyAgent
 from lazyagent.backend import make_backend
@@ -462,8 +463,21 @@ async def test_losing_the_connection_warns_and_reconnects(engine):
         await until(lambda: "AFTER_RECONNECT" in shell.session.screen_text())
 
 
+def _shell_view(panel):
+    """The session the panel's shell view shows; None while the view is
+    being replaced (between the old one's removal and the new one's mount)."""
+    try:
+        return panel.query_one("#terminal-widget").session
+    except NoMatches:
+        return None
+
+
 async def test_an_engine_that_comes_back_is_resynced(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Each wait below ends as soon as its step is done; the cap only bounds a
+    # hang, and is generous because a loaded machine (a parallel run, another
+    # suite) can take seconds to start a login shell or an engine.
+    cap = 30.0
     first = _engine(tmp_path)
     await first.start()
     info, _ = await _spawn(first)
@@ -478,23 +492,33 @@ async def test_an_engine_that_comes_back_is_resynced(tmp_path, monkeypatch):
             app.notify = MagicMock()
 
             await first.stop()  # the agents die with it (K3)
-            await until(lambda: not app.backend.connected)
-            await until(lambda: app.notify.call_count >= 1)
+            await until(
+                lambda: not app.backend.connected, cap, what="the loss noticed"
+            )
+            await until(
+                lambda: app.notify.call_count >= 1, cap, what="the loss toasted"
+            )
             assert "Lost the engine" in app.notify.call_args_list[0].args[0]
             assert app.sub_title == "engine disconnected"
 
             second = _engine(tmp_path)
             await second.start()
-            await until(lambda: app.backend.connected, timeout=10)
-            await until(lambda: panel.agent_ids == [])
+            await until(lambda: app.backend.connected, cap, what="reconnected")
+            await until(lambda: panel.agent_ids == [], cap, what="old tabs gone")
             await until(
-                lambda: panel.query_one("#terminal-widget").session is not old_shell
+                lambda: _shell_view(panel) not in (None, old_shell),
+                cap,
+                what="a new shell view",
             )
-            shell = panel.query_one("#terminal-widget").session
+            shell = _shell_view(panel)
             assert not old_shell.running
-            await until(lambda: shell.attached)
+            await until(lambda: shell.attached, cap, what="the new shell attached")
             shell.write("echo NEW_\\ENGINE\r")
-            await until(lambda: "NEW_ENGINE" in shell.screen_text())
+            await until(
+                lambda: "NEW_ENGINE" in shell.screen_text(),
+                cap,
+                what="the new shell answering",
+            )
     finally:
         await first.stop()
         if second is not None:

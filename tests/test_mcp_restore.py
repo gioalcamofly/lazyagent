@@ -31,11 +31,12 @@ async def test_mcp_lists_restores_and_reports_through_list_events(
     feat.mkdir()
     worktrees = [worktree(str(repo)), worktree(str(feat), "feat", is_main=False)]
     manifest = tmp_path / "manifest.json"
+    # One shim for both engines: rewriting it while the first engine's agent
+    # still runs it would fail (ETXTBSY).
+    provider = _provider(tmp_path)
 
     def engine():
-        e = make_engine(
-            list(worktrees), repo_root=str(repo), provider=_provider(tmp_path)
-        )
+        e = make_engine(list(worktrees), repo_root=str(repo), provider=provider)
         e.open_manifest(manifest)
         return e
 

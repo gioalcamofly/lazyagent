@@ -538,7 +538,12 @@ class TestGitStatusDebounce:
             DummyWorktreeManager.calls.clear()
 
             wt = await _select_worktree(app, 1)
-            await asyncio.sleep(0.4)
+            # Until the timer has fired and its fetch ran: on a loaded machine
+            # a 50 ms timer can fire well after any fixed sleep.
+            deadline = time.perf_counter() + 30.0
+            while not _status_paths():
+                assert time.perf_counter() < deadline, "the timer never fetched"
+                await asyncio.sleep(0.01)
             await _drain_workers(app)
 
         assert _status_paths() == {wt.path}
@@ -764,7 +769,12 @@ class TestDiffRefreshDebounce:
             diffs.clear()
 
             wt = await _select_worktree(app, 1)
-            await asyncio.sleep(0.4)
+            # Until the timer has fired and its fetch ran: on a loaded machine
+            # a short timer can fire well after any fixed sleep.
+            deadline = time.perf_counter() + 30.0
+            while not diffs:
+                assert time.perf_counter() < deadline, "the timer never fetched"
+                await asyncio.sleep(0.01)
             await _drain_workers(app)
 
         # A set, not a list: _select_worktree both awaits the handler directly

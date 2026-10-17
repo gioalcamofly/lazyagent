@@ -60,12 +60,15 @@ class World:
             worktree(str(self.feat), "feat", is_main=False),
         ]
         self.engines: list[Engine] = []
+        # Once: a crashed engine's agent may still be running the shim, and
+        # rewriting a running executable fails (ETXTBSY).
+        self.provider = _provider(tmp_path)
 
     def engine(self, config: Config | None = None) -> Engine:
         engine = make_engine(
             list(self.worktrees),
             repo_root=str(self.repo),
-            provider=_provider(self.tmp),
+            provider=self.provider,
             config=config,
         )
         engine.open_manifest(self.manifest)
