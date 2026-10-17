@@ -83,21 +83,35 @@ function tuiBlank() {
 
 let returnFromModal = false;
 
-function focusShown() {
-  requestAnimationFrame(() => {
-    if (store.centerView.value === "tui") tui.focus();
-    else {
-      const agent = store.shownAgent();
-      if (agent) terminals.sessions.get(agent.session_id)?.focus();
-      else if (store.shellOpen.value) focusShell();
+/** Give the keyboard to a session's terminal once it is on screen: tried
+ * each frame (a busy page may not have shown it yet), for up to a second. */
+function focusTerminal(sessionId) {
+  let tries = 0;
+  const step = () => {
+    const terminal = terminals.sessions.get(sessionId);
+    if (terminal?.visible && terminal.opened) {
+      terminal.focus();
+      if (terminal.element.contains(document.activeElement)) return;
     }
-  });
+    if (++tries < 60) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function focusShown() {
+  if (store.centerView.value === "tui") {
+    requestAnimationFrame(() => tui.focus());
+    return;
+  }
+  const agent = store.shownAgent();
+  if (agent) focusTerminal(agent.session_id);
+  else if (store.shellOpen.value) focusShell();
 }
 
 function focusShell() {
   const path = store.selected.value;
   const id = path ? store.shells.value[path] : undefined;
-  if (id) requestAnimationFrame(() => terminals.sessions.get(id)?.focus());
+  if (id) focusTerminal(id);
 }
 
 async function ensureShell(path) {
