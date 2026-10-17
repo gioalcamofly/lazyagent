@@ -57,6 +57,7 @@ V1_METHODS: tuple[str, ...] = (
     "attach_ui",
     "detach_ui",
     "publish_view",
+    "shutdown",
     "ui.get_view",
     "ui.select_worktree",
     "ui.select_orchestrator",

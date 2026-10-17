@@ -9,6 +9,7 @@ import pytest
 
 from lazyagent.engine.client import RequestError
 from lazyagent.protocol import validation
+from tests.contract.harness import NotSupported
 from tests.contract.helpers import checked, spawn, wait_for_text
 
 pytestmark = pytest.mark.asyncio
@@ -215,9 +216,63 @@ async def test_detach_unknown_stream(client):
     ).code == "VALIDATION_ERROR"
 
 
-@pytest.mark.parametrize("method", ["no_such_method", "shutdown"])
-async def test_unknown_method(client, method):
-    assert (await _error(client, method)).code == "UNKNOWN_METHOD"
+async def test_unknown_method(client):
+    assert (await _error(client, "no_such_method")).code == "UNKNOWN_METHOD"
+
+
+def _detached(harness) -> list[int]:
+    try:
+        return harness.detach()
+    except NotSupported as e:
+        pytest.skip(str(e))
+
+
+async def test_shutdown(harness, client):
+    calls = _detached(harness)
+    await checked(client, "subscribe", events=["engine.shutdown"])
+    assert await checked(client, "shutdown") == {"stopping": True, "agents": 0}
+    assert calls == [1]
+
+
+async def test_shutdown_counts_the_agents_it_stops(harness, client):
+    calls = _detached(harness)
+    await spawn(client, harness.feat)
+    result = await checked(client, "shutdown", stop_agents=True)
+    assert result == {"stopping": True, "agents": 1}
+    assert calls == [1]
+
+
+async def test_shutdown_without_stopping_agents_refuses_while_one_runs(
+    harness, client
+):
+    calls = _detached(harness)
+    await spawn(client, harness.feat)
+    error = await _error(client, "shutdown", stop_agents=False)
+    assert error.code == "VALIDATION_ERROR"
+    assert "1 agent still running" in error.message
+    assert calls == []
+
+
+async def test_shutdown_without_stopping_agents_when_none_runs(harness, client):
+    calls = _detached(harness)
+    result = await checked(client, "shutdown", stop_agents=False)
+    assert result == {"stopping": True, "agents": 0}
+    assert calls == [1]
+
+
+async def test_shutdown_param_must_be_a_boolean(harness, client):
+    calls = _detached(harness)
+    error = await _error(client, "shutdown", stop_agents="yes")
+    assert error.code == "VALIDATION_ERROR"
+    assert calls == []
+
+
+async def test_an_engine_inside_a_tui_refuses_shutdown(harness, client):
+    if harness.name != "python":
+        pytest.skip("an in-process engine is the Python one")
+    error = await _error(client, "shutdown")
+    assert error.code == "VALIDATION_ERROR"
+    assert "inside a lazyagent TUI" in error.message
 
 
 async def test_requests_may_overlap(harness, client):

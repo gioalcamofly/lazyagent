@@ -11,6 +11,7 @@ import asyncio
 
 import pytest
 
+from lazyagent.app import LazyAgent
 from lazyagent.engine.client import Client, RequestError
 from lazyagent.protocol import UI_COMMAND_METHODS, validation
 from lazyagent.widgets.monitored_terminal import MonitoredTerminal
@@ -27,6 +28,9 @@ SIZE = (160, 90)
 
 async def _connect(app) -> Client:
     assert app.backend.engine.v1_socket_path is not None
+    # The app announces its first view once it settles: before the host
+    # subscribes, so that event is not mistaken for a command's.
+    await until(lambda: app.backend.engine.ui_view is not None)
     client = await Client.connect(app.backend.engine.v1_socket_path, client="host")
     await checked(client, "subscribe", events=["ui.view_changed"])
     return client
@@ -227,5 +231,37 @@ async def test_one_host_action_is_one_view_change(tmp_path, monkeypatch, backend
                 assert [
                     e for e in client.pending_events() if e.event == "ui.view_changed"
                 ] == []
+        finally:
+            await client.close()
+
+
+async def test_a_busy_app_announces_where_the_focus_lands(
+    tmp_path, monkeypatch, backend_kind
+):
+    """The focus a command asks for is queued on the app: a handler still
+    awaiting ahead of it must not let the view go out without it."""
+
+    async def busy() -> None:
+        await asyncio.sleep(0.2)
+
+    focus_shown = LazyAgent._focus_shown
+
+    def busy_focus_shown(self) -> None:
+        self.call_later(busy)
+        focus_shown(self)
+
+    monkeypatch.setattr(LazyAgent, "_focus_shown", busy_focus_shown)
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
+    async with app.run_test(size=SIZE):
+        client = await _connect(app)
+        try:
+            await checked(client, "ui.select_worktree", worktree_path=app.feat)
+            event = await client.next_event(
+                lambda e: e.event == "ui.view_changed", timeout=10
+            )
+            assert (event.data["worktree_path"], event.data["focus"]) == (
+                app.feat,
+                "shell",
+            )
         finally:
             await client.close()

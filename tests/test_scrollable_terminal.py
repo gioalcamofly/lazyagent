@@ -603,7 +603,7 @@ class TestOnKeyCopy:
 
         from unittest.mock import patch
         with patch.object(type(t), "app", new_callable=lambda: property(lambda self: mock_app)):
-            asyncio.get_event_loop().run_until_complete(t.on_key(event))
+            asyncio.run(t.on_key(event))
 
         # Nothing should have been written to the PTY
         t.session._emulator.recv_queue.put_nowait.assert_not_called()

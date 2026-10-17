@@ -96,6 +96,7 @@ from lazyagent.worktree_manager import (
 )
 
 if TYPE_CHECKING:
+    from lazyagent.engine.runtime import EngineLock
     from lazyagent.engine.server import V1Server
     from lazyagent.ipc import IpcServer
 
@@ -196,6 +197,14 @@ class Engine:
         self._v1_enabled = v1_server
         self.v1_socket_path: str | None = None
         self._v1_server: V1Server | None = None
+        self._lock: EngineLock | None = None
+        # The pid of the lazyagent that already serves the repo when this
+        # engine could not (0: unknown), else None.
+        self.other_instance: int | None = None
+        # Set by whoever runs a detached engine: called (after the reply is
+        # on its way) when a client asks it to shut down. None: the engine
+        # lives inside a TUI and only that TUI stops it.
+        self.shutdown_handler: Callable[[], None] | None = None
 
         # Hosted UIs that carry out ui.command, and the last view a UI
         # announced (ui.view_changed).
@@ -246,14 +255,15 @@ class Engine:
         # only for the clients' interest sets.
         self.worktree_service.start()
 
-    async def stop(self) -> None:
+    async def stop(self, reason: str = "stopped") -> None:
         """Stop the timers, jobs, servers and every session. Idempotent.
 
-        Clients hear ``engine.shutdown`` first. Sessions are stopped quietly:
-        no ``agent.exited`` is emitted for an engine that is going away.
+        Clients hear ``engine.shutdown {reason}`` first. Sessions are stopped
+        quietly: no ``agent.exited`` is emitted for an engine that is going
+        away.
         """
         if self._started:
-            self.events.emit(ENGINE_SHUTDOWN, {"reason": "stopped"})
+            self.events.emit(ENGINE_SHUTDOWN, {"reason": reason})
         self._started = False
         self._scheduler.stop()
         self.worktree_service.stop()
@@ -267,6 +277,12 @@ class Engine:
             v1, self._v1_server = self._v1_server, None
             self.v1_socket_path = None
             await v1.stop()
+        if self._lock is not None:
+            from lazyagent.engine.runtime import remove_empty_dirs
+
+            lock, self._lock = self._lock, None
+            lock.release()
+            remove_empty_dirs(lock.path.parent)
         if self._ipc_server is not None:
             server, self._ipc_server = self._ipc_server, None
             await server.stop()
@@ -289,6 +305,12 @@ class Engine:
 
     async def _start_v1(self) -> None:
         from lazyagent.engine import server as v1
+        from lazyagent.engine.runtime import (
+            LOCK_NAME,
+            EngineLock,
+            lock_holder,
+            remove_empty_dirs,
+        )
 
         enabled = self._v1_enabled
         if enabled is None:
@@ -297,23 +319,33 @@ class Engine:
         if not enabled or not repo_root:
             return
         path = v1.socket_path(repo_root)
+        lock = EngineLock(path.with_name(LOCK_NAME))
         server = v1.V1Server(self, path)
         try:
-            started = await server.start()
+            v1.private_dir(path.parent)
+            started = lock.acquire() and await server.start()
         except OSError as e:
+            lock.release()
+            remove_empty_dirs(path.parent)
             self.notice("warning", f"Protocol v1 server failed to start: {e}")
             return
         if not started:
-            other = v1.read_info(path.with_name(v1.INFO_NAME)) or {}
-            pid = other.get("pid")
+            # The lock's holder, or (holding no lock: an older lazyagent)
+            # whoever engine.json names.
+            other = lock_holder(lock.path) if not lock.held else None
+            lock.release()
+            if other is None:
+                other = (v1.read_info(path.with_name(v1.INFO_NAME)) or {}).get("pid")
+            self.other_instance = other if isinstance(other, int) else 0
             self.notice(
                 "warning",
                 "Another lazyagent"
-                + (f" (pid {pid})" if pid else "")
+                + (f" (pid {other})" if other else "")
                 + f" already serves this repo on {path}; this instance runs "
                 "without the protocol v1 server.",
             )
             return
+        self._lock = lock
         self._v1_server = server
         self.v1_socket_path = str(path)
 
@@ -1014,6 +1046,10 @@ class Engine:
     def agent_states(self, key: str) -> dict[str, AgentState]:
         """The registry's view of ``key``'s agents (may be empty)."""
         return self.registry.agents(key)
+
+    def agent_count(self) -> int:
+        """Agents (the orchestrator included) this engine runs."""
+        return sum(len(bucket) for bucket in self._agents.values())
 
     def has_agent(self, key: str) -> bool:
         """Whether any agent of ``key`` has a live process."""

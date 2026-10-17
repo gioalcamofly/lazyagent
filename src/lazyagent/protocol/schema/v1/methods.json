@@ -501,6 +501,21 @@
       "required": ["published"],
       "properties": {"published": {"type": "boolean", "description": "False when the view equals the last one announced."}}
     },
+    "shutdown.params": {
+      "type": "object",
+      "description": "Stop a detached engine once the reply is sent (lazyagent engine stop). An engine inside a TUI answers VALIDATION_ERROR.",
+      "properties": {
+        "stop_agents": {"type": "boolean", "default": true, "description": "false: only stop an engine that runs no agent (VALIDATION_ERROR otherwise). An agent cannot outlive its engine: its PTY closes."}
+      }
+    },
+    "shutdown.result": {
+      "type": "object",
+      "required": ["stopping", "agents"],
+      "properties": {
+        "stopping": {"const": true},
+        "agents": {"type": "integer", "minimum": 0, "description": "Agents (the orchestrator included) stopped with the engine."}
+      }
+    },
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {
       "type": "object",

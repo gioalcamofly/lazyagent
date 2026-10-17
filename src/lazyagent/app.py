@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 import os
@@ -8,6 +7,7 @@ import sys
 import time
 from collections.abc import Callable
 from functools import partial
+from typing import Any
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -736,12 +736,21 @@ class LazyAgent(App):
             self._view_hold += 1
             try:
                 await self._carry_out(data)
+                # Widget.focus only queues the move on the app, while the
+                # settle timer runs in its own task: a busy app would let it
+                # announce the view before the focus lands.
+                await self._drain_messages()
             except Exception:
                 log.exception("ui.command %r failed", data)
             finally:
                 self._view_hold -= 1
-            # The focus moves the command asked for land after it returns.
             self._publish_view()
+
+    async def _drain_messages(self) -> None:
+        """Wait until the app has handled the messages queued so far."""
+        drained = asyncio.Event()
+        if self.call_later(drained.set):
+            await drained.wait()
 
     async def _carry_out(self, data: dict) -> None:
         command = data.get("command")
@@ -1152,33 +1161,25 @@ class LazyAgent(App):
         self.push_screen(HelpModal(hosted=self.host is not None))
 
 
-def main() -> None:
-    if sys.argv[1:2] == ["host"]:
-        from lazyagent.host.cli import main as host_main
-
-        host_main(sys.argv[2:])
-        return
-    parser = argparse.ArgumentParser(
-        prog="lazyagent",
-        description="TUI for managing coding agents across git worktrees",
-        epilog="lazyagent host [repo]: the TUI in a web page (experimental); "
-        "a repo dir literally named host must be passed as ./host.",
-    )
-    parser.add_argument(
-        "repo",
-        nargs="?",
-        default=None,
-        help="Path to git repository (default: auto-detect from cwd)",
-    )
-    args = parser.parse_args()
-
+def run_tui(repo_path: str | None = None, *, launch: Any = None) -> None:
+    """Run the TUI on the backend ``LAZYAGENT_ENGINE`` asks for; ``launch``
+    is an engine the CLI already started (see lazyagent.cli)."""
     log_file = diag.setup()
     if log_file is not None:
         print(f"lazyagent: diagnostic log -> {log_file}", file=sys.stderr)
 
     try:
-        app = LazyAgent(repo_path=args.repo)
+        app = LazyAgent(
+            repo_path=repo_path, backend=make_backend(repo_path, launch=launch)
+        )
         app.run()
     except WorktreeManagerError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def main() -> None:
+    """``lazyagent``; kept for callers of the old entry point."""
+    from lazyagent.cli import main as cli_main
+
+    cli_main()
