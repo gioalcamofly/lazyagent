@@ -265,8 +265,11 @@ def cmd_restore(args: argparse.Namespace, root: str) -> int:
         print(json.dumps(result))
     else:
         for agent in result["restored"]:
-            name = agent["agent_id"] or "(orchestrator)"
-            _print(f"restored {name} in {agent['worktree_path']} ({agent['resumed']})")
+            if agent["kind"] == "orchestrator":
+                what = "the orchestrator"
+            else:
+                what = f"{agent['agent_id']} in {agent['worktree_path']}"
+            _print(f"restored {what} ({agent['resumed']})")
         for failure in result["failed"]:
             _error(f"could not restore {failure['id']}: {failure['reason']}")
     return 1 if result["failed"] else 0
