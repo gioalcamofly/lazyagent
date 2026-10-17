@@ -203,9 +203,8 @@ async def test_page_drives_the_hosted_tui(host, repo, tmp_path):
         await page.request("ui.show_diff")
         await page.event("ui.view_changed", worktree_path=feat, focus="diff")
         for method, params in [
-            ("spawn_agent", {"worktree_path": feat}),
-            ("remove_worktree", {"worktree_path": feat}),
             ("send_agent_input", {"worktree_path": feat, "agent_id": "1", "text": "x"}),
+            ("set_interest", {"worktree_paths": []}),
         ]:
             reply = await page.call(method, **params)
             assert reply["error"]["code"] == "FORBIDDEN"
@@ -359,3 +358,39 @@ async def test_a_slow_page_loses_the_stream_not_the_page(
     finally:
         await driver.close()
         await page.close()
+
+
+async def test_the_host_passes_its_own_environment(repo, monkeypatch, tmp_path):
+    """D5: what the page starts (a shell here) gets the host's environment,
+    the one the TUI passes too, never one the page sends."""
+    import io
+
+    from lazyagent.host.cli import repo_root
+
+    monkeypatch.setenv("U3_HOST_ONLY", "from-the-host")
+    h = Host(repo=None, cwd=str(repo), root=repo_root(str(repo)), out=io.StringIO())
+    task = asyncio.get_running_loop().create_task(h.run())
+    try:
+        for _ in range(500):
+            if h.server.port and h.tui.pid:
+                break
+            await asyncio.sleep(0.01)
+        assert h.server.client_env == h.tui.env
+        assert h.server.client_env["U3_HOST_ONLY"] == "from-the-host"
+        page = await _ready_page(h)
+        try:
+            feat = str(tmp_path / "repo-feat")
+            shell = await page.request(
+                "open_shell", worktree_path=feat, env={"U3_PAGE": "from-the-page"}
+            )
+            attached = await page.request("attach_stream", session_id=shell["session_id"])
+            sid = attached["stream_id"]
+            page.client.send_binary(
+                input_frame(b"echo \"[$U3_HOST_ONLY|${U3_PAGE:-none}]\"\r", sid)
+            )
+            await page.wait_stream(sid, "[from-the-host|none]")
+        finally:
+            await page.close()
+    finally:
+        h.stop()
+        await asyncio.wait_for(task, 30)
