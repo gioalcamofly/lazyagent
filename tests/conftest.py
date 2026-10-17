@@ -1,4 +1,5 @@
 import itertools
+import json
 import shutil
 import tempfile
 
@@ -52,3 +53,17 @@ def runtime_dir(_runtime_base, monkeypatch):
 def backend_kind(request):
     """Which backend a TUI pilot test runs against (see tests/tui_backends.py)."""
     return request.param
+
+
+@pytest.fixture
+def record(request, capsys):
+    """``record(name, **numbers)``: print a perf result and keep it in
+    ``.perf/results.jsonl`` (tests/perf/stats.py)."""
+    from tests.perf.stats import keep
+
+    def write(name: str, **numbers) -> None:
+        keep(request.node.nodeid, name, numbers)
+        with capsys.disabled():
+            print(f"\nPERF {name}: {json.dumps(numbers)}")
+
+    return write

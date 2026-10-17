@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 
 from lazyagent.host.cli import Host, repo_root
+from tests.browser import browser  # noqa: F401 (fixture)
 from tests.engine.fakes import FAKE_AGENT
 
 
