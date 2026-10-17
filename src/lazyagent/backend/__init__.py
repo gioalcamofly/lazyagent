@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BACKEND_CONNECTED",
     "BACKEND_DISCONNECTED",
+    "AUTOSTART_ENV",
     "ENGINE_ENV",
     "ENGINE_SOCKET_ENV",
     "Backend",
@@ -55,6 +56,8 @@ __all__ = [
 ENGINE_ENV = "LAZYAGENT_ENGINE"
 #: The socket of that engine; found from the repo root when unset.
 ENGINE_SOCKET_ENV = "LAZYAGENT_ENGINE_SOCKET"
+#: ``0`` keeps a remote TUI from starting an engine when it finds none.
+AUTOSTART_ENV = "LAZYAGENT_ENGINE_AUTOSTART"
 
 #: The backend reached the engine (again): ``{"first", "engine_changed"}``.
 BACKEND_CONNECTED = "backend.connected"
@@ -253,21 +256,44 @@ class Backend(ABC):
         """Announce what the TUI shows (``ui.view_changed``)."""
 
 
-def make_backend(
-    repo_path: str | None = None, environ: Mapping[str, str] = os.environ
-) -> Backend:
-    """The backend ``LAZYAGENT_ENGINE`` asks for: ``remote`` (with
-    ``LAZYAGENT_ENGINE_SOCKET`` or the repo's discovered socket), else an
-    in-process engine."""
+def wants_remote(environ: Mapping[str, str] = os.environ) -> bool:
+    """Whether ``LAZYAGENT_ENGINE`` asks for a remote engine."""
     mode = environ.get(ENGINE_ENV, "").strip().lower()
     if mode == "remote":
+        return True
+    if mode not in ("", "inprocess", "in-process", "embedded"):
+        raise ValueError(f"{ENGINE_ENV} must be remote or inprocess, not {mode!r}")
+    return False
+
+
+def autostart_enabled(environ: Mapping[str, str] = os.environ) -> bool:
+    """Whether a remote TUI starts the engine it does not find: unless
+    ``LAZYAGENT_ENGINE_SOCKET`` names one or ``LAZYAGENT_ENGINE_AUTOSTART=0``."""
+    return not environ.get(ENGINE_SOCKET_ENV) and (
+        environ.get(AUTOSTART_ENV, "1").strip() != "0"
+    )
+
+
+def make_backend(
+    repo_path: str | None = None,
+    environ: Mapping[str, str] = os.environ,
+    *,
+    launch: Any = None,
+) -> Backend:
+    """The backend ``LAZYAGENT_ENGINE`` asks for: ``remote`` (with
+    ``LAZYAGENT_ENGINE_SOCKET`` or the repo's discovered socket, which it
+    starts when there is none, see :func:`autostart_enabled`), else an
+    in-process engine. ``launch``: an engine the caller is already starting
+    (a :class:`~lazyagent.engine.launcher.Launch`)."""
+    if wants_remote(environ):
         from lazyagent.backend.remote import RemoteBackend
 
         return RemoteBackend(
-            repo_path, socket_path=environ.get(ENGINE_SOCKET_ENV) or None
+            repo_path,
+            socket_path=environ.get(ENGINE_SOCKET_ENV) or None,
+            autostart=autostart_enabled(environ),
+            launch=launch,
         )
-    if mode not in ("", "inprocess", "in-process", "embedded"):
-        raise ValueError(f"{ENGINE_ENV} must be remote or inprocess, not {mode!r}")
     from lazyagent.backend.inprocess import InProcessBackend
 
     return InProcessBackend.for_repo(repo_path)

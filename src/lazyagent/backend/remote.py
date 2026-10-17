@@ -15,6 +15,12 @@ and the backend retries with backoff (re-discovering the socket each time);
 once it is back they get the store's state again, then
 :data:`~lazyagent.backend.BACKEND_CONNECTED`. Stopping the backend only
 closes the connection: the engine and its agents keep running.
+
+With ``autostart`` (D4) a backend that finds no engine for the repo starts
+one, detached (:mod:`lazyagent.engine.launcher`), once per outage: at
+start, and after an engine that died without saying so. An engine that
+announced ``engine.shutdown`` (``lazyagent engine stop``) was stopped on
+purpose and is not restarted; the backend keeps looking for one.
 """
 
 from __future__ import annotations
@@ -24,7 +30,6 @@ import contextlib
 import logging
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping
-from pathlib import Path
 from typing import Any
 
 from lazyagent import __version__
@@ -37,12 +42,15 @@ from lazyagent.backend import (
     EventCallback,
 )
 from lazyagent.backend.remote_session import RemoteSession
+from lazyagent.engine import launcher
 from lazyagent.engine.client import Client, ConnectionClosed, RequestError, discover
+from lazyagent.engine.launcher import resolve_repo_root
 from lazyagent.engine.events import (
     AGENT_EXITED,
     AGENT_SPAWNED,
     AGENT_UPDATED,
     ENGINE_NOTICE,
+    ENGINE_SHUTDOWN,
     GIT_STATUS_UPDATED,
     PR_INFO_UPDATED,
     WORKTREES_CHANGED,
@@ -66,7 +74,7 @@ from lazyagent.models import (
     PrInfo,
     WorktreeInfo,
 )
-from lazyagent.worktree_manager import WorktreeManagerError, find_repo_root
+from lazyagent.worktree_manager import WorktreeManagerError
 
 log = logging.getLogger(__name__)
 
@@ -81,14 +89,6 @@ RETRY_MAX = 5.0
 # without one (it keeps trying in the background).
 FIRST_CONNECT_TIMEOUT = 3.0
 _SYNC_TIMEOUT = 5.0
-
-
-def resolve_repo_root(repo_path: str | None) -> str:
-    """The repo root the engine for ``repo_path`` is named after, as the
-    engine computes it."""
-    if repo_path:
-        return str(Path(repo_path).resolve())
-    return str(find_repo_root())
 
 
 def _git_status(data: Mapping[str, Any]) -> GitStatus:
@@ -138,12 +138,23 @@ class RemoteBackend(Backend):
         retry_initial: float = RETRY_INITIAL,
         retry_max: float = RETRY_MAX,
         first_connect_timeout: float = FIRST_CONNECT_TIMEOUT,
+        autostart: bool = False,
+        launch: launcher.Launch | None = None,
+        start_timeout: float = launcher.START_TIMEOUT,
     ) -> None:
         self.repo_path = repo_path
         self._socket_option = os.fspath(socket_path) if socket_path else None
         self._retry_initial = retry_initial
         self._retry_max = retry_max
         self._first_connect_timeout = first_connect_timeout
+        self._autostart = autostart and not self._socket_option
+        # Whether this outage may still start an engine.
+        self._autostart_armed = self._autostart
+        # An engine already being started (by the CLI, before the TUI loaded).
+        self._launch = launch
+        self._start_timeout = start_timeout
+        # The engine.shutdown reason of the engine this client is on.
+        self._shutdown_reason: str | None = None
 
         self.client: Client | None = None
         self._socket_path: str | None = None
@@ -273,9 +284,45 @@ class RemoteBackend(Backend):
         if path is None:
             raise EngineUnavailable(
                 f"no engine serves {self._repo_root} "
-                "(start one with: python -m lazyagent.engine)"
+                "(start one with: lazyagent engine start)"
             )
         return str(path)
+
+    async def _maybe_autostart(self) -> bool:
+        """Start an engine for the repo, once per outage; True when one
+        now serves it (this backend's, or one another client started)."""
+        if not self._autostart_armed:
+            return False
+        self._autostart_armed = False
+        try:
+            if not self._repo_root:
+                self._repo_root = resolve_repo_root(self.repo_path)
+            if self._launch is None:
+                self._launch = await asyncio.to_thread(
+                    launcher.prestart, self._repo_root
+                )
+            if self._launch is not None:
+                await asyncio.to_thread(self._launch.wait, self._start_timeout)
+        except (launcher.EngineStartError, OSError, WorktreeManagerError) as e:
+            self._launch = None
+            self._report_outage(str(e))
+            return False
+        return True
+
+    def _announce_launch(self) -> None:
+        """Tell the user when the engine just connected to is the one this
+        backend (or the CLI before it) started."""
+        launch, self._launch = self._launch, None
+        if launch is None:
+            return
+        launch.close()
+        info = launcher.info(self._repo_root) if self._repo_root else None
+        if info is not None and info.get("pid") == launch.pid:
+            self._notice(
+                "information",
+                f"Started an engine for this repo (pid {launch.pid}): agents "
+                "keep running when you quit. Stop it with: lazyagent engine stop",
+            )
 
     async def _supervise(self) -> None:
         delay = self._retry_initial
@@ -293,6 +340,8 @@ class RemoteBackend(Backend):
                 WorktreeManagerError,
                 asyncio.TimeoutError,
             ) as e:
+                if await self._maybe_autostart():
+                    continue
                 self._report_outage(str(e) or type(e).__name__)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self._retry_max)
@@ -321,7 +370,17 @@ class RemoteBackend(Backend):
         self.client = None
         for session in self._sessions.values():
             session.connection_lost()
-        self._report_outage("the engine closed the connection")
+        reason = self._shutdown_reason
+        if reason is None:
+            # It died without a word (K3): its agents are gone, a new engine
+            # may as well be started.
+            self._autostart_armed = self._autostart
+            self._report_outage("the engine closed the connection")
+        else:
+            how = " with lazyagent engine stop" if reason == "shutdown" else ""
+            self._report_outage(
+                f"it was stopped{how}; start it again with: lazyagent engine start"
+            )
 
     async def _on_connected(self, client: Client, path: str) -> None:
         hello = client.hello
@@ -353,6 +412,8 @@ class RemoteBackend(Backend):
         self._seq = state["cursor"]
         self.client = client
         self._outage_reported = False
+        self._shutdown_reason = None
+        self._autostart_armed = False
         self._connected_once.set()
 
         self._emit(WORKTREES_CHANGED, state["worktrees"])
@@ -370,6 +431,7 @@ class RemoteBackend(Backend):
         self._emit(
             BACKEND_CONNECTED, {"first": first, "engine_changed": engine_changed}
         )
+        self._announce_launch()
         if self._view is not None:
             self.fire("publish_view", view=self._view)
         # Re-list and sweep git status, as an in-process engine does at start.
@@ -487,7 +549,9 @@ class RemoteBackend(Backend):
                 session.gone()
 
     def _apply(self, name: str, data: Any) -> None:
-        if name == WORKTREES_CHANGED:
+        if name == ENGINE_SHUTDOWN:
+            self._shutdown_reason = str(data.get("reason") or "stopped")
+        elif name == WORKTREES_CHANGED:
             self._set_worktrees(data)
         elif name == GIT_STATUS_UPDATED:
             for path, status in data.items():

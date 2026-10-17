@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lazyagent = "lazyagent.app:main"
+lazyagent = "lazyagent.cli:main"
 
 [build-system]
 requires = ["hatchling"]

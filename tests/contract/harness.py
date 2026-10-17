@@ -77,6 +77,12 @@ class Harness:
         """Announce a view the way a hosted UI would."""
         raise NotSupported("publish_view")
 
+    def detach(self) -> list[int]:
+        """Run the engine as a detached one would, except that a
+        ``shutdown`` only counts: returns the list that grows by one each
+        time the engine would stop."""
+        raise NotSupported("detach")
+
 
 class PythonHarness(Harness):
     """This package's Engine, with a fake git world and the fake agent."""
@@ -121,6 +127,11 @@ class PythonHarness(Harness):
 
     def publish_view(self, view: dict[str, Any]) -> None:
         self.engine.publish_view(view)
+
+    def detach(self) -> list[int]:
+        calls: list[int] = []
+        self.engine.shutdown_handler = lambda: calls.append(1)
+        return calls
 
 
 IMPLEMENTATIONS = {"python": PythonHarness}
