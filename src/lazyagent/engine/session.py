@@ -11,8 +11,13 @@ not any client shows it:
   :class:`_Feeder` in slices, a few milliseconds of parsing at a time, so a
   burst of hidden output never holds the event loop (keys, frames and
   requests go between the slices). A session the feeder falls more than
-  :data:`PENDING_FEED_LIMIT` characters behind on keeps only the newest
-  :data:`PENDING_FEED_KEEP` (see :meth:`TerminalSession._bound_pending`);
+  :data:`PENDING_FEED_LIMIT` bytes behind on keeps only the newest
+  :data:`PENDING_FEED_KEEP` (see :meth:`TerminalSession.bound_pending`).
+  The backlog is kept as raw bytes and :attr:`~TerminalSession.parsed_offset`
+  says exactly how far the screen has got, so a snapshot can be taken without
+  parsing the backlog first (:meth:`~TerminalSession.snapshot` with
+  ``flush=False``): the snapshot is exact at that offset and the rest is in
+  the ring;
 - the terminal modes the child has set (mouse tracking, bracketed paste),
   which programmatic input needs to frame text correctly;
 - :meth:`~TerminalSession.send_input`, which frames text as a paste and
@@ -69,8 +74,8 @@ FEED_BUDGET = 0.004
 FEED_SLICE = 1024
 FEED_REST = 0.004
 
-# A hidden session whose unparsed output passes the limit keeps only the
-# newest part: its screen is only read by the status scan (which wants the
+# A hidden session whose unparsed output passes the limit (in bytes) keeps
+# only the newest part: its screen is only read by the status scan (which wants the
 # latest screen) and read_agent_output (the last lines). Nobody waits on the
 # rest, and parsing it would cost far more than the output it explains.
 PENDING_FEED_LIMIT = 1024 * 1024
@@ -291,7 +296,13 @@ class TerminalSession:
         self.screen = ScrollbackScreen(cols, rows)
         self._stream = pyte.Stream(self.screen)
         self.ring = ByteRing(ring_capacity)
+        # Decodes each chunk as it arrives (observers, terminal modes).
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        # Decodes the backlog as it is fed to the screen, later; a sequence
+        # split across two feeds waits in it.
+        self._feed_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        # The ring offset of the first byte not yet handed to _feed_decoder.
+        self._fed_offset = 0
 
         self.mouse_tracking = False
         # DECSET 2004 — set once the child asks for bracketed paste. Until
@@ -310,7 +321,8 @@ class TerminalSession:
         self._listeners: list[SessionListener] = []
         self._viewers: list[_Viewer] = []
         self._size_listeners: list[SizeListener] = []
-        self._pending_feed: deque[str] = deque()
+        # Raw output not yet fed to the screen, oldest first, and its size.
+        self._pending_feed: deque[bytes] = deque()
         self._pending_chars = 0
         self._feed_handle: asyncio.TimerHandle | None = None
         # Characters dropped unparsed because the feeder was too far behind.
@@ -442,8 +454,9 @@ class TerminalSession:
         self._on_text(text)
         if text:
             self._scan_terminal_modes(text)
-            self._pending_feed.append(text)
-            self._pending_chars += len(text)
+        if data:
+            self._pending_feed.append(data)
+            self._pending_chars += len(data)
         self._output_event.set()
 
         if any(viewer.watching() for viewer in self._viewers):
@@ -468,33 +481,56 @@ class TerminalSession:
         if self._queued_on is not None:
             self._queued_on.discard(self)
 
+    @property
+    def parsed_offset(self) -> int:
+        """The output offset the screen is exact at: every byte before it is
+        in the screen (or was dropped unparsed, see :meth:`bound_pending`),
+        none from it on."""
+        return self._fed_offset - len(self._feed_decoder.getstate()[0])
+
+    def _feed(self, data: bytes) -> None:
+        self._fed_offset += len(data)
+        text = self._feed_decoder.decode(data)
+        if not text:
+            return
+        try:
+            self._stream.feed(text)
+        except TypeError as error:
+            log.warning("could not feed: %s", error)
+
     def _bound_pending(self) -> None:
-        """Keep at most :data:`PENDING_FEED_KEEP` characters of a backlog
-        that passed :data:`PENDING_FEED_LIMIT`, starting at a line.
+        self.bound_pending(PENDING_FEED_LIMIT, PENDING_FEED_KEEP)
+
+    def bound_pending(self, limit: int, keep: int | None = None) -> None:
+        """Keep at most ``keep`` (default ``limit``) bytes of a backlog that
+        passed ``limit``, starting at a line.
 
         What is dropped never reaches the screen or the scrollback; a
         full-screen program's next redraw repairs whatever the cut left.
         """
-        if self._pending_chars <= PENDING_FEED_LIMIT:
+        if self._pending_chars <= limit:
             return
-        text = "".join(self._pending_feed)
-        cut = len(text) - PENDING_FEED_KEEP
-        newline = text.find("\n", cut)
+        keep = limit if keep is None else keep
+        data = b"".join(self._pending_feed)
+        cut = len(data) - keep
+        newline = data.find(b"\n", cut)
         if newline != -1:
             cut = newline + 1
-        kept = text[cut:]
+        kept = data[cut:]
         self.feed_dropped += cut
         log.info(
-            "%s: %d characters of output left unparsed (too far behind)",
+            "%s: %d bytes of output left unparsed (too far behind)",
             self._diag_name,
             cut,
         )
+        # The screen skips them: it is exact at the cut from now on.
+        self._fed_offset += cut
+        self._feed_decoder.reset()
         self._pending_feed = deque([kept]) if kept else deque()
         self._pending_chars = len(kept)
 
     def _feed_slice(self, limit: int) -> bool:
-        """Feed up to ``limit`` batched characters; False once nothing is
-        left."""
+        """Feed up to ``limit`` batched bytes; False once nothing is left."""
         pending = self._pending_feed
         if not pending:
             return False
@@ -505,10 +541,7 @@ class TerminalSession:
             pending[0] = piece[limit:]
             piece = piece[:limit]
         self._pending_chars -= len(piece)
-        try:
-            self._stream.feed(piece)
-        except TypeError as error:
-            log.warning("could not feed: %s", error)
+        self._feed(piece)
         if not pending:
             self._after_feed()
         return bool(pending)
@@ -524,25 +557,37 @@ class TerminalSession:
         self._unqueue()
         if not self._pending_feed:
             return
-        text = "".join(self._pending_feed)
+        data = b"".join(self._pending_feed)
         batched = len(self._pending_feed)
         self._pending_feed.clear()
         self._pending_chars = 0
         feed_start = time.perf_counter() if diag.HOT else 0.0
-        try:
-            self._stream.feed(text)
-        except TypeError as error:
-            log.warning("could not feed: %s", error)
+        self._feed(data)
         if diag.HOT:
             diag.debug_event(
                 log,
                 "term.feed",
                 session=self._diag_name,
                 chunks=batched,
-                chars=len(text),
+                chars=len(data),
                 feed_ms=round((time.perf_counter() - feed_start) * 1000, 3),
             )
         self._after_feed()
+
+    async def catch_up(self) -> None:
+        """Feed the backlog in the feeder's slices, yielding to the loop
+        between them, until the screen has all the output there was when
+        called (for a reader that wants the latest screen and may wait for
+        it, without stalling the loop). Output that arrives meanwhile is
+        left to the feeder, so a chatty child cannot keep this going."""
+        clock = time.perf_counter
+        target = self.ring.end_offset
+        while self._pending_feed and self._fed_offset < target:
+            deadline = clock() + FEED_BUDGET
+            while self._fed_offset < target and clock() < deadline:
+                if not self._feed_slice(min(FEED_SLICE, target - self._fed_offset)):
+                    break
+            await asyncio.sleep(0)
 
     def _cancel_feed_timer(self) -> None:
         if self._feed_handle is not None:
@@ -608,21 +653,23 @@ class TerminalSession:
         return len(self._viewers)
 
     def snapshot(
-        self, max_scrollback: int = SNAPSHOT_SCROLLBACK_LINES
+        self, max_scrollback: int = SNAPSHOT_SCROLLBACK_LINES, *, flush: bool = True
     ) -> tuple[int, str]:
         """``(offset, ansi)``: the screen as ANSI (see
         :func:`~lazyagent.engine.screen.ansi_snapshot`) and the output offset
         it is exact at. The bytes from ``offset`` on are not in it: a client
         that renders the snapshot then feeds the output from ``offset`` ends
         up with this screen.
+
+        ``flush=False`` takes the screen as parsed so far, without feeding
+        the backlog: ``offset`` is then :attr:`parsed_offset`, and the
+        backlog is what the ring holds from it.
         """
-        self.flush()
+        if flush:
+            self.flush()
         # A chunk that ended inside a UTF-8 sequence leaves its first bytes
         # in the decoder, out of the screen.
-        undecoded = len(self._decoder.getstate()[0])
-        return self.ring.end_offset - undecoded, ansi_snapshot(
-            self.screen, max_scrollback
-        )
+        return self.parsed_offset, ansi_snapshot(self.screen, max_scrollback)
 
     def _emit(self, event: SessionEvent) -> None:
         for listener in list(self._listeners):
@@ -909,13 +956,17 @@ class AgentSession(TerminalSession):
             )
 
     def _do_scan_screen(self) -> None:
-        self._apply_events(
-            self._observer.on_screen_update(
-                self.screen_text(),
-                current_status=self.status,
-                current_detail=self.detail,
+        # Rendering the screen to text is the scan's cost; only an observer
+        # that reads it pays for it (proposal 0005). The poll stays: output
+        # is often what a hook log entry follows.
+        if self._observer.needs_screen:
+            self._apply_events(
+                self._observer.on_screen_update(
+                    self.screen_text(),
+                    current_status=self.status,
+                    current_detail=self.detail,
+                )
             )
-        )
         self.poll()
 
     def _on_disconnect(self) -> None:

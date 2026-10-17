@@ -257,6 +257,94 @@ class TestOutput:
         kept = [text for text in lines if text.strip()]
         assert kept[0].startswith("line ")
 
+    @staticmethod
+    def _rendered(session, offset: int, snapshot: str) -> list[str]:
+        """A fresh terminal fed the snapshot, then the ring from ``offset``."""
+        import pyte
+
+        from lazyagent.engine.screen import ScrollbackScreen
+
+        screen = ScrollbackScreen(session.cols, session.rows)
+        feed = pyte.Stream(screen)
+        feed.feed(snapshot)
+        feed.feed(session.ring.read(offset).decode("utf-8", "replace"))
+        return [screen.screen_text(y) for y in range(screen.lines)]
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_without_flushing_is_exact_at_its_offset(self):
+        """Taken over a backlog, split UTF-8 sequences included: the
+        snapshot plus the ring from its offset is the flushed screen."""
+        session, _, _ = _agent()
+        text = "".join(f"línea {i} — ünïcödé ✓\r\n" for i in range(60))
+        data = text.encode()
+        for start in range(0, len(data), 7):  # chunks cut inside sequences
+            session._on_chunk(data[start : start + 7])
+        # Parse up to a chunk boundary that falls inside a character, so the
+        # feed decoder holds its first bytes back.
+        boundary = next(
+            k for k in range(40, len(data) // 7) if 0x80 <= data[k * 7] < 0xC0
+        )
+        for _ in range(boundary):
+            session._feed_slice(7)
+        assert session._feed_decoder.getstate()[0]
+        assert 0 < session.parsed_offset < boundary * 7 < session.ring.end_offset
+        offset, snapshot = session.snapshot(flush=False)
+        assert offset == session.parsed_offset
+        rendered = self._rendered(session, offset, snapshot)
+        session.flush()
+        assert session.parsed_offset == session.ring.end_offset
+        assert rendered == [
+            session.screen.screen_text(y) for y in range(session.rows)
+        ]
+        assert "línea 59 — ünïcödé ✓" in "\n".join(rendered)
+
+    @pytest.mark.asyncio
+    async def test_a_cut_backlog_moves_the_parsed_offset_to_the_cut(self):
+        session, _, _ = _agent()
+        for i in range(200):
+            session._on_chunk(f"row {i:03d} ".encode() + b"z" * 40 + b"\r\n")
+        end = session.ring.end_offset
+        session.bound_pending(1000)
+        assert session._pending_chars <= 1000
+        # The screen skips the cut part: exact at the cut, the rest in the ring.
+        assert session.parsed_offset == end - session._pending_chars
+        offset, snapshot = session.snapshot(flush=False)
+        tail = session.ring.read(offset)
+        assert tail.startswith(b"row ") and len(tail) <= 1000
+        rendered = self._rendered(session, offset, snapshot)
+        session.flush()
+        assert rendered == [
+            session.screen.screen_text(y) for y in range(session.rows)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_catch_up_parses_in_slices_and_stops_at_the_end_it_saw(self):
+        session, _, _ = _agent()
+        line = b"x" * 78 + b"\r\n"
+        for _ in range(40):
+            session._on_chunk(line * 100)
+        target = session.ring.end_offset
+        turns = 0
+        late = False
+
+        async def ticker() -> None:
+            nonlocal turns, late
+            while True:
+                await asyncio.sleep(0)
+                turns += 1
+                if turns == 3 and not late:
+                    late = True
+                    session._on_chunk(b"late output\r\n")
+
+        task = asyncio.ensure_future(ticker())
+        try:
+            await session.catch_up()
+        finally:
+            task.cancel()
+        assert turns > 3  # it yielded between slices
+        assert session.parsed_offset == target  # not the late output
+        assert session._pending_feed
+
     @pytest.mark.asyncio
     async def test_flush_still_feeds_everything_at_once(self):
         session, _, _ = _agent()
@@ -703,6 +791,8 @@ def _shown(session) -> list[str]:
 class _PromptObserver(AgentObserver):
     """WAITING while the fake agent's prompt is the last thing on screen."""
 
+    needs_screen = True
+
     def on_screen_update(self, screen_text, *, current_status, current_detail=""):
         lines = [line.strip() for line in screen_text.splitlines() if line.strip()]
         at_prompt = bool(lines) and lines[-1].startswith("your turn>")
@@ -711,6 +801,26 @@ class _PromptObserver(AgentObserver):
         if not at_prompt and current_status == AgentStatus.WAITING:
             return [AgentLifecycleEvent(AgentStatus.RUNNING, HIGH)]
         return []
+
+
+class TestScanNeedsTheScreen:
+    """Proposal 0005: the scan renders the screen to text only for an
+    observer that reads it; the poll happens either way."""
+
+    def _scanned(self, observer) -> tuple[int, int]:
+        session = AgentSession("true", worktree_path=WT_PATH, observer=observer)
+        rendered = MagicMock(return_value="")
+        session.screen_text = rendered
+        polls = MagicMock(return_value=[])
+        observer.poll = polls
+        session.scan_screen()
+        return rendered.call_count, polls.call_count
+
+    def test_a_hook_driven_observer_skips_the_render(self):
+        assert self._scanned(AgentObserver()) == (0, 1)
+
+    def test_a_screen_reading_observer_gets_it(self):
+        assert self._scanned(_PromptObserver()) == (1, 1)
 
 
 class TestRealPty:

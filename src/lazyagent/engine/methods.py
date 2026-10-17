@@ -305,6 +305,11 @@ class EngineMethods:
             raise ValueError("No agent terminal in this worktree")
 
         agent_id = resolve_agent_id(agent_ids, params.get("agent_id"))
+        # A backlog after a burst is parsed in slices first, so reading the
+        # screen never holds the loop for long; what is left is small.
+        session = self._engine.get_session(worktree_path, agent_id)
+        if session is not None:
+            await session.catch_up()
         lines, total_lines = self._engine.read_agent_output(
             worktree_path, agent_id, num_lines
         )
