@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,33 +8,9 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="vendor/xterm/xterm.css">
 <link rel="stylesheet" href="app.css">
+<link rel="modulepreload" href="vendor/preact/preact.mjs">
+<link rel="modulepreload" href="vendor/xterm/xterm.mjs">
 <script type="module" src="app.js"></script>
 </head>
-<body>
-<header id="topbar">
-  <span class="brand">lazyagent</span>
-  <span id="repo" class="muted"></span>
-  <span class="spacer"></span>
-  <span id="conn" class="pill">connecting…</span>
-  <button id="notify" type="button" hidden>Enable notifications</button>
-</header>
-<main>
-  <aside id="sidebar">
-    <nav id="toolbar" aria-label="Actions">
-      <button type="button" data-action="spawn" title="Spawn an agent (s)">Spawn</button>
-      <button type="button" data-action="create" title="New worktree (c)">New</button>
-      <button type="button" data-action="remove" title="Remove worktree (d)">Remove</button>
-      <button type="button" data-action="shell" title="Worktree shell">Shell</button>
-      <button type="button" data-action="diff" title="Diff">Diff</button>
-    </nav>
-    <ul id="worktrees" aria-label="Worktrees"></ul>
-    <p id="engine-state" class="muted"></p>
-  </aside>
-  <section id="terminal-pane">
-    <div id="terminal"></div>
-    <div id="overlay" hidden></div>
-  </section>
-</main>
-<div id="toasts" aria-live="polite"></div>
-</body>
+<body></body>
 </html>

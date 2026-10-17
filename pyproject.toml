@@ -26,3 +26,14 @@ dev = [
     "pytest",
     "pytest-asyncio",
 ]
+e2e = [
+    "playwright>=1.48",
+]
+
+[tool.pytest.ini_options]
+# perf tests are local-only and slow: `pytest -m perf` runs them.
+addopts = "-m 'not perf'"
+markers = [
+    "e2e: browser tests (Playwright); skipped when Playwright or a browser is missing",
+    "perf: performance tests against the ui-plan budgets; local only, run with -m perf",
+]

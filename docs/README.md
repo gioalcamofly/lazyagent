@@ -2,7 +2,7 @@
 
 | Folder | Holds |
 |---|---|
-| [`design/`](design/) | **How** things are built: architecture and migration plans. Start with [engine-split.md](design/engine-split.md) |
+| [`design/`](design/) | **How** things are built: architecture and migration plans. Start with [engine-split.md](design/engine-split.md); the graphical UI plan is [ui-plan.md](design/ui-plan.md) |
 | [`proposals/`](proposals/README.md) | **What** could be built next: one improvement idea per file, with problem, protocol additions, fit in the plan, value and effort |
 
 ## Conventions
