@@ -126,8 +126,12 @@ async def test_changes_are_written_debounced_and_off_the_loop_thread(tmp_path):
     manifest.remove("/r/feat", "a199")
     on_loop = time.perf_counter() - started
     assert calls == []  # nothing written yet: debounced
-    await asyncio.sleep(0.3)
-    assert len(calls) == 1  # one write for the burst
+    deadline = time.monotonic() + 30
+    while manifest.writes == 0:  # until the debounced write is on disk
+        assert time.monotonic() < deadline, "never written"
+        await asyncio.sleep(0.01)
+    await manifest.flush()  # nothing left to write
+    assert len(calls) == 1 and manifest.writes == 1  # one write for the burst
     assert calls[0][0] != loop_thread  # in a worker thread
     agents, _ = mf.read(path)
     assert len(agents) == 199
@@ -169,3 +173,29 @@ async def test_a_failed_write_is_logged_not_raised(tmp_path, caplog):
     manifest.add(_entry())
     await manifest.close()
     assert "disk full" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_flush_waits_for_a_write_already_under_way(tmp_path):
+    """The debounced write is in its thread when the engine stops: flush
+    must not return before it is on disk (nor start a second one beside it)."""
+    started, release = threading.Event(), threading.Event()
+    done: list[int] = []
+
+    def slow(path, payload):
+        started.set()
+        release.wait(10)
+        mf.write(path, payload)
+        done.append(1)
+
+    path = tmp_path / "m.json"
+    manifest = Manifest(path, repo_root="/r", debounce=0, writer=slow)
+    manifest.add(_entry())
+    await asyncio.to_thread(started.wait, 10)
+    flushing = asyncio.ensure_future(manifest.flush())
+    await asyncio.sleep(0.05)
+    assert not flushing.done()
+    release.set()
+    await flushing
+    assert done == [1]
+    assert len(mf.read(path)[0]) == 1
