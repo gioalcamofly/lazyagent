@@ -133,3 +133,25 @@ class TestGetClient:
             client = _get_client()
             assert isinstance(client, IpcClient)
             assert client._socket_path == "/tmp/test.sock"
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_leaves_the_base_to_the_engine(monkeypatch):
+    """No base_branch given: the tool sends none, and the engine picks the
+    repo's (not a hard-coded "main")."""
+    from lazyagent import mcp_server
+
+    calls = []
+
+    class Client:
+        async def call(self, method, params=None):
+            calls.append((method, params))
+            return {}
+
+    monkeypatch.setattr(mcp_server, "_get_client", lambda: Client())
+    await mcp_server.create_worktree("feat")
+    await mcp_server.create_worktree("feat2", base_branch="develop")
+    assert calls == [
+        ("create_worktree", {"branch": "feat"}),
+        ("create_worktree", {"branch": "feat2", "base_branch": "develop"}),
+    ]

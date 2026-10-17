@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.binding import Binding
-from textual.widgets import TabbedContent
+from textual.widgets import Input, TabbedContent
 from textual.worker import WorkerState
 
 from lazyagent.app import LazyAgent
@@ -720,6 +720,20 @@ class TestPrStatusDebounce:
             assert app._selection_debounce is not None
 
 
+class TestCreateDialogBase:
+    @pytest.mark.asyncio
+    async def test_the_base_is_prefilled_with_the_main_branch(
+        self, monkeypatch: pytest.MonkeyPatch, backend_kind: str
+    ) -> None:
+        """No default branch configured (the built-in "master" is not a
+        branch of this repo): the dialog offers the main worktree's branch."""
+        _patch_app_dependencies(monkeypatch)
+        app = tui_app(backend_kind)
+        async with app.run_test() as pilot:
+            await _drain_workers(app)
+            app.action_create_worktree()
+            await pilot.pause()
+            assert app.screen.query_one("#base-input", Input).value == "main"
 class TestLateDiff:
     @pytest.mark.asyncio
     async def test_a_diff_that_outlives_the_screen_is_dropped(

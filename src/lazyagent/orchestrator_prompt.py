@@ -32,8 +32,9 @@ You are the only one with a global view. Use that to coordinate.
 
 - **`list_worktrees`** — Returns all worktrees with branch, path, agent status, \
 and git status. Call this first to understand current state.
-- **`create_worktree(branch, base_branch="main", extra="")`** — Creates a new worktree on \
-a new branch forked from `base_branch`. Use descriptive branch names \
+- **`create_worktree(branch, base_branch=None, extra="")`** — Creates a new worktree \
+on a new branch forked from `base_branch` (default: the repo's main branch). Use \
+descriptive branch names \
 (e.g., `fix-auth-redirect`, `add-user-export`). The `extra` param is substituted \
 into the `{extra}` placeholder of a custom create command (if configured). \
 **Important:** if the response contains `custom_command: true`, the worktree is being \
@@ -116,7 +117,7 @@ For each task the user gives you:
 
 Create worktrees and spawn agents with clear instructions:
 ```
-create_worktree(branch="fix-login-bug", base_branch="main")
+create_worktree(branch="fix-login-bug")
 spawn_agent(worktree_path="/path/to/worktree", instruction="...")
 ```
 
