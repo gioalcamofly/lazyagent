@@ -68,6 +68,16 @@ export function createStore() {
     view: signal(null),
     toasts: signal([]),
     help: signal(false),
+    // The page's own selection (not the hosted TUI's): a worktree path,
+    // null for the orchestrator, undefined before the first sidebar.
+    selected: signal(undefined),
+    // The agent tab shown per worktree path (or ORCHESTRATOR_KEY).
+    activeAgent: signal({}),
+    // What the centre shows: "native" terminals, or the hosted "tui".
+    centerView: signal("native"),
+    shellOpen: signal(false),
+    // Worktree path → its shell's session_id, once open_shell answered.
+    shells: signal({}),
   };
 
   // ------------------------------------------------------------ queue
@@ -117,6 +127,24 @@ export function createStore() {
     store.orchestrator.value = sidebar.orchestrator.agents;
     store.prInfo.value = { ...store.prInfo.value, ...sidebar.pr_info };
     store.view.value = sidebar.view;
+  };
+
+  /** The agents of the selected worktree (or the orchestrator). */
+  store.selectedAgents = () => {
+    const path = store.selected.value;
+    if (path === undefined) return [];
+    return store.agentsOf(path === null ? ORCHESTRATOR_KEY : path);
+  };
+
+  /** The agent whose tab is shown for the selection: the chosen one while
+   * it runs, else the last one. */
+  store.shownAgent = () => {
+    const agents = store.selectedAgents();
+    if (agents.length === 0) return null;
+    const path = store.selected.value;
+    const key = path === null ? ORCHESTRATOR_KEY : path;
+    const chosen = store.activeAgent.value[key];
+    return agents.find((a) => a.agent_id === chosen) || agents[agents.length - 1];
   };
 
   store.agentsOf = (path) => {

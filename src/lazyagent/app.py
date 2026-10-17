@@ -89,6 +89,8 @@ _MODAL_NAMES: tuple[tuple[type, str], ...] = (
 
 # The selection key while nothing is shown (None is the orchestrator).
 _NOTHING = object()
+# What the center shows after ui.blank.
+_BLANK_TEXT = "Shown in the browser. Pick a worktree here to show it in this pane too."
 
 
 class LazyAgent(App):
@@ -761,6 +763,9 @@ class LazyAgent(App):
         if command == "open_modal" and data.get("modal") == "create":
             self.action_create_worktree()
             return
+        if command == "blank":
+            await self._blank()
+            return
         if command not in (
             "select_worktree",
             "select_orchestrator",
@@ -788,6 +793,16 @@ class LazyAgent(App):
                 self.action_spawn_agent()
             elif modal == "remove":
                 self.action_remove_worktree()
+
+    async def _blank(self) -> None:
+        """Show nothing: the host shows the agents itself, and a panel in
+        sight here would keep rendering them for nobody."""
+        self._cancel_selection_debounce()
+        self.query_one(CenterPanel).show_placeholder(_BLANK_TEXT)
+        self.query_one(WorktreeList).index = None
+        deadline = time.monotonic() + _UI_SELECT_TIMEOUT
+        while self._shown is not _NOTHING and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
 
     async def _show(self, path: str | None) -> bool:
         """Select ``path`` (None: the orchestrator) as the sidebar would and

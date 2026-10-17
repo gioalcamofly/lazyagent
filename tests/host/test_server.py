@@ -13,7 +13,7 @@ from lazyagent.host import server as host_server
 from lazyagent.host import websocket as ws
 from lazyagent.host.cli import STATIC_ROOT
 from lazyagent.host.server import ALLOWED_METHODS, HostServer
-from tests.host.wsclient import Refused, WsClient, http_get
+from tests.host.wsclient import Refused, WsClient, http_get, input_frame, tui_output
 
 pytestmark = pytest.mark.asyncio
 
@@ -68,7 +68,7 @@ async def _page(server, token: str = TOKEN) -> WsClient:
         "version": hello["version"],
         "engine": False,
     }
-    assert await client.recv() == b"\x1b[?1049h"
+    assert await client.recv() == tui_output(0, b"\x1b[?1049h")
     return client
 
 
@@ -257,17 +257,32 @@ async def test_nothing_reaches_an_unauthenticated_page(server, tui):
 async def test_terminal_bytes_both_ways(server, tui):
     page = await _page(server)
     server.broadcast_output(b"\x1b[1mscreen")
-    assert await page.recv() == b"\x1b[1mscreen"
-    page.send_binary(b"q")
-    await _wait(lambda: tui.written == [b"q"])
+    assert await page.recv() == tui_output(0, b"\x1b[1mscreen")
+    server.broadcast_output(b"more")
+    assert await page.recv() == tui_output(10, b"more")
+    page.send_binary(input_frame(b"q"))
+    await _wait(lambda: [bytes(w) for w in tui.written] == [b"q"])
+    await page.close()
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [b"q", b"\x02\x00\x00", tui_output(0, b"x"), input_frame(b"x", stream_id=3)],
+)
+async def test_bad_input_frames_are_answered(server, tui, frame):
+    page = await _page(server)
+    page.send_binary(frame)
+    reply = json.loads(await page.recv())
+    assert reply["error"]["code"] == "PROTOCOL_ERROR"
+    assert tui.written == []
     await page.close()
 
 
 async def test_output_goes_to_every_page(server):
     a, b = await _page(server), await _page(server)
     server.broadcast_output(b"both")
-    assert await a.recv() == b"both"
-    assert await b.recv() == b"both"
+    assert await a.recv() == tui_output(0, b"both")
+    assert await b.recv() == tui_output(0, b"both")
     await a.close()
     await b.close()
 
@@ -298,10 +313,7 @@ async def test_resize_and_redraw(server, tui):
         "remove_worktree",
         "create_worktree",
         "stop_agent",
-        "open_shell",
-        "attach_stream",
-        "resize",
-        "claim_size",
+        "read_agent_output",
         "set_interest",
         "refresh_worktrees",
         "hello",
@@ -321,11 +333,18 @@ async def test_whitelist():
     assert ALLOWED_METHODS == {
         "get_sidebar_state",
         "list_worktrees",
+        "list_agents",
         "get_pr_info",
         "get_diff",
         "subscribe",
         "unsubscribe",
+        "attach_stream",
+        "detach_stream",
+        "claim_size",
+        "resize",
+        "open_shell",
         "ui.get_view",
+        "ui.blank",
         "ui.select_worktree",
         "ui.select_orchestrator",
         "ui.focus_agent",
@@ -363,7 +382,7 @@ async def test_malformed_messages_are_answered(server, message, code):
     assert reply["type"] == "res" and reply["error"]["code"] == code
     # The page stays connected.
     server.broadcast_output(b"still")
-    assert await page.recv() == b"still"
+    assert await page.recv() == tui_output(0, b"still")
     await page.close()
 
 

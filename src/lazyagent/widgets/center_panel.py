@@ -497,6 +497,15 @@ class CenterPanel(Container):
         self.query_one("#center-placeholder", Static).display = False
         self.query_one("#panel-switcher", ContentSwitcher).current = self._panels[key].id
 
+    def show_placeholder(self, text: str) -> None:
+        """Show ``text`` instead of any panel: every panel is hidden, so
+        their terminal views stop rendering (and detach) until the next
+        switch."""
+        placeholder = self.query_one("#center-placeholder", Static)
+        placeholder.update(text)
+        placeholder.display = True
+        self.query_one("#panel-switcher", ContentSwitcher).current = None
+
     async def ensure_panel(self, worktree_path: str) -> WorktreePanel:
         """Get or lazily create a WorktreePanel for the given worktree.
 

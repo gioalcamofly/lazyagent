@@ -1,13 +1,17 @@
-// lazyagent host page: the TUI in xterm.js, a sidebar fed by engine events.
+// lazyagent host page: native terminals for the agents and shells, a
+// sidebar fed by engine events, and the hosted TUI as one more tab.
 // The host serves these files and proxies a whitelist of v1 methods; see
 // lazyagent/host/server.py for the message format.
 
-import { html, render } from "./lib/html.js";
+import { html, render, effect } from "./lib/html.js";
 import { Connection, takeToken } from "./lib/conn.js";
 import { createStore, SIDEBAR_EVENTS } from "./lib/store.js";
-import { basename } from "./lib/format.js";
+import { ORCHESTRATOR_KEY, basename } from "./lib/format.js";
 import { createTui } from "./lib/tui.js";
+import { TerminalManager, parseFrame } from "./lib/terminals.js";
+import { resolvedTheme, terminalTheme } from "./lib/theme.js";
 import { Sidebar } from "./components/sidebar.js";
+import { Center } from "./components/center.js";
 import { TopBar, Toasts, HelpSheet, TuiPane, Overlay } from "./components/chrome.js";
 
 const store = createStore();
@@ -25,39 +29,160 @@ store.notify = (title, body) => {
 const conn = new Connection({
   onOpen: () => (store.conn.value = { text: "terminal only", kind: "" }),
   onControl,
-  onBinary: (data) => tui.write(data),
+  onBinary,
   onClose,
 });
 const tui = createTui(conn);
+const terminals = new TerminalManager(conn);
+effect(() => {
+  resolvedTheme.value;
+  terminals.applyTheme(terminalTheme());
+});
+
+function onBinary(buffer) {
+  // Stream 0 is the hosted TUI; the rest are this page's streams.
+  if (new DataView(buffer).getUint32(1) === 0) tui.write(parseFrame(buffer).data);
+  else terminals.onFrame(buffer);
+}
 
 // ---------------------------------------------------------------- actions
+
+const keyOf = (path) => (path === null ? ORCHESTRATOR_KEY : path);
 
 async function command(method, params = {}) {
   try {
     await conn.request(method, params);
+    return true;
   } catch (e) {
     store.toast(e.message, "warning");
+    return false;
   }
-  tui.focus();
+}
+
+/** Tell the hosted TUI to show what the page selected (TUI tab only). */
+function tuiFollow() {
+  tuiBlanked = false;
+  const path = store.selected.value;
+  if (path === undefined) return command("ui.blank");
+  return path === null
+    ? command("ui.select_orchestrator")
+    : command("ui.select_worktree", { worktree_path: path });
+}
+
+// Whether the last thing the page asked the TUI to show was nothing.
+let tuiBlanked = false;
+
+/** The hosted TUI is out of sight: it renders nothing (ui.blank). */
+function tuiBlank() {
+  const view = store.view.value;
+  const blank = view && !view.orchestrator && view.worktree_path === null && view.focus !== "modal";
+  if (!store.engine.value || (blank && tuiBlanked)) return;
+  tuiBlanked = true;
+  command("ui.blank");
+}
+
+let returnFromModal = false;
+
+function focusShown() {
+  requestAnimationFrame(() => {
+    if (store.centerView.value === "tui") tui.focus();
+    else {
+      const agent = store.shownAgent();
+      if (agent) terminals.sessions.get(agent.session_id)?.focus();
+      else if (store.shellOpen.value) focusShell();
+    }
+  });
+}
+
+function focusShell() {
+  const path = store.selected.value;
+  const id = path ? store.shells.value[path] : undefined;
+  if (id) requestAnimationFrame(() => terminals.sessions.get(id)?.focus());
+}
+
+async function ensureShell(path) {
+  if (!path || store.shells.value[path]) return;
+  try {
+    const shell = await conn.request("open_shell", { worktree_path: path });
+    store.shells.value = { ...store.shells.value, [path]: shell.session_id };
+  } catch (e) {
+    store.toast(`Shell: ${e.message}`, "warning");
+  }
 }
 
 const actions = {
-  select: (path) =>
-    path === null
-      ? command("ui.select_orchestrator")
-      : command("ui.select_worktree", { worktree_path: path }),
-  focusAgent: (path, agentId) => {
-    const target = path === "__orchestrator__" ? { orchestrator: true } : { worktree_path: path };
-    command("ui.focus_agent", { ...target, agent_id: agentId });
+  select(path, { focus = true } = {}) {
+    store.selected.value = path;
+    if (store.centerView.value === "tui") tuiFollow();
+    if (store.shellOpen.value && path) ensureShell(path);
+    if (focus) focusShown();
   },
-  toolbar: (action) =>
-    ({
-      spawn: () => command("ui.open_modal", { modal: "spawn" }),
-      create: () => command("ui.open_modal", { modal: "create" }),
-      remove: () => command("ui.open_modal", { modal: "remove" }),
-      shell: () => command("ui.open_shell"),
-      diff: () => command("ui.show_diff"),
-    })[action](),
+  focusAgent(path, agentId) {
+    store.activeAgent.value = { ...store.activeAgent.value, [path]: agentId };
+    const target = path === ORCHESTRATOR_KEY ? null : path;
+    if (store.centerView.value === "tui") {
+      store.selected.value = target;
+      command("ui.focus_agent", target === null ? { orchestrator: true, agent_id: agentId } : { worktree_path: target, agent_id: agentId });
+      return;
+    }
+    actions.select(target);
+  },
+  showAgent(agentId) {
+    const path = store.selected.value;
+    if (path === undefined) return;
+    store.activeAgent.value = { ...store.activeAgent.value, [keyOf(path)]: agentId };
+    if (store.centerView.value === "tui") actions.showNative();
+    focusShown();
+  },
+  cycleAgent(step) {
+    const agents = store.selectedAgents();
+    if (agents.length === 0) return;
+    const shown = store.shownAgent();
+    const at = agents.findIndex((a) => a.agent_id === shown?.agent_id);
+    const next = agents[(at + step + agents.length) % agents.length];
+    actions.showAgent(next.agent_id);
+  },
+  showTui() {
+    store.centerView.value = "tui";
+    tuiFollow();
+    requestAnimationFrame(() => {
+      tui.announce();
+      tui.focus();
+    });
+  },
+  showNative() {
+    store.centerView.value = "native";
+    tuiBlank();
+    focusShown();
+  },
+  toggleShell() {
+    const path = store.selected.value;
+    if (!path) return;
+    store.shellOpen.value = !store.shellOpen.value;
+    if (store.shellOpen.value) {
+      if (store.centerView.value === "tui") actions.showNative();
+      ensureShell(path).then(focusShell);
+    } else focusShown();
+  },
+  async toolbar(action) {
+    const path = store.selected.value;
+    if (action === "shell") return actions.toggleShell();
+    // Until U3/U5 these are the TUI's dialogs and diff: show the TUI tab,
+    // and come back to the native view once the dialog closes.
+    store.centerView.value = "tui";
+    if (!(await tuiFollow())) return;
+    requestAnimationFrame(() => {
+      tui.announce();
+      tui.focus();
+    });
+    if (action === "diff") {
+      command("ui.show_diff", { worktree_path: path });
+      return;
+    }
+    returnFromModal = true;
+    const target = path === null ? { orchestrator: true } : path ? { worktree_path: path } : {};
+    command("ui.open_modal", { modal: action, ...(action === "create" ? {} : target) });
+  },
 };
 
 // ---------------------------------------------------------------- engine
@@ -68,10 +193,28 @@ function refreshSoon() {
   refreshTimer = setTimeout(loadSidebar, 100);
 }
 
+function afterSidebar() {
+  const worktrees = store.worktrees.value;
+  if (store.selected.value === undefined && worktrees.length) {
+    const first = worktrees.find((w) => w.agents && w.agents.length) || worktrees.find((w) => w.is_main) || worktrees[0];
+    store.selected.value = first.path;
+  } else if (store.selected.value && !worktrees.some((w) => w.path === store.selected.value)) {
+    store.selected.value = worktrees.find((w) => w.is_main)?.path;
+  }
+  // Terminals of sessions that are gone are dropped (shells stay).
+  const alive = new Set(Object.values(store.shells.value));
+  for (const w of worktrees) for (const a of w.agents || []) alive.add(a.session_id);
+  for (const a of store.orchestrator.value) alive.add(a.session_id);
+  terminals.retain(alive);
+}
+
 async function loadSidebar() {
   try {
     const sidebar = await conn.request("get_sidebar_state");
-    store.enqueue(() => store.applySidebar(sidebar));
+    store.enqueue(() => {
+      store.applySidebar(sidebar);
+      afterSidebar();
+    });
   } catch (e) {
     store.toast(`Sidebar: ${e.message}`, "error");
   }
@@ -80,12 +223,64 @@ async function loadSidebar() {
 async function onEngineReady() {
   store.engine.value = true;
   store.conn.value = { text: "connected", kind: "ok" };
+  store.overlay.value = null;
   try {
     const sidebar = await conn.request("get_sidebar_state");
-    store.enqueue(() => store.applySidebar(sidebar));
+    store.enqueue(() => {
+      store.applySidebar(sidebar);
+      afterSidebar();
+      if (store.centerView.value === "native") tuiBlank();
+      else tuiFollow();
+    });
     await conn.request("subscribe", { since: sidebar.cursor, events: SIDEBAR_EVENTS });
+    terminals.resume();
   } catch (e) {
     store.toast(`Engine: ${e.message}`, "error");
+  }
+}
+
+let pendingAgent = null;
+
+function onEvent(name, data) {
+  if (name.startsWith("stream.")) {
+    terminals.onEvent(name, data);
+    return;
+  }
+  store.enqueue(() => {
+    if (name === "ui.view_changed") onViewChanged(data);
+    if (name === "agent.spawned") {
+      const selected = store.selected.value;
+      if (data.worktree_path === (selected === null ? ORCHESTRATOR_KEY : selected)) pendingAgent = data;
+      // Back from the TUI's spawn dialog. Not from ui.view_changed alone: a
+      // dialog closed within the TUI's 50 ms settle is never announced.
+      if (returnFromModal) {
+        returnFromModal = false;
+        actions.showNative();
+      }
+    }
+    if (store.applyEvent(name, data)) refreshSoon();
+    if (name === "worktrees.changed") afterSidebar();
+    if (pendingAgent && store.selectedAgents().some((a) => a.agent_id === pendingAgent.agent_id)) {
+      store.activeAgent.value = { ...store.activeAgent.value, [pendingAgent.worktree_path]: pendingAgent.agent_id };
+      pendingAgent = null;
+      if (store.centerView.value === "native") focusShown();
+    }
+  });
+}
+
+function onViewChanged(view) {
+  const previous = store.view.value;
+  if (store.centerView.value !== "tui") return;
+  // On the TUI tab the page follows what the TUI shows.
+  if (view.orchestrator) store.selected.value = null;
+  else if (view.worktree_path) store.selected.value = view.worktree_path;
+  if (view.focus === "agent" && view.agent_id !== null) {
+    const key = view.orchestrator ? ORCHESTRATOR_KEY : view.worktree_path;
+    if (key) store.activeAgent.value = { ...store.activeAgent.value, [key]: view.agent_id };
+  }
+  if (returnFromModal && previous?.focus === "modal" && view.focus !== "modal") {
+    returnFromModal = false;
+    actions.showNative();
   }
 }
 
@@ -94,8 +289,8 @@ function onControl(message) {
     case "hello":
       store.repoRoot.value = message.repo_root;
       document.title = `lazyagent — ${basename(message.repo_root)}`;
+      reconnectDelay = 250;
       tui.announce();
-      tui.focus();
       break;
     case "engine":
       if (message.ready) onEngineReady();
@@ -109,9 +304,7 @@ function onControl(message) {
       if (message.error) store.toast(message.error.message, "error");
       break;
     case "evt":
-      store.enqueue(() => {
-        if (store.applyEvent(message.event, message.data)) refreshSoon();
-      });
+      onEvent(message.event, message.data);
       break;
     case "exit":
       store.exited.value = message.code;
@@ -121,44 +314,105 @@ function onControl(message) {
   }
 }
 
+let reconnectDelay = 250;
+
 function onClose(event) {
   store.engine.value = false;
   if (store.exited.value !== null) return;
-  store.conn.value = { text: "disconnected", kind: "bad" };
-  store.overlay.value =
-    event.code === 1008
-      ? "The host refused this page (bad or stale token).\nOpen the URL lazyagent host printed."
-      : "Disconnected from lazyagent host.\nReload the page if it is still running.";
+  if (event.code === 1008) {
+    store.conn.value = { text: "disconnected", kind: "bad" };
+    store.overlay.value = "The host refused this page (bad or stale token).\nOpen the URL lazyagent host printed.";
+    return;
+  }
+  store.conn.value = { text: "reconnecting…", kind: "bad" };
+  store.overlay.value = "Reconnecting to lazyagent host…";
+  setTimeout(() => conn.open(token), reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 5000);
 }
 
 // ---------------------------------------------------------------- keys
 
-const inTerminal = (target) => target instanceof Element && target.closest(".xterm") !== null;
-const inField = (target) =>
-  target instanceof Element && target.closest("input, textarea, select, [contenteditable]") !== null;
+const inside = (target, selector) => target instanceof Element && target.closest(selector) !== null;
+const inField = (target) => inside(target, "input, textarea:not(.xterm-helper-textarea), select, [contenteditable]");
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && store.help.value) {
-    store.help.value = false;
-    event.preventDefault();
-    return;
+function focusSidebar() {
+  const list = document.getElementById("worktrees");
+  const current = list?.querySelector("li.wt.current") || list?.querySelector("li.wt");
+  current?.focus();
+}
+
+function moveSelection(step) {
+  const keys = [null, ...store.worktrees.value.map((w) => w.path)];
+  const at = keys.indexOf(store.selected.value);
+  const next = keys[Math.min(keys.length - 1, Math.max(0, at + step))];
+  actions.select(next, { focus: false });
+  requestAnimationFrame(focusSidebar);
+}
+
+/** Keys the page takes before a native terminal sees them (the TUI's
+ * global set, §7a). In the TUI tab every key goes to the TUI. */
+function globalKey(event) {
+  const mod = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+  const alt = event.altKey && !event.ctrlKey && !event.metaKey;
+  const key = event.key.toLowerCase();
+  if (mod && key === "k") return focusSidebar(), true;
+  if (mod && key === "j") return actions.showNative(), true;
+  if (mod && key === "l") {
+    if (!store.selected.value) return true;
+    if (!store.shellOpen.value) actions.toggleShell();
+    else focusShell();
+    return true;
   }
-  if (inTerminal(event.target) || inField(event.target)) return;
-  if (event.key === "?" && !event.ctrlKey && !event.altKey && !event.metaKey) {
-    store.help.value = !store.help.value;
-    event.preventDefault();
-  }
-});
+  if (mod && key === "d") return actions.toolbar("diff"), true;
+  if (alt && (event.code === "BracketRight" || key === "n")) return actions.cycleAgent(1), true;
+  if (alt && (event.code === "BracketLeft" || key === "p")) return actions.cycleAgent(-1), true;
+  return false;
+}
+
+function sidebarKey(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  if (event.key === "j" || event.key === "ArrowDown") return moveSelection(1), true;
+  if (event.key === "k" || event.key === "ArrowUp") return moveSelection(-1), true;
+  if (event.key === "Enter") return focusShown(), true;
+  return false;
+}
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    const target = event.target;
+    if (event.key === "Escape" && store.help.value) {
+      store.help.value = false;
+      event.preventDefault();
+      return;
+    }
+    if (store.help.value || inField(target)) return;
+    if (inside(target, "#terminal-pane")) return;
+    let handled = globalKey(event);
+    if (!handled && inside(target, "#worktrees")) handled = sidebarKey(event);
+    if (!handled && !inside(target, ".xterm") && event.key === "?" && !event.ctrlKey && !event.altKey) {
+      store.help.value = true;
+      handled = true;
+    }
+    if (handled) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  },
+  true,
+);
 
 // ---------------------------------------------------------------- page
+
+const tuiPane = html`<div class="tui-wrap"><${TuiPane} tui=${tui} /></div>`;
 
 function App() {
   return html`
     <${TopBar} store=${store} />
     <main>
       <${Sidebar} store=${store} actions=${actions} />
-      <div class="center">
-        <${TuiPane} tui=${tui} />
+      <div class="center-wrap">
+        <${Center} store=${store} actions=${actions} manager=${terminals} tuiPane=${tuiPane} />
         <${Overlay} store=${store} />
       </div>
     </main>
@@ -177,4 +431,4 @@ else {
 }
 
 // For the browser tests.
-window.lazyagent = { store, conn, tui };
+window.lazyagent = { store, conn, tui, terminals, actions };

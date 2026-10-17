@@ -6,9 +6,18 @@ WebSocket upgrade must also come from our own ``Origin`` (cross-site
 WebSocket hijacking), and its first message must carry the token printed in
 the URL. Responses carry a self-only Content-Security-Policy.
 
+Binary messages both ways are protocol v1 stream frame payloads
+(``u8 type · u32 stream_id · u64 offset`` for output, ``u8 type · u32
+stream_id`` for input, then the bytes; :mod:`lazyagent.protocol.framing`).
+Stream 0 is the hosted TUI's PTY; any other id is a stream this page
+attached through ``attach_stream`` on its own engine connection. Output
+frames are passed on as the engine sent them (re-framed, not decoded), and
+input frames are spliced to the engine unchanged, after a check that the
+page owns the stream.
+
 WebSocket messages, page → host:
 
-- binary: keystrokes for the TUI;
+- binary: input frames (keystrokes) for the TUI (stream 0) or a stream;
 - ``{"type": "auth", "token"}``: first, and only once;
 - ``{"type": "resize", "rows", "cols", "redraw"?}``: the terminal panel's
   size (``redraw`` asks the TUI to repaint even when it is unchanged);
@@ -17,7 +26,7 @@ WebSocket messages, page → host:
 
 Host → page:
 
-- binary: TUI output;
+- binary: output frames of the TUI (stream 0) and of the page's streams;
 - ``{"type": "hello", "repo_root", "host", "engine": bool}`` after the auth;
 - ``{"type": "engine", "ready": bool}`` when the engine connection opens or
   closes;
@@ -33,6 +42,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,22 +50,30 @@ from typing import Any
 from lazyagent import __version__
 from lazyagent.engine.client import Client
 from lazyagent.engine.client import ConnectionClosed as EngineClosed
+from lazyagent.engine.client import RequestError, Stream
 from lazyagent.host import websocket as ws
 from lazyagent.host.tui import HostedTui
-from lazyagent.protocol import UI_COMMAND_METHODS
+from lazyagent.protocol import UI_COMMAND_METHODS, framing
 
 log = logging.getLogger(__name__)
 
-# What a page may ask the engine: views and read-only data. Anything that
-# changes worktrees or agents goes through the TUI's own modals.
+# What a page may ask the engine: views, read-only data and its own
+# terminals (streams, sizes, worktree shells). Creating, removing, spawning
+# and stopping still go through the TUI's modals.
 ALLOWED_METHODS = frozenset(
     {
         "get_sidebar_state",
         "list_worktrees",
+        "list_agents",
         "get_pr_info",
         "get_diff",
         "subscribe",
         "unsubscribe",
+        "attach_stream",
+        "detach_stream",
+        "claim_size",
+        "resize",
+        "open_shell",
         "ui.get_view",
         *UI_COMMAND_METHODS,
     }
@@ -101,6 +119,13 @@ MAX_MESSAGE = 1024 * 1024
 # reload and gets a full repaint.
 MAX_BUFFERED = 8 * 1024 * 1024
 MAX_SIZE = 1000
+# A page this far behind on its streams loses the one that overflows (it
+# gets stream.reset and re-attaches); the TUI's output keeps MAX_BUFFERED.
+MAX_STREAM_BUFFERED = 2 * 1024 * 1024
+TUI_STREAM = 0
+_OUTPUT_HEADER = struct.Struct(">BIQ")
+_INPUT_HEADER = struct.Struct(">BI")
+_FRAME_HEADER = struct.Struct(">IB")
 
 
 def static_files(root: Path) -> dict[str, Path]:
@@ -121,6 +146,9 @@ class Peer:
     socket: ws.WebSocket
     engine: Client | None = None
     tasks: set[asyncio.Task] = field(default_factory=set)
+    # Streams this page dropped for being too slow: their late frames are
+    # not sent.
+    dropped: set[int] = field(default_factory=set)
 
 
 class HostServer:
@@ -146,6 +174,8 @@ class HostServer:
         self._server: asyncio.Server | None = None
         self._handlers: set[asyncio.Task] = set()
         self.exit_code: int | None = None
+        # Bytes of TUI output so far: the offset of stream 0's next frame.
+        self.tui_offset = 0
 
     @property
     def url(self) -> str:
@@ -177,11 +207,13 @@ class HostServer:
     # -- TUI output --------------------------------------------------------
 
     def broadcast_output(self, data: bytes) -> None:
+        frame = _OUTPUT_HEADER.pack(framing.STREAM_OUTPUT, TUI_STREAM, self.tui_offset) + data
+        self.tui_offset += len(data)
         for peer in list(self.peers):
             if peer.socket.buffered > MAX_BUFFERED:
                 self._drop(peer, ws.CLOSE_TRY_AGAIN, "too slow")
                 continue
-            self._send_binary(peer, data)
+            self._send_binary(peer, frame)
 
     def _drop(self, peer: Peer, code: int, reason: str) -> None:
         self.peers.discard(peer)
@@ -357,14 +389,17 @@ class HostServer:
         # A fresh xterm.js has none of the modes the TUI set at its start.
         modes = self.tui.mode_sequence()
         if modes:
-            self._send_binary(peer, modes)
+            # Not TUI output: offset 0 marks it as a preamble.
+            self._send_binary(
+                peer, _OUTPUT_HEADER.pack(framing.STREAM_OUTPUT, TUI_STREAM, 0) + modes
+            )
         self.peers.add(peer)
         self._spawn(peer, self._bridge_engine(peer))
         try:
             while True:
                 message = await socket.recv()
                 if isinstance(message, bytes):
-                    self.tui.write(message)
+                    self._on_input(peer, message)
                 else:
                     self._on_text(peer, message)
         except ws.ConnectionClosed:
@@ -383,6 +418,21 @@ class HostServer:
         task = asyncio.get_running_loop().create_task(coro)
         peer.tasks.add(task)
         task.add_done_callback(peer.tasks.discard)
+
+    def _on_input(self, peer: Peer, frame: bytes) -> None:
+        """An input frame: keys for the TUI, or spliced to the engine."""
+        if len(frame) < _INPUT_HEADER.size or frame[0] != framing.STREAM_INPUT:
+            self._error(peer, "", "PROTOCOL_ERROR", "expected an input stream frame")
+            return
+        _, stream_id = _INPUT_HEADER.unpack_from(frame)
+        if stream_id == TUI_STREAM:
+            self.tui.write(memoryview(frame)[_INPUT_HEADER.size :])
+        elif peer.engine is not None and peer.engine.stream(stream_id) is not None:
+            peer.engine.send_raw(
+                _FRAME_HEADER.pack(len(frame), framing.KIND_STREAM) + frame
+            )
+        else:
+            self._error(peer, "", "PROTOCOL_ERROR", f"no stream {stream_id} here")
 
     def _on_text(self, peer: Peer, text: str) -> None:
         try:
@@ -421,6 +471,10 @@ class HostServer:
                 )
             elif peer.engine is None:
                 self._error(peer, request_id, "NOT_READY", "no engine connection yet")
+            elif method == "attach_stream":
+                self._spawn(peer, self._attach(peer, request_id, params))
+            elif method == "detach_stream":
+                self._spawn(peer, self._detach(peer, request_id, params))
             else:
                 self._spawn(peer, self._forward(peer, request_id, method, params))
         else:
@@ -448,6 +502,108 @@ class HostServer:
             )
             return
         self._send(peer, {**response.to_dict(), "id": request_id})
+
+    async def _attach(self, peer: Peer, request_id: str, params: dict) -> None:
+        """attach_stream on the page's engine connection; its output frames
+        follow the reply (the ones read with it wait until it is sent)."""
+        assert peer.engine is not None
+        held: list[tuple[int, bytes]] | None = []
+        stream_id = -1
+
+        def on_output(offset: int, data: bytes) -> None:
+            if held is not None:
+                held.append((offset, data))
+            elif stream_id in peer.dropped:
+                return
+            elif peer.socket.buffered > MAX_STREAM_BUFFERED:
+                self._drop_stream(peer, stream, offset)
+            else:
+                self._send_binary(
+                    peer,
+                    _OUTPUT_HEADER.pack(framing.STREAM_OUTPUT, stream_id, offset) + data,
+                )
+
+        session_id = params.get("session_id")
+        from_offset = params.get("from_offset")
+        try:
+            stream = await peer.engine.attach(
+                session_id,  # type: ignore[arg-type]  (the engine validates)
+                on_output,
+                from_offset=from_offset,
+            )
+        except RequestError as e:
+            self._error(peer, request_id, e.code, e.message)
+            return
+        except EngineClosed:
+            self._error(peer, request_id, "NOT_READY", "the engine connection is closed")
+            return
+        stream_id = stream.stream_id
+        result: dict[str, Any] = {
+            "stream_id": stream.stream_id,
+            "session_id": stream.session_id,
+            "size": {"rows": stream.rows, "cols": stream.cols},
+            "mode": stream.mode,
+            "offset": stream.offset,
+        }
+        if stream.snapshot is not None:
+            result["snapshot"] = stream.snapshot
+        self._send(peer, {"type": "res", "id": request_id, "result": result})
+        frames, held = held, None
+        for offset, data in frames:
+            on_output(offset, data)
+
+    def _drop_stream(self, peer: Peer, stream: Stream, offset: int) -> None:
+        """The page cannot keep up with this stream: stop it, and tell the
+        page where to re-attach from, as the engine's own stream.reset does."""
+        peer.dropped.add(stream.stream_id)
+        self._send(
+            peer,
+            {
+                "type": "evt",
+                "seq": 0,
+                "event": "stream.reset",
+                "data": {
+                    "stream_id": stream.stream_id,
+                    "session_id": stream.session_id,
+                    "rows": stream.rows,
+                    "cols": stream.cols,
+                    "offset": offset,
+                },
+            },
+        )
+        if peer.engine is not None:
+            engine = peer.engine
+
+            async def detach() -> None:
+                try:
+                    await engine.detach(stream.stream_id)
+                except (RequestError, EngineClosed):
+                    pass
+
+            self._spawn(peer, detach())
+
+    async def _detach(self, peer: Peer, request_id: str, params: dict) -> None:
+        assert peer.engine is not None
+        stream_id = params.get("stream_id")
+        if not isinstance(stream_id, int) or peer.engine.stream(stream_id) is None:
+            # Gone already (closed, reset, dropped): nothing to detach.
+            self._send(
+                peer,
+                {"type": "res", "id": request_id, "result": {"stream_id": stream_id, "detached": False}},
+            )
+            return
+        try:
+            await peer.engine.detach(stream_id)
+        except RequestError as e:
+            self._error(peer, request_id, e.code, e.message)
+            return
+        except EngineClosed:
+            self._error(peer, request_id, "NOT_READY", "the engine connection is closed")
+            return
+        self._send(
+            peer,
+            {"type": "res", "id": request_id, "result": {"stream_id": stream_id, "detached": True}},
+        )
 
     async def _bridge_engine(self, peer: Peer) -> None:
         """Open this page's own engine connection and relay its events."""

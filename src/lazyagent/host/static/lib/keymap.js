@@ -4,7 +4,8 @@
 // keys. ui-plan.md §7a is the design.
 //
 // `where` says who acts on the key today: "tui" = the hosted TUI, when its
-// pane has the keyboard; "page" = this page.
+// tab has the keyboard; "page" = this page (in the TUI tab every key goes
+// to the TUI).
 
 export const SCOPES = {
   global: "Anywhere",
@@ -14,26 +15,26 @@ export const SCOPES = {
 };
 
 export const KEYMAP = [
-  { keys: ["Ctrl+K"], tui: ["ctrl+k"], action: "Focus the sidebar", scope: "global", where: "tui" },
-  { keys: ["Ctrl+J"], tui: ["ctrl+j"], action: "Focus the active agent", scope: "global", where: "tui" },
-  { keys: ["Ctrl+D"], tui: ["ctrl+d"], action: "Show the diff", scope: "global", where: "tui" },
-  { keys: ["Ctrl+L"], tui: ["ctrl+l"], action: "Focus the worktree shell", scope: "global", where: "tui" },
+  { keys: ["Ctrl+K"], tui: ["ctrl+k"], action: "Focus the sidebar", scope: "global", where: "page" },
+  { keys: ["Ctrl+J"], tui: ["ctrl+j"], action: "Focus the active agent", scope: "global", where: "page" },
+  { keys: ["Ctrl+D"], tui: ["ctrl+d"], action: "Show the diff (in the TUI tab)", scope: "global", where: "page" },
+  { keys: ["Ctrl+L"], tui: ["ctrl+l"], action: "Open and focus the worktree shell", scope: "global", where: "page" },
   {
     keys: ["Alt+]", "Alt+N"],
     tui: ["alt+right_square_bracket", "alt+n"],
     action: "Next agent tab",
     scope: "global",
-    where: "tui",
+    where: "page",
   },
   {
     keys: ["Alt+[", "Alt+P"],
     tui: ["alt+left_square_bracket", "alt+p"],
     action: "Previous agent tab",
     scope: "global",
-    where: "tui",
+    where: "page",
   },
   { keys: ["Alt+G"], tui: ["alt+g"], action: "Refresh git status", scope: "global", where: "tui" },
-  { keys: ["J", "K"], tui: ["j", "k"], action: "Next / previous worktree", scope: "sidebar", where: "tui" },
+  { keys: ["J", "K"], tui: ["j", "k"], action: "Next / previous worktree (also ↓ / ↑; Enter: its agent)", scope: "sidebar", where: "page" },
   { keys: ["S"], tui: ["s"], action: "Spawn an agent", scope: "outside", where: "tui" },
   { keys: ["X"], tui: ["x"], action: "Stop the agent", scope: "outside", where: "tui" },
   { keys: ["C"], tui: ["c"], action: "Create a worktree", scope: "outside", where: "tui" },

@@ -4,6 +4,7 @@
 
 import { Terminal } from "../vendor/xterm/xterm.mjs";
 import { FitAddon } from "../vendor/xterm/addon-fit.mjs";
+import { binaryBytes, inputFrame } from "./terminals.js";
 
 // The TUI paints its own (dark) palette over the whole screen, so its
 // terminal stays dark in both page themes: a light background would only
@@ -26,14 +27,9 @@ export function createTui(conn) {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  const encoder = new TextEncoder();
-
-  term.onData((data) => conn.send(encoder.encode(data)));
-  term.onBinary((data) => {
-    const bytes = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
-    conn.send(bytes);
-  });
+  // Stream 0 is the TUI's PTY.
+  term.onData((data) => conn.send(inputFrame(0, data)));
+  term.onBinary((data) => conn.send(inputFrame(0, binaryBytes(data))));
   term.onResize(({ rows, cols }) => conn.sendJson({ type: "resize", rows, cols }));
 
   return {
@@ -50,9 +46,9 @@ export function createTui(conn) {
         // Not laid out yet.
       }
     },
-    /** @param {ArrayBuffer} data */
+    /** @param {Uint8Array} data */
     write(data) {
-      term.write(new Uint8Array(data));
+      term.write(data);
     },
     /** Tell the host our size and ask the TUI for a full repaint. */
     announce() {
