@@ -326,7 +326,7 @@ async def test_without_an_engine_the_backend_says_so_and_keeps_trying(tmp_path):
         assert not backend.connected
         [lost] = [e for e in events if e.event == "backend.disconnected"]
         assert "no engine serves" in lost.data["reason"]
-        assert "python -m lazyagent.engine" in lost.data["reason"]
+        assert "lazyagent engine start" in lost.data["reason"]
         await asyncio.sleep(0.3)  # retried, still reported once
         assert sum(e.event == "backend.disconnected" for e in events) == 1
     finally:
