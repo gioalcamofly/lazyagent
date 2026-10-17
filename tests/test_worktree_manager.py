@@ -710,12 +710,18 @@ class TestGetDiffCaps:
 # --- Batched PR lookup (gh api graphql) ---
 
 
-def _check_run(name, status="COMPLETED", conclusion="SUCCESS"):
-    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
+def _check_run(name, status="COMPLETED", conclusion="SUCCESS", url=None):
+    run = {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
+    if url is not None:
+        run["detailsUrl"] = url
+    return run
 
 
-def _status_context(context, state="SUCCESS"):
-    return {"__typename": "StatusContext", "context": context, "state": state}
+def _status_context(context, state="SUCCESS", url=None):
+    ctx = {"__typename": "StatusContext", "context": context, "state": state}
+    if url is not None:
+        ctx["targetUrl"] = url
+    return ctx
 
 
 def _pr_node(number, state="OPEN", *, contexts=None, cross=False, rollup=True, **extra):
@@ -817,9 +823,9 @@ class TestParsePrBatch:
         node = _pr_node(
             42,
             contexts=[
-                _check_run("build"),
-                _check_run("e2e", status="QUEUED", conclusion=None),
-                _status_context("ci/jenkins", state="PENDING"),
+                _check_run("build", url="https://x"),
+                _check_run("e2e", status="QUEUED", conclusion=None, url="https://y"),
+                _status_context("ci/jenkins", state="PENDING", url="https://z"),
             ],
             reviewDecision="CHANGES_REQUESTED",
             mergeable="CONFLICTING",
