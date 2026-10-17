@@ -542,6 +542,37 @@ class TestWorktreeJobs:
         ]
 
     @pytest.mark.asyncio
+    async def test_the_methods_pass_custom_and_the_client_env(self, tmp_path, repo, feat):
+        """create_worktree / remove_worktree as clients call them: a remote
+        TUI asks for the custom remove and sends its env, like the in-process
+        one does."""
+        from lazyagent.engine.methods import EngineMethods
+
+        engine = _custom_engine(
+            tmp_path, repo, feat,
+            create="echo create=$LAZYAGENT_TEST_JOB_VAR",
+            remove="echo remove=$LAZYAGENT_TEST_JOB_VAR {force}",
+        )
+        methods = EngineMethods(engine)
+        events = Recorder(engine)
+        env = {"PATH": os.environ["PATH"], "LAZYAGENT_TEST_JOB_VAR": "client"}
+
+        created = await methods.create_worktree({"branch": "x", "env": env})
+        removed = await methods.remove_worktree(
+            {"worktree_path": str(feat), "force": True, "custom": True, "env": env}
+        )
+
+        assert created["job_id"] == "j1"
+        assert removed == {"removed": str(feat), "job_id": "j2"}
+        assert [e["text"] for e in events.named("job.output")] == [
+            "create=client\n",
+            "remove=client --force\n",
+        ]
+        validation.validate_result("remove_worktree", removed, strict=True)
+        with pytest.raises(ValueError, match="custom must be a boolean"):
+            await methods.remove_worktree({"worktree_path": str(feat), "custom": "yes"})
+
+    @pytest.mark.asyncio
     async def test_custom_false_uses_git(self, tmp_path, repo, feat):
         engine = _custom_engine(tmp_path, repo, feat, remove="exit 4")
         await engine.remove_worktree(str(feat), custom=False)
@@ -720,3 +751,49 @@ class TestLifecycle:
             socket_path = engine.socket_path
             await engine.stop()
         assert not os.path.exists(socket_path)
+
+
+@pytest.mark.asyncio
+async def test_wait_idle_returns_while_a_finished_task_is_still_listed(monkeypatch):
+    """A finished task leaves the set in a done callback that has not run
+    yet; gathering it completes without yielding, so waiting on it again
+    would spin forever."""
+    engine = make_engine([worktree()])
+    real_gather = asyncio.gather
+    calls = []
+
+    def gather(*args, **kwargs):
+        calls.append(args)
+        assert len(calls) < 100, "wait_idle is spinning"
+        return real_gather(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", gather)
+
+    async def nothing() -> None:
+        return None
+
+    task = asyncio.get_running_loop().create_task(nothing())
+    await task
+    engine._tasks.add(task)
+    await asyncio.wait_for(engine.wait_idle(), 1.0)
+
+
+@pytest.mark.asyncio
+async def test_v1_lists_an_agent_with_no_status_yet_as_starting(monkeypatch):
+    from tests.engine.fakes import no_pty
+
+    no_pty(monkeypatch)
+    engine = make_engine([worktree(), worktree("/tmp/repo-feat", "feat", is_main=False)])
+    info = await engine.spawn_agent("/tmp/repo-feat")
+    assert engine.registry.agents("/tmp/repo-feat") == {}
+
+    [entry] = engine.agents_payload("/tmp/repo-feat", v1=True)
+    assert entry["status"] == "starting"
+    assert entry["session_id"] == info.session_id
+    assert entry["label"] == info.label
+    validation.validate_result(
+        "list_worktrees", engine.worktrees_payload(v1=True), strict=True
+    )
+    # The legacy answer is unchanged.
+    assert engine.agents_payload("/tmp/repo-feat") == []
+    engine.stop_agent("/tmp/repo-feat", info.agent_id)

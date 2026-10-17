@@ -7,7 +7,7 @@
     "agent_status": {
       "type": "string",
       "description": "Open set: clients must tolerate values they do not know.",
-      "x-known-values": ["no_agent", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
+      "x-known-values": ["no_agent", "starting", "running", "waiting", "waiting_for_user", "waiting_for_approval", "completed", "failed", "interrupted", "possibly_hanged"]
     },
     "confidence": {
       "type": "string",
@@ -73,7 +73,8 @@
       "properties": {
         "branch": {"type": "string", "minLength": 1},
         "base_branch": {"type": "string", "default": "main"},
-        "extra": {"type": "string", "description": "Only used by a configured custom create command."}
+        "extra": {"type": "string", "description": "Only used by a configured custom create command."},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment of a custom command this call runs (the client's, D5); the engine's own when omitted."}
       }
     },
     "create_worktree.result": {
@@ -93,7 +94,9 @@
       "required": ["worktree_path"],
       "properties": {
         "worktree_path": {"$ref": "#/$defs/worktree_path"},
-        "force": {"type": "boolean", "default": false}
+        "force": {"type": "boolean", "default": false},
+        "custom": {"type": "boolean", "default": false, "description": "Run the configured custom remove command as an engine job instead of git worktree remove, as the TUI does."},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment of a custom command this call runs (the client's, D5); the engine's own when omitted."}
       }
     },
     "remove_worktree.result": {
@@ -450,6 +453,7 @@
           "additionalProperties": {"anyOf": [{"$ref": "events.json#/$defs/pr_info"}, {"type": "null"}]},
           "description": "Worktree path -> PR info (null: no PR), for the worktrees fetched so far."
         },
+        "git_statuses": {"$ref": "events.json#/$defs/git_status.updated", "description": "Worktree path -> full git status, for the worktrees computed so far (worktrees only carries the counts)."},
         "view": {"anyOf": [{"$ref": "#/$defs/ui_view"}, {"type": "null"}]},
         "cursor": {"type": "integer", "minimum": 0, "description": "subscribe {since: cursor} continues from this state without a gap."}
       }
@@ -482,6 +486,21 @@
       }
     },
     "ui_target": {"type": "boolean", "description": "true targets the orchestrator instead of a worktree."},
+    "attach_ui.params": {"type": "object", "properties": {}, "description": "Make this connection a hosted UI (a TUI on a remote engine): the ui.* commands are offered while one is attached. Dropped by detach_ui or on disconnect."},
+    "attach_ui.result": {"type": "object", "required": ["attached"], "properties": {"attached": {"const": true}}},
+    "detach_ui.params": {"type": "object", "properties": {}},
+    "detach_ui.result": {"type": "object", "required": ["attached"], "properties": {"attached": {"const": false}}},
+    "publish_view.params": {
+      "type": "object",
+      "required": ["view"],
+      "description": "A UI announces what it shows; emitted as ui.view_changed unless equal to the last view.",
+      "properties": {"view": {"$ref": "#/$defs/ui_view"}}
+    },
+    "publish_view.result": {
+      "type": "object",
+      "required": ["published"],
+      "properties": {"published": {"type": "boolean", "description": "False when the view equals the last one announced."}}
+    },
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {
       "type": "object",

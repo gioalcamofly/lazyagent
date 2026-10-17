@@ -80,6 +80,7 @@ log = logging.getLogger(__name__)
 
 V1_SERVER_ENV = "LAZYAGENT_V1_SERVER"
 UI_MODALS = ("spawn", "create", "remove")
+_VIEW_FIELDS = ("worktree_path", "orchestrator", "agent_id", "focus", "modal")
 
 # Output a client may have queued per stream before the stream is dropped.
 STREAM_QUEUE_LIMIT = 1024 * 1024
@@ -245,6 +246,8 @@ class _Connection:
         self._drained.set()
         self._stream_ids = itertools.count(1)
         self._unsubscribe: Callable[[], None] | None = None
+        # Set while this client is a hosted UI (attach_ui).
+        self.detach_ui: Callable[[], None] | None = None
         self._tasks: set[asyncio.Task] = set()
         self._writer_task: asyncio.Task | None = None
 
@@ -293,6 +296,9 @@ class _Connection:
         if self.closed:
             return
         self.closed = True
+        # Nothing queued will be written any more: flush() must not wait.
+        self._queue.clear()
+        self._drained.set()
         for task in list(self._tasks):
             task.cancel()
         if self._writer_task is not None:
@@ -579,6 +585,9 @@ class V1Server:
                 "set_interest": self.handle_set_interest,
                 "get_config": self.handle_get_config,
                 "get_sidebar_state": self.handle_get_sidebar_state,
+                "attach_ui": self.handle_attach_ui,
+                "detach_ui": self.handle_detach_ui,
+                "publish_view": self.handle_publish_view,
                 "ui.get_view": self.handle_ui_get_view,
                 "ui.select_worktree": self.handle_ui_select_worktree,
                 "ui.select_orchestrator": self.handle_ui_select_orchestrator,
@@ -682,6 +691,9 @@ class V1Server:
     def forget(self, conn: _Connection) -> None:
         self._connections.discard(conn)
         self.engine.set_interest((), conn.interest_client)
+        if conn.detach_ui is not None:
+            conn.detach_ui()
+            conn.detach_ui = None
         for state in list(self._sessions.values()):
             if state.owner is conn:
                 state.owner = None
@@ -736,6 +748,8 @@ class V1Server:
         async def call(conn: _Connection, params: dict) -> Any:
             result = await handler(params)
             key = result["worktree_path"]
+            # The v1 list has every agent the engine runs, "starting" ones too.
+            result["agents"] = self.engine.agents_payload(key, v1=True)
             for agent in result["agents"]:
                 info = self.engine.get_agent(key, agent["agent_id"])
                 session = self.engine.get_session(key, agent["agent_id"])
@@ -1059,6 +1073,9 @@ class V1Server:
                 "agents": engine.agents_payload(ORCHESTRATOR_KEY, v1=True)
             },
             "pr_info": pr_info,
+            "git_statuses": {
+                path: asdict(status) for path, status in engine.git_statuses.items()
+            },
             "view": engine.ui_view,
             "cursor": engine.events.cursor,
         }
@@ -1066,6 +1083,26 @@ class V1Server:
     # ------------------------------------------------------------------
     # Hosted UI
     # ------------------------------------------------------------------
+
+    async def handle_attach_ui(self, conn: _Connection, params: dict) -> Any:
+        """This client carries out ``ui.command`` events (a hosted TUI on a
+        remote engine) until it detaches or disconnects."""
+        if conn.detach_ui is None:
+            conn.detach_ui = self.engine.attach_ui()
+        return {"attached": True}
+
+    async def handle_detach_ui(self, conn: _Connection, params: dict) -> Any:
+        if conn.detach_ui is not None:
+            conn.detach_ui()
+            conn.detach_ui = None
+        return {"attached": False}
+
+    async def handle_publish_view(self, conn: _Connection, params: dict) -> Any:
+        """A UI announces what it shows (``ui.view_changed``)."""
+        view = params.get("view")
+        if not (isinstance(view, dict) and all(k in view for k in _VIEW_FIELDS)):
+            raise ValueError(f"view must be an object with {', '.join(_VIEW_FIELDS)}")
+        return {"published": self.engine.publish_view(view)}
 
     async def handle_ui_get_view(self, conn: _Connection, params: dict) -> Any:
         return {"view": self.engine.ui_view}

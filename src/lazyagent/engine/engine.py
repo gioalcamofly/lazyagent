@@ -64,6 +64,14 @@ from lazyagent.engine.session import (
     StatusChanged,
     TerminalSession,
 )
+from lazyagent.engine.types import (
+    AGENT_KIND,
+    ORCHESTRATOR_KIND,
+    SHELL_KIND,
+    AgentInfo,
+    ConfigView,
+    CreatedWorktree,
+)
 from lazyagent.engine.worktrees import (
     GIT_STATUS_UPDATED,
     PR_INFO_UPDATED,
@@ -75,6 +83,7 @@ from lazyagent.models import (
     AgentState,
     AgentStatus,
     GitStatus,
+    LifecycleConfidence,
     PrInfo,
     WorktreeInfo,
     rollup_status,
@@ -104,10 +113,6 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-AGENT_KIND = "agent"
-ORCHESTRATOR_KIND = "orchestrator"
-SHELL_KIND = "shell"
-
 # Hook logs are otherwise only read when an agent prints something; a quiet
 # agent's status (and the events that follow from it) would lag.
 POLL_AGENTS_INTERVAL = 1.0
@@ -115,36 +120,14 @@ CHECK_HANGS_INTERVAL = 60.0
 
 NOTICE_SEVERITIES = ("information", "warning", "error")
 
+# The v1 status of an agent the engine runs that has reported none yet.
+STARTING_STATUS = "starting"
+
 # An agent in one of these is working or about to: its worktree must not be
 # pulled out from under it.
 _ACTIVE_STATUSES = (AgentStatus.RUNNING, AgentStatus.WAITING)
 
 _JOB_READ_SIZE = 4096
-
-
-@dataclass(frozen=True)
-class AgentInfo:
-    """Who an agent is; the ``agent.spawned`` payload."""
-
-    worktree_path: str
-    agent_id: str
-    session_id: str
-    label: str
-    session_name: str
-    kind: str
-
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class ConfigView:
-    """The read-only part of the config that clients need (modals)."""
-
-    agent_provider: str
-    default_branch: str
-    has_custom_create: bool
-    has_custom_remove: bool
 
 
 @dataclass(frozen=True)
@@ -162,16 +145,6 @@ class JobResult:
         return (
             self.stderr.strip() or self.stdout.strip() or f"exit code {self.exit_code}"
         )
-
-
-@dataclass(frozen=True)
-class CreatedWorktree:
-    """A new worktree. With ``job_id`` set a custom command created it, and
-    ``path`` is predicted from the naming convention."""
-
-    path: str
-    branch: str
-    job_id: str | None = None
 
 
 @dataclass
@@ -411,8 +384,11 @@ class Engine:
 
     async def wait_idle(self) -> None:
         """Wait for the background work started so far (git sweeps)."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        # Only the unfinished ones: a finished task leaves the set in a
+        # done callback, and gathering finished tasks completes without
+        # yielding to the loop that would run it.
+        while pending := [t for t in self._tasks if not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
         await self.worktree_service.wait_idle()
 
     def _spawn(
@@ -653,9 +629,11 @@ class Engine:
 
     def agents_payload(self, key: str, *, v1: bool = False) -> list[dict[str, Any]]:
         """A worktree's agent states as the IPC responses carry them; ``v1``
-        adds ``session_id`` and ``kind`` for the agents the engine runs."""
+        adds ``session_id`` and ``kind`` for the agents the engine runs, and
+        lists those with no status yet as ``starting``."""
         result = []
-        for aid, st in self.registry.agents(key).items():
+        states = self.registry.agents(key)
+        for aid, st in states.items():
             entry: dict[str, Any] = {
                 "agent_id": aid,
                 "label": st.label,
@@ -669,6 +647,21 @@ class Engine:
                 entry["session_id"] = info.session_id
                 entry["kind"] = info.kind
             result.append(entry)
+        if v1:
+            for info in self.list_agents(key):
+                if info.agent_id not in states:
+                    result.append(
+                        {
+                            "agent_id": info.agent_id,
+                            "label": info.label,
+                            "session_name": info.session_name,
+                            "status": STARTING_STATUS,
+                            "confidence": LifecycleConfidence.LOW.value,
+                            "detail": "",
+                            "session_id": info.session_id,
+                            "kind": info.kind,
+                        }
+                    )
         return result
 
     def _on_worktree_event(self, event: WorktreeEvent) -> None:
