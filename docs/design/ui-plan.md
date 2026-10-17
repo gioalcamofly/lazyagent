@@ -612,6 +612,32 @@ Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `t
 - **Measured** (this laptop, headless system Chrome 151): B12 sidebar with 100 worktrees, every row changed: p50 2.8-2.9 ms, p95 3.7-7.1 ms (budget 4 ms); one agent changed: p50 0.2-0.3 ms; first mount of 100 rows 22 ms. Idle with the page open: Chrome renderer 0.2-0.6%, all Chrome processes 0.8-1.9%, TUI + engine 0.1-0.2%; H2's page measured the same way in the same session: 0.8-1.8%, no measurable difference. B3 engine echo p50 0.76 / p95 1.09 / p99 5.5 ms (budget 3 ms p95). pyte: plain 3.5 MB/s, agent workload 1.4 MB/s (§7d-4: 3.0 / 1.7).
 - **Not done here:** the light theme for the hosted TUI itself (Textual paints its own palette), the command palette and the `g` sequences (they come with the views they switch).
 
+#### U2: native terminals (2026-10-17)
+
+- **Host:** page binary messages are v1 stream frame payloads both ways; stream 0 is the hosted TUI's PTY (its output carries the TUI's byte offset; the DECSET preamble sent to a new page has offset 0). The page attaches, detaches, claims and resizes streams and opens shells on **its own** engine connection (`ALLOWED_METHODS` + `attach_stream`, `detach_stream`, `claim_size`, `resize`, `open_shell`, `list_agents`). Input frames are **spliced** (the page's payload gets the 5-byte unix-socket header and goes to the engine unchanged) once the page is known to own the stream; a frame for another stream is a `PROTOCOL_ERROR`. Output frames go through the reference client (decoded, then re-framed with the same id and offset): the plan measured splice and re-frame as equal within noise, and the client already registers a stream before its first frame. Frames read together with the attach reply are held until the reply is sent. A page more than 2 MiB behind on its WebSocket loses **that stream** (`stream.reset` with the first undelivered offset, the engine stream detached), not its connection; the TUI's output keeps H2's 8 MiB page drop.
+- **Engine (additive): `ui.blank`.** The hosted TUI shows a placeholder ("Shown in the browser…") and no worktree: its sidebar highlight is cleared and every panel hidden, so its terminal views hide and detach (PR 7's attach-while-shown). The page sends it whenever its native view is in front. This is how "the hosted TUI renders no natively shown session" is met; the measured difference is below.
+- **Page:** `lib/terminals.js` (one xterm.js per session; `TerminalManager` routes frames by stream id; `Writer` writes a chunk at once when idle, else coalesces per animation frame); `components/center.js` (agent tabs, the shell as a bottom pane, the TUI as one more tab). The **selection is the page's own** (plan §3a); the TUI follows it only while its tab is in front, and the page follows the TUI's `ui.view_changed` then. Spawn / New / Remove / Diff still open the TUI's dialogs (U3/U5): the page shows the TUI tab and comes back to the native view when the dialog closes, on the new agent's tab after a spawn.
+- **Size (D3):** a terminal renders at the PTY's size and claims (`claim_size` with its fitted rows/cols) when focused, when typed into with another size, and on a box change while it owns the size; hidden terminals never claim. Showing the TUI tab lets the TUI claim the PTY back (its own view rules), and pyte drops the top rows of a shrink: the native view then shows the TUI's size until it is typed into.
+- **Streams (P7):** attached while shown; the 3 most recently hidden stay attached, the rest (and anything hidden 30 s) detach and their xterm.js is disposed; a page hidden 30 s detaches everything and re-attaches on return. A WebSocket that drops (anything but a refused token) reconnects with backoff (0.25 s doubling to 5 s) and every shown terminal resumes from its last byte: a **tail** (tested).
+- **Renderer:** WebGL (`@xterm/addon-webgl` 0.19.0, vendored) when the WebGL renderer string is not a software rasteriser (SwiftShader, llvmpipe, …), DOM otherwise or after a context loss; `terminals.forceDom` forces it (tested).
+- **Keys (§7a):** Ctrl+K sidebar, Ctrl+J agent, Ctrl+L shell, Ctrl+D diff (TUI tab), Alt+]/Alt+N, Alt+[/Alt+P tabs, j/k/↑/↓/Enter in the sidebar, taken in the capture phase before a native terminal sees them; in the TUI tab every key goes to the TUI. s/x/c/d/r and Alt+G stay the TUI's until U3.
+- **Tests:** test_server (framed TUI output and input, bad input frames, whitelist), test_host_integration (streams of an agent and a shell through a real host, ownership, detach, tail re-attach, `stream.closed`, a slow page losing the stream), test_hosted_tui (`ui.blank` on both backends), test_page_js (frames, writer batching, renderer choice, page selection), test_browser (blank TUI, native shell, spawn round trip, typing claims the size, tab hide/show, reload, exit closes the tab), test_browser_terminals (reconnect with a tail, DOM fallback, keys).
+- **Measured** (`pytest -m perf`, headless system Chrome 151 with the Intel GPU, this laptop):
+
+  | Budget | Result |
+  |---|---|
+  | B1 key → bytes back in the page, WebGL / DOM | p50 2.4 / 1.7, p95 3.4 / 3.1 ms |
+  | B1 key → the frame that paints them, WebGL / DOM | p50 8.4 / 8.5, p95 8.9 / 9.0 ms (budget 8 / 16) |
+  | B4 frames while 5 MB arrive | p50 16.7, p95 16.7-16.8 ms, long tasks 63-64 ms per 5 MB (budget 17 ms, 100 ms) |
+  | B5 5 MB end to end, TUI blank | 0.30-0.33 s, 15-17 MB/s (budget ≥ 10); TUI + engine CPU 0.10-0.15 s |
+  | Same, TUI tab in front (renders the agent too) | 3.11 s, 1.6 MB/s; TUI + engine CPU 3.0 s |
+  | B6 idle, one native agent on screen | 0.3-0.5% of a core in all (Chrome renderer 0.0%) |
+  | B8 attach with snapshot right after the burst | p50 7.7-8.6 ms; the first attach 62-77 ms (it flushes the feeder's backlog; budget p95 50 / worst 100) |
+  | B9 JS heap after 5 MB | 21-27 MB (budget 50) |
+
+  B5 meets the budget because the PR 7 feeder keeps only the newest 256 KiB of a backlog it is more than 1 MiB behind on, so the engine's pyte no longer throttles the agent; B8's first attach pays the flush of that bounded backlog.
+- **Not done here:** the nightly perf job (Q16: local only), the multi-agent grid (U6), E1/E2 (the engine side already holds B5/B8 well enough after PR 7).
+
 ### 8b. Fit with PRs 7-9 and §6's web phase
 
 | Engine-split item | Relation |
