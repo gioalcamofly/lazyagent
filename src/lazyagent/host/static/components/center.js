@@ -20,17 +20,22 @@ export class TerminalSlot extends Component {
     this.sync(previous.sessionId);
   }
   componentWillUnmount() {
-    this.terminal()?.hide();
+    this.release(this.props.sessionId);
+  }
+  /** Hide a session's terminal, unless another slot has taken it since. */
+  release(id) {
+    const terminal = this.terminal(id);
+    if (terminal && this.base && this.base.contains(terminal.element)) terminal.hide();
   }
   terminal(id = this.props.sessionId) {
     return id ? this.props.manager.sessions.get(id) : undefined;
   }
   sync(previousId) {
-    if (previousId && previousId !== this.props.sessionId) this.terminal(previousId)?.hide();
+    if (previousId && previousId !== this.props.sessionId) this.release(previousId);
     const { sessionId, active, manager } = this.props;
     if (!sessionId) return;
     if (active) manager.get(sessionId).show(this.base);
-    else this.terminal()?.hide();
+    else this.release(sessionId);
   }
   render({ className }) {
     return html`<div class=${`term-slot ${className || ""}`}></div>`;
@@ -112,6 +117,7 @@ function WorktreeHeader({ store, actions }) {
     <${GitBadges} git=${wt.git_status} pr=${store.prInfo.value[wt.path]} />
     <span class="spacer"></span>
     <button type="button" class="link" title="Refresh git status (Alt+G)" onClick=${actions.refreshGit}>↻ git</button>
+    <button type="button" class="link" data-tool="pr" title="Pull request and CI (Ctrl+.)" onClick=${actions.togglePrPanel}>PR</button>
   </div>`;
 }
 
@@ -119,10 +125,13 @@ export function Center({ store, actions, manager, tuiPane }) {
   const agents = store.selectedAgents();
   const shown = store.shownAgent();
   const tui = store.centerView.value === "tui";
+  // The attention view has the screen: the worktree view lets go of its
+  // terminals (it stays mounted, for the TUI's terminal).
+  const away = store.centerView.value === "attention";
   const path = store.selected.value;
   const shellId = path ? store.shells.value[path] : undefined;
   const shellOpen = store.shellOpen.value && Boolean(path);
-  return html`<div class=${`center${tui ? " tui-shown" : ""}`}>
+  return html`<div class=${`center${tui ? " tui-shown" : ""}${away ? " away" : ""}`}>
     <${WorktreeHeader} store=${store} actions=${actions} />
     <${AgentTabs} store=${store} actions=${actions} agents=${agents} shown=${shown} />
     <div class="views">
@@ -130,7 +139,7 @@ export function Center({ store, actions, manager, tuiPane }) {
         className="agent-slot"
         manager=${manager}
         sessionId=${shown?.session_id}
-        active=${!tui && Boolean(shown)}
+        active=${!tui && !away && Boolean(shown)}
       />
       ${!tui && !shown && html`<${EmptyState} store=${store} actions=${actions} />`}
       ${tuiPane}
@@ -142,7 +151,7 @@ export function Center({ store, actions, manager, tuiPane }) {
         <span>Shell · ${basename(path)}</span>
         <button type="button" class="link" onClick=${actions.toggleShell} title="Close (Ctrl+L)">×</button>
       </div>
-      <${TerminalSlot} className="shell-slot" manager=${manager} sessionId=${shellId} active=${Boolean(shellId)} />
+      <${TerminalSlot} className="shell-slot" manager=${manager} sessionId=${shellId} active=${Boolean(shellId) && !away} />
     </div>`}
   </div>`;
 }
