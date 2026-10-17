@@ -1,5 +1,5 @@
 """Allow running lazyagent as `python -m lazyagent`."""
 
-from lazyagent.app import main
+from lazyagent.cli import main
 
 main()
