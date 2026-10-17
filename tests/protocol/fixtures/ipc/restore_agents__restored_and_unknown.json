@@ -1,0 +1,33 @@
+{
+  "case": "restore_agents/restored_and_unknown",
+  "method": "restore_agents",
+  "params": {
+    "ids": [
+      "3f2a9c1d0b7e",
+      "nope"
+    ]
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "failed": [
+        {
+          "id": "nope",
+          "reason": "not restorable (unknown id, or its worktree is gone)"
+        }
+      ],
+      "restored": [
+        {
+          "agent_id": "a2",
+          "id": "3f2a9c1d0b7e",
+          "kind": "agent",
+          "label": "Reviewer",
+          "resumed": "conversation",
+          "session_id": "s1",
+          "session_name": "repo-feat-a2",
+          "worktree_path": "/tmp/repo-feat"
+        }
+      ]
+    }
+  }
+}

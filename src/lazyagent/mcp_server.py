@@ -449,7 +449,12 @@ async def list_events(
     interrupted or exited), "not_running" (anything but running).
 
     Returns:
-        Object with events (list, oldest first), cursor, and truncated.
+        Object with events (list, oldest first), cursor, and truncated. When
+        agents were restored after ``since`` (restore_agents, or the engine's
+        ``restore_on_start``), also ``restores``: one entry per restore with
+        its seq, ``restored`` (id, worktree_path, agent_id, label, session_name,
+        kind, resumed) and ``failed`` (id, reason). The filters do not apply
+        to it.
     """
     params: dict[str, Any] = {}
     if since is not None:
@@ -461,6 +466,63 @@ async def list_events(
     if statuses is not None:
         params["statuses"] = statuses
     return await _get_client().call("list_events", params)
+
+
+@mcp.tool()
+async def list_restorable() -> dict:
+    """List the agents an earlier lazyagent engine ran when it ended (it was
+    stopped, crashed, or the machine rebooted), which can be brought back.
+
+    Read this after a restart before spawning agents again: restoring one
+    resumes its own conversation, with the same worktree, agent id and
+    session name, where a new spawn would start from scratch.
+
+    Returns:
+        Object with ``agents``: each has ``id`` (what restore_agents takes),
+        worktree_path, agent_id, kind ("agent" or "orchestrator"), provider,
+        label, session_name, skip_permissions, conversation_id (null when the
+        provider never reported one: the restore then resumes the provider's
+        last conversation in that worktree), instruction (the last one sent
+        to it, when known), started_at and ended_at.
+    """
+    return await _get_client().call("list_restorable", {})
+
+
+@mcp.tool()
+async def restore_agents(ids: list[str] | None = None) -> dict:
+    """Bring back agents from list_restorable (all of them when ``ids`` is
+    omitted). Each is spawned again in its worktree with its provider, label
+    and permissions, the same agent id when it is free, and resumes its
+    conversation.
+
+    Args:
+        ids: The ``id`` values from list_restorable to restore. Omit for all.
+
+    Returns:
+        Object with ``restored`` (id, worktree_path, agent_id, session_id,
+        label, session_name, kind, and ``resumed``: "conversation" for the
+        exact one, "last" for the provider's last in that worktree) and
+        ``failed`` (id, reason; a failed agent stays restorable). The same
+        object shows up in list_events as a ``restores`` entry.
+    """
+    params: dict[str, Any] = {}
+    if ids is not None:
+        params["ids"] = ids
+    return await _get_client().call("restore_agents", params)
+
+
+@mcp.tool()
+async def dismiss_restorable(ids: list[str] | None = None) -> dict:
+    """Stop offering agents from list_restorable (all of them when ``ids``
+    is omitted), e.g. once their work was finished or redone another way.
+
+    Returns:
+        Object with ``dismissed``: the ids no longer offered.
+    """
+    params: dict[str, Any] = {}
+    if ids is not None:
+        params["ids"] = ids
+    return await _get_client().call("dismiss_restorable", params)
 
 
 if __name__ == "__main__":

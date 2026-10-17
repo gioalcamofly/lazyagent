@@ -1,0 +1,33 @@
+{
+  "case": "list_events/with_a_restore",
+  "method": "list_events",
+  "params": {
+    "since": 0
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "cursor": 2,
+      "events": [],
+      "restores": [
+        {
+          "failed": [],
+          "restored": [
+            {
+              "agent_id": "a2",
+              "id": "3f2a9c1d0b7e",
+              "kind": "agent",
+              "label": "Reviewer",
+              "resumed": "conversation",
+              "session_id": "s1",
+              "session_name": "repo-feat-a2",
+              "worktree_path": "/tmp/repo-feat"
+            }
+          ],
+          "seq": 2
+        }
+      ],
+      "truncated": false
+    }
+  }
+}

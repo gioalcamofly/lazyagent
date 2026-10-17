@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -368,6 +369,61 @@ async def _():
 
 
 # --------------------------------------------------------------------------
+
+# --- restart manifest (PR 9) ---------------------------------------------
+
+def _restorable_engine():
+    """An engine whose manifest offers one agent of an earlier engine."""
+    from lazyagent.engine.manifest import Entry
+
+    engine = _make_engine(worktrees=[_make_worktree("/tmp/repo-feat", "feat", is_main=False)])
+    engine.open_manifest(Path(tempfile.mkdtemp()) / "manifest.json")
+    entry = Entry(
+        id="3f2a9c1d0b7e",
+        worktree_path="/tmp/repo-feat",
+        agent_id="a2",
+        kind="agent",
+        provider="claude",
+        label="Reviewer",
+        session_name="repo-feat-a2",
+        skip_permissions=True,
+        conversation_id="5d3c2b1a-0f9e-4d8c-b7a6-112233445566",
+        instruction="review the diff",
+        started_at=1699990000.0,
+        engine_id="0123456789abcdef0123456789abcdef",
+        ended_at=1699999000.0,
+    )
+    engine.manifest.restorable = {entry.id: entry}
+    return engine
+
+
+@case("list_restorable/one")
+async def _():
+    return await _call(_restorable_engine(), "list_restorable", {})
+
+
+@case("restore_agents/restored_and_unknown")
+async def _():
+    engine = _restorable_engine()
+    with pty_free():
+        return await _call(
+            engine, "restore_agents", {"ids": ["3f2a9c1d0b7e", "nope"]}
+        )
+
+
+@case("dismiss_restorable/all")
+async def _():
+    return await _call(_restorable_engine(), "dismiss_restorable", {})
+
+
+@case("list_events/with_a_restore")
+async def _():
+    engine = _restorable_engine()
+    cursor = engine.events.cursor
+    with pty_free():
+        await engine.restore_agents()
+    return await _call(engine, "list_events", {"since": cursor})
+
 
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
