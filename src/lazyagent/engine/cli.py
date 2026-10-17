@@ -9,6 +9,9 @@ repo's engine (docs/design/engine-split.md §5d).
 - ``status``: whether an engine serves the repo, and what it runs. Exit
   status 3 when none does.
 - ``logs``: the end of a detached engine's log; ``-f`` follows it.
+- ``restore``: the agents an earlier engine ran when it ended (restart
+  manifest): list them, bring them back (each resuming its conversation),
+  or stop offering them.
 
 Only ``start --foreground`` loads the engine itself; the rest talk to it
 over its socket.
@@ -134,7 +137,7 @@ def cmd_status(args: argparse.Namespace, root: str) -> int:
             _print(f"not running for {root}")
         return NOT_RUNNING
     try:
-        state = asyncio.run(_request(socket, "get_sidebar_state"))
+        state, restorable = asyncio.run(_status_requests(socket))
     except Exception as e:  # noqa: BLE001 (reported, whatever it is)
         _error(f"engine pid {info.get('pid')} does not answer: {e}")
         return 1
@@ -167,6 +170,7 @@ def cmd_status(args: argparse.Namespace, root: str) -> int:
             }
             for a in agents
         ],
+        "restorable": restorable,
     }
     if args.json:
         print(json.dumps(status))
@@ -181,7 +185,24 @@ def cmd_status(args: argparse.Namespace, root: str) -> int:
     for agent in status["agents"]:
         where = agent["worktree_path"] or "orchestrator"
         _print(f"  {agent['agent_id'] or '(orchestrator)'} {agent['status']} {where}")
+    if restorable:
+        _print(f"{restorable} agent(s) to restore: lazyagent engine restore")
     return 0
+
+
+async def _status_requests(socket: Path) -> tuple[dict[str, Any], int | None]:
+    from lazyagent.engine.client import Client, RequestError
+
+    client = await Client.connect(socket, client="cli", client_version=__version__)
+    try:
+        state = await client.request("get_sidebar_state")
+        try:
+            restorable = len((await client.request("list_restorable"))["agents"])
+        except RequestError:
+            restorable = None  # no manifest (or an older engine)
+        return state, restorable
+    finally:
+        await client.close()
 
 
 def _duration(seconds: int) -> str:
@@ -195,6 +216,60 @@ def _duration(seconds: int) -> str:
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _restorable_line(agent: dict[str, Any]) -> str:
+    where = (
+        "orchestrator" if agent["kind"] == "orchestrator" else agent["worktree_path"]
+    )
+    resume = "conversation" if agent.get("conversation_id") else "last"
+    name = agent["agent_id"] or "(orchestrator)"
+    return f"  {agent['id']}  {name}  {where}  {agent['provider']}, resumes {resume}"
+
+
+def cmd_restore(args: argparse.Namespace, root: str) -> int:
+    from lazyagent.engine.client import RequestError
+
+    socket = launcher.find(root)
+    if socket is None:
+        _error(f"no engine running for {root} (start one: lazyagent engine start)")
+        return NOT_RUNNING
+    ids = args.ids or None
+    try:
+        if args.dismiss:
+            if ids is None and not args.all:
+                _error("name the ids to dismiss, or pass --all")
+                return 2
+            result = asyncio.run(_request(socket, "dismiss_restorable", ids=ids))
+            _print(f"dismissed {len(result['dismissed'])}")
+            return 0
+        if ids is None and not args.all:
+            agents = asyncio.run(_request(socket, "list_restorable"))["agents"]
+            if args.json:
+                print(json.dumps(agents))
+                return 0
+            if not agents:
+                _print("nothing to restore")
+                return 0
+            _print(f"{len(agents)} agent(s) to restore (restore --all, or --id ID)")
+            for agent in agents:
+                print(_restorable_line(agent))
+            return 0
+        result = asyncio.run(
+            _request(socket, "restore_agents", ids=ids, env=dict(os.environ))
+        )
+    except RequestError as e:
+        _error(e.message)
+        return 1
+    if args.json:
+        print(json.dumps(result))
+    else:
+        for agent in result["restored"]:
+            name = agent["agent_id"] or "(orchestrator)"
+            _print(f"restored {name} in {agent['worktree_path']} ({agent['resumed']})")
+        for failure in result["failed"]:
+            _error(f"could not restore {failure['id']}: {failure['reason']}")
+    return 1 if result["failed"] else 0
 
 
 def cmd_logs(args: argparse.Namespace, root: str) -> int:
@@ -286,6 +361,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status = command("status", "Whether an engine serves the repo (exit 3: none)")
     status.add_argument("--json", action="store_true", help="Print JSON")
+    restore = command(
+        "restore",
+        "List, restore or dismiss the agents an earlier engine ran when it ended",
+    )
+    restore.add_argument(
+        "--id",
+        dest="ids",
+        action="append",
+        metavar="ID",
+        help="Restore (or dismiss) this one; repeat for more",
+    )
+    restore.add_argument("--all", action="store_true", help="Every one of them")
+    restore.add_argument(
+        "--dismiss", action="store_true", help="Stop offering them instead"
+    )
+    restore.add_argument("--json", action="store_true", help="Print JSON")
     logs = command("logs", "Print the end of the engine's log")
     logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to print")
     logs.add_argument("-f", "--follow", action="store_true", help="Keep printing")
@@ -298,6 +389,7 @@ _COMMANDS = {
     "stop": cmd_stop,
     "status": cmd_status,
     "logs": cmd_logs,
+    "restore": cmd_restore,
 }
 
 

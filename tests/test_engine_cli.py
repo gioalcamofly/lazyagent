@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from lazyagent.engine.client import Client
+from lazyagent.engine.manifest import manifest_path
 from lazyagent.engine.runtime import log_path, runtime_dir
 from tests.engine.fakes import FAKE_AGENT
 
@@ -574,3 +575,71 @@ def test_a_tui_does_not_restart_an_engine_stopped_on_purpose(world):
         assert world.engine_pids() == []
         assert t.quit() == 0
     assert world.engine_pids() == [] and not _alive(pid)
+
+
+# ----------------------------------------------------------------------
+# The restart manifest: crash, restart, restore
+# ----------------------------------------------------------------------
+
+
+def test_agents_of_a_crashed_engine_are_restored_into_their_conversation(world):
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+    [pid] = world.engine_pids()
+
+    async def spawn() -> dict:
+        client = await world.client()
+        try:
+            agent = await client.request(
+                "spawn_agent", worktree_path=world.repo, env=world.env
+            )
+            await _wait_screen(client, world.repo, agent["agent_id"], "your turn>")
+            return agent
+        finally:
+            await client.close()
+
+    agent = asyncio.run(spawn())
+    [fake] = _fake_agents(world)
+    # What Claude's hooks would log: the conversation id the restore resumes.
+    args = _cmdline(fake)
+    hook_log = Path(args[args.index("--settings") + 1]).with_name("hook-events.jsonl")
+    conversation = "5d3c2b1a-0f9e-4d8c-b7a6-112233445566"
+    event = {"hook_event_name": "UserPromptSubmit", "session_id": conversation}
+    with hook_log.open("a") as f:
+        f.write(json.dumps(event) + "\n")
+    path = manifest_path(world.repo, world.env)
+    _wait(
+        lambda: path.exists() and conversation in path.read_text(),
+        what="the manifest noting it",
+    )
+
+    os.kill(pid, signal.SIGKILL)  # a crash: no stop, no last write
+    _wait(lambda: not _alive(pid) and not _alive(fake), what="engine and agent dead")
+
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+    status = world.status()
+    assert status["agents"] == [] and status["restorable"] == 1
+    listed = world.lazyagent("engine", "restore", world.repo, "--json")
+    [entry] = json.loads(listed.stdout)
+    assert entry["agent_id"] == agent["agent_id"]
+    assert entry["conversation_id"] == conversation
+
+    restored = world.lazyagent("engine", "restore", world.repo, "--all")
+    assert restored.returncode == 0, restored.stderr
+    assert f"restored {agent['agent_id']} in {world.repo} (conversation)" in (
+        restored.stdout
+    )
+    _wait(lambda: len(_fake_agents(world)) == 1, what="the agent back")
+    [back] = _fake_agents(world)
+    command = " ".join(_cmdline(back))
+    assert f"--resume {conversation}" in command
+    assert f"--name {entry['session_name']}" in command and entry['session_name']
+    assert world.status()["agents"][0]["agent_id"] == agent["agent_id"]
+
+    # A deliberate stop keeps them restorable too; dismissing forgets them.
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+    assert world.status()["restorable"] == 1
+    dismissed = world.lazyagent("engine", "restore", world.repo, "--all", "--dismiss")
+    assert "dismissed 1" in dismissed.stdout
+    assert world.status()["restorable"] == 0
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
