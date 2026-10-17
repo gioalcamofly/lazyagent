@@ -171,6 +171,31 @@ async def test_get_diff(harness, client):
     assert isinstance(result["diff"], str)
 
 
+async def test_get_diff_from_a_base_with_a_cap(harness, client):
+    result = await checked(
+        client, "get_diff", worktree_path=harness.feat, base="main", max_bytes=1_000_000
+    )
+    assert result["worktree_path"] == harness.feat
+    assert isinstance(result["diff"], str)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"base": ""},
+        {"base": 7},
+        {"max_bytes": 0},
+        {"max_bytes": 4 * 1024 * 1024 + 1},
+        {"max_bytes": "64"},
+        {"base": "no-such-branch"},
+    ],
+)
+async def test_get_diff_refuses_bad_options(harness, client, params):
+    with pytest.raises(RequestError) as e:
+        await client.request("get_diff", worktree_path=harness.feat, **params)
+    assert e.value.code == "VALIDATION_ERROR"
+
+
 async def test_get_pr_info(harness, client):
     result = await checked(client, "get_pr_info", worktree_path=harness.feat)
     assert result["worktree_path"] == harness.feat

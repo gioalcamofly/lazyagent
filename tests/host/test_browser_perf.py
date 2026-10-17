@@ -358,3 +358,91 @@ async def test_idle_with_ten_agents_and_the_queue_open(fake_claude, host, browse
     await page.close()
     assert total <= 2.0 * 1.5
     assert list(problems) == []
+
+
+DIFF_BENCH = """async ({ files, lines, mode }) => {
+  const { html, render } = await import('/lib/html.js');
+  const { parseDiff } = await import('/lib/diff.js');
+  const { DiffRows, flatten } = await import('/components/diff.js');
+  // `files` files of `lines` changed lines each: hunks of 6 context, 4
+  // removed, 6 added lines.
+  const parts = [];
+  for (let f = 0; f < files; f++) {
+    parts.push(`diff --git a/src/module_${f}.py b/src/module_${f}.py`, 'index 1111111..2222222 100644',
+               `--- a/src/module_${f}.py`, `+++ b/src/module_${f}.py`);
+    for (let h = 0, at = 1; h < lines / 16; h++, at += 20) {
+      parts.push(`@@ -${at},10 +${at},12 @@ def handler_${h}(request):`);
+      for (let i = 0; i < 3; i++) parts.push(` context line ${i} of hunk ${h}: value = compute(request, ${i})`);
+      for (let i = 0; i < 4; i++) parts.push(`-    old_value_${i} = legacy.lookup(request.args["key_${i}"], default=None)`);
+      for (let i = 0; i < 6; i++) parts.push(`+    new_value_${i} = registry.resolve(request.args.get("key_${i}"), fallback=DEFAULT)`);
+      for (let i = 3; i < 6; i++) parts.push(` context line ${i} of hunk ${h}: value = compute(request, ${i})`);
+    }
+  }
+  const text = parts.join('\\n') + '\\n';
+  const host = document.createElement('div');
+  host.className = 'diff-body';
+  host.style.cssText = 'position:fixed;inset:0;display:flex;';
+  document.body.append(host);
+  const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+  const settle = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = r; c.port2.postMessage(0); });
+  await frame();
+  // First screen: parse, flatten, render, and the frame that paints it.
+  let t = performance.now();
+  const parsed = parseDiff(text);
+  const parse = performance.now() - t;
+  const flat = flatten(parsed.files, mode, []);
+  const flattened = performance.now() - t - parse;
+  let rows = null;
+  render(html`<${DiffRows} ref=${(r) => (rows = r)} flat=${flat} mode=${mode} onComment=${() => {}} />`, host);
+  await settle();
+  const scroller = host.querySelector('.diff-scroll');
+  scroller.getBoundingClientRect();
+  const work = performance.now() - t;
+  await frame();
+  const first = performance.now() - t;
+  const shown = host.querySelectorAll('.drow').length;
+  // Scrolling: a wheel-sized step per frame, timing each frame and the
+  // work done inside it (the rows re-rendered on the next frame).
+  const intervals = [], renders = [];
+  let last = performance.now();
+  for (let n = 0; n < 240; n++) {
+    scroller.scrollTop += 60;
+    await frame();
+    const r0 = performance.now();
+    await settle();
+    scroller.getBoundingClientRect();
+    renders.push(performance.now() - r0);
+    await frame();
+    const now = performance.now();
+    intervals.push((now - last) / 2);
+    last = now;
+  }
+  const deepest = host.querySelector('.drow:last-child')?.textContent || '';
+  return { lines: text.split('\\n').length, parse, flattened, work, first, shown, intervals, renders, total: flat.rows.length,
+           top: scroller.scrollTop, deepest };
+}"""
+
+
+@pytest.mark.parametrize("mode", ["unified", "split"])
+async def test_diff_of_5000_lines(browser, record, mode):
+    """U5: a 5,000-line diff shows its first screen in ≤ 100 ms and scrolls
+    in ≤ 17 ms frames (only the rows in view are in the DOM)."""
+    page, problems = await module_page(browser, viewport={"width": 1400, "height": 860})
+    result = await page.evaluate(DIFF_BENCH, {"files": 25, "lines": 192, "mode": mode})
+    assert result["lines"] >= 5000
+    assert result["shown"] < 120 and result["total"] > 3500
+    assert result["top"] > 0
+    frames, renders = summary(result["intervals"][10:]), summary(result["renders"][10:])
+    record(
+        f"U5 diff of {result['lines']} lines, {mode}: first screen (ms)",
+        parse=round(result["parse"], 2),
+        flatten=round(result["flattened"], 2),
+        work=round(result["work"], 2),
+        painted=round(result["first"], 2),
+    )
+    record(f"U5 diff scroll, {mode}: frame interval (ms)", **frames)
+    record(f"U5 diff scroll, {mode}: rows re-rendered per frame (ms)", **renders)
+    assert result["first"] <= 100
+    assert frames["p95"] <= 17
+    assert renders["p95"] <= 8
+    assert list(problems) == []

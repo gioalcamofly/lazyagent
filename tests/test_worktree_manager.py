@@ -989,3 +989,57 @@ class TestGetGithubRepo:
         manager = _manager(tmp_path)
         with patch("lazyagent.worktree_manager.subprocess.run", return_value=_completed(returncode=1)):
             assert manager.get_github_repo() is None
+
+
+class TestGetDiffFromABase:
+    """get_diff(base=…) diffs from the merge-base to the working tree, so
+    what a branch committed shows next to what it has not; max_bytes moves
+    the cap. Real git, in a temporary repo."""
+
+    @staticmethod
+    def _git(cwd, *args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+        )
+
+    @pytest.fixture
+    def repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        (repo / "a.txt").write_text("one\n")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-qm", "init")
+        self._git(repo, "switch", "-qc", "feat")
+        (repo / "a.txt").write_text("one\ntwo\n")
+        self._git(repo, "commit", "-qam", "committed on feat")
+        (repo / "b.txt").write_text("staged\n")
+        self._git(repo, "add", "b.txt")
+        (repo / "a.txt").write_text("one\ntwo\nthree\n")
+        (repo / "new.txt").write_text("untracked\n")
+        return repo
+
+    def test_default_is_the_working_tree_against_the_index(self, repo):
+        diff = WorktreeManager.get_diff(repo)
+        assert "+three" in diff and "+two" not in diff
+        assert "b.txt" not in diff  # staged, not in `git diff`
+        assert "diff --git a/new.txt b/new.txt\nnew file\nuntracked" in diff
+
+    def test_base_adds_what_the_branch_committed_and_staged(self, repo):
+        diff = WorktreeManager.get_diff(repo, base="main")
+        assert "+two" in diff and "+three" in diff
+        assert "+staged" in diff
+        assert "diff --git a/new.txt b/new.txt\nnew file\nuntracked" in diff
+
+    def test_unknown_base(self, repo):
+        with pytest.raises(ValueError, match="merge-base"):
+            WorktreeManager.get_diff(repo, base="no-such-branch")
+
+    def test_max_bytes(self, repo):
+        (repo / "big.txt").write_text("x" * 100 + "\n" * 2000)
+        small = WorktreeManager.get_diff(repo, max_bytes=200)
+        assert len(small) < 300 and small.endswith("… diff truncated (too large to display)")
+        assert len(WorktreeManager.get_diff(repo, max_bytes=1_000_000)) > 1000

@@ -80,7 +80,11 @@ class FakeManager:
     def get_last_commit_subject(self, path) -> str:
         return ""
 
-    def get_diff(self, path) -> str:
+    def get_diff(self, path, *, base=None, max_bytes=None) -> str:
+        """Empty, as a clean worktree; a ``base`` called "no-such-branch"
+        has no merge-base (the real manager's error)."""
+        if base == "no-such-branch":
+            raise ValueError(f"No merge-base between {base!r} and HEAD")
         return ""
 
     def is_gh_available(self) -> bool:

@@ -127,7 +127,7 @@ export function Center({ store, actions, manager, tuiPane }) {
   const tui = store.centerView.value === "tui";
   // The attention view has the screen: the worktree view lets go of its
   // terminals (it stays mounted, for the TUI's terminal).
-  const away = store.centerView.value === "attention";
+  const away = store.centerView.value === "attention" || store.centerView.value === "diff";
   const path = store.selected.value;
   const shellId = path ? store.shells.value[path] : undefined;
   const shellOpen = store.shellOpen.value && Boolean(path);

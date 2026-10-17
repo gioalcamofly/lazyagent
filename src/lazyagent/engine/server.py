@@ -73,6 +73,7 @@ from lazyagent.protocol.envelope import (
     parse_message,
 )
 from lazyagent.protocol.hosted import HOST_ENV
+from lazyagent.worktree_manager import MAX_DIFF_BYTES_LIMIT
 
 if TYPE_CHECKING:
     from lazyagent.engine.engine import Engine
@@ -1049,7 +1050,16 @@ class V1Server:
 
     async def handle_get_diff(self, conn: _Connection, params: dict) -> Any:
         path = self._worktree(params)
-        return {"worktree_path": path, "diff": await self.engine.get_diff(path)}
+        base = params.get("base")
+        if base is not None and not (isinstance(base, str) and base.strip()):
+            raise ValueError("base must be a non-empty string")
+        max_bytes = params.get("max_bytes")
+        if max_bytes is not None and not (
+            _is_int(max_bytes) and 1 <= max_bytes <= MAX_DIFF_BYTES_LIMIT
+        ):
+            raise ValueError(f"max_bytes must be an integer from 1 to {MAX_DIFF_BYTES_LIMIT}")
+        diff = await self.engine.get_diff(path, base=base, max_bytes=max_bytes)
+        return {"worktree_path": path, "diff": diff}
 
     async def handle_get_pr_info(self, conn: _Connection, params: dict) -> Any:
         path = self._worktree(params)

@@ -517,8 +517,12 @@ class Engine:
     async def refresh_git_status(self, paths: Collection[str] | None = None) -> None:
         await self.worktree_service.refresh_git_status(paths)
 
-    async def get_diff(self, path: str) -> str:
-        return await self.worktree_service.get_diff(path)
+    async def get_diff(
+        self, path: str, *, base: str | None = None, max_bytes: int | None = None
+    ) -> str:
+        if base is None and max_bytes is None:
+            return await self.worktree_service.get_diff(path)
+        return await self.worktree_service.get_diff(path, base=base, max_bytes=max_bytes)
 
     def get_pr_info(self, path: str) -> PrInfo | None:
         """The cached PR info of a worktree (``None`` also when not fetched

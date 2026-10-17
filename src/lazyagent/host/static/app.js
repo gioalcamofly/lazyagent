@@ -17,6 +17,9 @@ import { SpawnDialog, CreateDialog, RemoveDialog, StopDialog } from "./component
 import { JobDrawer } from "./components/jobs.js";
 import { AttentionView, PrPanel } from "./components/attention.js";
 import { ciFailurePrompt } from "./lib/attention.js";
+import { DiffView, SubmitDialog, READY } from "./components/diff.js";
+import { parseDiff } from "./lib/diff.js";
+import { defaultBase } from "./components/dialogs.js";
 
 const store = createStore();
 
@@ -139,6 +142,7 @@ const actions = {
   select(path, { focus = true } = {}) {
     store.selected.value = path;
     if (store.centerView.value === "attention") store.centerView.value = "native";
+    if (store.centerView.value === "diff") actions.showDiff();
     if (store.centerView.value === "tui") tuiFollow();
     if (store.shellOpen.value && path) ensureShell(path);
     if (focus) focusShown();
@@ -193,18 +197,7 @@ const actions = {
   async toolbar(action) {
     const path = store.selected.value;
     if (action === "shell") return actions.toggleShell();
-    if (action === "diff") {
-      // Until U5 the diff is the TUI's.
-      if (!path) return;
-      store.centerView.value = "tui";
-      if (!(await tuiFollow())) return;
-      requestAnimationFrame(() => {
-        tui.announce();
-        tui.focus();
-      });
-      command("ui.show_diff", { worktree_path: path });
-      return;
-    }
+    if (action === "diff") return actions.showDiff();
     actions.openDialog(action);
   },
   openDialog(kind) {
@@ -221,6 +214,7 @@ const actions = {
       store.toast("No agent to stop here", "warning");
       return;
     }
+    if (kind === "review" && !path) return;
     if (kind === "remove" && !path) {
       store.toast(path === null ? "The orchestrator is not a worktree" : "Select a worktree first", "warning");
       return;
@@ -373,6 +367,66 @@ const actions = {
     }
   },
 
+  // ------------------------------------------------ diff (U5)
+
+  showDiff() {
+    const path = store.selected.value;
+    if (!path) {
+      store.toast("Select a worktree to see its diff", "warning", 3000);
+      return;
+    }
+    if (store.centerView.value === "tui") tuiBlank();
+    store.centerView.value = "diff";
+    const current = store.diff.value;
+    if (!current || current.path !== path || !current.parsed) {
+      // The branch the worktree came from, as New worktree prefills it;
+      // the main worktree diffs against nothing.
+      const wt = store.worktrees.value.find((w) => w.path === path);
+      const base = wt?.is_main ? "" : defaultBase(store.config.value, store.worktrees.value);
+      actions.loadDiff(path, base === wt?.branch ? "" : base);
+    }
+  },
+  async loadDiff(path, base) {
+    store.diffBase.value = base;
+    store.diff.value = { path, base, loading: true, error: null, parsed: store.diff.value?.path === path ? store.diff.value.parsed : null };
+    try {
+      const params = { worktree_path: path, max_bytes: 4 * 1024 * 1024 };
+      if (base) params.base = base;
+      const result = await conn.request("get_diff", params);
+      // Parsed in a task of its own, after the answer is in, never inside
+      // an input event.
+      await new Promise((r) => setTimeout(r, 0));
+      const parsed = parseDiff(result.diff);
+      if (store.selected.value === path) store.diff.value = { path, base, loading: false, error: null, parsed };
+    } catch (e) {
+      store.diff.value = { path, base, loading: false, error: e.message, parsed: null };
+    }
+  },
+  diffMode(mode) {
+    store.diffMode.value = mode;
+    store.saveDiffMode();
+  },
+  setComment(path, anchor, text) {
+    const list = (store.comments.value[path] || []).filter((c) => c.id !== anchor.id);
+    if (text) list.push({ ...anchor, text });
+    store.comments.value = { ...store.comments.value, [path]: list };
+    store.saveComments();
+  },
+  /** Send a review now, or queue it until the agent is idle. */
+  async sendReview(path, agent, text, { whenIdle, clear }) {
+    if (whenIdle) {
+      store.pendingReviews.value = { ...store.pendingReviews.value, [path]: { agent_id: agent.agent_id, text, clear } };
+      store.toast(`The review goes to ${agentLabel(agent)} when it is idle`, "information", 4000);
+      return;
+    }
+    await conn.request("send_agent_input", { worktree_path: path, agent_id: agent.agent_id, text });
+    store.toast(`Review sent to ${agentLabel(agent)}`, "success", 3000);
+    if (clear) {
+      store.comments.value = { ...store.comments.value, [path]: [] };
+      store.saveComments();
+    }
+  },
+
   // ------------------------------------------------ PR panel (U4)
 
   togglePrPanel() {
@@ -460,6 +514,8 @@ async function loadSidebar() {
     store.enqueue(() => {
       store.applySidebar(sidebar);
       afterSidebar();
+      // A quiet agent sends no event after it is listed: wake the waiters.
+      for (const waiter of [...waiters]) waiter();
     });
   } catch (e) {
     store.toast(`Sidebar: ${e.message}`, "error");
@@ -508,7 +564,25 @@ function onEvent(name, data) {
       if (store.centerView.value === "native" && keyOf(store.selected.value) === key) focusShown();
     }
     for (const waiter of [...waiters]) waiter();
+    sendPendingReviews();
   });
+}
+
+/** Reviews queued with "Send when idle" go once their agent is. */
+function sendPendingReviews() {
+  for (const [path, pending] of Object.entries(store.pendingReviews.value)) {
+    const agent = store.agentsOf(path).find((a) => a.agent_id === pending.agent_id);
+    if (agent && !READY.has(agent.status)) continue;
+    const { [path]: _, ...rest } = store.pendingReviews.value;
+    store.pendingReviews.value = rest;
+    if (!agent) {
+      store.toast("The review's agent is gone: not sent", "warning");
+      continue;
+    }
+    actions.sendReview(path, agent, pending.text, { whenIdle: false, clear: pending.clear }).catch((e) =>
+      store.toast(`Review: ${e.message}`, "error"),
+    );
+  }
 }
 
 function onViewChanged(view) {
@@ -608,7 +682,11 @@ function globalKey(event) {
     else focusShell();
     return true;
   }
-  if (mod && key === "d") return actions.toolbar("diff"), true;
+  if (mod && key === "d") {
+    if (store.centerView.value === "diff") actions.showNative();
+    else actions.showDiff();
+    return true;
+  }
   if (mod && key === ".") return actions.togglePrPanel(), true;
   if (alt && key === "g") return actions.refreshGit(), true;
   if (alt && (event.code === "BracketRight" || key === "n")) return actions.cycleAgent(1), true;
@@ -696,6 +774,7 @@ function App() {
       <div class="center-wrap">
         <${Center} store=${store} actions=${actions} manager=${terminals} tuiPane=${tuiPane} />
         ${store.centerView.value === "attention" && html`<${AttentionView} store=${store} actions=${actions} manager=${terminals} />`}
+        ${store.centerView.value === "diff" && html`<${DiffView} store=${store} actions=${actions} />`}
         ${store.centerView.value === "native" && html`<${PrPanel} store=${store} actions=${actions} />`}
         <${Overlay} store=${store} />
       </div>
@@ -726,6 +805,14 @@ function Dialogs() {
       />`;
     case "stop":
       return html`<${StopDialog} path=${dialog.path} agent=${dialog.agent} actions=${actions} onClose=${close} />`;
+    case "review":
+      return html`<${SubmitDialog}
+        path=${dialog.path}
+        agents=${store.agentsOf(dialog.path)}
+        comments=${store.comments.value[dialog.path] || []}
+        onSend=${(agent, text, options) => actions.sendReview(dialog.path, agent, text, options)}
+        onClose=${close}
+      />`;
     default:
       return null;
   }

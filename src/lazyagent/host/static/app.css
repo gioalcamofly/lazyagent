@@ -475,3 +475,61 @@ a { color: var(--primary); }
 #pr-panel { width: 320px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); }
 #pr-panel .pane-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .pr-body { padding: 10px 12px; overflow-y: auto; }
+
+/* Diff view */
+.diff-view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.diff-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+.diff-head .spacer { flex: 1; }
+.diff-head > * { white-space: nowrap; }
+.diff-head input.base { font-family: var(--mono); padding: 2px 6px; }
+.diff-head label.inline { display: flex; gap: 6px; align-items: center; }
+.seg { display: flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 4px 0 0 4px; }
+.seg button:last-child { border-radius: 0 4px 4px 0; }
+.seg button.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.diff-body { flex: 1; display: flex; min-height: 0; }
+.diff-files { width: clamp(150px, 22%, 260px); flex: none; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); padding: 4px 0; }
+.dfile { display: flex; gap: 6px; align-items: baseline; width: 100%; border: none; border-radius: 0; background: none; padding: 3px 10px; text-align: left; font-size: 12px; }
+.dfile:hover { background: var(--panel); }
+.dname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); }
+.adds { color: var(--green); font-family: var(--mono); font-size: 11px; }
+.dels { color: var(--red); font-family: var(--mono); font-size: 11px; }
+.fstatus { font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--muted); }
+.fstatus.added { color: var(--green); }
+.fstatus.deleted { color: var(--red); }
+.fstatus.renamed { color: var(--cyan); }
+.diff-scroll { flex: 1; overflow: auto; position: relative; background: var(--term-bg); font: 12px/18px var(--mono); }
+.diff-scroll:focus { outline: none; }
+.diff-rows { position: relative; }
+.drow { position: absolute; left: 0; right: 0; height: 18px; display: flex; white-space: pre; contain: strict; }
+.drow .ln {
+  width: 4.5em; flex: none; text-align: right; padding: 0 6px 0 0; color: var(--muted);
+  background: none; border: none; border-radius: 0; font: inherit; cursor: pointer;
+}
+.drow button.ln:hover { color: var(--primary); text-decoration: underline; }
+.drow .sign { width: 1.4em; flex: none; text-align: center; color: var(--muted); }
+.drow .code { flex: 1; }
+.drow.add, .half.add { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.drow.del, .half.del { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.drow.hunk { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 8%, transparent); padding-left: 6px; }
+.drow.note { color: var(--muted); padding-left: 6px; font-style: italic; }
+.drow.file {
+  background: var(--panel); color: var(--text); gap: 10px; align-items: center; padding-left: 8px;
+  font-family: var(--sans); border-top: 1px solid var(--border);
+}
+.drow.comment { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font-family: var(--sans); }
+.drow.split { gap: 0; }
+.half { flex: 1 1 50%; display: flex; min-width: 0; overflow: hidden; }
+.half + .half { border-left: 1px solid var(--border); }
+.half.none { background: color-mix(in srgb, var(--muted) 6%, transparent); }
+.comment-editor {
+  position: absolute; right: 18px; bottom: 18px; z-index: 6; width: min(560px, calc(100% - 36px));
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 6px 20px var(--shadow);
+}
+.comment-editor .quote, .prompt-preview {
+  margin: 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font: 12px/1.4 var(--mono);
+  white-space: pre-wrap; max-height: 30vh; overflow: auto;
+}
+select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px; }
