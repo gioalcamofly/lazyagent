@@ -116,3 +116,42 @@ async def test_keys_move_between_sidebar_tabs_and_shell(fake_claude, host, brows
     await page.keyboard.press("Control+j")
     await page.wait_for_function(f"() => ({focused})() === '{second['session_id']}'")
     assert list(problems) == []
+
+
+async def test_a_foreign_resize_is_taken_back_once(fake_claude, host, browser, tmp_path):
+    """Another client (here a bare v1 client standing in for the hosted
+    TUI) takes the PTY's size while the page's terminal has the keyboard:
+    the page claims it back once, and not again within a second, so two
+    clients that insist cannot SIGWINCH the agent in a loop."""
+    import asyncio
+
+    feat = str(tmp_path / "repo-feat")
+    page, problems = await open_page(await browser.new_context(), host.server.url)
+    agent = await _agent(host, feat)
+    await _shown(page, feat, agent)
+    session = agent["session_id"]
+    await page.locator(".agent-slot").click()
+    mine = await page.evaluate(
+        "(id) => window.lazyagent.terminals.sessions.get(id).proposed()", session
+    )
+    await page.wait_for_function(
+        "([id, r, c]) => { const p = window.lazyagent.terminals.sessions.get(id).pty;"
+        " return p.rows === r && p.cols === c; }",
+        arg=[session, mine["rows"], mine["cols"]],
+    )
+    other = await Client.connect(host.server.engine_socket, client="cli")
+    try:
+        sizes = []
+        await other.attach(session, on_event=lambda e: sizes.append((e.data["rows"], e.data["cols"])))
+        await other.request("claim_size", session_id=session, rows=20, cols=70)
+        await asyncio.sleep(0.3)
+        await other.request("claim_size", session_id=session, rows=21, cols=71)
+        await asyncio.sleep(1.2)
+        # Ours back once; the second foreign claim, inside the second, stays.
+        assert sizes == [(20, 70), (mine["rows"], mine["cols"]), (21, 71)]
+        sizes.clear()
+        await asyncio.sleep(1.0)
+        assert sizes == []
+    finally:
+        await other.close()
+    assert list(problems) == []

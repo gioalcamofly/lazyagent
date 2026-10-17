@@ -251,6 +251,12 @@ function onEvent(name, data) {
     if (name === "agent.spawned") {
       const selected = store.selected.value;
       if (data.worktree_path === (selected === null ? ORCHESTRATOR_KEY : selected)) pendingAgent = data;
+      // Back from the TUI's spawn dialog. Not from ui.view_changed alone: a
+      // dialog closed within the TUI's 50 ms settle is never announced.
+      if (returnFromModal) {
+        returnFromModal = false;
+        actions.showNative();
+      }
     }
     if (store.applyEvent(name, data)) refreshSoon();
     if (name === "worktrees.changed") afterSidebar();

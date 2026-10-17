@@ -124,18 +124,48 @@ async def test_page_in_a_real_browser(fake_claude, host, browser, tmp_path):
     await page.wait_for_selector(".center.tui-shown")
     await page.click(".tabs .tab[data-agent]")
     await page.wait_for_selector(".center:not(.tui-shown)")
+    # The TUI is blank again: whatever it claimed while in front is done.
+    await page.wait_for_function(
+        "() => { const b = window.lazyagent.tui.term.buffer.active; let t = '';"
+        " for (let i = 0; i < b.length; i++) t += b.getLine(i).translateToString(true);"
+        " return t.includes('Shown in the browser'); }",
+        timeout=20000,
+    )
     await native_has(page, agent, f"size {dims['rows']}x{dims['cols']}")
     assert await page.evaluate(
         "(id) => window.lazyagent.terminals.sessions.get(id).streamId !== null", agent
     )
 
+    # Showing the TUI tab let the TUI claim the PTY (its view claims when
+    # Textual lays it out, late under load): the native terminal takes the
+    # size back, so a later "size" prints the terminal's own.
+    marker = f"size {dims['rows']}x{dims['cols']}"
+    count = "([id, needle]) => (" + TERM_TEXT + ")(id).split(needle).length - 1"
+    before = await page.evaluate(count, [agent, marker])
+    await page.locator(".agent-slot").click()
+    for _ in range(5):
+        await page.keyboard.type("size")
+        await page.keyboard.press("Enter")
+        try:
+            await page.wait_for_function(
+                f"(args) => ({count})(args) > {before}", arg=[agent, marker], timeout=3000
+            )
+            break
+        except Exception:
+            continue
+    else:
+        text = await page.evaluate(TERM_TEXT, agent)
+        raise AssertionError(f"{marker!r} never came back: {text.strip()!r}")
+
     # A reload re-attaches with a snapshot of the screen.
     await page.reload()
     await page.wait_for_selector("#conn.ok", timeout=30000)
     await page.locator("li.wt", has_text="repo-feat").click()
-    # (Only the prompt: showing the TUI tab let the TUI claim the PTY,
-    # and the engine's screen lost its top rows on that shrink.)
+    await native_has(page, agent, marker)
     await native_has(page, agent, "your turn>")
+    assert await page.evaluate(
+        "(id) => window.lazyagent.terminals.sessions.get(id).mode", agent
+    ) == "snapshot"
 
     # The agent's exit becomes a toast and a notification; its tab closes.
     await page.locator(".agent-slot").click()
@@ -149,11 +179,16 @@ async def test_page_in_a_real_browser(fake_claude, host, browser, tmp_path):
     await page.wait_for_selector(".tabs .tab[data-agent]", state="detached")
     await page.wait_for_selector("li.agent", state="detached")
 
-    # q in the TUI quits lazyagent: the page says so.
+    # q in the TUI quits lazyagent: the page says so. The TUI tab makes the
+    # TUI show feat (its keyboard goes to the shell there); Ctrl+K only once
+    # that focus has landed, and q only once the TUI has left the shell,
+    # else a late focus would send q to the shell.
+    view = "(focus) => window.lazyagent.store.view.value?.focus === focus"
     await page.click(".tui-tab")
+    await page.wait_for_function(view, arg="shell")
     await page.locator("#terminal").click()
     await page.keyboard.press("Control+k")
-    await asyncio.sleep(0.3)
+    await page.wait_for_function(view, arg="none")
     await page.keyboard.press("q")
     await page.wait_for_selector("#overlay:not([hidden])", timeout=20000)
     assert "lazyagent exited (code 0)" in await page.inner_text("#overlay")

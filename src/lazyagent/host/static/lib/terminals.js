@@ -25,6 +25,7 @@ export const OUTPUT = 1;
 export const INPUT = 2;
 export const HIDDEN_GRACE_MS = 30000;
 export const KEEP_HIDDEN = 3;
+export const RECLAIM_INTERVAL_MS = 1000;
 const SCROLLBACK = 5000;
 
 /** (type, stream id, offset, data view) of a binary message. */
@@ -159,6 +160,7 @@ export class SessionTerminal {
     this.hiddenAt = 0;
     this.pty = { rows: 24, cols: 80 };
     this.owner = false;
+    this.reclaimedAt = -Infinity;
     this.renderer = "dom";
 
     this.element = document.createElement("div");
@@ -250,21 +252,25 @@ export class SessionTerminal {
     if (this.owner || this.focused) this.claim();
   }
 
-  /** Ask for the PTY to match our box (we become the size owner). */
+  /** Ask for the PTY to match our box (we become the size owner). Returns
+   * the pending claim, or null when there is nothing to change. */
   claim() {
-    if (this.closed || this.streamId === null) return;
+    if (this.closed || this.streamId === null) return null;
     const want = this.proposed();
-    if (!want) return;
+    if (!want) return null;
     this.owner = true;
-    if (want.rows === this.pty.rows && want.cols === this.pty.cols) return;
-    if (this.claiming && this.claiming.rows === want.rows && this.claiming.cols === want.cols) return;
-    this.claiming = want;
-    this.manager.conn
+    if (want.rows === this.pty.rows && want.cols === this.pty.cols) return null;
+    const pending = this.claiming;
+    if (pending && pending.rows === want.rows && pending.cols === want.cols) return pending.done;
+    const claim = { ...want };
+    claim.done = this.manager.conn
       .request("claim_size", { session_id: this.sessionId, ...want })
       .catch(() => {})
       .finally(() => {
-        if (this.claiming === want) this.claiming = null;
+        if (this.claiming === claim) this.claiming = null;
       });
+    this.claiming = claim;
+    return claim.done;
   }
 
   setPtySize(rows, cols) {
@@ -274,8 +280,23 @@ export class SessionTerminal {
 
   input(bytes) {
     if (this.closed || this.streamId === null) return;
-    const want = this.proposed();
-    if (want && (want.rows !== this.pty.rows || want.cols !== this.pty.cols)) this.claim();
+    // Keys typed while the PTY has another size wait for our claim to be
+    // answered, so the program sees the resize before the key.
+    const claimed = this.claim() || this.claiming?.done;
+    if (claimed || this.held) {
+      if (!this.held) {
+        this.held = [];
+        const release = () => {
+          const held = this.held;
+          this.held = null;
+          if (this.streamId === null || this.closed) return;
+          for (const part of held) this.manager.conn.send(inputFrame(this.streamId, part));
+        };
+        (claimed || Promise.resolve()).then(release);
+      }
+      this.held.push(bytes);
+      return;
+    }
     this.owner = true;
     this.manager.conn.send(inputFrame(this.streamId, bytes));
   }
@@ -442,7 +463,21 @@ export class TerminalManager {
   onEvent(name, data) {
     const terminal = this.byStream.get(data.stream_id);
     if (!terminal) return;
-    if (name === "stream.resized") terminal.setPtySize(data.rows, data.cols);
+    if (name === "stream.resized") {
+      terminal.setPtySize(data.rows, data.cols);
+      // Someone else took the size while this terminal shows the session
+      // and owned it: typically the hosted TUI, whose view claims when
+      // Textual lays it out, late under load. Take it back, at most once a
+      // second, so two clients that both insist cannot SIGWINCH the agent
+      // in a loop; never from a hidden page.
+      const now = performance.now();
+      const want = terminal.owner && terminal.visible ? terminal.proposed() : null;
+      const foreign = want && (want.rows !== data.rows || want.cols !== data.cols);
+      if (foreign && !document.hidden && now - terminal.reclaimedAt > RECLAIM_INTERVAL_MS) {
+        terminal.reclaimedAt = now;
+        terminal.claim();
+      }
+    }
     else if (name === "stream.reset") {
       terminal.dropStream();
       terminal.received = data.offset;
