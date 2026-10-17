@@ -160,6 +160,43 @@
         "exit_code": {"type": ["integer", "null"], "description": "null when the job was killed by a signal."}
       }
     },
+    "engine.restored": {
+      "type": "object",
+      "description": "What a restore_agents brought back and what failed (a failed agent stays restorable).",
+      "required": ["restored", "failed"],
+      "properties": {
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "worktree_path", "agent_id", "session_id", "label", "session_name", "kind", "resumed"],
+            "properties": {
+              "id": {"type": "string"},
+              "worktree_path": {"type": "string"},
+              "agent_id": {"type": "string"},
+              "session_id": {"type": "string"},
+              "label": {"type": "string"},
+              "session_name": {"type": "string"},
+              "kind": {"type": "string", "x-known-values": ["agent", "orchestrator"]},
+              "resumed": {"type": "string", "x-known-values": ["conversation", "last"], "description": "conversation: the exact one its provider reported; last: the provider's last conversation in that directory."}
+            }
+          }
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "reason"],
+            "properties": {
+              "id": {"type": "string"},
+              "worktree_path": {"type": "string"},
+              "agent_id": {"type": "string"},
+              "reason": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
     "engine.shutdown": {
       "type": "object",
       "required": ["reason"],

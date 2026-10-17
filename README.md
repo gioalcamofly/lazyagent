@@ -206,7 +206,33 @@ provider = "claude"
 # Available placeholders: {branch}, {name}, {base}, {path}, {repo}
 create = "git worktree add -b {branch} ../{name} {base}"
 remove = "git worktree remove ../{name}"
+
+[engine]
+# Bring back, when the engine starts, the agents the previous one ran when it
+# ended (stopped, crashed, or the machine rebooted). Default: only offer them
+# (lazyagent engine restore).
+# restore_on_start = true
 ```
+
+## Agents that outlive the TUI (experimental)
+
+`lazyagent --remote` (or `LAZYAGENT_ENGINE=remote`) runs the TUI on a separate
+engine process that owns the agents. The TUI starts the engine if none is
+running, and `q` only closes the screen: the agents keep running, and the next
+`lazyagent --remote` comes back to them. The default is still `--embedded`, where
+the engine lives inside the TUI.
+
+```bash
+lazyagent engine start [repo]      # start it detached (--foreground: in this terminal)
+lazyagent engine status [repo]     # pid, agents, socket, log (exit 3: not running)
+lazyagent engine stop [repo]       # stop it and its agents (--if-idle: only with none)
+lazyagent engine logs [repo] -f    # its log (capped at 2 x 2 MB)
+lazyagent engine restore [repo]    # agents an earlier engine left: list them,
+                                   # --all / --id ID to bring them back, --dismiss
+```
+
+A restored Claude agent resumes the conversation it was in (`--resume`), with the
+same agent id and session name.
 
 ## Development
 

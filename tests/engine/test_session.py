@@ -194,26 +194,39 @@ class TestOutput:
 
     @pytest.mark.asyncio
     async def test_a_burst_of_hidden_output_does_not_hold_the_loop(self):
-        """Batched output is parsed in slices: the loop keeps turning."""
+        """Batched output is parsed in slices: the loop keeps turning.
+
+        Each gap between two turns of this ticker is measured in this
+        thread's CPU time, which is the work the loop did in between: time
+        the process spent preempted by a busy machine does not count, so the
+        bound can follow the feeder's own budget: a turn may overrun it by
+        one slice and some loop overhead, never by a multiple of it (a turn
+        budget of 100 ms, or the batch parsed in one go, shows up here).
+        """
         session, _, _ = _agent()
         line = b"x" * 78 + b"\r\n"
         for _ in range(40):
             session._on_chunk(line * 100)  # 320 kB in all
         gaps = []
+        walls = []
 
         async def tick() -> None:
-            last = time.perf_counter()
+            last, last_wall = time.thread_time(), time.perf_counter()
             while session._pending_feed or session._queued_on is not None:
                 await asyncio.sleep(0)
-                now = time.perf_counter()
+                now, wall = time.thread_time(), time.perf_counter()
                 gaps.append(now - last)
-                last = now
+                walls.append(wall - last_wall)
+                last, last_wall = now, wall
 
         await asyncio.sleep(UNWATCHED_FEED_INTERVAL + 0.01)
         await asyncio.wait_for(tick(), 30)
         assert session.screen.screen_text(0).startswith("x" * 78)
         assert len(gaps) > 10
-        assert max(gaps) < 0.05, max(gaps)
+        assert max(gaps) < 0.012, (  # 3 x the 4 ms turn budget (FEED_BUDGET)
+            f"a loop turn took {max(gaps) * 1000:.1f} ms of CPU "
+            f"({max(walls) * 1000:.1f} ms wall at most)"
+        )
         assert session.feed_dropped == 0
 
     @pytest.mark.asyncio

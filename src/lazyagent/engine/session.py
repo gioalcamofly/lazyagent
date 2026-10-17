@@ -784,6 +784,11 @@ class AgentSession(TerminalSession):
         # _after_feed to enforce _SCAN_MIN_INTERVAL.
         self._next_scan_dispatch: float = 0.0
 
+    @property
+    def conversation_id(self) -> str | None:
+        """The provider's conversation id, once its observer saw one."""
+        return self._observer.conversation_id
+
     def start(self) -> None:
         """Spawn the agent and report it RUNNING."""
         if self.running:

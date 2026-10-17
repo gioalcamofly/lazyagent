@@ -20,6 +20,10 @@ class AgentLifecycleEvent:
 class AgentObserver:
     """Base interface for provider-specific lifecycle observers."""
 
+    #: The provider's id of the conversation the agent runs, once seen
+    #: (Claude's ``session_id``); a restore resumes exactly that one.
+    conversation_id: str | None = None
+
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return []
 
@@ -142,6 +146,9 @@ class ClaudeHooksObserver(JsonlTailObserver):
 
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_name = data.get("hook_event_name")
+        conversation = data.get("session_id")
+        if isinstance(conversation, str) and conversation and not data.get("agent_id"):
+            self.conversation_id = conversation
         if event_name in ("PreToolUse", "PostToolUse") and data.get("agent_id"):
             # A subagent's tool call after the main agent's Stop isn't the
             # agent working. Seen from Claude Code 2.1.295 after a turn a

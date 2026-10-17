@@ -58,6 +58,9 @@ V1_METHODS: tuple[str, ...] = (
     "detach_ui",
     "publish_view",
     "shutdown",
+    "list_restorable",
+    "restore_agents",
+    "dismiss_restorable",
     "ui.get_view",
     "ui.select_worktree",
     "ui.select_orchestrator",
@@ -89,6 +92,7 @@ EVENTS: tuple[str, ...] = (
     "job.output",
     "job.finished",
     "engine.shutdown",
+    "engine.restored",
     "ui.command",
     "ui.view_changed",
 )
