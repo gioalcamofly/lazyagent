@@ -81,7 +81,7 @@ async def test_idle_cpu_with_the_page_open(host, browser, record):
     problems.watch(page)
     await page.goto(host.server.url)
     await page.wait_for_selector("#conn.ok", timeout=30000)
-    await page.wait_for_function("document.querySelectorAll('#worktrees li.wt').length === 3")
+    await page.wait_for_function("() => document.querySelectorAll('#worktrees li.wt').length === 3")
     await asyncio.sleep(3)
     pids = descendants(os.getpid())
     before, start = cpu_seconds(pids), time.monotonic()

@@ -45,7 +45,7 @@ async def test_page_in_a_real_browser(fake_claude, host, browser, tmp_path):
     # The token leaves the address bar once read.
     assert "token" not in page.url
     await page.wait_for_function(
-        "document.querySelectorAll('#worktrees li.wt').length === 3"
+        "() => document.querySelectorAll('#worktrees li.wt').length === 3"
     )
     await _terminal_has(page, "Select a worktree")
 
