@@ -327,7 +327,7 @@ Done in PR 6: every row except `shutdown` (PR 8). The ten legacy methods are ans
 | `attach_ui` / `detach_ui` | PR 7 | The connection becomes (stops being) a hosted UI: what `Engine.attach_ui` does for an in-process TUI, for a hosted TUI on a remote engine. Dropped on disconnect. Not a `ui.*` command, so always offered |
 | `publish_view {view}` | PR 7 | A UI announces what it shows (`ui.view_changed` unless unchanged; `{published}`): every TUI publishes its view, a remote one through this |
 | `shutdown {stop_agents?}` | PR 8 | `lazyagent engine stop`. Stops a detached engine once the reply is sent: `{stopping: true, agents}` (agents stopped with it, orchestrator included), then `engine.shutdown {reason: "shutdown"}`. `stop_agents` defaults to true; false only stops an engine that runs no agent (`VALIDATION_ERROR` otherwise), because an agent cannot outlive its engine (its PTY closes). An engine inside a TUI answers `VALIDATION_ERROR` (quit that TUI instead) |
-| `list_restorable` / `restore_agents {ids?, env?}` / `dismiss_restorable {ids?}` | PR 9 | The restart manifest (§6e): agents earlier engines ran when they ended; restore spawns them again, each resuming its conversation; `ids` default to all. `VALIDATION_ERROR` for an engine without a manifest |
+| `list_restorable` / `restore_agents {ids?, env?}` / `dismiss_restorable {ids?}` | PR 9 | The restart manifest (§6e): agents earlier engines ran when they ended; restore spawns them again, each resuming its conversation; `ids` default to all. `VALIDATION_ERROR` for an engine without a manifest. Since the MCP follow-up they are legacy methods too (`EngineMethods`, both sockets, golden fixtures), and the legacy `list_events` gains `restores` |
 
 Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, which avoids base64 for keystrokes.
 
@@ -397,7 +397,10 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `get_agent_status` :334 | `get_agent_status` |
 | `read_agent_output` :352 | `read_agent_output` |
 | `send_agent_input` :376 | `send_agent_input` |
-| `list_events` :421 | `list_events` |
+| `list_events` :421 | `list_events` (+ `restores`: each `engine.restored` after `since`, with its `seq`, engine-wide; the key is absent when there was none, so older answers are unchanged) |
+| `list_restorable` | `list_restorable` (MCP follow-up to PR 9) |
+| `restore_agents` | `restore_agents` (no `env`: the engine's, as for MCP spawns, K4) |
+| `dismiss_restorable` | `dismiss_restorable` |
 
 - **Phase 1:** the MCP server keeps talking NDJSON to the legacy socket, with **zero changes**.
 - **Later:** swap `IpcClient` (mcp_server.py:26-64) for `lazyagent.protocol.client` (v1, `client:"mcp"`). The tools stay 1:1, so it becomes just another client.
@@ -717,7 +720,7 @@ Decided for PR 9 as below; open for review.
 | Q26 | Agents stopped by `engine stop` | Offered back like a crash's (an upgrade restart wants them) | Only offer what a crash left; `engine stop` dismisses |
 | Q27 | Which conversation | The exact one from Claude's hooks (`--resume <id>`), else the provider's last in that directory (`--continue`), which two agents in one worktree would share | Always `--continue`, as the plan said |
 | Q28 | Interrupted turn | Resumed as is; no "you were interrupted" prompt is typed (proposal 0009's risk) | Send a short note after the resume |
-| Q29 | `engine.restored` for MCP | v1 only; the legacy `list_events` keeps `agent.status` only, so the planner over MCP sees the agents come back as spawns | Add MCP tools `list_restorable` / `restore_agents` (a follow-up) |
+| Q29 | `engine.restored` for MCP | **Resolved (MCP follow-up):** MCP tools `list_restorable`, `restore_agents`, `dismiss_restorable` over the legacy socket, and the legacy `list_events` carries `restores` (each `engine.restored` after `since`, with its `seq`; absent when none) next to the `agent.status` events, so /gio-planner can restore and see the result over MCP | Leave restores to the CLI and v1 |
 | Q30 | The TUI | No restore UI: the CLI, v1 and the config cover the boot | A toast with "restore" when a TUI connects to an engine with restorable agents |
 
 ### Decisions (2026-10-15)
