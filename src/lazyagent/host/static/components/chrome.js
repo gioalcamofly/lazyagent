@@ -12,12 +12,13 @@ function NotifyButton() {
   return html`<button
     id="notify"
     type="button"
+    title="Enable desktop notifications"
     onClick=${async (event) => {
       await Notification.requestPermission();
       event.target.hidden = Notification.permission !== "default";
     }}
   >
-    Enable notifications
+    Notifications
   </button>`;
 }
 

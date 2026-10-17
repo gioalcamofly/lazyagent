@@ -392,6 +392,8 @@ button.primary:disabled, button.danger:disabled { opacity: 0.45; }
 .job-output { margin: 0; max-height: 26vh; overflow: auto; padding: 6px 8px; background: var(--bg); border-radius: 4px; font: 12px/1.35 var(--mono); white-space: pre-wrap; }
 #jobs-button.busy { color: var(--yellow); border-color: var(--yellow); }
 
-#toolbar button { font-size: 12px; padding: 2px 6px; }
+#toolbar { gap: 2px; }
+#toolbar button { font-size: 12px; padding: 2px 5px; }
+#topbar button { white-space: nowrap; }
 .label-head { display: flex; gap: 8px; align-items: baseline; }
 .label-head .muted { font-size: 12px; }
