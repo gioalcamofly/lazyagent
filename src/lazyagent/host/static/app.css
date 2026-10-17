@@ -111,8 +111,8 @@ main { flex: 1; display: flex; min-height: 0; }
 #toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px;
+  gap: 3px;
+  padding: 8px 6px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -328,3 +328,70 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Forms (dialogs) */
+.dialog { width: min(560px, calc(100vw - 32px)); }
+.form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.form label { display: flex; flex-direction: column; gap: 4px; }
+.form label.inline, .dialog label.inline { flex-direction: row; align-items: center; gap: 6px; }
+.form fieldset { border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.form legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+input[type="text"], textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 7px;
+}
+textarea { font-family: var(--mono); resize: vertical; }
+input[type="text"]:focus, textarea:focus { border-color: var(--primary); outline: none; }
+.form-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.form-actions > :first-child { flex: 1; font-size: 12px; }
+.form-error { color: var(--red); margin: 6px 0 0; }
+button.danger { background: var(--red); border-color: var(--red); color: #fff; padding: 4px 12px; }
+button.primary:disabled, button.danger:disabled { opacity: 0.45; }
+.dialog p { margin: 8px 0; }
+.dialog kbd { margin-left: 2px; }
+
+/* Worktree header */
+.wt-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px;
+  background: var(--surface);
+  flex: none;
+}
+.wt-header .wt-meta { margin: 0; }
+.wt-header .spacer { flex: 1; }
+.wt-header .muted { font-family: var(--mono); font-size: 12px; }
+
+/* Job drawer */
+.drawer {
+  position: fixed;
+  left: 300px;
+  right: 0;
+  bottom: 0;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-top: 2px solid var(--accent);
+  box-shadow: 0 -4px 14px var(--shadow);
+  z-index: 5;
+}
+.drawer .pane-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+.drawer-body { overflow-y: auto; padding: 0 10px 8px; }
+.job header { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; }
+.job header code { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.job-state { font-family: var(--mono); font-size: 11px; }
+.job-state.running { color: var(--yellow); }
+.job-state.ok { color: var(--green); }
+.job-state.failed { color: var(--red); }
+.job-output { margin: 0; max-height: 26vh; overflow: auto; padding: 6px 8px; background: var(--bg); border-radius: 4px; font: 12px/1.35 var(--mono); white-space: pre-wrap; }
+#jobs-button.busy { color: var(--yellow); border-color: var(--yellow); }
+
+#toolbar button { font-size: 12px; padding: 2px 6px; }
+.label-head { display: flex; gap: 8px; align-items: baseline; }
+.label-head .muted { font-size: 12px; }
