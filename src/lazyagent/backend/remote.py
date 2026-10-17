@@ -739,12 +739,14 @@ class RemoteBackend(Backend):
     async def create_worktree(
         self,
         branch: str,
-        base_branch: str = "main",
+        base_branch: str | None = None,
         extra: str = "",
         *,
         env: Mapping[str, str] | None = None,
     ) -> CreatedWorktree:
-        params: dict[str, Any] = {"branch": branch, "base_branch": base_branch}
+        params: dict[str, Any] = {"branch": branch}
+        if base_branch:
+            params["base_branch"] = base_branch
         if extra:
             params["extra"] = extra
         if env is not None:

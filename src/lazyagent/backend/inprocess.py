@@ -123,7 +123,7 @@ class InProcessBackend(Backend):
     async def create_worktree(
         self,
         branch: str,
-        base_branch: str = "main",
+        base_branch: str | None = None,
         extra: str = "",
         *,
         env: Mapping[str, str] | None = None,

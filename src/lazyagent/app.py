@@ -42,7 +42,7 @@ from lazyagent.engine.events import (
 )
 from lazyagent.engine.registry import AgentRegistry
 from lazyagent.engine.types import ORCHESTRATOR_KIND
-from lazyagent.models import AgentState, GitStatus, WorktreeInfo
+from lazyagent.models import AgentState, GitStatus, WorktreeInfo, default_base
 from lazyagent.protocol.hosted import encode_osc, host, tmux_passthrough
 from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
 from lazyagent.widgets.confirm_modal import ConfirmModal
@@ -1093,7 +1093,7 @@ class LazyAgent(App):
 
         self.push_screen(
             CreateWorktreeModal(
-                default_branch=config.default_branch,
+                default_branch=default_base(config.default_branch, self.worktrees),
                 show_extra_options=config.has_custom_create,
             ),
             on_modal_dismiss,
