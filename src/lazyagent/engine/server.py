@@ -57,6 +57,7 @@ from lazyagent.engine.runtime import (  # noqa: F401  (re-exported)
     INFO_NAME,
     SOCKET_NAME,
     read_info,
+    remove_empty_dirs,
     runtime_dir,
     socket_path,
 )
@@ -125,7 +126,7 @@ def peer_uid(sock: Any) -> int | None:
     return uid
 
 
-def _private_dir(path: Path) -> None:
+def private_dir(path: Path) -> None:
     """Create ``path`` (and missing parents) as 0700 dirs owned by us."""
     missing = []
     node = path
@@ -588,6 +589,7 @@ class V1Server:
                 "attach_ui": self.handle_attach_ui,
                 "detach_ui": self.handle_detach_ui,
                 "publish_view": self.handle_publish_view,
+                "shutdown": self.handle_shutdown,
                 "ui.get_view": self.handle_ui_get_view,
                 "ui.select_worktree": self.handle_ui_select_worktree,
                 "ui.select_orchestrator": self.handle_ui_select_orchestrator,
@@ -617,7 +619,7 @@ class V1Server:
         file is replaced. Raises OSError when the socket cannot be created.
         """
         path = Path(self.socket_path)
-        _private_dir(path.parent)
+        private_dir(path.parent)
         if path.exists() or path.is_symlink():
             if await probe(self.socket_path):
                 return False
@@ -669,12 +671,9 @@ class V1Server:
         info = read_info(self.info_path)
         if info is not None and info.get("pid") == os.getpid():
             self.info_path.unlink(missing_ok=True)
-        # The repo's dir, then the per-user one if no other repo uses it.
-        for directory in (self.info_path.parent, self.info_path.parent.parent):
-            try:
-                os.rmdir(directory)
-            except OSError:
-                break
+        # Kept while the engine holds its lock (engine.lock is in it); the
+        # engine removes it after releasing the lock.
+        remove_empty_dirs(self.info_path.parent)
 
     async def _on_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1103,6 +1102,27 @@ class V1Server:
         if not (isinstance(view, dict) and all(k in view for k in _VIEW_FIELDS)):
             raise ValueError(f"view must be an object with {', '.join(_VIEW_FIELDS)}")
         return {"published": self.engine.publish_view(view)}
+
+    async def handle_shutdown(self, conn: _Connection, params: dict) -> Any:
+        """Stop a detached engine (``lazyagent engine stop``), after the
+        reply. ``stop_agents: false`` only stops one that runs no agent:
+        an agent cannot outlive its engine (its PTY closes)."""
+        stop_agents = params.get("stop_agents", True)
+        if not isinstance(stop_agents, bool):
+            raise ValueError("stop_agents must be a boolean")
+        handler = self.engine.shutdown_handler
+        if handler is None:
+            raise ValueError(
+                f"This engine runs inside a lazyagent TUI (pid {os.getpid()}); "
+                "quit that TUI to stop it"
+            )
+        agents = self.engine.agent_count()
+        if agents and not stop_agents:
+            raise ValueError(
+                f"{agents} agent{'s' if agents != 1 else ''} still running; "
+                "stopping the engine would stop them too"
+            )
+        return _Reply({"stopping": True, "agents": agents}, handler)
 
     async def handle_ui_get_view(self, conn: _Connection, params: dict) -> Any:
         return {"view": self.engine.ui_view}
