@@ -69,6 +69,7 @@ V1_METHODS: tuple[str, ...] = (
     "ui.open_shell",
     "ui.show_diff",
     "ui.open_modal",
+    "ui.blank",
 )
 
 # The v1 methods a hosted UI carries out: an engine advertises them only

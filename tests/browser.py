@@ -56,13 +56,19 @@ async def browser():
             await launched.close()
 
 
+# xterm.js's own note that a parse ran past its time slice (a busy machine).
+BENIGN = ("task queue exceeded allotted deadline",)
+
+
 class Problems(list):
     """Console errors and warnings, and uncaught page errors."""
 
     def watch(self, page) -> None:
         page.on(
             "console",
-            lambda m: self.append(m.text) if m.type in ("error", "warning") else None,
+            lambda m: self.append(m.text)
+            if m.type in ("error", "warning") and not m.text.startswith(BENIGN)
+            else None,
         )
         page.on("pageerror", lambda e: self.append(str(e)))
 

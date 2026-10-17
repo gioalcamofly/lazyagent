@@ -149,3 +149,20 @@ class WsClient:
             await self.writer.wait_closed()
         except (ConnectionError, OSError):
             pass
+
+
+def tui_output(offset: int, data: bytes) -> bytes:
+    """What the host sends for TUI output: an output frame on stream 0."""
+    return struct.pack(">BIQ", 1, 0, offset) + data
+
+
+def input_frame(data: bytes, stream_id: int = 0) -> bytes:
+    """Keys for a stream (0: the TUI), as the page sends them."""
+    return struct.pack(">BI", 2, stream_id) + data
+
+
+def output_frame(frame: bytes) -> tuple[int, int, bytes]:
+    """(stream_id, offset, data) of an output frame."""
+    kind, stream_id, offset = struct.unpack_from(">BIQ", frame)
+    assert kind == 1, frame[:16]
+    return stream_id, offset, frame[13:]

@@ -175,9 +175,81 @@ main { flex: 1; display: flex; min-height: 0; }
 
 #engine-state { padding: 6px 10px; margin: 0; font-size: 11px; border-top: 1px solid var(--border); }
 
-.center { flex: 1; position: relative; display: flex; min-width: 0; }
-#terminal-pane { flex: 1; position: relative; min-width: 0; background: #121212; }
+.center-wrap { flex: 1; position: relative; display: flex; min-width: 0; }
+.center { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex: none;
+}
+.tabs .spacer { flex: 1; }
+.tab, .tab-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tab:hover:not(:disabled), .tab-tool:hover { border-color: var(--border); color: var(--text); }
+.tab.active { background: var(--bg); border-color: var(--border); color: var(--text); margin-bottom: -1px; }
+:where(.tab) .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.tab .status { font-family: var(--mono); font-size: 11px; }
+.tab-tool.on { color: var(--accent); }
+.tui-tab { font-family: var(--mono); font-size: 12px; }
+
+.views { flex: 1; position: relative; min-height: 0; background: var(--term-bg); }
+.term-slot { position: absolute; inset: 0; }
+.native-term { position: absolute; inset: 4px 0 0 6px; overflow: hidden; }
+.native-term[hidden] { display: none; }
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.empty p { margin: 4px; }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; padding: 4px 12px; }
+button.link { background: none; border: none; color: var(--muted); font-size: 15px; padding: 0 4px; }
+
+.tui-wrap { position: absolute; inset: 0; background: #121212; }
+.center:not(.tui-shown) .tui-wrap { display: none; }
+#terminal-pane { position: absolute; inset: 0; background: #121212; }
 #terminal { position: absolute; inset: 4px 0 0 6px; }
+
+.shell-pane {
+  flex: 0 0 34%;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  border-top: 2px solid var(--border);
+  background: var(--term-bg);
+}
+.shell-pane .pane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.shell-pane .term-slot { position: relative; flex: 1; }
+
+.wt:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 
 #overlay {
   position: absolute;

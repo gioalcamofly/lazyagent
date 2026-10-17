@@ -207,7 +207,7 @@
     "ui_command_name": {
       "type": "string",
       "description": "Open set: a hosted UI ignores a command it does not know.",
-      "x-known-values": ["select_worktree", "select_orchestrator", "focus_agent", "open_shell", "show_diff", "open_modal"]
+      "x-known-values": ["select_worktree", "select_orchestrator", "focus_agent", "open_shell", "show_diff", "open_modal", "blank"]
     },
     "ui.command": {
       "type": "object",

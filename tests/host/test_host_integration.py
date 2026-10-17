@@ -17,7 +17,8 @@ import termios
 import pytest
 
 from lazyagent.host.cli import Host
-from tests.host.wsclient import WsClient
+from tests.contract.helpers import wait_for_text
+from tests.host.wsclient import WsClient, input_frame, output_frame
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,6 +34,8 @@ class Page:
     def __init__(self, client: WsClient) -> None:
         self.client = client
         self.screen = bytearray()
+        # Output of the page's own streams, by stream id.
+        self.streams: dict[int, bytearray] = {}
         self.messages: asyncio.Queue[dict] = asyncio.Queue()
         self.replies: dict[str, asyncio.Future] = {}
         self.ids = 0
@@ -56,7 +59,11 @@ class Page:
             except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
                 return
             if isinstance(message, bytes):
-                self.screen += message
+                stream_id, _, data = output_frame(message)
+                if stream_id == 0:
+                    self.screen += data
+                else:
+                    self.streams.setdefault(stream_id, bytearray()).extend(data)
             elif isinstance(message, tuple):
                 self.closed = message[0]
                 self.changed.set()
@@ -120,6 +127,24 @@ class Page:
         except asyncio.TimeoutError:
             raise AssertionError(f"{needle!r} x{count} not on screen") from None
 
+    def stream_text(self, stream_id: int) -> str:
+        return _ANSI.sub(b"", bytes(self.streams.get(stream_id, b""))).decode(
+            errors="replace"
+        )
+
+    async def wait_stream(self, stream_id: int, needle: str, timeout: float = 20) -> None:
+        async def find() -> None:
+            while needle not in self.stream_text(stream_id):
+                self.changed.clear()
+                await self.changed.wait()
+
+        try:
+            await asyncio.wait_for(find(), timeout)
+        except asyncio.TimeoutError:
+            raise AssertionError(
+            f"{needle!r} not in stream {stream_id}: {self.stream_text(stream_id)!r}"
+        ) from None
+
     async def close(self) -> None:
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -156,7 +181,7 @@ async def test_page_drives_the_hosted_tui(host, repo, tmp_path):
         await page.event("ui.view_changed", worktree_path=feat, focus="shell")
 
         # Keystrokes from the page reach the worktree shell.
-        page.client.send_binary(b"echo H2_IT_OK\r")
+        page.client.send_binary(input_frame(b"echo H2_IT_OK\r"))
         await page.wait_text("H2_IT_OK", count=2)
 
         # A resize from the page resizes the PTY; the TUI announces again.
@@ -191,13 +216,13 @@ async def test_page_drives_the_hosted_tui(host, repo, tmp_path):
         await page.request("ui.open_modal", modal="spawn")
         await page.event("ui.view_changed", focus="modal", modal="spawn")
         await page.wait_text("Spawn agent in feat")
-        page.client.send_binary(b"\x1b")
+        page.client.send_binary(input_frame(b"\x1b"))
         await page.event("ui.view_changed", modal=None)
 
         # q in the TUI (Ctrl+K first, out of the shell) ends the host.
-        page.client.send_binary(b"\x0b")
+        page.client.send_binary(input_frame(b"\x0b"))
         await asyncio.sleep(0.3)
-        page.client.send_binary(b"q")
+        page.client.send_binary(input_frame(b"q"))
         assert await page.message("exit") == {"type": "exit", "code": 0}
         assert await asyncio.wait_for(host.task, 30) == 0
         for _ in range(100):
@@ -236,4 +261,101 @@ async def test_a_killed_tui_ends_the_host(host, tmp_path):
         assert await asyncio.wait_for(host.task, 30) == -signal.SIGKILL
         assert (await page.message("exit"))["code"] == -signal.SIGKILL
     finally:
+        await page.close()
+
+
+async def test_native_terminals_through_the_host(fake_claude, host, tmp_path):
+    """U2: the page attaches the streams of an agent and a shell on its own
+    engine connection; frames carry their stream id; input frames for a
+    stream reach its process; the hosted TUI can be blanked."""
+    from lazyagent.engine.client import Client
+
+    page = await _ready_page(host)
+    feat = str(tmp_path / "repo-feat")
+    assert host.server.engine_socket is not None
+    driver = await Client.connect(host.server.engine_socket, client="cli")
+    try:
+        agent = await driver.request("spawn_agent", worktree_path=feat)
+        await wait_for_text(driver, agent, "your turn>")
+        sidebar = await page.request("get_sidebar_state")
+        await page.request("subscribe", since=sidebar["cursor"])
+        # (The TUI shows nothing yet, so its view does not change: only the
+        # placeholder's text does.)
+        await page.request("ui.blank")
+        await page.wait_text("Shown in the browser")
+
+        attached = await page.request("attach_stream", session_id=agent["session_id"])
+        stream_id = attached["stream_id"]
+        assert stream_id > 0 and attached["mode"] == "snapshot"
+        assert "fake agent ready" in attached["snapshot"]
+        claim = await page.request(
+            "claim_size", session_id=agent["session_id"], rows=30, cols=100
+        )
+        assert (claim["rows"], claim["cols"]) == (30, 100)
+        await page.event("stream.resized", stream_id=stream_id, rows=30, cols=100)
+        page.client.send_binary(input_frame(b"size\r", stream_id))
+        await page.wait_stream(stream_id, "size 30x100")
+
+        # Input for a stream the page does not own is refused.
+        page.client.send_binary(input_frame(b"x", stream_id + 100))
+        error = await page.message("res", id="")
+        assert error["error"]["code"] == "PROTOCOL_ERROR"
+
+        shell = await page.request("open_shell", worktree_path=feat)
+        attached_shell = await page.request("attach_stream", session_id=shell["session_id"])
+        shell_stream = attached_shell["stream_id"]
+        assert shell_stream != stream_id
+        page.client.send_binary(input_frame(b"echo U2_SHELL_$((6*7))\r", shell_stream))
+        await page.wait_stream(shell_stream, "U2_SHELL_42")
+
+        # Re-attach from where the page is: a tail, not a snapshot.
+        offset = attached["offset"] + len(page.streams[stream_id])
+        detached = await page.request("detach_stream", stream_id=stream_id)
+        assert detached == {"stream_id": stream_id, "detached": True}
+        again = await page.request(
+            "attach_stream", session_id=agent["session_id"], from_offset=offset
+        )
+        assert again["mode"] == "tail" and again["offset"] == offset
+
+        # The agent exits: its stream closes.
+        page.client.send_binary(input_frame(b"exit 0\r", again["stream_id"]))
+        closed = await page.event("stream.closed", stream_id=again["stream_id"])
+        assert closed["session_id"] == agent["session_id"]
+        gone = await page.request("detach_stream", stream_id=again["stream_id"])
+        assert gone["detached"] is False
+    finally:
+        await driver.close()
+        await page.close()
+
+
+async def test_a_slow_page_loses_the_stream_not_the_page(
+    fake_claude, host, tmp_path, monkeypatch
+):
+    from lazyagent.engine.client import Client
+    from lazyagent.host import server as host_server
+
+    page = await _ready_page(host)
+    feat = str(tmp_path / "repo-feat")
+    driver = await Client.connect(host.server.engine_socket, client="cli")
+    try:
+        agent = await driver.request("spawn_agent", worktree_path=feat)
+        await wait_for_text(driver, agent, "your turn>")
+        await page.request("subscribe")
+        attached = await page.request("attach_stream", session_id=agent["session_id"])
+        (peer,) = host.server.peers
+        monkeypatch.setattr(host_server, "MAX_STREAM_BUFFERED", -1)
+        page.client.send_binary(input_frame(b"count 50\r", attached["stream_id"]))
+        reset = await page.event("stream.reset", stream_id=attached["stream_id"])
+        assert reset["session_id"] == agent["session_id"]
+        assert attached["stream_id"] in peer.dropped
+        monkeypatch.setattr(host_server, "MAX_STREAM_BUFFERED", 2 * 1024 * 1024)
+        # Still connected: it re-attaches from the reset's offset.
+        again = await page.request(
+            "attach_stream", session_id=agent["session_id"], from_offset=reset["offset"]
+        )
+        assert again["offset"] == reset["offset"] or again["mode"] == "snapshot"
+        page.client.send_binary(input_frame(b"size\r", again["stream_id"]))
+        await page.wait_stream(again["stream_id"], "size ")
+    finally:
+        await driver.close()
         await page.close()
