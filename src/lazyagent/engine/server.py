@@ -42,6 +42,7 @@ import logging
 import os
 import socket
 import struct
+import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
@@ -643,6 +644,9 @@ class V1Server:
                 "socket": self.socket_path,
                 "engine_id": self.engine_id,
                 "repo_root": self.engine.repo_root,
+                # false: the engine lives inside a TUI and stops with it.
+                "detached": self.engine.shutdown_handler is not None,
+                "started_at": time.time(),
             },
         )
         log.info("v1 server listening on %s", self.socket_path)

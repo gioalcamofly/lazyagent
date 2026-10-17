@@ -305,7 +305,12 @@ class Engine:
 
     async def _start_v1(self) -> None:
         from lazyagent.engine import server as v1
-        from lazyagent.engine.runtime import LOCK_NAME, EngineLock, lock_holder
+        from lazyagent.engine.runtime import (
+            LOCK_NAME,
+            EngineLock,
+            lock_holder,
+            remove_empty_dirs,
+        )
 
         enabled = self._v1_enabled
         if enabled is None:
@@ -321,6 +326,7 @@ class Engine:
             started = lock.acquire() and await server.start()
         except OSError as e:
             lock.release()
+            remove_empty_dirs(path.parent)
             self.notice("warning", f"Protocol v1 server failed to start: {e}")
             return
         if not started:
