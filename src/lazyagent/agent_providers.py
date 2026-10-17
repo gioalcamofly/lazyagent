@@ -92,15 +92,20 @@ class AgentProvider:
         system_prompt: str | None = None,
         session_name: str | None = None,
         env: Mapping[str, str] | None = None,
+        resume_conversation: str | None = None,
     ) -> str:
         """Build the full shell command used to launch this provider.
 
         ``env`` is the environment the agent starts from (the spawning
-        client's); ``None`` means this process's own.
+        client's); ``None`` means this process's own. ``resume_conversation``
+        resumes that conversation id (the pick flag with the id), over
+        ``resume_mode``.
         """
         context = runtime_context or self.build_runtime_context(worktree_path)
 
         resume_args = self._resume_args(resume_mode)
+        if resume_conversation and self.resume_pick_args:
+            resume_args = (*self.resume_pick_args, resume_conversation)
 
         if self.resume_is_subcommand and resume_args:
             # Subcommand providers (e.g. codex): executable + resume_args + flags

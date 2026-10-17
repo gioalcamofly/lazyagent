@@ -1,0 +1,27 @@
+{
+  "case": "list_restorable/one",
+  "method": "list_restorable",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agents": [
+        {
+          "agent_id": "a2",
+          "conversation_id": "5d3c2b1a-0f9e-4d8c-b7a6-112233445566",
+          "ended_at": 1699999000.0,
+          "engine_id": "0123456789abcdef0123456789abcdef",
+          "id": "3f2a9c1d0b7e",
+          "instruction": "review the diff",
+          "kind": "agent",
+          "label": "Reviewer",
+          "provider": "claude",
+          "session_name": "repo-feat-a2",
+          "skip_permissions": true,
+          "started_at": 1699990000.0,
+          "worktree_path": "/tmp/repo-feat"
+        }
+      ]
+    }
+  }
+}

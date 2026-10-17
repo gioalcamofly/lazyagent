@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
+from lazyagent.engine.events import ENGINE_RESTORED
 from lazyagent.engine.types import AGENT_KIND, ORCHESTRATOR_KIND
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManagerError
@@ -93,6 +94,9 @@ class EngineMethods:
             "send_agent_input": self.send_agent_input,
             "list_agents": self.list_agents,
             "list_events": self.list_events,
+            "list_restorable": self.list_restorable,
+            "restore_agents": self.restore_agents,
+            "dismiss_restorable": self.dismiss_restorable,
         }
 
     async def list_worktrees(self, params: dict) -> Any:
@@ -423,11 +427,45 @@ class EngineMethods:
         events, truncated = bus.since(since, match)
         # The events are filtered, so the cursor has to cover what the filter
         # skipped too — otherwise the next call would re-scan it forever.
-        return {
+        result: dict[str, Any] = {
             "events": [e.to_dict() for e in events],
             "cursor": bus.cursor,
             "truncated": truncated,
         }
+        # Restores (engine.restored) are engine-wide, so no filter applies;
+        # the key is only there when one happened after the cursor, which
+        # keeps the answer unchanged for clients that never restore.
+        restores = [
+            {"seq": e.seq, **e.data}
+            for e in bus.history(since)
+            if e.event == ENGINE_RESTORED
+        ]
+        if restores:
+            result["restores"] = restores
+        return result
+
+    @staticmethod
+    def _ids(params: dict) -> list[str] | None:
+        ids = params.get("ids")
+        if ids is not None and not (
+            isinstance(ids, list) and all(isinstance(i, str) for i in ids)
+        ):
+            raise ValueError("ids must be a list of strings")
+        return ids
+
+    async def list_restorable(self, params: dict) -> Any:
+        """Agents earlier engines ran when they ended (restart manifest)."""
+        return {"agents": [e.to_dict() for e in self._engine.list_restorable()]}
+
+    async def restore_agents(self, params: dict) -> Any:
+        """Spawn restorable agents again (all of them without ``ids``), each
+        resuming its conversation. Params: ids, env (both optional)."""
+        env = check_env(params.get("env"))
+        return await self._engine.restore_agents(self._ids(params), env=env)
+
+    async def dismiss_restorable(self, params: dict) -> Any:
+        """Stop offering restorable agents (all of them without ``ids``)."""
+        return {"dismissed": self._engine.dismiss_restorable(self._ids(params))}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

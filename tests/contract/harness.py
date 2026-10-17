@@ -77,6 +77,12 @@ class Harness:
         """Announce a view the way a hosted UI would."""
         raise NotSupported("publish_view")
 
+    async def restart(self) -> None:
+        """Stop the engine (its agents die with it) and start a new one for
+        the same repo, which finds them in its restart manifest. Clients
+        must connect again."""
+        raise NotSupported("restart")
+
     def detach(self) -> list[int]:
         """Run the engine as a detached one would, except that a
         ``shutdown`` only counts: returns the list that grows by one each
@@ -99,15 +105,32 @@ class PythonHarness(Harness):
         repo.mkdir()
         feat.mkdir()
         self.repo, self.feat = str(repo), str(feat)
+        self._tmp = tmp_path
+        self.socket_path = str(socket_path(self.repo))
+        await self._start_engine()
+
+    async def _start_engine(self, world=None) -> None:
         self.engine = make_engine(
             [worktree(self.repo), worktree(self.feat, "feat", is_main=False)],
             repo_root=self.repo,
-            provider=fake_agent_provider(tmp_path),
+            provider=fake_agent_provider(self._tmp),
+            world=world,
         )
+        self.engine.open_manifest(self._tmp / "manifest.json")
         await self.engine.start(ipc=False)
-        self.socket_path = str(socket_path(self.repo))
-        self.server = V1Server(self.engine, self.socket_path, **self._server_options)
+        self.server = V1Server(
+            self.engine,
+            self.socket_path,
+            engine_id=self.engine.instance_id,
+            **self._server_options,
+        )
         assert await self.server.start()
+
+    async def restart(self) -> None:
+        await self.close_clients()
+        await self.server.stop()
+        await self.engine.stop()
+        await self._start_engine(self.engine.world)
 
     async def stop(self) -> None:
         await super().stop()

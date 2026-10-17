@@ -1,6 +1,6 @@
 # 0009. Restore everything after a reboot
 
-- **Status:** Proposed
+- **Status:** Landed in PR 9 (engine-split.md §6e): the manifest, `list_restorable` / `restore_agents` / `dismiss_restorable`, `engine.restored`, `[engine] restore_on_start`, `lazyagent engine restore`. Not done: the "you were interrupted" note (Q28) and MCP tools (Q29)
 - **Design refs:** [engine-split.md](../design/engine-split.md) §0e, §6 (PRs 2, 8, 9), K3, K8
 
 ## Problem

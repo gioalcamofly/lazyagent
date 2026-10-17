@@ -36,6 +36,10 @@ LEGACY_METHODS: tuple[str, ...] = (
     "send_agent_input",
     "list_agents",
     "list_events",
+    # The restart manifest, on the legacy socket too so MCP can restore.
+    "list_restorable",
+    "restore_agents",
+    "dismiss_restorable",
 )
 
 # The methods protocol v1 adds.
@@ -90,6 +94,7 @@ EVENTS: tuple[str, ...] = (
     "job.output",
     "job.finished",
     "engine.shutdown",
+    "engine.restored",
     "ui.command",
     "ui.view_changed",
 )

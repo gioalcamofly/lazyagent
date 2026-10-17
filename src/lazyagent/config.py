@@ -52,12 +52,22 @@ class OrchestratorConfig:
 
 
 @dataclass
+class EngineConfig:
+    """How the engine starts."""
+
+    # Bring back, at engine start, the agents the previous engine ran when
+    # it ended (the restart manifest); otherwise they are only offered.
+    restore_on_start: bool = False
+
+
+@dataclass
 class Config:
     """Application configuration loaded from .lazyagent.toml."""
 
     worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
+    engine: EngineConfig = field(default_factory=EngineConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -99,6 +109,10 @@ def load_config(repo_root: str | Path) -> Config:
         prompt_file=orch_data.get("prompt_file"),
         agent_instruction_template=orch_data.get("agent_instruction_template"),
     )
+    engine_data = data.get("engine", {})
+    engine_config = EngineConfig(
+        restore_on_start=engine_data.get("restore_on_start") is True
+    )
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
     return Config(
         worktree=worktree_config,
@@ -106,6 +120,7 @@ def load_config(repo_root: str | Path) -> Config:
             provider=provider, cross_session_inbound=cross_session_inbound
         ),
         orchestrator=orchestrator_config,
+        engine=engine_config,
         default_branch=default_branch,
     )
 

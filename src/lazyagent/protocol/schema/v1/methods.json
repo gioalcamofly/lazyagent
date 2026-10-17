@@ -516,6 +516,47 @@
         "agents": {"type": "integer", "minimum": 0, "description": "Agents (the orchestrator included) stopped with the engine."}
       }
     },
+    "restorable_agent": {
+      "type": "object",
+      "description": "An agent an earlier engine ran when it ended, from the restart manifest.",
+      "required": ["id", "worktree_path", "agent_id", "kind", "provider", "label", "session_name", "skip_permissions", "conversation_id", "instruction", "started_at", "engine_id", "ended_at"],
+      "properties": {
+        "id": {"type": "string", "description": "Opaque; what restore_agents and dismiss_restorable take."},
+        "worktree_path": {"type": "string", "description": "The orchestrator's key for kind orchestrator."},
+        "agent_id": {"type": "string"},
+        "kind": {"type": "string", "x-known-values": ["agent", "orchestrator"]},
+        "provider": {"type": "string"},
+        "label": {"type": "string"},
+        "session_name": {"type": "string"},
+        "skip_permissions": {"type": "boolean"},
+        "conversation_id": {"type": ["string", "null"], "description": "The provider's conversation id when it reported one; a restore resumes exactly it, else the provider's last conversation."},
+        "instruction": {"type": ["string", "null"], "description": "The last instruction sent to it, when known (first 4,096 characters)."},
+        "started_at": {"type": "number"},
+        "engine_id": {"type": ["string", "null"]},
+        "ended_at": {"type": ["number", "null"]}
+      }
+    },
+    "restore_ids": {"type": "array", "items": {"type": "string"}, "description": "Default: every restorable agent."},
+    "list_restorable.params": {"type": "object", "properties": {}},
+    "list_restorable.result": {
+      "type": "object",
+      "required": ["agents"],
+      "properties": {"agents": {"type": "array", "items": {"$ref": "#/$defs/restorable_agent"}}}
+    },
+    "restore_agents.params": {
+      "type": "object",
+      "properties": {
+        "ids": {"$ref": "#/$defs/restore_ids"},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "The environment the agents start from (the calling client's, D5); default: the engine's."}
+      }
+    },
+    "restore_agents.result": {"$ref": "events.json#/$defs/engine.restored"},
+    "dismiss_restorable.params": {"type": "object", "properties": {"ids": {"$ref": "#/$defs/restore_ids"}}},
+    "dismiss_restorable.result": {
+      "type": "object",
+      "required": ["dismissed"],
+      "properties": {"dismissed": {"type": "array", "items": {"type": "string"}}}
+    },
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {
       "type": "object",
@@ -586,7 +627,20 @@
       "properties": {
         "events": {"type": "array", "items": {"$ref": "events.json#/$defs/agent.status"}},
         "cursor": {"type": "integer", "minimum": 0},
-        "truncated": {"type": "boolean", "description": "True when events after since were already evicted."}
+        "truncated": {"type": "boolean", "description": "True when events after since were already evicted."},
+        "restores": {
+          "type": "array",
+          "description": "Present only when agents were restored after since: each engine.restored, with its seq. Engine-wide: the filters do not apply.",
+          "items": {
+            "type": "object",
+            "required": ["seq", "restored", "failed"],
+            "properties": {
+              "seq": {"type": "integer", "minimum": 1},
+              "restored": {"$ref": "events.json#/$defs/engine.restored/properties/restored"},
+              "failed": {"$ref": "events.json#/$defs/engine.restored/properties/failed"}
+            }
+          }
+        }
       }
     }
   }
