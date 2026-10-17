@@ -31,8 +31,8 @@ function ViewSwitch({ store, actions }) {
       type="button"
       role="tab"
       id="view-worktrees"
-      aria-selected=${view !== "attention"}
-      class=${view !== "attention" ? "on" : ""}
+      aria-selected=${view !== "attention" && view !== "diff"}
+      class=${view !== "attention" && view !== "diff" ? "on" : ""}
       title="Worktrees (g w)"
       onClick=${actions.showNative}
     >

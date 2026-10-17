@@ -414,3 +414,136 @@ async def test_attention_dismiss_and_snooze(page):
     }"""
     )
     assert result == {"hidden": 0, "back": ["failed"], "again": ["question", "failed"]}
+
+
+DIFF = """diff --git a/calc.py b/calc.py
+index 1111111..2222222 100644
+--- a/calc.py
++++ b/calc.py
+@@ -1,4 +1,5 @@
+ def add(a, b):
+-    return a+b
++    # sum
++    return a + b
+ 
+ x = 1
+\\ No newline at end of file
+diff --git a/old.txt b/new.txt
+similarity index 90%
+rename from old.txt
+rename to new.txt
+diff --git a/logo.png b/logo.png
+Binary files a/logo.png and b/logo.png differ
+diff --git a/notes.md b/notes.md
+new file
+# notes
+
+review me
+
+diff --git a/blob.bin b/blob.bin
+new file
+Binary file
+
+… diff truncated (64 KB cap)"""
+
+
+async def test_parse_diff(page):
+    result = await page.evaluate(
+        """async (text) => {
+        const { parseDiff } = await import('/lib/diff.js');
+        const { files, truncated } = parseDiff(text);
+        return { truncated, files: files.map((f) => ({
+          path: f.path, oldPath: f.oldPath, status: f.status, binary: f.binary, added: f.added, removed: f.removed,
+          rows: f.rows.map((r) => [r.kind, r.text, r.old ?? null, r.new ?? null]),
+        })) };
+        }""",
+        DIFF,
+    )
+    assert result["truncated"] is True
+    calc, renamed, logo, notes, blob = result["files"]
+    assert (calc["status"], calc["added"], calc["removed"]) == ("modified", 2, 1)
+    assert calc["rows"] == [
+        ["hunk", "@@ -1,4 +1,5 @@", None, None],
+        ["ctx", "def add(a, b):", 1, 1],
+        ["del", "    return a+b", 2, None],
+        ["add", "    # sum", None, 2],
+        ["add", "    return a + b", None, 3],
+        ["ctx", "", 3, 4],
+        ["ctx", "x = 1", 4, 5],
+        ["note", "\\ No newline at end of file", None, None],
+    ]
+    assert (renamed["path"], renamed["oldPath"], renamed["status"], renamed["rows"]) == ("new.txt", "old.txt", "renamed", [])
+    assert logo["binary"] and logo["rows"] == [["note", "Binary file", None, None]]
+    # The engine's untracked entry: raw contents, every line an addition.
+    assert notes["status"] == "added"
+    assert notes["rows"] == [["add", "# notes", None, 1], ["add", "", None, 2], ["add", "review me", None, 3]]
+    assert blob["binary"] and blob["status"] == "added"
+
+
+async def test_split_rows_and_flatten(page):
+    result = await page.evaluate(
+        """async (text) => {
+        const { parseDiff, splitRows, anchorOf } = await import('/lib/diff.js');
+        const { flatten } = await import('/components/diff.js');
+        const { files } = parseDiff(text);
+        const show = (r) => r ? `${r.kind}:${r.text}` : null;
+        const pairs = splitRows(files[0].rows).map((p) => p.kind ? [p.kind] : [show(p.left), show(p.right)]);
+        const comment = { ...anchorOf('calc.py', files[0].rows[2]), text: 'why?' };
+        const unified = flatten(files, 'unified', [comment]);
+        const split = flatten(files, 'split', [comment]);
+        const ctx = flatten(files, 'split', [{ ...anchorOf('calc.py', files[0].rows[1]), text: 'ok' }]);
+        return {
+          pairs, anchor: comment.id,
+          unified: unified.rows.map((r) => r.type), starts: unified.starts,
+          split: split.rows.map((r) => r.type),
+          ctxComments: ctx.rows.filter((r) => r.type === 'comment').length,
+        };
+        }""",
+        DIFF,
+    )
+    assert result["pairs"] == [
+        ["hunk"],
+        ["ctx:def add(a, b):", "ctx:def add(a, b):"],
+        ["del:    return a+b", "add:    # sum"],
+        [None, "add:    return a + b"],
+        ["ctx:", "ctx:"],
+        ["ctx:x = 1", "ctx:x = 1"],
+        ["note"],
+    ]
+    assert result["anchor"] == "calc.py:old:2"
+    # Header, 8 rows with the comment under the deleted line, then the other files.
+    assert result["unified"][:10] == ["file", "row", "row", "row", "comment", "row", "row", "row", "row", "row"]
+    assert result["starts"] == [0, 10, 11, 13, 17]
+    assert result["split"][:5] == ["file", "pair", "pair", "pair", "comment"]
+    # A context line is on both sides of a pair, but it has one comment.
+    assert result["ctxComments"] == 1
+
+
+async def test_review_prompt(page):
+    text = await page.evaluate(
+        """async () => {
+        const { reviewPrompt } = await import('/lib/diff.js');
+        return reviewPrompt([
+          { path: 'b.py', side: 'new', line: 9, code: '  y = 2 ', text: 'and this' },
+          { path: 'a.py', side: 'new', line: 7, code: 'x = 1', text: 'rename x\\nto count' },
+          { path: 'a.py', side: 'old', line: 3, code: 'gone()', text: 'why removed?' },
+        ], { summary: '  Looks close.  ' });
+        }"""
+    )
+    assert text == (
+        "Review comments on your changes. Please address each one:\n"
+        "\n"
+        "Looks close.\n"
+        "\n"
+        "- b.py:9\n"
+        "  > y = 2\n"
+        "  and this\n"
+        "\n"
+        "- a.py:3 (removed line)\n"
+        "  > gone()\n"
+        "  why removed?\n"
+        "- a.py:7\n"
+        "  > x = 1\n"
+        "  rename x\n"
+        "  to count"
+    )

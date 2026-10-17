@@ -17,7 +17,7 @@ export const SCOPES = {
 export const KEYMAP = [
   { keys: ["Ctrl+K"], tui: ["ctrl+k"], action: "Focus the sidebar", scope: "global", where: "page" },
   { keys: ["Ctrl+J"], tui: ["ctrl+j"], action: "Focus the active agent", scope: "global", where: "page" },
-  { keys: ["Ctrl+D"], tui: ["ctrl+d"], action: "Show the diff (in the TUI tab until U5)", scope: "global", where: "page" },
+  { keys: ["Ctrl+D"], tui: ["ctrl+d"], action: "Show or hide the worktree's diff", scope: "global", where: "page" },
   { keys: ["Ctrl+L"], tui: ["ctrl+l"], action: "Open and focus the worktree shell", scope: "global", where: "page" },
   {
     keys: ["Alt+]", "Alt+N"],
@@ -58,7 +58,7 @@ export const KEYMAP = [
   { keys: ["Y", "N"], tui: ["y", "n"], action: "Confirm dialog: yes / no", scope: "modal", where: "page" },
   { keys: ["F"], tui: ["f"], action: "Remove dialog: toggle force", scope: "modal", where: "page" },
   { keys: ["Esc"], tui: ["escape"], action: "Close a dialog (this help too)", scope: "modal", where: "page" },
-  { keys: ["Ctrl+Enter"], tui: [], action: "Send: the reply box, a dialog's instruction", scope: "modal", where: "page" },
+  { keys: ["Ctrl+Enter"], tui: [], action: "Send: the reply box, a dialog's instruction, a diff comment", scope: "modal", where: "page" },
   { keys: ["G", "A"], tui: [], action: "The attention queue (g then a)", scope: "outside", where: "page" },
   { keys: ["G", "W"], tui: [], action: "The worktree view (g then w)", scope: "outside", where: "page" },
   { keys: ["J", "K", "Enter"], tui: [], action: "Attention queue: next / previous item, Enter: its terminal", scope: "outside", where: "page" },

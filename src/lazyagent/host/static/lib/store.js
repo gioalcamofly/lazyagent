@@ -135,6 +135,14 @@ export function createStore() {
     prFetched: signal({}),
     // True once a sidebar state has been applied.
     loaded: signal(false),
+    // The diff view: {path, base, loading, error, parsed}.
+    diff: signal(null),
+    diffMode: signal(loadJson("lazyagent-diff", {}).mode === "split" ? "split" : "unified"),
+    diffBase: signal(""),
+    // Review comments per worktree path, kept in this browser (Q12).
+    comments: signal(loadJson("lazyagent-comments", {})),
+    // A review waiting for its agent to be idle: path → {agent_id, text}.
+    pendingReviews: signal({}),
   };
 
   // When each queue condition was first seen: kept while it holds, dropped
@@ -195,6 +203,8 @@ export function createStore() {
     saveJson("lazyagent-notify", store.notifySettings.value);
   };
   store.notifies = (kind) => store.notifySettings.value[kind] !== false;
+  store.saveComments = () => saveJson("lazyagent-comments", store.comments.value);
+  store.saveDiffMode = () => saveJson("lazyagent-diff", { mode: store.diffMode.value });
 
   // ------------------------------------------------------------ queue
 
