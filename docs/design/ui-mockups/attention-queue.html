@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Attention queue · lazyagent mockup</title>
+<!-- Static mockup for docs/design/ui-plan.md. Sample data only; no scripts, no network. -->
+<style>
+:root {
+  --bg: #121212; --surface: #1e1e1e; --panel: #262626; --panel-2: #2e2e2e; --border: #333333;
+  --text: #e0e0e0; --muted: #8a8a8a; --primary: #0178d4; --accent: #ffa62b;
+  --green: #4ebf71; --yellow: #ffcc4d; --cyan: #4fc1e9; --red: #e5534b; --purple: #b083f0;
+  --add-bg: #12301c; --del-bg: #3a1716; --add-hl: #1d5c33; --del-hl: #6b2421;
+  --mono: "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", ui-monospace, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 var(--sans); }
+body { display: flex; flex-direction: column; overflow: hidden; }
+.muted { color: var(--muted); } .mono { font-family: var(--mono); }
+.g { color: var(--green); } .y { color: var(--yellow); } .c { color: var(--cyan); } .r { color: var(--red); } .p { color: var(--purple); } .a { color: var(--accent); } .b { font-weight: 600; }
+button, .btn { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.warn { border-color: var(--yellow); color: var(--yellow); }
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.ghost { background: transparent; }
+kbd { font-family: var(--mono); font-size: 10.5px; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); background: var(--surface); }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.pill.ok { color: var(--green); border-color: var(--green); }
+.pill.warn { color: var(--yellow); border-color: var(--yellow); }
+.pill.bad { color: var(--red); border-color: var(--red); }
+.count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--yellow); color: #1a1a1a; font-weight: 700; font-size: 11px; text-align: center; }
+
+/* top bar */
+#topbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none; }
+#topbar .brand { font-weight: 600; color: var(--accent); }
+#topbar .repo { white-space: nowrap; font-family: var(--mono); color: var(--muted); }
+.spacer { flex: 1; }
+.views { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px; }
+.views span { padding: 2px 10px; border-radius: 3px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.views span.on { background: var(--panel-2); color: var(--text); }
+.search { width: 300px; white-space: nowrap; gap: 8px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--bg); display: flex; justify-content: space-between; }
+.usage { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+main { flex: 1; display: flex; min-height: 0; }
+
+/* sidebar */
+#sidebar { width: 290px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+#sidebar .head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+#sidebar .head .t { font-weight: 600; flex: 1; }
+.wts { list-style: none; margin: 0; padding: 4px 0; overflow: hidden; flex: 1; }
+.wt { padding: 6px 10px; border-left: 3px solid transparent; }
+.wt.current { border-left-color: var(--accent); background: #2b2416; }
+.wt-head { display: flex; align-items: baseline; gap: 6px; }
+.wt-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-branch { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; font-family: var(--mono); font-size: 11px; }
+.prb { padding: 0 5px; border-radius: 3px; border: 1px solid var(--border); }
+.prb.open { color: var(--green); border-color: var(--green); }
+.prb.merged { color: var(--purple); border-color: var(--purple); }
+.prb.draft { color: var(--muted); }
+.agents { list-style: none; margin: 4px 0 0; padding: 0; }
+.agent { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+.agent.current { outline: 1px solid var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.agent .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent .status { font-family: var(--mono); font-size: 11px; }
+.s-run .dot, .dot.s-run { background: var(--green); } .s-run .status { color: var(--green); }
+.s-wait .dot, .dot.s-wait { background: var(--yellow); box-shadow: 0 0 0 3px #ffcc4d33; } .s-wait .status { color: var(--yellow); font-weight: 600; }
+.s-done .dot, .dot.s-done { background: var(--cyan); } .s-done .status { color: var(--cyan); }
+.s-fail .dot, .dot.s-fail { background: var(--red); } .s-fail .status { color: var(--red); font-weight: 600; }
+.s-idle .dot { background: var(--muted); } .s-idle .status { color: var(--muted); }
+#sidebar .foot { padding: 6px 10px; font-size: 11px; border-top: 1px solid var(--border); color: var(--muted); display: flex; justify-content: space-between; }
+
+/* centre */
+.centre { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.wthead { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.wthead .n { white-space: nowrap; font-weight: 600; font-size: 14px; }
+.tabs { display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 6px; }
+.tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: var(--muted); border-bottom: 2px solid transparent; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); background: var(--bg); }
+.tab .x { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.tab.add { color: var(--muted); }
+
+.term { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; background: var(--bg); padding: 8px 12px; white-space: pre; overflow: hidden; color: #d4d4d4; }
+.term .dim { color: #7a7a7a; } .term .hl { background: #2a2a2a; }
+.cursor { background: #e0e0e0; color: #121212; }
+.box { border: 1px solid #555; border-radius: 6px; display: inline-block; padding: 0 8px; }
+
+.split { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.pane-title { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-size: 11.5px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+
+/* right panel */
+.right { width: 330px; flex: none; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sect { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.sect h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+.kv { display: grid; grid-template-columns: 90px 1fr; gap: 3px 8px; font-size: 12px; }
+.kv .k { color: var(--muted); }
+.checks { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.checks li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.checks .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.checks .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.feed { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.feed li { display: flex; gap: 8px; padding: 2px 0; }
+.feed .tm { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; width: 38px; }
+
+#toasts { position: fixed; right: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.toast { padding: 8px 12px; border-radius: 4px; background: var(--panel); border-left: 4px solid var(--primary); box-shadow: 0 2px 8px rgba(0,0,0,.5); font-size: 12.5px; }
+.toast.warning { border-left-color: var(--yellow); }
+.wthead > .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+</style>
+<style>
+.q { width: 400px; flex: none; border-right: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; }
+.q .filters { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.chip { font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.chip.on { color: var(--text); border-color: var(--accent); }
+.item { padding: 9px 12px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 8px; }
+.item.sel { background: #2b2416; border-left-color: var(--accent); }
+.item .ic { grid-row: span 3; font-size: 15px; line-height: 1.2; }
+.item .t { font-weight: 600; }
+.item .w { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); grid-column: 2 / 4; }
+.item .d { color: var(--muted); font-size: 12px; grid-column: 2 / 4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .age { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+.detail { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.detail .dh { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.actions { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--surface); align-items: center; }
+.reply { flex: 1; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); padding: 6px 9px; color: var(--muted); }
+.phone-only { display: none; }
+@media (max-width: 600px) {
+  #topbar .views, #topbar .usage, #topbar .search, #topbar .repo, .detail, .q .filters { display: none; }
+  #topbar .pill { margin-left: auto; }
+  .q { width: 100%; border-right: none; }
+  .phone-only { display: block; }
+  .keyhint { display: none; }
+  .item.sel { grid-template-columns: 22px 1fr auto; }
+  .mini { grid-column: 1 / 4; margin-top: 8px; font-family: var(--mono); font-size: 11px; white-space: pre; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: #d4d4d4; }
+  .mbtns { grid-column: 1 / 4; display: flex; gap: 8px; margin-top: 8px; }
+  .mbtns .btn { flex: 1; padding: 8px; text-align: center; font-size: 14px; }
+}
+</style>
+</head>
+<body>
+<header id="topbar">
+  <span class="brand">lazyagent</span>
+  <span class="repo">~/smith/agentsmith</span>
+  <span class="pill ok">engine ● connected</span>
+  <span class="spacer"></span>
+  <nav class="views" aria-label="Views">
+    <span class="">Worktree</span>
+    <span class="on">Attention <span class="count">4</span></span>
+    <span class="">Grid</span>
+    <span class="">Orchestrator</span>
+  </nav>
+  <span class="spacer"></span>
+  <span class="usage" title="Estimated, from transcripts (proposal 0006)">today 1.24M tok · ~$4.10</span>
+  <span class="search">Search or run a command<kbd>Ctrl+Shift+P</kbd></span>
+  <button class="btn ghost" title="Settings">⚙</button>
+</header>
+
+<main>
+<section class="q" aria-label="Needs attention">
+  <div class="filters"><span class="chip on">All 4</span><span class="chip">Approvals 1</span><span class="chip">Questions 1</span><span class="chip">CI 1</span><span class="chip">Done 1</span><span class="spacer"></span><span class="chip">Snoozed 0</span></div>
+  <div class="item sel">
+    <span class="ic y">⚠</span><span class="t"><span class="kind y">Approval</span> · Agent 2</span><span class="age">2m</span>
+    <span class="w">transfer-dir-availability</span>
+    <span class="d">Bash: docker compose exec db psql -c "DELETE FROM transfer_hours…"</span>
+    <div class="phone-only mini">Do you want to proceed?
+❯ 1. Yes
+  2. Yes, and don't ask again for docker
+  3. No, and tell Claude what to do</div>
+    <div class="phone-only mbtns"><span class="btn primary">Approve</span><span class="btn">Deny…</span><span class="btn ghost">Open</span></div>
+  </div>
+  <div class="item">
+    <span class="ic y">?</span><span class="t"><span class="kind y">Question</span> · Agent 1</span><span class="age">9m</span>
+    <span class="w">nested-validator</span>
+    <span class="d">"Should empty nested dicts be valid, or raise like empty lists?"</span>
+  </div>
+  <div class="item">
+    <span class="ic r">✗</span><span class="t"><span class="kind r">CI failed</span> · #17298</span><span class="age">14m</span>
+    <span class="w">transfer-dir-availability</span>
+    <span class="d">tests / django (3/4), vart / evals-smoke</span>
+  </div>
+  <div class="item">
+    <span class="ic c">✓</span><span class="t"><span class="kind c">Completed</span> · Agent 4</span><span class="age">31m</span>
+    <span class="w">amplitude-cleanup</span>
+    <span class="d">PR approved, CI green · review diff (+42 −310)</span>
+  </div>
+  <div style="flex:1"></div>
+  <div class="muted keyhint" style="padding:8px 12px;font-size:11.5px;border-top:1px solid var(--border)"><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>Enter</kbd> open · <kbd>e</kbd> snooze 30m · items clear themselves</div>
+</section>
+<section class="detail">
+  <div class="dh">
+    <span class="dot s-wait" style="background:var(--yellow)"></span>
+    <b>Agent 2</b><span class="wt-branch">transfer-dir-availability · PROJ-17298-dir-hours</span>
+    <span class="pill warn">waiting_for_approval · needs approval</span>
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:12px">live terminal · <kbd>Ctrl+J</kbd> to type</span>
+  </div>
+  <div class="term" style="flex:1">
+<span class="dim">● Read(src/django/agentsmith/transfers/models.py)</span>
+<span class="dim">  ⎿  Read 340 lines</span>
+
+<span class="b">●</span> The failing eval seeds overlapping hours for the same directory entry.
+  I'll clear the seeded rows in the dev DB and re-run the fixture loader.
+
+<span class="b">●</span> <span class="b">Bash</span>(docker compose exec db psql -U smith -c "DELETE FROM
+       transfer_hours WHERE directory_entry_id IN (SELECT id FROM
+       directory_entry WHERE name LIKE 'eval-%');")
+
+<span class="box" style="padding:4px 10px;border-color:var(--yellow)"> <span class="b">Bash command</span>                                                            
+                                                                          
+   docker compose exec db psql -U smith -c "DELETE FROM transfer_hours    
+   WHERE directory_entry_id IN (SELECT id FROM directory_entry WHERE      
+   name LIKE 'eval-%');"                                                  
+   Clear eval-seeded transfer hours in the shared dev DB                  
+                                                                          
+ Do you want to proceed?                                                  
+ <span class="c">❯ 1. Yes</span>                                                                 
+   2. Yes, and don't ask again for <span class="b">docker compose exec</span> commands          
+   3. No, and tell Claude what to do differently <span class="dim">(esc)</span>                    </span>
+  </div>
+  <div class="actions">
+    <button class="btn primary">Approve <kbd style="color:#fff;border-color:#fff8;background:transparent">1</kbd></button>
+    <button class="btn">Always for docker <kbd>2</kbd></button>
+    <button class="btn danger">Deny… <kbd>3</kbd></button>
+    <span class="reply">…or reply: "use the test DB instead, the dev DB slot is held by Agent 3"</span>
+    <button class="btn">Send <kbd>Ctrl+Enter</kbd></button>
+  </div>
+</section>
+</main>
+</body>
+</html>
