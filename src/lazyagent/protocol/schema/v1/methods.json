@@ -380,7 +380,9 @@
       "type": "object",
       "required": ["worktree_path"],
       "properties": {
-        "worktree_path": {"$ref": "#/$defs/worktree_path"}
+        "worktree_path": {"$ref": "#/$defs/worktree_path"},
+        "base": {"type": "string", "minLength": 1, "description": "U5: diff from the merge-base of this branch (or commit) and HEAD to the working tree, so committed work shows too. VALIDATION_ERROR when there is no merge-base. Default: the working tree against the index, as the TUI's tab."},
+        "max_bytes": {"type": "integer", "minimum": 1, "description": "U5: the cap instead of the default 64 KiB, up to 4 MiB (4194304); more is a VALIDATION_ERROR."}
       }
     },
     "get_diff.result": {

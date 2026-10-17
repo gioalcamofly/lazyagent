@@ -26,6 +26,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Collection, Coroutine, Iterable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from lazyagent import diagnostics as diag
@@ -234,12 +235,22 @@ class WorktreeService:
 
     # --- Diff ---
 
-    async def get_diff(self, path: str) -> str:
-        """Fetch a worktree's diff (capped, see ``WorktreeManager.get_diff``)."""
+    async def get_diff(
+        self, path: str, *, base: str | None = None, max_bytes: int | None = None
+    ) -> str:
+        """Fetch a worktree's diff (capped, see ``WorktreeManager.get_diff``).
+        Only the default one (no ``base``, default cap) is kept as
+        :meth:`diff`."""
+        manager = self._manager_cls()
         with diag.timed(log, "worker.diff", worktree=path) as span:
-            text = await asyncio.to_thread(self._manager_cls().get_diff, path)
+            if base is None and max_bytes is None:
+                text = await asyncio.to_thread(manager.get_diff, path)
+            else:
+                text = await asyncio.to_thread(
+                    partial(manager.get_diff, path, base=base, max_bytes=max_bytes)
+                )
             span["bytes"] = len(text)
-        if self.worktree(path) is not None:
+        if base is None and max_bytes is None and self.worktree(path) is not None:
             self._diffs[path] = text
         return text
 

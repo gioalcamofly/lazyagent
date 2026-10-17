@@ -48,6 +48,8 @@ def _run(cmd, **kwargs):
 # a large string. 64 KB is ~800 lines of diff, more than anyone reads in a
 # tab, and keeps that measurement near 50 ms.
 _MAX_DIFF_BYTES = 64 * 1024
+# What a caller may ask for instead (the web viewer is virtualised).
+MAX_DIFF_BYTES_LIMIT = 4 * 1024 * 1024
 _MAX_UNTRACKED_FILE_BYTES = 32 * 1024
 _DIFF_TRUNCATED = "… diff truncated (too large to display)"
 
@@ -297,12 +299,23 @@ class WorktreeManager:
         return statuses
 
     @staticmethod
-    def get_diff(worktree_path: str | Path) -> str:
+    def get_diff(
+        worktree_path: str | Path,
+        *,
+        base: str | None = None,
+        max_bytes: int | None = None,
+    ) -> str:
         """Get diff showing all working tree changes including untracked files.
 
         Uses ``git diff`` for tracked changes. Untracked files are inlined,
         but only up to :data:`_MAX_UNTRACKED_FILE_BYTES` each and
-        :data:`_MAX_DIFF_BYTES` overall.
+        :data:`_MAX_DIFF_BYTES` overall (``max_bytes`` when given, up to
+        :data:`MAX_DIFF_BYTES_LIMIT`).
+
+        With ``base`` (a branch or commit), the tracked part is the diff from
+        the merge-base of ``base`` and ``HEAD`` to the working tree: what
+        the branch committed plus what is staged and unstaged. Raises
+        :class:`ValueError` when the merge-base cannot be found.
 
         The caps are not cosmetic. A worktree holding a few 30 MB eval dumps
         produced 287 MB of "diff" here, and the Diff tab re-measures whatever
@@ -313,6 +326,16 @@ class WorktreeManager:
         cwd = str(worktree_path)
         parts: list[str] = []
         budget = _MAX_DIFF_BYTES
+        if max_bytes is not None:
+            budget = max(1, min(max_bytes, MAX_DIFF_BYTES_LIMIT))
+        since: list[str] = []
+        if base is not None:
+            found = _run(
+                ["git", "merge-base", base, "HEAD"], capture_output=True, cwd=cwd
+            )
+            if found.returncode != 0 or not found.stdout.strip():
+                raise ValueError(f"No merge-base between {base!r} and HEAD")
+            since = [found.stdout.decode().strip()]
 
         def add(entry: str) -> bool:
             """Append an entry within budget. Returns False once full."""
@@ -332,7 +355,7 @@ class WorktreeManager:
         try:
             # Tracked changes (staged + unstaged)
             result = _run(
-                ["git", "diff"],
+                ["git", "diff", *since],
                 capture_output=True,
                 cwd=cwd,
             )
@@ -340,12 +363,13 @@ class WorktreeManager:
                 add(result.stdout.decode("utf-8", errors="replace").strip())
 
             # Staged binary files — git diff skips these, show a marker
+            # (a diff from a merge-base already lists them).
             result = _run(
                 ["git", "diff", "--cached", "--numstat", "-z"],
                 capture_output=True,
                 cwd=cwd,
-            )
-            if result.returncode == 0 and result.stdout.strip():
+            ) if not since else None
+            if result is not None and result.returncode == 0 and result.stdout.strip():
                 for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
                     if entry.startswith("-\t-\t"):
                         f = entry[len("-\t-\t"):]
