@@ -279,8 +279,9 @@ async def test_native_terminals_through_the_host(fake_claude, host, tmp_path):
         await wait_for_text(driver, agent, "your turn>")
         sidebar = await page.request("get_sidebar_state")
         await page.request("subscribe", since=sidebar["cursor"])
+        # (The TUI shows nothing yet, so its view does not change: only the
+        # placeholder's text does.)
         await page.request("ui.blank")
-        await page.event("ui.view_changed", worktree_path=None, orchestrator=False)
         await page.wait_text("Shown in the browser")
 
         attached = await page.request("attach_stream", session_id=agent["session_id"])

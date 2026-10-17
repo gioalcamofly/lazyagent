@@ -163,24 +163,95 @@ async def test_queue_applies_in_order_in_one_batch(page):
     assert result == {"before": 0, "runs": 1, "paths": ["/r/b"]}
 
 
-async def test_selection_follows_the_hosted_view(page):
+async def test_selection_is_the_pages_own(page):
     result = await page.evaluate(
-        """async () => {
+        "async ([a, b]) => {" + STORE + """
         const { selection } = await import('/components/sidebar.js');
-        return [
-          selection(null),
-          selection({orchestrator: true, worktree_path: null, agent_id: '', focus: 'agent'}),
-          selection({orchestrator: false, worktree_path: '/r/a', agent_id: '2', focus: 'shell'}),
-          selection({orchestrator: false, worktree_path: '/r/a', agent_id: '2', focus: 'agent'}),
-        ];
-    }"""
+        store.applySidebar({worktrees: [a, b], orchestrator: {agents: [{agent_id: '9', session_id: 's9'}]},
+                            pr_info: {}, view: null, cursor: 0});
+        const out = [selection(store)];
+        store.selected.value = '/r/b';
+        out.push(selection(store));            // the last agent by default
+        store.activeAgent.value = {'/r/b': '2'};
+        out.push(selection(store));
+        store.activeAgent.value = {'/r/b': 'gone'};
+        out.push(selection(store));            // a chosen agent that left
+        store.selected.value = null;
+        out.push(selection(store));            // the orchestrator
+        store.selected.value = '/r/a';
+        out.push(selection(store));            // no agent there
+        return out;
+    }""",
+        [wt("/r/a"), wt("/r/b", [agent("2"), agent("3")])],
     )
     assert result == [
         {"path": None, "agent": None},  # undefined comes back as None
-        {"path": None, "agent": ""},
+        {"path": "/r/b", "agent": "3"},
+        {"path": "/r/b", "agent": "2"},
+        {"path": "/r/b", "agent": "3"},
+        {"path": None, "agent": "9"},
         {"path": "/r/a", "agent": None},
-        {"path": "/r/a", "agent": "2"},
     ]
+
+
+async def test_stream_frames(page):
+    result = await page.evaluate(
+        """async () => {
+        const t = await import('/lib/terminals.js');
+        const out = new Uint8Array([1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 5, 104, 105]);
+        const parsed = t.parseFrame(out.buffer);
+        const input = t.inputFrame(7, 'é');
+        const binary = t.inputFrame(0, t.binaryBytes('\x1b[M\xff'));
+        return {type: parsed.type, stream: parsed.streamId, offset: parsed.offset,
+                data: [...parsed.data], shared: parsed.data.buffer === out.buffer,
+                input: [...input], binary: [...binary]};
+    }"""
+    )
+    assert result == {
+        "type": 1,
+        "stream": 7,
+        "offset": 2**32 + 5,
+        "data": [104, 105],
+        "shared": True,  # a view, not a copy
+        "input": [2, 0, 0, 0, 7, 0xC3, 0xA9],
+        "binary": [2, 0, 0, 0, 0, 0x1B, 0x5B, 0x4D, 0xFF],
+    }
+
+
+async def test_writer_batches_while_a_write_is_pending(page):
+    result = await page.evaluate(
+        """async () => {
+        const { Writer } = await import('/lib/terminals.js');
+        const writes = [];
+        let finish = null;
+        const writer = new Writer((data, done) => { writes.push([...data]); finish = done; });
+        writer.push(new Uint8Array([1]));          // written at once
+        writer.push(new Uint8Array([2]));          // queued
+        writer.push(new Uint8Array([3, 4]));       // queued
+        const before = writes.length;
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r)));
+        const stillOne = writes.length;            // the first is still pending
+        finish();
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r)));
+        finish();
+        writer.push(new Uint8Array([5]));          // idle again: at once
+        return {before, stillOne, writes};
+    }"""
+    )
+    assert result == {"before": 1, "stillOne": 1, "writes": [[1], [2, 3, 4], [5]]}
+
+
+async def test_software_webgl_is_not_used(page):
+    result = await page.evaluate(
+        """async () => {
+        const { isSoftwareRenderer } = await import('/lib/terminals.js');
+        return ['ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)',
+                'llvmpipe (LLVM 17.0.6, 256 bits)', 'Microsoft Basic Render Driver',
+                'Mesa Intel(R) Graphics (ADL GT2)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060)', '']
+               .map(isSoftwareRenderer);
+    }"""
+    )
+    assert result == [True, True, True, False, False, False]
 
 
 def _binding_keys(bindings) -> set[str]:
