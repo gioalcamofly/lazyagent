@@ -23,8 +23,10 @@ import itertools
 import logging
 import os
 import shlex
+import uuid
 from collections.abc import Callable, Collection, Coroutine, Iterable, Mapping
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lazyagent import diagnostics as diag
@@ -41,6 +43,7 @@ from lazyagent.engine.events import (
     AGENT_SPAWNED,
     AGENT_UPDATED,
     ENGINE_NOTICE,
+    ENGINE_RESTORED,
     ENGINE_SHUTDOWN,
     JOB_FINISHED,
     JOB_OUTPUT,
@@ -55,6 +58,12 @@ from lazyagent.engine.registry import (
     AgentIdStore,
     AgentRegistry,
     default_id_store_path,
+)
+from lazyagent.engine.manifest import (
+    Entry,
+    Manifest,
+    clip_instruction,
+    manifest_path,
 )
 from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.session import (
@@ -171,6 +180,7 @@ class Engine:
         poll_interval: float = POLL_AGENTS_INTERVAL,
         hang_interval: float = CHECK_HANGS_INTERVAL,
         v1_server: bool | None = None,
+        persist_manifest: bool | None = None,
     ) -> None:
         self.repo_path = repo_path
         # Looked up on each call, not bound here, so tests can swap the
@@ -185,6 +195,15 @@ class Engine:
         if id_store is None and persist_ids:
             id_store = AgentIdStore(default_id_store_path())
         self.registry = AgentRegistry(id_store=id_store, events=self.events)
+        # The restart manifest (PR 9); None: this engine keeps none (another
+        # engine serves the repo, or a throwaway engine). Follows persist_ids
+        # unless told otherwise.
+        self._persist_manifest = (
+            persist_ids if persist_manifest is None else persist_manifest
+        )
+        self.manifest: Manifest | None = None
+        # Random per engine process: the v1 engine_id, and the manifest's.
+        self.instance_id = uuid.uuid4().hex
         self.worktree_service = WorktreeService(
             self._manager,
             find_root=find_root or (lambda: find_repo_root()),
@@ -243,6 +262,9 @@ class Engine:
                 await self._start_ipc()
             with diag.timed(log, "engine.start_v1"):
                 await self._start_v1()
+            # Only the engine that holds the repo lock keeps the manifest.
+            if self._lock is not None and self._persist_manifest:
+                self.open_manifest()
         self._scheduler = Scheduler()
         self._scheduler.every(
             self._hang_interval, diag.wrap_timer("timer.check_hangs", self.check_hangs)
@@ -254,6 +276,12 @@ class Engine:
         # Git status and PR info are polled by the service, once a minute and
         # only for the clients' interest sets.
         self.worktree_service.start()
+        if (
+            self.manifest is not None
+            and self.manifest.restorable
+            and self.config.engine.restore_on_start
+        ):
+            self._spawn(self.restore_agents())
 
     async def stop(self, reason: str = "stopped") -> None:
         """Stop the timers, jobs, servers and every session. Idempotent.
@@ -294,6 +322,9 @@ class Engine:
         for shell in list(self._shells.values()):
             shell.stop()
         self._shells.clear()
+        # The agents just stopped stay in it: the next engine offers them.
+        if self.manifest is not None:
+            await self.manifest.close()
 
     async def _start_ipc(self) -> None:
         from lazyagent.ipc import start_ipc_server
@@ -320,7 +351,7 @@ class Engine:
             return
         path = v1.socket_path(repo_root)
         lock = EngineLock(path.with_name(LOCK_NAME))
-        server = v1.V1Server(self, path)
+        server = v1.V1Server(self, path, engine_id=self.instance_id)
         try:
             v1.private_dir(path.parent)
             started = lock.acquire() and await server.start()
@@ -631,6 +662,8 @@ class Engine:
             self._stop_agent(path, agent_id)
         self.registry.drop_worktree(path)
         self.close_shell(path)
+        if self.manifest is not None:
+            self.manifest.prune(self._restorable_exists)
 
     def worktrees_payload(self, *, v1: bool = False) -> list[dict[str, Any]]:
         """The worktree list as ``list_worktrees`` / ``worktrees.changed``
@@ -803,6 +836,9 @@ class Engine:
         kind: str = AGENT_KIND,
         env: Mapping[str, str] | None = None,
         spawn_id: str = "",
+        provider_name: str | None = None,
+        resume_conversation: str | None = None,
+        agent_id: str | None = None,
     ) -> AgentInfo:
         """Start a new agent in a worktree (or the orchestrator, for
         ``kind="orchestrator"``, which runs in the repo root and ignores
@@ -810,24 +846,32 @@ class Engine:
 
         ``env`` is the environment the agent starts from; ``None`` means the
         engine's own. Emits ``agent.spawned``. ``spawn_id`` is diagnostics
-        only.
+        only. A restore also passes the provider the agent ran with, the
+        conversation to resume and the agent id to take again (a new one
+        when it is in use).
         """
+        provider_name = provider_name or self.config.agent.provider
         if kind == ORCHESTRATOR_KIND:
-            return self._spawn_orchestrator(
+            info = self._spawn_orchestrator(
                 instruction,
                 skip_permissions=skip_permissions,
                 resume_mode=resume_mode,
                 env=env,
+                provider_name=provider_name,
+                resume_conversation=resume_conversation,
             )
+            self._remember(info, provider_name, skip_permissions, instruction)
+            return info
         if kind != AGENT_KIND:
             raise ValueError(f"Unknown agent kind: {kind!r}")
         if self.worktree(worktree_path) is None:
             raise ValueError(f"Unknown worktree: {worktree_path}")
 
         key = worktree_path
-        agent_id = self.registry.new_agent_id(key)
+        if not agent_id or agent_id in self._agents.get(key, {}):
+            agent_id = self.registry.new_agent_id(key)
         label = label or f"Agent {agent_id[1:]}"
-        provider = self._provider(self.config.agent.provider)
+        provider = self._provider(provider_name)
         session_name = (
             agent_session_name(key, agent_id) if provider.session_name_flag else ""
         )
@@ -841,6 +885,7 @@ class Engine:
             session_name=session_name,
             env=env,
             spawn_id=spawn_id,
+            resume_conversation=resume_conversation,
         )
         session = AgentSession(
             command,
@@ -849,7 +894,9 @@ class Engine:
             observer=observer,
             spawn_id=spawn_id,
         )
-        return self._start_agent(session, label, session_name, AGENT_KIND)
+        info = self._start_agent(session, label, session_name, AGENT_KIND)
+        self._remember(info, provider_name, skip_permissions, instruction)
+        return info
 
     def _spawn_orchestrator(
         self,
@@ -858,12 +905,14 @@ class Engine:
         skip_permissions: bool,
         resume_mode: ResumeMode,
         env: Mapping[str, str] | None,
+        provider_name: str,
+        resume_conversation: str | None = None,
     ) -> AgentInfo:
         if self.has_agent(ORCHESTRATOR_KEY):
             raise ValueError("Orchestrator agent already running")
         self._stop_agent(ORCHESTRATOR_KEY, "")
         repo_root = self.repo_root
-        provider = self._provider(self.config.agent.provider)
+        provider = self._provider(provider_name)
         session_name = (
             agent_session_name(repo_root, "orchestrator")
             if provider.session_name_flag
@@ -879,6 +928,7 @@ class Engine:
             system_prompt=compose_orchestrator_prompt(self.config, repo_root),
             session_name=session_name,
             env=env,
+            resume_conversation=resume_conversation,
         )
         session = AgentSession(
             command, worktree_path=ORCHESTRATOR_KEY, observer=observer
@@ -897,6 +947,7 @@ class Engine:
         env: Mapping[str, str] | None,
         system_prompt: str | None = None,
         spawn_id: str = "",
+        resume_conversation: str | None = None,
     ):
         # build_runtime_context touches the filesystem for some providers
         # (hook scripts, settings files), so it is timed separately.
@@ -921,6 +972,7 @@ class Engine:
             system_prompt=system_prompt,
             session_name=session_name or None,
             env=env,
+            resume_conversation=resume_conversation,
         )
         return command, provider.create_observer_from_context(runtime_context)
 
@@ -969,6 +1021,7 @@ class Engine:
                     "detail": state.detail,
                 },
             )
+            self._note_conversation(info.worktree_path, info.agent_id)
         elif isinstance(event, SessionExited):
             self._forget_agent(
                 info.worktree_path, info.agent_id, event.exit_code, stopped=False
@@ -1004,6 +1057,8 @@ class Engine:
         if agent is None:
             return
         agent.remove_listener()
+        if self.manifest is not None:
+            self.manifest.remove(key, agent_id)
         self.registry.drop(key, agent_id)
         self.registry.unregister(key, agent_id)
         self.events.emit(
@@ -1064,6 +1119,8 @@ class Engine:
         if session is None or not session.running:
             raise ValueError("Agent terminal is not ready")
         await session.send_input(text, submit=submit)
+        if self.manifest is not None:
+            self.manifest.update(key, agent_id, instruction=clip_instruction(text))
 
     def read_agent_output(
         self, key: str, agent_id: str, lines: int
@@ -1086,6 +1143,12 @@ class Engine:
         """Pick up every agent's latest hook/telemetry events."""
         for session in self._agent_sessions():
             session.poll()
+        if self.manifest is not None:
+            for bucket in self._agents.values():
+                for agent in bucket.values():
+                    self._note_conversation(
+                        agent.info.worktree_path, agent.info.agent_id
+                    )
 
     def check_hangs(self) -> None:
         """Flag the working agents that have gone quiet for too long."""
@@ -1137,6 +1200,142 @@ class Engine:
     def write_input(session: TerminalSession, data: bytes | str) -> None:
         """Send raw input (keys, a command line) to a session."""
         session.write(data)
+
+
+    # ------------------------------------------------------------------
+    # Restart manifest (PR 9)
+    # ------------------------------------------------------------------
+
+    def open_manifest(self, path: os.PathLike[str] | str | None = None) -> Manifest:
+        """Keep the restart manifest (at ``path``, else the repo's in the
+        state dir) and take over what earlier engines left in it."""
+        if self.manifest is None:
+            root = self.repo_root
+            self.manifest = Manifest(
+                Path(path) if path is not None else manifest_path(root),
+                repo_root=root,
+                engine_id=self.instance_id,
+            )
+            self.manifest.load(self._restorable_exists)
+            count = len(self.manifest.restorable)
+            if count:
+                log.info("%d agent(s) of an earlier engine can be restored", count)
+        return self.manifest
+
+    def _restorable_exists(self, entry: Entry) -> bool:
+        if entry.kind == ORCHESTRATOR_KIND:
+            return bool(self.repo_root) and os.path.isdir(self.repo_root)
+        return self.worktree(entry.worktree_path) is not None
+
+    def _remember(
+        self,
+        info: AgentInfo,
+        provider_name: str,
+        skip_permissions: bool,
+        instruction: str | None,
+    ) -> None:
+        if self.manifest is None:
+            return
+        self.manifest.add(
+            Entry(
+                id=Entry.new_id(),
+                worktree_path=info.worktree_path,
+                agent_id=info.agent_id,
+                kind=info.kind,
+                provider=provider_name,
+                label=info.label,
+                session_name=info.session_name,
+                skip_permissions=skip_permissions,
+                instruction=clip_instruction(instruction),
+            )
+        )
+
+    def _note_conversation(self, key: str, agent_id: str) -> None:
+        if self.manifest is None:
+            return
+        session = self.get_session(key, agent_id)
+        conversation = session.conversation_id if session is not None else None
+        if conversation:
+            self.manifest.update(key, agent_id, conversation_id=conversation)
+
+    def _require_manifest(self) -> Manifest:
+        if self.manifest is None:
+            raise ValueError("This engine keeps no restart manifest")
+        return self.manifest
+
+    def list_restorable(self) -> list[Entry]:
+        """Agents earlier engines ran when they ended, oldest first."""
+        manifest = self._require_manifest()
+        manifest.prune(self._restorable_exists)
+        return sorted(manifest.restorable.values(), key=lambda e: e.started_at)
+
+    def dismiss_restorable(self, ids: Iterable[str] | None = None) -> list[str]:
+        """Stop offering these agents (every one when ``ids`` is None)."""
+        manifest = self._require_manifest()
+        wanted = list(manifest.restorable) if ids is None else list(ids)
+        return [entry.id for entry in manifest.take(wanted)]
+
+    async def restore_agents(
+        self,
+        ids: Iterable[str] | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Spawn restorable agents again (every one when ``ids`` is None),
+        each resuming its conversation: the one its provider reported, else
+        its provider's "last" (``resume_mode=last``). Same worktree, kind,
+        provider, label, permissions and, when free, agent id. Emits
+        ``engine.restored``; a failed entry stays restorable."""
+        manifest = self._require_manifest()
+        manifest.prune(self._restorable_exists)
+        wanted = list(manifest.restorable if ids is None else dict.fromkeys(ids))
+        restored: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = [
+            {"id": i, "reason": "not restorable (unknown id, or its worktree is gone)"}
+            for i in wanted
+            if i not in manifest.restorable
+        ]
+        for entry in manifest.take(wanted):
+            try:
+                info = await self.spawn_agent(
+                    entry.worktree_path,
+                    skip_permissions=entry.skip_permissions,
+                    resume_mode=ResumeMode.RESUME_LAST,
+                    label=entry.label or None,
+                    kind=entry.kind,
+                    env=env,
+                    provider_name=entry.provider,
+                    resume_conversation=entry.conversation_id,
+                    agent_id=entry.agent_id or None,
+                )
+            except (ValueError, KeyError, OSError, WorktreeManagerError) as e:
+                manifest.restorable[entry.id] = entry
+                manifest.mark_dirty()
+                failed.append(
+                    {
+                        "id": entry.id,
+                        "worktree_path": entry.worktree_path,
+                        "agent_id": entry.agent_id,
+                        "reason": str(e) or type(e).__name__,
+                    }
+                )
+                continue
+            manifest.update(
+                info.worktree_path,
+                info.agent_id,
+                instruction=entry.instruction,
+                conversation_id=entry.conversation_id,
+            )
+            restored.append(
+                {
+                    "id": entry.id,
+                    **info.to_dict(),
+                    "resumed": "conversation" if entry.conversation_id else "last",
+                }
+            )
+        result = {"restored": restored, "failed": failed}
+        self.events.emit(ENGINE_RESTORED, result)
+        return result
 
 
 def _kill(proc: asyncio.subprocess.Process) -> None:
