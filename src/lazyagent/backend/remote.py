@@ -377,9 +377,9 @@ class RemoteBackend(Backend):
             self._autostart_armed = self._autostart
             self._report_outage("the engine closed the connection")
         else:
+            how = " with lazyagent engine stop" if reason == "shutdown" else ""
             self._report_outage(
-                f"the engine was stopped ({reason}); start it again with: "
-                "lazyagent engine start"
+                f"it was stopped{how}; start it again with: lazyagent engine start"
             )
 
     async def _on_connected(self, client: Client, path: str) -> None:

@@ -569,7 +569,7 @@ def test_a_tui_does_not_restart_an_engine_stopped_on_purpose(world):
         t.wait_text("Started an engine")
         [pid] = world.engine_pids()
         assert world.lazyagent("engine", "stop", world.repo).returncode == 0
-        t.wait_text("the engine was stopped")
+        t.wait_text("it was stopped with")
         time.sleep(0.5)
         assert world.engine_pids() == []
         assert t.quit() == 0
