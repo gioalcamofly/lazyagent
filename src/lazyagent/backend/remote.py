@@ -432,6 +432,15 @@ class RemoteBackend(Backend):
             BACKEND_CONNECTED, {"first": first, "engine_changed": engine_changed}
         )
         self._announce_launch()
+        if (first or engine_changed) and hello.engine_version != __version__:
+            # A detached engine keeps running the code it started with: after
+            # an upgrade it is the old one until it is restarted.
+            self._notice(
+                "warning",
+                f"The engine runs lazyagent {hello.engine_version}, this TUI "
+                f"{__version__}. Restart it to update: lazyagent engine stop, "
+                "then lazyagent engine restore brings the agents back",
+            )
         if self._view is not None:
             self.fire("publish_view", view=self._view)
         # Re-list and sweep git status, as an in-process engine does at start.

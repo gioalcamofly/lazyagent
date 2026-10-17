@@ -574,3 +574,33 @@ async def test_the_shell_takes_the_keyboard_once_its_view_is_there(engine):
         await until(lambda: panel.shell_ready.is_set())
         await pilot.pause()
         assert app.focused is panel.query_one("#terminal-widget")
+
+
+async def test_an_engine_of_another_version_is_reported(engine, monkeypatch):
+    """A detached engine runs the code it started with: after an upgrade the
+    TUI says so (once), and how to restart it."""
+    from lazyagent.engine import server as v1
+
+    monkeypatch.setattr(v1, "_engine_version", lambda: "0.0.1")
+    backend = _remote(engine)
+    events = []
+    backend.subscribe(events.append)
+    await backend.start()
+    try:
+        notices = [e.data for e in events if e.event == "engine.notice"]
+        assert len(notices) == 1 and notices[0]["severity"] == "warning"
+        assert "runs lazyagent 0.0.1" in notices[0]["message"]
+        assert "lazyagent engine stop" in notices[0]["message"]
+    finally:
+        await backend.stop()
+
+
+async def test_an_engine_of_the_same_version_says_nothing(engine):
+    backend = _remote(engine)
+    events = []
+    backend.subscribe(events.append)
+    await backend.start()
+    try:
+        assert not [e for e in events if e.event == "engine.notice"]
+    finally:
+        await backend.stop()
