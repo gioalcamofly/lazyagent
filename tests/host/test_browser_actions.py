@@ -92,6 +92,14 @@ async def test_spawn_accelerators_stop_and_remove(fake_claude, host, browser, tm
     agent = await shown_session(page)
     await native_has(page, agent, "your turn>")
     assert any("--dangerously-skip-permissions" in line for line in _agent_cmdlines())
+    # The new agent has the keyboard: what comes next goes to it.
+    await page.wait_for_function(
+        "(id) => document.activeElement?.closest('.native-term')?.dataset.session === id",
+        arg=agent,
+    )
+    await page.keyboard.type("size")
+    await page.keyboard.press("Enter")
+    await native_has(page, agent, "size ")
 
     # Remove is guarded while the agent runs.
     await _outside(page)
