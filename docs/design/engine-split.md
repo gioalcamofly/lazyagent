@@ -585,7 +585,7 @@ The default stays embedded; flipping it is Giovanni's call. This is what a reali
   - the restorable list kept one entry per stop (three orchestrators after a few sessions): deduplicated per worktree and agent id, newest wins;
   - a remote TUI on an engine of another lazyagent version (a detached engine keeps its code after an upgrade) now warns, with how to restart it and restore the agents.
 - **Checklist before flipping the default** (open):
-  1. **Restorable agents are invisible in the TUI** (Q30): only `lazyagent engine status/restore` and v1/MCP show them. A toast on connect ("N agents can be restored") and a key or palette command would close it. Embedded quits feed the same list.
+  1. ~~**Restorable agents are invisible in the TUI** (Q30)~~ **Done:** on connecting to an engine (once per engine) the TUI toasts "N agents from an earlier session can be brought back: press R"; `R` and the command palette's "Restore agents" call `restore_agents` (from the TUI's env) and toast what came back or failed. Both modes (embedded quits feed the same list).
   2. **The engine's environment is the first TUI's** (Q22, K4): agents spawned from a TUI get that TUI's env (D5), but MCP spawns, restores from MCP and `restore_on_start` get the engine's, frozen at its start (a stale `SSH_AUTH_SOCK`, `DISPLAY`, PATH after a profile change).
   3. **Upgrades:** the engine keeps running the old code until restarted (now warned). Restarting it stops the agents (they are restorable, each into its conversation for Claude). An "upgrade when idle" restart could automate it.
   4. **Unattended boot (K8):** the boot script needs `--remote` until the flip, and a choice between `[engine] restore_on_start` and `lazyagent engine restore --all` before `/gio-planner`.
@@ -745,7 +745,7 @@ Decided for PR 9 as below; open for review.
 | Q27 | Which conversation | The exact one from Claude's hooks (`--resume <id>`), else the provider's last in that directory (`--continue`), which two agents in one worktree would share | Always `--continue`, as the plan said |
 | Q28 | Interrupted turn | Resumed as is; no "you were interrupted" prompt is typed (proposal 0009's risk) | Send a short note after the resume |
 | Q29 | `engine.restored` for MCP | **Resolved (MCP follow-up):** MCP tools `list_restorable`, `restore_agents`, `dismiss_restorable` over the legacy socket, and the legacy `list_events` carries `restores` (each `engine.restored` after `since`, with its `seq`; absent when none) next to the `agent.status` events, so /gio-planner can restore and see the result over MCP | Leave restores to the CLI and v1 |
-| Q30 | The TUI | No restore UI: the CLI, v1 and the config cover the boot | A toast with "restore" when a TUI connects to an engine with restorable agents |
+| Q30 | The TUI | **Resolved:** a toast when a TUI connects to an engine with restorable agents, and `R` / the palette's "Restore agents" (§6f) | — |
 
 ### Decisions (2026-10-15)
 

@@ -10,7 +10,7 @@ from functools import partial
 from typing import Any
 
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.css.query import NoMatches
@@ -156,6 +156,7 @@ class LazyAgent(App):
         # (you just committed and want the badge to catch up).
         Binding("alt+g", "refresh_git_status", "Git status", priority=True),
         Binding("question_mark", "help", "Help"),
+        Binding("R", "restore_agents", "Restore agents", show=False),
     ]
 
     def __init__(
@@ -167,6 +168,8 @@ class LazyAgent(App):
         self._unsubscribe_engine: Callable[[], None] | None = None
         self._selected_worktree: WorktreeInfo | None = None
         self._orchestrator_selected: bool = False
+        # The engine whose restorable agents were already offered.
+        self._restore_offered_for: str | None = None
         self._selection_debounce: Timer | None = None
         # What the center panel shows once a selection has been applied:
         # a worktree path, None for the orchestrator, or _NOTHING.
@@ -236,6 +239,8 @@ class LazyAgent(App):
             await self.backend.start()
             span["worktrees"] = len(self.worktrees)
             span["repo_root"] = self._repo_root
+        if self.backend.connected:
+            self._offer_restore()
         if self.host is not None:
             self._announce_to_host()
         # Started last so the loop is already doing real work when it begins
@@ -310,8 +315,11 @@ class LazyAgent(App):
                 severity="error",
                 timeout=10,
             )
-        elif name == BACKEND_CONNECTED and not data["first"]:
-            self.call_later(self._resync, data["engine_changed"])
+        elif name == BACKEND_CONNECTED:
+            if not data["first"]:
+                self.call_later(self._resync, data["engine_changed"])
+            if data["first"] or data["engine_changed"]:
+                self._offer_restore()
 
     async def _show_agent(self, key: str, agent_id: str, kind: str) -> None:
         """Mount the view of an agent the engine has just spawned."""
@@ -1073,6 +1081,66 @@ class LazyAgent(App):
         diag.stop_watchdog()
         await self._stop_engine()
         self.exit()
+
+    # --- Restoring agents (engine-split §6e) ---
+
+    def _offer_restore(self) -> None:
+        """Say so when the engine (once per engine) has agents an earlier
+        session ran: they are not brought back unasked."""
+        engine_id = getattr(self.backend, "engine_id", None) or "in-process"
+        if engine_id == self._restore_offered_for:
+            return
+        self._restore_offered_for = engine_id
+        self.run_worker(self._offer_restore_now(), group="restore_offer")
+
+    async def _offer_restore_now(self) -> None:
+        try:
+            agents = await self.backend.list_restorable()
+        except (EngineUnavailable, ValueError):
+            return
+        if agents:
+            count = len(agents)
+            self.notify(
+                f"{count} agent{'s' if count != 1 else ''} from an earlier "
+                "session can be brought back: press R (or Restore agents in "
+                "the command palette)",
+                title="Restore agents",
+                timeout=15,
+            )
+
+    def action_restore_agents(self) -> None:
+        self.run_worker(self._restore_agents(), group="restore", exclusive=True)
+
+    async def _restore_agents(self) -> None:
+        try:
+            result = await self.backend.restore_agents()
+        except (EngineUnavailable, ValueError) as e:
+            self.notify(f"Could not restore: {e}", severity="error", timeout=5)
+            return
+        restored, failed = result["restored"], result["failed"]
+        if not restored and not failed:
+            self.notify("Nothing to restore", timeout=3)
+            return
+        if restored:
+            count = len(restored)
+            self.notify(
+                f"Restored {count} agent{'s' if count != 1 else ''}", timeout=5
+            )
+        for failure in failed:
+            self.notify(
+                f"Could not restore {failure.get('agent_id') or failure['id']}: "
+                f"{failure['reason']}",
+                severity="warning",
+                timeout=8,
+            )
+
+    def get_system_commands(self, screen):  # type: ignore[override]
+        yield from super().get_system_commands(screen)
+        yield SystemCommand(
+            "Restore agents",
+            "Bring back the agents an earlier session ran when it ended",
+            self.action_restore_agents,
+        )
 
     def action_refresh(self) -> None:
         self._load_worktrees()

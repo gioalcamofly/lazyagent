@@ -6,6 +6,7 @@ the views render the engine's headless screen (no second emulator).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import Any
 
@@ -113,6 +114,16 @@ class InProcessBackend(Backend):
 
     async def get_diff(self, path: str) -> str:
         return await self.engine.get_diff(path)
+
+    async def list_restorable(self) -> list[dict[str, Any]]:
+        if self.engine.manifest is None:
+            return []
+        return [entry.to_dict() for entry in self.engine.list_restorable()]
+
+    async def restore_agents(
+        self, ids: list[str] | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        return await self.engine.restore_agents(ids, env=dict(os.environ))
 
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         await self.engine.refresh_pr_info(paths)
