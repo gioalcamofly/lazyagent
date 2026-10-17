@@ -650,6 +650,11 @@ Each PR is small, keeps `lazyagent` and `lazyagent host` working, and extends `t
   - Spawn's `skip_permissions` defaults to off (the TUI's `n`), unlike the v1 schema default (`true`).
 - **Tests:** test_server (whitelist), test_host_integration (the host's environment wins), test_page_js (remove guard, default base, job events), test_browser_actions (create + launch with an instruction, checked in the agent's command line; spawn with `d` and a label; the remove guard, stop with `x`/`y`, remove failing on a dirty tree then forced with `f`; the main worktree; a custom create in the job drawer, success and failure).
 - **Measured:** key → form painted p50 16.6 / p95 16.8 ms (budget 50; one frame). Nothing changed on the stream path (B1 as in U2).
+- **Manual pass** (a real `lazyagent host` on a scratch repo with two worktrees, driven by Playwright with screenshots: orchestrator spawn, two labelled agents in one worktree, the shell, light theme, a 900 px window, the help sheet). Found and fixed:
+  - the base branch prefilled as `master` in a `main` repo (the create failed): now the main worktree's branch (above);
+  - after spawning from the dialog the keys typed next went nowhere: the dialog gave the focus back to its opener after the new terminal had taken it. A dialog that started something now hands the keyboard to the shown terminal once it has closed; focus requests that retry while the terminal is not on screen yet give up when the keyboard goes elsewhere or a newer request comes (Ctrl+K, Enter right after j);
+  - Escape did nothing in the guarded Remove dialog (nothing in it had the focus): it closes any open dialog now;
+  - the sidebar toolbar wrapped to two rows and "Enable notifications" wrapped in the top bar at 900 px.
 
 ### 8b. Fit with PRs 7-9 and §6's web phase
 
