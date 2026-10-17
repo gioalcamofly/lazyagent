@@ -55,6 +55,7 @@ def _session(running=True):
     session.agent_id = "a1"
     session.running = running
     session.send_input = AsyncMock()
+    session.catch_up = AsyncMock()
     return session
 
 
