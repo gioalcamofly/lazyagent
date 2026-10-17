@@ -61,7 +61,8 @@ def classify(error: Exception) -> tuple[str, str]:
         return "WORKTREE_ERROR", str(error)
     if isinstance(error, ValueError):
         return "VALIDATION_ERROR", str(error)
-    if isinstance(error, TimeoutError):
+    # Distinct from the builtin before Python 3.11.
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
         return "TIMEOUT", "Operation timed out"
     return "INTERNAL_ERROR", str(error)
 
