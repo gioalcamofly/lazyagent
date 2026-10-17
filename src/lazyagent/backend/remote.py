@@ -729,6 +729,20 @@ class RemoteBackend(Backend):
     async def get_diff(self, path: str) -> str:
         return (await self.request("get_diff", worktree_path=path))["diff"]
 
+    async def list_restorable(self) -> list[dict[str, Any]]:
+        try:
+            return (await self.request("list_restorable"))["agents"]
+        except ValueError:
+            return []  # an engine without a restart manifest
+
+    async def restore_agents(
+        self, ids: list[str] | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        params: dict[str, Any] = {"env": dict(os.environ)}
+        if ids is not None:
+            params["ids"] = ids
+        return await self.request("restore_agents", **params)
+
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         for path in paths:
             try:
