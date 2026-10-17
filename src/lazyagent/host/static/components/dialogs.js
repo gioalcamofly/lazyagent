@@ -62,7 +62,7 @@ class Form extends Component {
     this.setState({ busy: true, error: null });
     try {
       await work();
-      this.props.onClose();
+      (this.props.onDone || this.props.onClose)();
     } catch (e) {
       this.setState({ busy: false, error: e.message || String(e) });
     }

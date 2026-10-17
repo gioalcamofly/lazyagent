@@ -83,12 +83,21 @@ function tuiBlank() {
   command("ui.blank");
 }
 
+// The latest focus request; an older one still retrying gives up.
+let focusRequest = 0;
+
 /** Give the keyboard to a session's terminal once it is on screen: tried
- * each frame (a busy page may not have shown it yet), for up to a second. */
+ * each frame (a busy page may not have shown it yet), for up to a second,
+ * and dropped as soon as the keyboard goes anywhere else meanwhile. */
 function focusTerminal(sessionId) {
+  const request = ++focusRequest;
+  const from = document.activeElement;
   let tries = 0;
   const step = () => {
+    if (request !== focusRequest) return;
+    const now = document.activeElement;
     const terminal = terminals.sessions.get(sessionId);
+    if (now !== from && now !== document.body && !terminal?.element.contains(now)) return;
     if (terminal?.visible && terminal.opened) {
       terminal.focus();
       if (terminal.element.contains(document.activeElement)) return;
@@ -218,6 +227,12 @@ const actions = {
   closeDialog() {
     store.dialog.value = null;
   },
+  /** A dialog that started something closes and the shown terminal gets
+   * the keyboard (after the dialog gave it back to its opener). */
+  dialogDone() {
+    store.dialog.value = null;
+    requestAnimationFrame(() => requestAnimationFrame(focusShown));
+  },
   async spawn({ path, instruction, skipPermissions, resumeMode, label }) {
     const params =
       path === null
@@ -228,7 +243,11 @@ const actions = {
     if (label) params.label = label;
     if (store.centerView.value === "tui") actions.showNative();
     const result = await conn.request("spawn_agent", params);
-    expectAgent(path === null ? ORCHESTRATOR_KEY : result.worktree_path, result.agent_id);
+    const key = path === null ? ORCHESTRATOR_KEY : result.worktree_path;
+    expectAgent(key, result.agent_id);
+    // Listed (so its tab exists) before the dialog closes and the
+    // terminal takes the keyboard.
+    await until(() => store.agentsOf(key).some((a) => a.agent_id === result.agent_id), 15000, "The new agent").catch(() => {});
     return result;
   },
   async create({ branch, base, extra, launch }) {
@@ -459,6 +478,11 @@ const inside = (target, selector) => target instanceof Element && target.closest
 const inField = (target) => inside(target, "input, textarea:not(.xterm-helper-textarea), select, [contenteditable]");
 
 function focusSidebar() {
+  focusRequest++;
+  focusCurrentRow();
+}
+
+function focusCurrentRow() {
   const list = document.getElementById("worktrees");
   const current = list?.querySelector("li.wt.current") || list?.querySelector("li.wt");
   current?.focus();
@@ -469,7 +493,10 @@ function moveSelection(step) {
   const at = keys.indexOf(store.selected.value);
   const next = keys[Math.min(keys.length - 1, Math.max(0, at + step))];
   actions.select(next, { focus: false });
-  requestAnimationFrame(focusSidebar);
+  // The row is re-rendered: keep the keyboard on it, unless something
+  // asked for the keyboard since (Enter right after j).
+  const request = focusRequest;
+  requestAnimationFrame(() => request === focusRequest && focusCurrentRow());
 }
 
 /** Keys the page takes before a native terminal sees them (the TUI's
@@ -574,9 +601,9 @@ function Dialogs() {
   const config = store.config.value;
   switch (dialog.kind) {
     case "spawn":
-      return html`<${SpawnDialog} path=${dialog.path} provider=${config?.agent_provider} actions=${actions} onClose=${close} />`;
+      return html`<${SpawnDialog} path=${dialog.path} provider=${config?.agent_provider} actions=${actions} onClose=${close} onDone=${actions.dialogDone} />`;
     case "create":
-      return html`<${CreateDialog} config=${config} worktrees=${store.worktrees.value} actions=${actions} onClose=${close} />`;
+      return html`<${CreateDialog} config=${config} worktrees=${store.worktrees.value} actions=${actions} onClose=${close} onDone=${actions.dialogDone} />`;
     case "remove":
       return html`<${RemoveDialog}
         worktree=${store.worktrees.value.find((w) => w.path === dialog.path)}
