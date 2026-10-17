@@ -51,6 +51,9 @@ export const WorktreeRow = memo(function WorktreeRow({ wt, pr, current, currentA
   return html`<li
     class=${`wt${current ? " current" : ""}`}
     data-path=${wt.path}
+    tabindex=${current ? 0 : -1}
+    aria-selected=${current}
+    role="treeitem"
     onClick=${() => onSelect(wt.path)}
   >
     <div class="wt-head">
@@ -68,6 +71,9 @@ const OrchestratorRow = memo(function OrchestratorRow({ agents, current, current
   return html`<li
     class=${`wt orchestrator${current ? " current" : ""}`}
     data-path=${ORCHESTRATOR_KEY}
+    tabindex=${current ? 0 : -1}
+    aria-selected=${current}
+    role="treeitem"
     onClick=${() => onSelect(null)}
   >
     <div class="wt-head"><span class="wt-name">Orchestrator</span></div>
@@ -76,20 +82,18 @@ const OrchestratorRow = memo(function OrchestratorRow({ agents, current, current
   </li>`;
 });
 
-/** What the sidebar highlights: the worktree (null = orchestrator) the
- * hosted TUI shows, and its agent when an agent tab has the focus. */
-export function selection(view) {
-  if (!view) return { path: undefined, agent: null };
-  return {
-    path: view.orchestrator ? null : view.worktree_path,
-    agent: view.focus === "agent" ? view.agent_id : null,
-  };
+/** What the sidebar highlights: the page's selection (null = the
+ * orchestrator) and the agent whose tab it shows. */
+export function selection(store) {
+  const agent = store.shownAgent();
+  return { path: store.selected.value, agent: agent ? agent.agent_id : null };
 }
 
 export function WorktreeList({ store, actions }) {
-  const sel = selection(store.view.value);
+  store.activeAgent.value;
+  const sel = selection(store);
   const prInfo = store.prInfo.value;
-  return html`<ul id="worktrees" aria-label="Worktrees">
+  return html`<ul id="worktrees" aria-label="Worktrees" role="tree">
     <${OrchestratorRow}
       agents=${store.orchestrator.value}
       current=${sel.path === null}
@@ -122,8 +126,9 @@ const TOOLBAR = [
 function Toolbar({ store, actions }) {
   const view = store.view.value;
   const enabled = store.engine.value && store.exited.value === null;
-  const onWorktree = Boolean(view && !view.orchestrator && view.worktree_path);
-  const wt = onWorktree ? store.worktrees.value.find((w) => w.path === view.worktree_path) : null;
+  const path = store.selected.value;
+  const onWorktree = Boolean(path);
+  const wt = onWorktree ? store.worktrees.value.find((w) => w.path === path) : null;
   const modalOpen = Boolean(view && view.focus === "modal");
   const allowed = {
     spawn: enabled && !modalOpen,

@@ -76,7 +76,7 @@ export class HelpSheet extends Component {
           <button type="button" class="close" onClick=${onClose} aria-label="Close">Esc</button>
         </div>
         <p class="muted">
-          Keys marked “TUI” act when the TUI pane has the keyboard, exactly as in a terminal.
+          Keys marked “TUI” act in the TUI tab, exactly as in a terminal; there every key goes to the TUI.
         </p>
         ${groups.map(
           ([title, rows]) => html`<section>
