@@ -69,10 +69,13 @@ UNWATCHED_FEED_INTERVAL = 0.25
 # Parsing done in one go before the feeder yields to the loop, the size of
 # each pyte.feed call within it, and the rest the feeder takes after a full
 # slice: hidden output gets at most about half of the loop, whatever its
-# rate, and keys and frames never wait more than a slice.
-FEED_BUDGET = 0.004
-FEED_SLICE = 1024
-FEED_REST = 0.004
+# rate, and keys and frames never wait more than a slice. Short turns: a
+# key's echo crosses the loop several times and may wait behind a turn at
+# each (1 ms turns halved the echo's p95 next to five chatty hidden agents,
+# at the same parsing throughput as 4 ms ones).
+FEED_BUDGET = 0.001
+FEED_SLICE = 512
+FEED_REST = 0.001
 
 # A hidden session whose unparsed output passes the limit (in bytes) keeps
 # only the newest part: its screen is only read by the status scan (which wants the

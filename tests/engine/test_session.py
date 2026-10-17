@@ -200,9 +200,9 @@ class TestOutput:
         Each gap between two turns of this ticker is measured in this
         thread's CPU time, which is the work the loop did in between: time
         the process spent preempted by a busy machine does not count, so the
-        bound can follow the feeder's own budget: a turn may overrun it by
-        one slice and some loop overhead, never by a multiple of it (a turn
-        budget of 100 ms, or the batch parsed in one go, shows up here).
+        bound can be tight: a turn is the 1 ms budget plus at most one slice
+        and some loop overhead (a few ms of CPU under heavy contention), so a
+        budget gone wrong (20 ms) or the batch parsed in one go shows up.
         """
         session, _, _ = _agent()
         line = b"x" * 78 + b"\r\n"
@@ -232,7 +232,7 @@ class TestOutput:
             gc.enable()
         assert session.screen.screen_text(0).startswith("x" * 78)
         assert len(gaps) > 10
-        assert max(gaps) < 0.012, (  # 3 x the 4 ms turn budget (FEED_BUDGET)
+        assert max(gaps) < 0.012, (
             f"a loop turn took {max(gaps) * 1000:.1f} ms of CPU "
             f"({max(walls) * 1000:.1f} ms wall at most)"
         )
@@ -318,7 +318,12 @@ class TestOutput:
         ]
 
     @pytest.mark.asyncio
-    async def test_catch_up_parses_in_slices_and_stops_at_the_end_it_saw(self):
+    async def test_catch_up_parses_in_slices_and_stops_at_the_end_it_saw(
+        self, monkeypatch
+    ):
+        # The background feeder stays out of it (a slow machine would let
+        # its batching timer fire and parse the late output itself).
+        monkeypatch.setattr(session_mod, "UNWATCHED_FEED_INTERVAL", 3600)
         session, _, _ = _agent()
         line = b"x" * 78 + b"\r\n"
         for _ in range(40):
