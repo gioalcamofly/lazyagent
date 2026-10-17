@@ -149,6 +149,42 @@ class ScrollbackScreen(pyte.Screen):
         kwargs.pop("private", None)
         return super().set_margins(*args, **kwargs)
 
+    def resize(self, lines: int | None = None, columns: int | None = None) -> None:
+        """Resize as a terminal does. pyte drops rows from the top on a
+        shrink, so a smaller view (a client's, even for a moment) erased
+        what the screen showed, history included. Here the rows below the
+        cursor go first, and only the rows that must leave above the cursor
+        to keep it on screen scroll into the scrollback (not on the
+        alternate screen, whose program redraws on SIGWINCH)."""
+        lines = lines or self.lines
+        if lines < self.lines:
+            shift = max(0, self.cursor.y - (lines - 1))
+            if shift and (_ALT_SCREEN << _PRIVATE_SHIFT) not in self.mode:
+                for y in range(shift):
+                    self.scrollback.append(
+                        _encode_scrollback_row(
+                            self.buffer[y],
+                            self.columns,
+                            self.default_char,
+                            self._style_key_intern,
+                        )
+                    )
+            kept = {
+                y - shift: row
+                for y, row in self.buffer.items()
+                if shift <= y < shift + lines
+            }
+            self.buffer.clear()
+            self.buffer.update(kept)
+            self.cursor.y -= shift
+            # pyte now only has the columns to change (and the margins).
+            self.lines = lines
+            self.dirty.update(range(lines))
+            if columns is None or columns == self.columns:
+                self.set_margins()
+                return
+        super().resize(lines, columns)
+
     def index(self):
         top, bottom = self.margins or Margins(0, self.lines - 1)
         if self.cursor.y == bottom and top == 0:
