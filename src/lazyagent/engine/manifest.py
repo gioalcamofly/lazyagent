@@ -168,6 +168,12 @@ class Manifest:
         self._writer = writer
         self._dirty = False
         self._task: asyncio.Task | None = None
+        # True while the debounce task only sleeps: the one moment it may be
+        # cancelled. A write in progress must finish (its thread would go on
+        # anyway), so writes are serialized by a lock, created on first use
+        # (on the loop that writes).
+        self._sleeping = False
+        self._lock: asyncio.Lock | None = None
         self.writes = 0
 
     # ------------------------------------------------------------------
@@ -267,31 +273,42 @@ class Manifest:
 
     async def _write_soon(self) -> None:
         while self._dirty:
-            await asyncio.sleep(self._debounce)
+            self._sleeping = True
+            try:
+                await asyncio.sleep(self._debounce)
+            finally:
+                self._sleeping = False
             await self._write()
 
     async def _write(self) -> None:
-        self._dirty = False
-        # The snapshot is taken on the loop (a few dicts); encoding, writing
-        # and fsync happen in a worker thread.
-        payload = self.payload()
-        try:
-            await asyncio.to_thread(self._writer, self.path, payload)
-            self.writes += 1
-        except OSError as e:
-            log.warning("could not write the restart manifest %s: %s", self.path, e)
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if not self._dirty:
+                return
+            self._dirty = False
+            # The snapshot is taken on the loop (a few dicts); encoding,
+            # writing and fsync happen in a worker thread.
+            payload = self.payload()
+            try:
+                await asyncio.to_thread(self._writer, self.path, payload)
+                self.writes += 1
+            except OSError as e:
+                log.warning(
+                    "could not write the restart manifest %s: %s", self.path, e
+                )
 
     async def flush(self) -> None:
-        """Write now if anything changed, and wait for it."""
+        """Write now if anything changed, and wait for it, and for a write
+        already under way."""
         task = self._task
-        if task is not None and not task.done():
+        if task is not None and not task.done() and self._sleeping:
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        if self._dirty:
-            await self._write()
+        await self._write()
 
     async def close(self) -> None:
         """Flush; the running agents stay in the file, so the next engine

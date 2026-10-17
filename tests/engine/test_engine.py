@@ -334,7 +334,36 @@ class TestClientEnv:
         await _until(lambda: "VALUE=shell-client" in _shown(shell))
 
 
+async def _output(
+    session: TerminalSession, needle: bytes, timeout: float = 30.0
+) -> None:
+    """Wait until ``needle`` appears in the session's raw output (from now
+    on). Raw bytes, not the screen: a long line would wrap there. The
+    timeout only bounds a hang; the wait ends with the output."""
+    seen = bytearray()
+    found = asyncio.Event()
+
+    def on_output(offset: int, data: bytes) -> None:
+        seen.extend(data)
+        if needle in seen:
+            found.set()
+
+    detach = session.attach(on_output, watching=lambda: False)
+    try:
+        await asyncio.wait_for(found.wait(), timeout)
+    finally:
+        detach()
+
+
 class TestShells:
+    @pytest.fixture(autouse=True)
+    def _own_home(self, tmp_path, monkeypatch):
+        """The login shell reads no rc file of the real user (slow, and not
+        this test's business)."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
     @pytest.mark.asyncio
     async def test_open_shell_is_get_or_create(self, running, feat):
         shell = running.open_shell(str(feat))
@@ -343,8 +372,12 @@ class TestShells:
         assert running.open_shell(str(feat)) is shell
         assert running.get_shell(str(feat)) is shell
 
-        running.write_input(shell, "pwd\n")
-        await _until(lambda: str(feat) in _shown(shell))
+        # The shell runs in the worktree. The marker is computed, so the echo
+        # of the command line cannot match it.
+        waiting = asyncio.ensure_future(_output(shell, b"cwd-42"))
+        await asyncio.sleep(0)
+        running.write_input(shell, f"[ \"$PWD\" = '{feat}' ] && echo cwd-$((40+2))\n")
+        await waiting
 
     @pytest.mark.asyncio
     async def test_an_exited_shell_is_replaced(self, running, feat):

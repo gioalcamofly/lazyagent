@@ -37,10 +37,10 @@ def _attach_result(stream) -> dict:
     return result
 
 
-async def _idle(client, agent):
+async def _idle(client, agent, timeout: float = 10.0):
     """Wait for a command to finish (it prints done and the prompt)."""
     await until(lambda: True)
-    await wait_for_text(client, agent, "done")
+    await wait_for_text(client, agent, "done", timeout=timeout)
 
 
 async def test_snapshot_then_live_has_no_gap(harness, client):
@@ -100,9 +100,11 @@ async def test_reattach_outside_the_ring_gets_a_snapshot(harness, client, where)
     output = Output()
     stream = await client.attach(agent["session_id"], output)
     if where == "too old":
-        # Further back than a raw tail is allowed to reach.
-        client.send_input(stream.stream_id, b"spew 2000000\r")
-        await _idle(client, agent)
+        # Further back than a raw tail is allowed to reach (512 KiB), with
+        # room to spare. Only the outcome matters here, not how fast the
+        # megabyte goes through, so a loaded machine gets a long timeout.
+        client.send_input(stream.stream_id, b"spew 1000000\r")
+        await _idle(client, agent, timeout=60)
         from_offset = 0
     else:
         from_offset = 10**12
