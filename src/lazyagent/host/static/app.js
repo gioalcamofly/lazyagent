@@ -460,6 +460,8 @@ async function loadSidebar() {
     store.enqueue(() => {
       store.applySidebar(sidebar);
       afterSidebar();
+      // A quiet agent sends no event after it is listed: wake the waiters.
+      for (const waiter of [...waiters]) waiter();
     });
   } catch (e) {
     store.toast(`Sidebar: ${e.message}`, "error");

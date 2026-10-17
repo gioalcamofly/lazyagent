@@ -13,9 +13,15 @@ const isText = (el) => el instanceof Element && el.matches("input[type=text], in
 export class Dialog extends Component {
   componentDidMount() {
     this.opener = document.activeElement;
-    const first = this.base.querySelector(
-      "[autofocus], textarea, input, button.primary:not(:disabled), button.danger:not(:disabled), button.close",
-    );
+    // In priority order: the close button comes first in the document.
+    const first = [
+      "[autofocus]",
+      "textarea",
+      "input",
+      "button.primary:not(:disabled)",
+      "button.danger:not(:disabled)",
+      "button.close",
+    ].reduce((found, selector) => found || this.base.querySelector(selector), null);
     first?.focus();
   }
   componentWillUnmount() {
