@@ -595,6 +595,7 @@ class V1Server:
                 "ui.open_shell": self.handle_ui_open_shell,
                 "ui.show_diff": self.handle_ui_show_diff,
                 "ui.open_modal": self.handle_ui_open_modal,
+                "ui.blank": self.handle_ui_blank,
             }
         )
 
@@ -1168,6 +1169,9 @@ class V1Server:
     async def handle_ui_show_diff(self, conn: _Connection, params: dict) -> Any:
         path = self._ui_target(params, orchestrator=False)
         return self._ui_command("show_diff", worktree_path=path)
+
+    async def handle_ui_blank(self, conn: _Connection, params: dict) -> Any:
+        return self._ui_command("blank", worktree_path=None)
 
     async def handle_ui_open_modal(self, conn: _Connection, params: dict) -> Any:
         modal = params.get("modal")

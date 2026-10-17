@@ -536,6 +536,8 @@
       "properties": {"worktree_path": {"$ref": "#/$defs/worktree_path", "description": "Default: the worktree the UI shows."}}
     },
     "ui.show_diff.result": {"$ref": "#/$defs/ui_command"},
+    "ui.blank.params": {"type": "object", "properties": {}, "description": "The hosted UI shows no worktree (a placeholder) until the next ui command, so it renders no agent: a host that shows the agents natively sends it while the hosted UI is out of sight."},
+    "ui.blank.result": {"$ref": "#/$defs/ui_command"},
     "ui.open_modal.params": {
       "type": "object",
       "required": ["modal"],

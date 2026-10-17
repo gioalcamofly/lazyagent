@@ -124,6 +124,34 @@ async def test_host_focuses_an_agent(tmp_path, monkeypatch, backend_kind):
             await client.close()
 
 
+async def test_host_blanks_the_tui(tmp_path, monkeypatch, backend_kind):
+    """ui.blank: the TUI shows no worktree, so the agent's view hides and
+    stops rendering; the next selection brings it back."""
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
+    async with app.run_test(size=SIZE):
+        client = await _connect(app)
+        try:
+            await checked(client, "ui.select_worktree", worktree_path=app.feat)
+            agent = await spawn(client, app.feat)
+            await _view(client, agent_id=agent["agent_id"], focus="agent")
+            terminal = app.query_one(MonitoredTerminal)
+            assert terminal._detach_output is not None
+
+            result = await checked(client, "ui.blank")
+            assert result["command"] == "blank" and result["worktree_path"] is None
+            await _view(client, worktree_path=None, orchestrator=False, agent_id=None)
+            await until(lambda: terminal._detach_output is None)
+            placeholder = app.query_one("#center-placeholder")
+            assert placeholder.display and "browser" in str(placeholder.render())
+
+            await checked(client, "ui.select_worktree", worktree_path=app.feat)
+            await _view(client, worktree_path=app.feat, agent_id=agent["agent_id"])
+            await until(lambda: terminal._detach_output is not None)
+            assert not placeholder.display
+        finally:
+            await client.close()
+
+
 async def test_host_opens_the_spawn_modal(tmp_path, monkeypatch, backend_kind):
     app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
     async with app.run_test(size=SIZE) as pilot:
