@@ -176,7 +176,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #engine-state { padding: 6px 10px; margin: 0; font-size: 11px; border-top: 1px solid var(--border); }
 
 .center { flex: 1; position: relative; display: flex; min-width: 0; }
-#terminal-pane { flex: 1; position: relative; min-width: 0; background: var(--term-bg); }
+#terminal-pane { flex: 1; position: relative; min-width: 0; background: #121212; }
 #terminal { position: absolute; inset: 4px 0 0 6px; }
 
 #overlay {

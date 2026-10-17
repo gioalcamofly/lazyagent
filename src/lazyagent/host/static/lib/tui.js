@@ -4,8 +4,16 @@
 
 import { Terminal } from "../vendor/xterm/xterm.mjs";
 import { FitAddon } from "../vendor/xterm/addon-fit.mjs";
-import { effect } from "./html.js";
-import { resolvedTheme, terminalTheme } from "./theme.js";
+
+// The TUI paints its own (dark) palette over the whole screen, so its
+// terminal stays dark in both page themes: a light background would only
+// show as a frame around it.
+const TUI_THEME = {
+  background: "#121212",
+  foreground: "#e0e0e0",
+  cursor: "#e0e0e0",
+  selectionBackground: "#0178d466",
+};
 
 /** @param {import("./conn.js").Connection} conn */
 export function createTui(conn) {
@@ -14,7 +22,7 @@ export function createTui(conn) {
     fontSize: 13,
     cursorBlink: false,
     scrollback: 1000,
-    theme: terminalTheme(),
+    theme: TUI_THEME,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -27,10 +35,6 @@ export function createTui(conn) {
     conn.send(bytes);
   });
   term.onResize(({ rows, cols }) => conn.sendJson({ type: "resize", rows, cols }));
-  effect(() => {
-    resolvedTheme.value;
-    term.options.theme = terminalTheme();
-  });
 
   return {
     term,

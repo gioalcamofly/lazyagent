@@ -128,7 +128,8 @@ async def test_theme_and_help_sheet(host, browser):
     await page.click("#theme")
     assert await root.get_attribute("data-theme") == "light"
     assert await page.evaluate(background) == "rgb(246, 246, 246)" != dark
-    assert await page.evaluate("window.lazyagent.tui.term.options.theme.background") == "#fbfbfb"
+    # The hosted TUI paints its own dark palette: its terminal stays dark.
+    assert await page.evaluate("window.lazyagent.tui.term.options.theme.background") == "#121212"
     # Kept across a reload (the token is in sessionStorage).
     await page.reload()
     await page.wait_for_selector("#conn.ok", timeout=30000)
