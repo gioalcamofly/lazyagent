@@ -3,6 +3,7 @@
 import { html, Component } from "../lib/html.js";
 import { KEYMAP, SCOPES } from "../lib/keymap.js";
 import { theme, cycleTheme } from "../lib/theme.js";
+import { NOTIFY_KINDS } from "../lib/store.js";
 import { JobsButton } from "./jobs.js";
 
 const THEME_TEXT = { dark: "Dark", light: "Light", system: "System" };
@@ -22,15 +23,83 @@ function NotifyButton() {
   </button>`;
 }
 
-export function TopBar({ store }) {
+function ViewSwitch({ store, actions }) {
+  const view = store.centerView.value;
+  const count = store.attention.value.length;
+  return html`<div class="views-switch" role="tablist" aria-label="Views">
+    <button
+      type="button"
+      role="tab"
+      id="view-worktrees"
+      aria-selected=${view !== "attention"}
+      class=${view !== "attention" ? "on" : ""}
+      title="Worktrees (g w)"
+      onClick=${actions.showNative}
+    >
+      Worktrees
+    </button>
+    <button
+      type="button"
+      role="tab"
+      id="view-attention"
+      aria-selected=${view === "attention"}
+      class=${`${view === "attention" ? "on" : ""}${count ? " has" : ""}`}
+      title="Needs attention (g a)"
+      onClick=${actions.showAttention}
+    >
+      Attention${count ? html` <span class="count">${count}</span>` : ""}
+    </button>
+  </div>`;
+}
+
+class Settings extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { open: false };
+  }
+  render({ store }) {
+    const settings = store.notifySettings.value;
+    return html`<span class="settings">
+      <button
+        id="settings-button"
+        type="button"
+        title="Notifications"
+        aria-expanded=${this.state.open}
+        onClick=${() => this.setState({ open: !this.state.open })}
+      >
+        ⚙
+      </button>
+      ${this.state.open &&
+      html`<div id="settings" class="popover" role="dialog" aria-label="Notification settings">
+        <strong>Desktop notifications</strong>
+        <p class="muted">When the page is not focused. Kept in this browser.</p>
+        ${Object.entries(NOTIFY_KINDS).map(
+          ([kind, text]) => html`<label class="inline">
+            <input
+              type="checkbox"
+              data-kind=${kind}
+              checked=${settings[kind] !== false}
+              onChange=${(e) => store.setNotify(kind, e.target.checked)}
+            />
+            ${text}
+          </label>`,
+        )}
+      </div>`}
+    </span>`;
+  }
+}
+
+export function TopBar({ store, actions }) {
   const conn = store.conn.value;
   return html`<header id="topbar">
     <span class="brand">lazyagent</span>
+    <${ViewSwitch} store=${store} actions=${actions} />
     <span id="repo" class="muted">${store.repoRoot.value}</span>
     <span class="spacer"></span>
     <${JobsButton} store=${store} />
     <span id="conn" class=${`pill ${conn.kind}`}>${conn.text}</span>
     <${NotifyButton} />
+    <${Settings} store=${store} />
     <button
       id="theme"
       type="button"
