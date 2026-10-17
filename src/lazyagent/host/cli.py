@@ -202,8 +202,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="lazyagent host",
         description=(
-            "Run lazyagent in a minimal web host (experimental): the TUI in a "
-            "browser terminal next to a live sidebar. Serves 127.0.0.1 only."
+            "Run lazyagent in a web page (experimental): the agents and "
+            "shells in native browser terminals next to a live sidebar, and "
+            "the TUI itself as one more tab. Serves 127.0.0.1 only."
         ),
     )
     parser.add_argument(
