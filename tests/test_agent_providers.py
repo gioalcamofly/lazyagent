@@ -413,3 +413,13 @@ class TestBuildCommandInstruction:
         )[2]
         assert "--dangerously-skip-permissions" in script
         assert "deploy now" in script
+
+
+def test_a_hosted_tuis_marker_is_not_passed_on():
+    """LAZYAGENT_HOST is for the hosted TUI: a lazyagent started inside one
+    of its agents or shells (which may outlive the host) is not hosted."""
+    from lazyagent.agent_providers import env_exports
+
+    script = env_exports(base={"LAZYAGENT_HOST": "lazyagent-host-1", "KEEP": "1"})
+    assert "LAZYAGENT_HOST" not in script
+    assert "KEEP" in script

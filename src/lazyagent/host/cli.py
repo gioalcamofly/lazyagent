@@ -12,6 +12,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from lazyagent.backend import ENGINE_ENV
 from lazyagent.engine.client import Client, ConnectionClosed, RequestError, discover
 from lazyagent.host.server import HostServer
 from lazyagent.host.tui import HostedTui
@@ -114,7 +115,13 @@ class Host:
             await self.tui.start()
             self._print(f"lazyagent (pid {self.tui.pid}) is running in {self.root}")
             self._print(f"open {self.server.url}")
-            self._print("Ctrl+C here, or q in the TUI, quits")
+            if self.tui.env.get(ENGINE_ENV, "").strip().lower() == "remote":
+                self._print(
+                    "Ctrl+C here, or q in the TUI, quits; the agents keep "
+                    "running in the engine (lazyagent engine stop stops it)"
+                )
+            else:
+                self._print("Ctrl+C here, or q in the TUI, quits (with the agents)")
             if self.open_browser:
                 webbrowser.open(self.server.url)
             self._spawn(self._discover())
@@ -218,6 +225,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--open", action="store_true", help="Open the page in the default browser"
     )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Run the TUI on the repo's engine process, starting it when none "
+        "runs: quitting leaves the agents running (LAZYAGENT_ENGINE=remote)",
+    )
     args = parser.parse_args(argv)
     if not (STATIC_ROOT / "index.html").is_file():
         print(f"lazyagent host: web assets missing from {STATIC_ROOT}", file=sys.stderr)
@@ -227,12 +240,16 @@ def main(argv: list[str] | None = None) -> None:
     except (ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    environ = dict(os.environ)
+    if args.remote:
+        environ[ENGINE_ENV] = "remote"
     host = Host(
         repo=args.repo,
         cwd=os.getcwd(),
         root=root,
         port=args.port,
         open_browser=args.open,
+        environ=environ,
     )
     try:
         code = asyncio.run(host.run())
