@@ -1,14 +1,18 @@
 //! `lazyagent-desktop [repo]`: the native desktop app for lazyagent.
 
 mod app;
+mod attention;
+mod attention_view;
 mod bench;
 mod boxdraw;
 mod conn;
 mod dialogs;
 mod fonts;
 mod gpu;
+mod notify;
 mod pacer;
 mod panes;
+mod persist;
 mod render;
 mod store;
 mod term_view;
@@ -66,14 +70,14 @@ fn present_mode() -> Option<eframe::wgpu::PresentMode> {
 
 pub struct Args {
     pub repo: Option<PathBuf>,
-    pub theme: ThemeKind,
+    pub theme: Option<ThemeKind>,
     pub screenshot: Option<PathBuf>,
     pub after_ms: u64,
     pub bench: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { repo: None, theme: ThemeKind::Dark, screenshot: None, after_ms: 1500, bench: None };
+    let mut args = Args { repo: None, theme: None, screenshot: None, after_ms: 1500, bench: None };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().ok_or(format!("{name} needs a value"));
@@ -84,8 +88,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--theme" => {
                 args.theme = match value("--theme")?.as_str() {
-                    "light" => ThemeKind::Light,
-                    "dark" => ThemeKind::Dark,
+                    "light" => Some(ThemeKind::Light),
+                    "dark" => Some(ThemeKind::Dark),
                     other => return Err(format!("unknown theme {other}")),
                 }
             }

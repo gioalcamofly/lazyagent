@@ -32,8 +32,11 @@ fn worktree(path: &str, branch: &str, agents: Vec<serde_json::Value>) -> serde_j
 
 fn app(worktrees: Vec<serde_json::Value>) -> (App, mpsc::Sender<Msg>) {
     let (tx, rx) = mpsc::channel();
-    let conn = Conn::new("/r/repo".into(), Env::process(), tx.clone(), egui::Context::default());
-    let state = State::new(conn, FontSet::bundled_only(), ThemeKind::Dark);
+    // The app's state file goes to a temporary dir, never the user's.
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/r/repo".into(), env, tx.clone(), egui::Context::default());
+    let state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
     let seed: SidebarState = serde_json::from_value(json!({
         "worktrees": worktrees, "orchestrator": {"agents": []}, "pr_info": {}, "git_statuses": {},
         "view": null, "cursor": 1
@@ -239,7 +242,7 @@ fn against_a_real_engine_spawn_type_and_see_the_echo() {
     let ctx = egui::Context::default();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, ctx);
     conn.spawn_supervisor();
-    let state = State::new(conn.clone(), FontSet::bundled_only(), ThemeKind::Dark);
+    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
     let mut h = harness(App::new(state, rx, None));
     step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
     h.get_by_label("Spawn an agent").click();
@@ -267,7 +270,7 @@ fn world_app() -> Option<(lazyagent_testkit::World, Harness<'static, App>, std::
     let (tx, rx) = mpsc::channel();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, egui::Context::default());
     conn.spawn_supervisor();
-    let state = State::new(conn.clone(), FontSet::bundled_only(), ThemeKind::Dark);
+    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
     let mut h = harness(App::new(state, rx, None));
     step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
     Some((world, h, conn))
@@ -324,7 +327,7 @@ fn a_failing_custom_create_shows_its_output_and_launches_nothing() {
     let (tx, rx) = mpsc::channel();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, egui::Context::default());
     conn.spawn_supervisor();
-    let mut h = harness(App::new(State::new(conn.clone(), FontSet::bundled_only(), ThemeKind::Dark), rx, None));
+    let mut h = harness(App::new(State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark)), rx, None));
     step_until(&mut h, "seeded with the config", |a| a.state.seeded && a.state.store.config.is_some());
     h.get_by_label("+ New").click();
     h.run_steps(2);
@@ -442,4 +445,197 @@ fn the_spawn_dialog_passes_instruction_and_permissions() {
     assert!(cmd.contains("write the tests"), "{cmd}");
     assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
     conn.shutdown();
+}
+
+fn pr_json() -> serde_json::Value {
+    json!({"number": 7, "title": "Login", "state": "OPEN", "url": "https://github.com/o/r/pull/7",
+           "review_decision": "REVIEW_REQUIRED", "mergeable": "MERGEABLE", "checks": [
+               {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
+               {"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE", "details_url": "https://ci/1"}]})
+}
+
+#[test]
+fn the_attention_queue_ranks_badges_dismisses_and_snoozes() {
+    use crate::app::View;
+    let (app, tx) = app(vec![
+        worktree("/r/repo", "main", vec![agent("a1", "Done one", "completed", "s1")]),
+        worktree(
+            "/r/repo-f",
+            "f",
+            vec![agent("a2", "Asker", "waiting_for_user", "s2"), agent("a3", "Gate", "waiting_for_approval", "s3")],
+        ),
+    ]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let order: Vec<String> = h.state().state.attention.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(order, ["Gate", "Asker", "Done one"]);
+    assert!(h.state().title.starts_with("(3) lazyagent"), "{}", h.state().title);
+    // g a (outside a terminal: the agent's terminal has the keyboard, so
+    // Ctrl+K first): the attention view, with the most urgent item picked.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::G);
+    h.key_press(egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(h.state().state.view, View::Attention);
+    assert!(h.query_all_by_label("Needs approval").count() >= 1);
+    h.get_by_label("Dismiss").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.attention.len(), 2);
+    h.get_by_label("Snooze 1h").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.attention.len(), 1);
+    assert_eq!(h.state().state.saved.marks.dismissed.len(), 1);
+    assert_eq!(h.state().state.saved.marks.snoozed.len(), 1);
+    // The asker stops asking, then asks again: a new occurrence shows.
+    let set = |status: &str| {
+        event(
+            "agent.updated",
+            json!({"worktree_path": "/r/repo-f", "agent_id": "a3", "status": status, "confidence": "high", "detail": ""}),
+        )
+    };
+    tx.send(set("running")).unwrap();
+    h.run_steps(2);
+    tx.send(set("waiting_for_approval")).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().state.attention.len(), 2, "dismissing hid that occurrence only");
+    // g w: back.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::G);
+    h.key_press(egui::Key::W);
+    h.run_steps(2);
+    assert_eq!(h.state().state.view, View::Worktrees);
+}
+
+#[test]
+fn a_failing_pr_is_queued_toasted_and_shown_in_the_panel() {
+    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![agent("a1", "Fixer", "running", "s1")])]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    tx.send(event("pr_info.updated", json!({"path": "/r/repo", "pr_info": pr_json()}))).unwrap();
+    h.run_steps(2);
+    let s = &h.state().state;
+    assert!(s.toasts.iter().any(|t| t.text.contains("CI is failing on repo (#7 Login)")));
+    let ci = s.attention.iter().find(|i| i.kind == crate::attention::Kind::Ci).expect("a CI item");
+    assert_eq!(ci.detail, "tests");
+    // The worktree's PR panel (Ctrl+.): the PR linked, every check.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Period);
+    h.run_steps(2);
+    assert!(h.state().state.pr_panel);
+    h.get_by_label("#7 Login");
+    h.get_by_label("tests");
+    h.get_by_label("lint");
+    // In the queue, the CI item offers to send the failures to the agent.
+    h.state_mut().state.view = crate::app::View::Attention;
+    h.state_mut().state.att_selected = Some("Ci:/r/repo:7".into());
+    h.run_steps(2);
+    h.get_by_label("Send the failures to Fixer").click();
+    h.run_steps(2);
+    // No engine here: the send fails, and says so.
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("Not sent")));
+}
+
+#[test]
+fn marks_and_settings_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = Env::process().with("XDG_STATE_HOME", Some(dir.path().to_str().unwrap()));
+    let path = crate::persist::path("/r/repo", &env);
+    let mut saved = crate::persist::Saved::default();
+    saved.notify.insert("done".into(), false);
+    saved.marks.dismissed.insert("x@1".into(), crate::app::unix_now());
+    saved.theme = Some("light".into());
+    let mut saver = crate::persist::Saver::new(path.clone());
+    saver.touch();
+    saver.flush(&saved);
+    let (tx, _rx) = mpsc::channel();
+    let conn = Conn::new("/r/repo".into(), env, tx, egui::Context::default());
+    let state = State::new(conn, FontSet::bundled_only(), None);
+    assert!(!state.saved.notify_on("done"));
+    assert_eq!(state.saved.marks.dismissed.len(), 1);
+    assert_eq!(state.theme.kind, ThemeKind::Light, "the saved theme, since no --theme was given");
+}
+
+#[test]
+fn a_reply_reaches_a_real_agent() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "the prompt", |a| {
+        a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("your turn>"))
+    });
+    let agent = h.state().state.store.agents(&world.repo)[0].agent_id.clone();
+    h.state_mut().state.send_reply(&world.repo, &agent, "from the queue".into());
+    step_until(&mut h, "the agent's answer", |a| {
+        a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("got: 'from the queue'"))
+    });
+    step_until(&mut h, "the delivery toast", |a| a.state.toasts.iter().any(|t| t.text.starts_with("Sent")));
+    conn.shutdown();
+}
+
+#[test]
+fn deriving_the_queue_for_200_agents_is_cheap() {
+    let statuses = ["running", "waiting_for_user", "completed", "waiting_for_approval", "failed"];
+    let trees: Vec<_> = (0..40)
+        .map(|w| {
+            let agents =
+                (0..5).map(|a| agent(&format!("a{a}"), "x", statuses[(w + a) % 5], &format!("s{w}{a}"))).collect();
+            worktree(&format!("/r/repo-{w}"), &format!("b{w}"), agents)
+        })
+        .collect();
+    let mut store = crate::store::Store::default();
+    store.seed(
+        serde_json::from_value(json!({"worktrees": trees, "orchestrator": {"agents": []}, "pr_info": {},
+                                      "git_statuses": {}, "view": null, "cursor": 0}))
+        .unwrap(),
+    );
+    let mut since = std::collections::HashMap::new();
+    let marks = crate::attention::Marks::default();
+    let mut times = vec![];
+    for i in 0..50 {
+        let t = Instant::now();
+        let items = crate::attention::items(&store, &[], &[], &mut since, &marks, i as f64);
+        times.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!(items.len(), 160);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = times[47];
+    println!("queue of 200 agents re-derived: p50 {:.3} / p95 {p95:.3} ms", times[25]);
+    if !cfg!(debug_assertions) {
+        assert!(p95 < 2.0, "p95 {p95} ms");
+    }
+}
+
+#[test]
+fn render_the_attention_view_and_the_pr_panel() {
+    let (app, tx) = app(vec![
+        worktree("/r/repo", "main", vec![agent("a1", "Fixer", "completed", "s1")]),
+        worktree("/r/repo-login", "feat-login", vec![agent("a2", "Implementer", "waiting_for_approval", "s2")]),
+        worktree("/r/repo-docs", "docs", vec![agent("a3", "Writer", "waiting_for_user", "s3")]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1300.0, 760.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(2);
+    tx.send(event("pr_info.updated", json!({"path": "/r/repo", "pr_info": pr_json()}))).unwrap();
+    h.run_steps(2);
+    let ctx = h.ctx.clone();
+    let pane = h.state_mut().state.pane("s2", PaneKind::Agent, &ctx);
+    pane.inner.lock().unwrap().term.feed(
+        "\x1b[1mBash command\x1b[0m\r\n\r\n  \x1b[33mnpm test -- --watch=false\x1b[0m\r\n\r\nDo you want to proceed?\r\n\x1b[36m❯ 1. Yes\x1b[0m\r\n  2. No, and tell Claude what to do differently\r\n"
+            .as_bytes(),
+    );
+    h.state_mut().state.view = crate::app::View::Attention;
+    h.run_steps(3);
+    let out = std::env::temp_dir();
+    match h.render() {
+        Ok(image) => image.save(out.join("lazyagent-desktop-attention.png")).unwrap(),
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => return,
+    }
+    h.state_mut().state.view = crate::app::View::Worktrees;
+    h.state_mut().state.selected = Some("/r/repo".into());
+    h.state_mut().state.pr_panel = true;
+    h.run_steps(3);
+    h.render().unwrap().save(out.join("lazyagent-desktop-pr-panel.png")).unwrap();
 }
