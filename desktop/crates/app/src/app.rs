@@ -13,7 +13,9 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, Id, Key, KeyboardShortcut, Layout, Modifiers, RichText, Sense, Stroke, Ui, Vec2,
 };
 use lazyagent_proto::EngineEvent;
-use lazyagent_proto::types::{OpenShellResult, SpawnResult, Worktree};
+use lazyagent_proto::types::{
+    CreateWorktreeResult, OpenShellResult, RestorableAgent, RestorableList, SpawnResult, Worktree,
+};
 use serde_json::json;
 
 use crate::conn::{Conn, Link, Msg};
@@ -47,6 +49,23 @@ pub struct Toast {
     pub text: String,
     pub severity: Severity,
     pub at: Instant,
+}
+
+/// A custom create/remove command the engine runs (`job.*` events).
+pub struct Job {
+    pub id: String,
+    pub title: String,
+    pub command: String,
+    pub output: String,
+    /// `Some(code)` once finished (`None` inside: killed by a signal).
+    pub finished: Option<Option<i32>>,
+}
+
+struct PendingLaunch {
+    path: String,
+    instruction: String,
+    skip: bool,
+    job: Option<String>,
 }
 
 /// Hooks a bench (or a test) runs at the end of each frame.
@@ -84,6 +103,18 @@ pub struct State {
     pub font_size: f32,
     pub atlas: Option<Atlas>,
     pub shell_split: f32,
+    pub dialog: Option<crate::dialogs::Dialog>,
+    dialog_seq: u64,
+    pub jobs: Vec<Job>,
+    pub jobs_open: bool,
+    pub restorable: Vec<RestorableAgent>,
+    restore_hidden: bool,
+    /// A worktree being created to launch an agent in, once listed.
+    pending_launch: Option<PendingLaunch>,
+    /// Select this worktree once it is listed (a new one).
+    pending_select: Option<String>,
+    /// A terminal had the keyboard last frame (single-letter keys are its).
+    pub terminal_focused: bool,
     pub frames: u64,
     pub frame_started: Instant,
     /// eframe's CPU time of the previous frame (ui + tessellation + paint), seconds.
@@ -119,6 +150,15 @@ impl State {
             font_size: fonts::font_size(),
             atlas: None,
             shell_split: 0.34,
+            dialog: None,
+            dialog_seq: 0,
+            jobs: vec![],
+            jobs_open: false,
+            restorable: vec![],
+            restore_hidden: false,
+            pending_launch: None,
+            pending_select: None,
+            terminal_focused: false,
             frames: 0,
             frame_started: Instant::now(),
             last_frame_cpu: None,
@@ -138,6 +178,150 @@ impl State {
         self.conn.env.vars().into_iter().map(|(k, v)| (k, json!(v))).collect()
     }
 
+    /// The app's environment, for what it starts (D5).
+    pub fn env_json(&self) -> serde_json::Value {
+        serde_json::Value::Object(self.env_map())
+    }
+
+    pub fn open_dialog(&mut self, kind: crate::dialogs::Kind) {
+        use crate::dialogs::{Dialog, Kind};
+        let target = self.selected.clone().unwrap_or_default();
+        if kind != Kind::Create && kind != Kind::Help && target.is_empty() {
+            return;
+        }
+        if kind == Kind::Remove && target == ORCHESTRATOR_KEY {
+            return;
+        }
+        self.dialog_seq += 1;
+        let mut d = Dialog::new(kind, self.dialog_seq, target.clone());
+        match kind {
+            Kind::Create => {
+                d.target = String::new();
+                d.base = crate::dialogs::default_base(self.store.config.as_ref(), &self.store.worktrees);
+            }
+            Kind::Stop => {
+                let Some(agent) = self
+                    .tabs
+                    .get(&target)
+                    .cloned()
+                    .or_else(|| self.store.agents(&target).first().map(|a| a.agent_id.clone()))
+                else {
+                    self.toast(Severity::Info, "No agent to stop here.");
+                    return;
+                };
+                d.agent_id = Some(agent);
+            }
+            _ => {}
+        }
+        self.dialog = Some(d);
+    }
+
+    /// After a spawn answered: show and focus the new agent.
+    pub fn spawned(&mut self, target: &str, v: &serde_json::Value) {
+        if let Ok(r) = serde_json::from_value::<SpawnResult>(v.clone()) {
+            let path = if target.is_empty() { ORCHESTRATOR_KEY.to_string() } else { target.to_string() };
+            self.tabs.insert(path.clone(), r.agent_id.clone());
+            self.selected = Some(path);
+            self.focus_request = Some(Focus::Agent);
+            self.focus_session = r.session_id;
+        }
+    }
+
+    pub fn after_create(&mut self, r: CreateWorktreeResult, launch: Option<(String, bool)>) {
+        if let Some(w) = &r.warning
+            && r.job_id.is_none()
+        {
+            self.toast(Severity::Warning, w.clone());
+        }
+        if r.job_id.is_some() {
+            self.jobs_open = true;
+        } else {
+            self.toast(Severity::Info, format!("Created worktree {}", store::basename(&r.path)));
+        }
+        self.pending_select = Some(r.path.clone());
+        if let Some((instruction, skip)) = launch {
+            self.pending_launch = Some(PendingLaunch { path: r.path, instruction, skip, job: r.job_id });
+        }
+        self.conn.notify("refresh_worktrees", json!({}));
+    }
+
+    pub fn after_remove(&mut self, path: &str, job: Option<String>) {
+        if job.is_some() {
+            self.jobs_open = true;
+        } else {
+            self.toast(Severity::Info, format!("Removed worktree {}", store::basename(path)));
+        }
+        if self.selected.as_deref() == Some(path) {
+            self.selected = self.store.worktrees.iter().find(|w| w.is_main).map(|w| w.path.clone());
+        }
+    }
+
+    /// Runs what waits for a worktree to show up (select it, launch in it).
+    fn pending(&mut self) {
+        if let Some(path) = self.pending_select.clone()
+            && self.store.worktree(&path).is_some()
+        {
+            self.selected = Some(path);
+            self.pending_select = None;
+        }
+        let Some(p) = &self.pending_launch else { return };
+        if let Some(job) = &p.job
+            && let Some(j) = self.jobs.iter().find(|j| &j.id == job)
+            && let Some(code) = j.finished
+            && code != Some(0)
+        {
+            self.toast(Severity::Error, "The create command failed; no agent launched (see the job log).");
+            self.pending_launch = None;
+            return;
+        }
+        let job_done = p.job.as_ref().is_none_or(|job| self.jobs.iter().any(|j| &j.id == job && j.finished.is_some()));
+        if !job_done || self.store.worktree(&p.path).is_none() {
+            return;
+        }
+        let p = self.pending_launch.take().unwrap();
+        let params = json!({
+            "worktree_path": p.path,
+            "instruction": (!p.instruction.is_empty()).then_some(p.instruction),
+            "skip_permissions": p.skip,
+            "env": self.env_json(),
+        });
+        let path = p.path.clone();
+        self.conn.clone().request("spawn_agent", params, move |s, reply| match reply {
+            Ok(v) => s.spawned(&path, &v),
+            Err(e) => s.toast(
+                Severity::Error,
+                format!("The worktree is there, but the agent did not start: {e}. Spawn again with s."),
+            ),
+        });
+    }
+
+    fn fetch_restorable(&mut self) {
+        self.conn.request("list_restorable", json!({}), |s, reply| {
+            // VALIDATION_ERROR: an engine without a manifest (nothing to offer).
+            if let Ok(list) = reply.and_then(|v| {
+                serde_json::from_value::<RestorableList>(v)
+                    .map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+            }) {
+                s.restorable = list.agents;
+            }
+        });
+    }
+
+    pub fn restore(&mut self, all: bool) {
+        let params = if all { json!({"env": self.env_json()}) } else { json!({"ids": [], "env": self.env_json()}) };
+        self.restore_hidden = true;
+        self.conn.request("restore_agents", params, |s, reply| {
+            if let Err(e) = reply {
+                s.toast(Severity::Error, format!("Restore failed: {e}"));
+            }
+            s.fetch_restorable();
+        });
+    }
+
+    pub fn dismiss_restorable(&mut self) {
+        self.restore_hidden = true;
+        self.conn.request("dismiss_restorable", json!({}), |s, _| s.restorable.clear());
+    }
     pub fn pane(&mut self, session_id: &str, kind: PaneKind, ctx: &egui::Context) -> Arc<Pane> {
         let palette = self.theme.palette();
         self.panes
@@ -175,6 +359,8 @@ impl State {
                         i.claim_pending = false;
                     }
                 }
+                self.restore_hidden = false;
+                self.fetch_restorable();
                 if started {
                     self.toast(
                         Severity::Info,
@@ -258,6 +444,52 @@ impl State {
             EngineEvent::EngineShutdown(s) => {
                 self.toast(Severity::Warning, format!("The engine is shutting down ({}).", s.reason));
             }
+            EngineEvent::JobStarted(j) => {
+                self.jobs.push(Job {
+                    id: j.job_id,
+                    title: j.title,
+                    command: j.command,
+                    output: String::new(),
+                    finished: None,
+                });
+                if self.jobs.len() > 20 {
+                    self.jobs.remove(0);
+                }
+                self.jobs_open = true;
+            }
+            EngineEvent::JobOutput(o) => {
+                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == o.job_id) {
+                    j.output.push_str(&o.text);
+                    // Keep the tail: a job log is for the last lines.
+                    if j.output.len() > 256 * 1024 {
+                        let cut = j.output.len() - 192 * 1024;
+                        let cut = (cut..j.output.len()).find(|i| j.output.is_char_boundary(*i)).unwrap_or(cut);
+                        j.output.drain(..cut);
+                    }
+                }
+            }
+            EngineEvent::JobFinished(f) => {
+                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == f.job_id) {
+                    j.finished = Some(f.exit_code);
+                    let title = j.title.clone();
+                    match f.exit_code {
+                        Some(0) => self.toast(Severity::Info, format!("{title}: done")),
+                        Some(c) => {
+                            self.toast(Severity::Error, format!("{title}: failed (exit code {c}); see the job log"))
+                        }
+                        None => self.toast(Severity::Error, format!("{title}: killed")),
+                    }
+                }
+            }
+            EngineEvent::EngineRestored(r) => {
+                if !r.restored.is_empty() {
+                    self.toast(Severity::Info, format!("Restored {} agent(s)", r.restored.len()));
+                }
+                for f in &r.failed {
+                    self.toast(Severity::Error, format!("Could not restore {}: {}", f.id, f.reason));
+                }
+                self.fetch_restorable();
+            }
             _ => {}
         }
     }
@@ -298,16 +530,9 @@ impl State {
             Some(p) => params["worktree_path"] = json!(p),
             None => params["kind"] = json!("orchestrator"),
         }
+        let target = worktree.unwrap_or_default();
         self.conn.request("spawn_agent", params, move |s, reply| match reply {
-            Ok(v) => {
-                if let Ok(r) = serde_json::from_value::<SpawnResult>(v) {
-                    let path = worktree.unwrap_or_else(|| ORCHESTRATOR_KEY.to_string());
-                    s.tabs.insert(path.clone(), r.agent_id.clone());
-                    s.selected = Some(path);
-                    s.focus_request = Some(Focus::Agent);
-                    s.focus_session = r.session_id;
-                }
-            }
+            Ok(v) => s.spawned(&target, &v),
             Err(e) => s.toast(Severity::Error, format!("Could not spawn an agent: {e}")),
         });
     }
@@ -416,6 +641,32 @@ impl App {
         if take(Modifiers::CTRL, Key::Num0) {
             zoom(s, fonts::font_size());
         }
+        if take(Modifiers::ALT, Key::G)
+            && let Some(p) = s.selected.clone().filter(|p| p != ORCHESTRATOR_KEY)
+        {
+            s.conn.notify("refresh_git_status", json!({"paths": [p]}));
+        }
+        // Single letters belong to a terminal that has the keyboard, and to
+        // text fields; otherwise they are the TUI's action keys.
+        let outside = s.dialog.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
+        if outside {
+            use crate::dialogs::Kind;
+            if take(Modifiers::NONE, Key::S) {
+                s.open_dialog(Kind::Spawn);
+            } else if take(Modifiers::NONE, Key::X) {
+                s.open_dialog(Kind::Stop);
+            } else if take(Modifiers::NONE, Key::C) {
+                s.open_dialog(Kind::Create);
+            } else if take(Modifiers::NONE, Key::D) {
+                s.open_dialog(Kind::Remove);
+            } else if take(Modifiers::SHIFT, Key::R) {
+                s.restore(true);
+            } else if take(Modifiers::NONE, Key::R) {
+                s.conn.notify("refresh_worktrees", json!({}));
+            } else if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
+                s.open_dialog(Kind::Help);
+            }
+        }
         if s.focus == Focus::Sidebar && ctx.memory(|m| m.has_focus(self.sidebar_id)) {
             if take(Modifiers::NONE, Key::J) || take(Modifiers::NONE, Key::ArrowDown) {
                 s.move_selection(1);
@@ -488,6 +739,12 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("↻").on_hover_text("Refresh the worktree list (r)").clicked() {
                     s.conn.notify("refresh_worktrees", json!({}));
+                }
+                if ui.button("+ New").on_hover_text("Create a worktree (c)").clicked() {
+                    s.open_dialog(crate::dialogs::Kind::Create);
+                }
+                if ui.button("?").on_hover_text("Keys").clicked() {
+                    s.open_dialog(crate::dialogs::Kind::Help);
                 }
             });
         });
@@ -600,6 +857,7 @@ impl App {
         };
         let orchestrator = selected == ORCHESTRATOR_KEY;
         self.link_banner(ui);
+        self.restore_banner(ui);
         // Header.
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -634,9 +892,18 @@ impl App {
                         }
                     }
                 }
-                if ui.button("+ Agent").on_hover_text("Spawn an agent here").clicked() {
-                    let target = (!orchestrator).then(|| selected.clone());
-                    self.state.spawn_agent(target);
+                if ui.button("+ Agent").on_hover_text("Spawn an agent here (s)").clicked() {
+                    self.state.open_dialog(crate::dialogs::Kind::Spawn);
+                }
+                if !orchestrator {
+                    if ui.button("Remove").on_hover_text("Remove this worktree (d)").clicked() {
+                        self.state.open_dialog(crate::dialogs::Kind::Remove);
+                    }
+                    if !self.state.store.agents(&selected).is_empty()
+                        && ui.button("Stop").on_hover_text("Stop the agent of the active tab (x)").clicked()
+                    {
+                        self.state.open_dialog(crate::dialogs::Kind::Stop);
+                    }
                 }
             });
         });
@@ -683,8 +950,7 @@ impl App {
                     );
                     ui.add_space(6.0);
                     if ui.button(if orchestrator { "Start the orchestrator" } else { "Spawn an agent" }).clicked() {
-                        let target = (!orchestrator).then(|| selected.clone());
-                        self.state.spawn_agent(target);
+                        self.state.open_dialog(crate::dialogs::Kind::Spawn);
                     }
                 });
                 if self.state.focus_request == Some(Focus::Agent) && self.state.focus != Focus::Sidebar {
@@ -760,10 +1026,89 @@ impl App {
             term_view::show(ui, &pane, view, atlas, client.as_ref(), &self.state.theme, focus_now, window_focused);
         if out.response.has_focus() {
             self.state.focus = role;
+            self.state.terminal_focused = true;
         }
         if out.drew {
             self.state.terminal_draws += 1;
         }
+    }
+
+    /// Agents an earlier engine ran (the restart manifest), offered back.
+    fn restore_banner(&mut self, ui: &mut Ui) {
+        let n = self.state.restorable.len();
+        if n == 0 || self.state.restore_hidden || self.state.link != Link::Connected {
+            return;
+        }
+        let t = self.state.theme;
+        egui::Frame::new()
+            .fill(t.panel)
+            .stroke(Stroke::new(1.0, t.primary))
+            .corner_radius(CornerRadius::same(4))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let names: Vec<String> = self
+                        .state
+                        .restorable
+                        .iter()
+                        .take(4)
+                        .map(|a| {
+                            let label =
+                                if a.label.is_empty() { format!("Agent {}", a.agent_id) } else { a.label.clone() };
+                            format!("{label} ({})", self.state.place_name(&a.worktree_path))
+                        })
+                        .collect();
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{n} agent(s) from an earlier session can be brought back: {}",
+                                names.join(", ")
+                            ))
+                            .color(t.text),
+                        )
+                        .truncate(),
+                    );
+                    if ui.button("Restore all (Shift+R)").clicked() {
+                        self.state.restore(true);
+                    }
+                    if ui.button("Dismiss").clicked() {
+                        self.state.dismiss_restorable();
+                    }
+                    if ui.button("Later").clicked() {
+                        self.state.restore_hidden = true;
+                    }
+                });
+            });
+    }
+
+    /// The output of custom create/remove commands (`job.*`).
+    fn job_drawer(&mut self, ui: &mut Ui) {
+        let t = self.state.theme;
+        let mut open = self.state.jobs_open;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Jobs").strong());
+            if let Some(j) = self.state.jobs.last() {
+                let (txt, c) = match j.finished {
+                    None => ("running".to_string(), t.yellow),
+                    Some(Some(0)) => ("done".to_string(), t.green),
+                    Some(Some(code)) => (format!("failed ({code})"), t.red),
+                    Some(None) => ("killed".to_string(), t.red),
+                };
+                ui.label(RichText::new(format!("{}: {txt}", j.title)).color(c));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("✖").on_hover_text("Close the job log").clicked() {
+                    open = false;
+                }
+            });
+        });
+        egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+            for j in &self.state.jobs {
+                ui.label(RichText::new(format!("$ {}", j.command)).monospace().color(t.muted));
+                ui.label(RichText::new(&j.output).monospace());
+            }
+        });
+        self.state.jobs_open = open;
     }
 
     /// While the engine is not reachable, say so above the (stale) view.
@@ -982,9 +1327,19 @@ impl App {
                     .show(ui, |ui| self.footer(ui));
                 self.sidebar(ui);
             });
+        if self.state.jobs_open && !self.state.jobs.is_empty() {
+            egui::Panel::bottom("jobs")
+                .resizable(true)
+                .default_size(160.0)
+                .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(10, 6)))
+                .show(ui, |ui| self.job_drawer(ui));
+        }
+        self.state.terminal_focused = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(8, 0)))
             .show(ui, |ui| self.center(ui, &ctx));
+        crate::dialogs::show(&ctx, &mut self.state);
+        self.state.pending();
         self.toasts(&ctx);
         self.state.stream_policy();
         if let Some(mut hook) = self.hook.take() {
