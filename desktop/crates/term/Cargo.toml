@@ -1,0 +1,16 @@
+[package]
+name = "lazyagent-term"
+description = "Terminal emulation for lazyagent's desktop app: alacritty_terminal plus xterm input encoding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+
+[dev-dependencies]
+lazyagent-proto = { path = "../proto" }
+lazyagent-testkit = { path = "../testkit" }
+serde_json.workspace = true

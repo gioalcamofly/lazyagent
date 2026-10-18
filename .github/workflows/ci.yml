@@ -44,6 +44,9 @@ jobs:
       - name: Install the Python package
         run: uv sync --group dev
 
+      - name: Software Vulkan (lavapipe) for the headless render tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -60,9 +63,10 @@ jobs:
         working-directory: desktop
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Test (integration tests against the Python engine are required)
+      - name: Test (the Python engine and a Vulkan adapter are required)
         working-directory: desktop
         env:
           LAZYAGENT_PYTHON: ${{ github.workspace }}/.venv/bin/python
           LAZYAGENT_REQUIRE_ENGINE: "1"
+          LAZYAGENT_REQUIRE_GPU: "1"
         run: cargo test --locked

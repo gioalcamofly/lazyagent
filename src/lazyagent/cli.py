@@ -8,6 +8,7 @@
 - ``lazyagent engine …``: run or manage the engine (:mod:`lazyagent.engine.cli`).
 - ``lazyagent host …``: the TUI in a web page (experimental).
 - ``lazyagent mcp``: the MCP server (``python -m lazyagent.mcp_server``).
+- ``lazyagent desktop [repo]``: the native desktop app (:mod:`lazyagent.desktop`).
 
 A repo dir literally named like a subcommand must be passed as ``./engine``.
 Subcommands never load Textual. A remote TUI starts the engine before it
@@ -20,7 +21,7 @@ import argparse
 import os
 import sys
 
-SUBCOMMANDS = ("engine", "host", "mcp")
+SUBCOMMANDS = ("engine", "host", "mcp", "desktop")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,7 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="TUI for managing coding agents across git worktrees",
         epilog="Subcommands: lazyagent engine {start,stop,status,logs} [repo] "
         "(the engine that owns the agents); lazyagent host [repo] (the TUI in "
-        "a web page, experimental); lazyagent mcp (the MCP server). A repo "
+        "a web page, experimental); lazyagent desktop [repo] (the native desktop "
+        "app); lazyagent mcp (the MCP server). A repo "
         "dir literally named like a subcommand must be passed as ./engine.",
     )
     parser.add_argument(
@@ -64,6 +66,10 @@ def main(argv: list[str] | None = None) -> None:
 
         host_main(argv[1:])
         return
+    if argv[:1] == ["desktop"]:
+        from lazyagent.desktop import main as desktop_main
+
+        sys.exit(desktop_main(argv[1:]))
     if argv[:1] == ["mcp"]:
         from lazyagent.mcp_server import mcp
 
