@@ -116,6 +116,14 @@ pub struct State {
     pub atlas: Option<Atlas>,
     pub shell_split: f32,
     pub view: View,
+    /// The selected worktree's diff replaces its agents and shell.
+    pub diff_open: bool,
+    pub diff: Option<crate::diff_view::DiffState>,
+    pub comment_edit: Option<crate::diff_view::CommentEdit>,
+    pub review: Option<crate::diff_view::ReviewForm>,
+    pub pending_reviews: Vec<crate::diff_view::PendingReview>,
+    /// Bumped when comments change (the diff rows carry them).
+    pub comments_gen: u64,
     pub saved: crate::persist::Saved,
     saver: crate::persist::Saver,
     /// The attention queue, re-derived when its inputs change.
@@ -163,6 +171,12 @@ impl State {
             theme.unwrap_or(if saved.theme.as_deref() == Some("light") { ThemeKind::Light } else { ThemeKind::Dark });
         State {
             view: View::Worktrees,
+            diff_open: false,
+            diff: None,
+            comment_edit: None,
+            review: None,
+            pending_reviews: vec![],
+            comments_gen: 0,
             saved,
             saver: crate::persist::Saver::new(saved_path),
             attention: vec![],
@@ -385,6 +399,10 @@ impl State {
             }
         }
         self.notified.retain(|o| current.contains(o));
+    }
+
+    pub fn touch_saved(&mut self) {
+        self.saver.touch();
     }
 
     pub fn move_attention(&mut self, delta: i32) {
@@ -789,6 +807,13 @@ impl App {
     fn global_keys(&mut self, ctx: &egui::Context) {
         let s = &mut self.state;
         let take = |mods: Modifiers, key: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(mods, key)));
+        // Ctrl+D is EOF inside a terminal: there, Ctrl+Shift+D (Q6).
+        if take(Modifiers::CTRL | Modifiers::SHIFT, Key::D)
+            || (!s.terminal_focused && !ctx.text_edit_focused() && take(Modifiers::CTRL, Key::D))
+        {
+            s.view = View::Worktrees;
+            s.toggle_diff();
+        }
         if take(Modifiers::CTRL, Key::Period) {
             s.pr_panel = !s.pr_panel;
         }
@@ -1136,6 +1161,14 @@ impl App {
                 {
                     self.state.pr_panel = !self.state.pr_panel;
                 }
+                if !orchestrator
+                    && ui
+                        .selectable_label(self.state.diff_open, "Diff")
+                        .on_hover_text("The worktree's changes (Ctrl+D outside a terminal, Ctrl+Shift+D)")
+                        .clicked()
+                {
+                    self.state.toggle_diff();
+                }
                 if ui.button("+ Agent").on_hover_text("Spawn an agent here (s)").clicked() {
                     self.state.open_dialog(crate::dialogs::Kind::Spawn);
                 }
@@ -1151,6 +1184,14 @@ impl App {
                 }
             });
         });
+        if self.state.diff_open {
+            if self.state.diff.as_ref().is_some_and(|d| d.path == selected) {
+                self.diff_view(ui);
+                return;
+            }
+            // Another worktree was selected: its agents, not the old diff.
+            self.state.diff_open = false;
+        }
         // Tabs.
         let agents: Vec<(String, String, String, Option<String>)> = self
             .state
@@ -1605,6 +1646,8 @@ impl App {
                 }
             });
         crate::dialogs::show(&ctx, &mut self.state);
+        self.diff_dialogs(&ctx);
+        self.state.pending_reviews();
         self.state.pending();
         self.toasts(&ctx);
         self.state.stream_policy();
