@@ -251,3 +251,26 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 ## 10. As landed
 
 (One note per phase.)
+
+### D1: protocol client (2026-10-18)
+
+- **Workspace** `desktop/` (`Cargo.lock` committed, `rustfmt.toml` at 120 columns, release profile with thin LTO). Crates: `lazyagent-proto` and `lazyagent-testkit` (test support, not published). `target/` is ignored.
+- **`lazyagent-proto`:**
+  - `framing`: the Python framing byte for byte (test vectors taken from `lazyagent.protocol.framing`); the decoder fails for good on a bad header and skips a bad payload, as the Python one; consumed bytes are dropped only when they dominate the buffer (no memmove per frame).
+  - `envelope`: req/res/evt; unknown fields ignored; error codes as strings (open set).
+  - `types`: every method result and event the app uses; open sets (statuses, confidence, delivery, kinds) stay strings. `EngineEvent::parse` gives the known events a shape; an unknown event, or a known one with an unreadable payload, is `Other` and ignored.
+  - `client`: a reader thread per connection; writes from the caller's thread under one mutex (a key is one `write_all`, no hop). Requests block (`request`/`call`, with a timeout) or call back on the reader thread (`request_async`); a request that cannot be sent still completes its callback. `attach_async` registers the sink under the stream id when the reader sees the response, before any output frame of that stream; `stream.resized` / `stream.reset` / `stream.closed` reach the sink on the reader thread in wire order, so a terminal can apply a resize exactly where it falls in the bytes. Pastes over 64 KiB go out as several input frames.
+  - `discovery`: repo root, runtime dir (`sha1(root)[:12]`, `XDG_RUNTIME_DIR` else `TMPDIR`/`/tmp` + `lazyagent-<uid>`), `engine.json` naming this repo + a socket that accepts a connection, `LAZYAGENT_ENGINE_SOCKET`, `LAZYAGENT_ENGINE_AUTOSTART=0`. Auto-start runs `$LAZYAGENT_PYTHON -m lazyagent engine start <root>` (else `lazyagent` on PATH) without the client-only variables. Everything takes an explicit `Env` (process env plus overrides), so tests run isolated engines side by side.
+- **Sync with Python** (`tests/golden.rs`): the 19 golden fixtures of the methods the app uses decode and re-encode **without losing a field** (a new field in a Python response fails the test until the Rust type has it); error fixtures decode; every method the app calls has params and result schemas; **every event in `events.json` is either handled or listed as deliberately ignored** (`ui.command`, `ui.view_changed`), so a new event forces a decision; the required fields of `attach_stream`, `claim_size`, `open_shell` and `get_config` results equal the schema's.
+- **Integration** (`tests/engine.rs`, a real `python -m lazyagent.engine` per test in its own process group, the fake agent behind a `claude` shim, killed in `Drop`): hello + capabilities + sidebar + config; error responses; spawn → `agent.spawned` → attach (snapshot) → type → echo → `claim_size` → `stream.resized` → the agent sees the size → `resize` → stop → `stream.closed` + `agent.exited {stopped}` with no offset gap; detach + re-attach from the last byte is a `tail`; shell + create (`worktrees.changed`) + diff + remove; a dead engine fails pending requests; auto-start through `lazyagent engine start` (idempotent) then `shutdown`.
+- **Found on the way:** typing before the fake agent prints its prompt loses the input to the PTY's line discipline (it is not in raw mode yet); the tests wait for the prompt, and the app will too only in the sense that real agents do the same (nothing to fix in the engine).
+- **CI:** a `desktop` job: `uv sync`, stable Rust with clippy/rustfmt, `Swatinem/rust-cache`, `cargo fmt --check`, `clippy -D warnings`, `cargo test --locked` with `LAZYAGENT_REQUIRE_ENGINE=1` so the engine tests cannot silently skip.
+- **Measured** (release, this laptop, 300 samples after 30 warm-up, 3 runs):
+
+  | | p50 | p95 | p99 |
+  |---|---|---|---|
+  | B3 echo, Rust client → engine process → fake agent → back | 1.14-1.38 ms | 1.73-1.95 ms | 2.08-2.38 ms |
+  | Same with the Python reference client (separate engine process, same session) | 1.08-1.17 | 1.74-1.93 | 2.02-2.35 |
+  | `tests/perf/test_echo.py` (engine inside the test's process: no process hop) | 1.03 | 1.39-1.40 | 1.49-1.77 |
+
+  The client adds nothing measurable: the round trip is the engine's (budget B3 p95 ≤ 3 ms; target ≤ 1.5 ms is met at p50 and missed by the engine hop at p95, which no client can remove). Cold engine start through `lazyagent engine start`: **0.20-0.23 s**.
