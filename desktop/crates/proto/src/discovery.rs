@@ -31,18 +31,23 @@ impl std::error::Error for DiscoveryError {}
 
 /// The repo root an engine is named after, as the engine computes it: the
 /// given path resolved, else `git rev-parse --show-toplevel` from the cwd.
-pub fn repo_root(path: Option<&Path>) -> Result<String, DiscoveryError> {
+pub fn repo_root(path: Option<&Path>, cwd: Option<&Path>) -> Result<String, DiscoveryError> {
     if let Some(p) = path {
         let resolved = std::fs::canonicalize(p).map_err(|e| DiscoveryError(format!("{}: {e}", p.display())))?;
         return Ok(resolved.to_string_lossy().into_owned());
     }
-    let out = Command::new("git")
+    let mut git = Command::new("git");
+    if let Some(dir) = cwd {
+        git.current_dir(dir);
+    }
+    let out = git
         .args(["rev-parse", "--show-toplevel"])
         .stderr(Stdio::null())
         .output()
         .map_err(|e| DiscoveryError(format!("cannot run git: {e}")))?;
     if !out.status.success() {
-        let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+        let cwd = cwd.map(Path::to_path_buf).or_else(|| std::env::current_dir().ok());
+        let cwd = cwd.map(|p| p.display().to_string()).unwrap_or_default();
         return Err(DiscoveryError(format!("Not inside a git repository: {cwd}")));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches(['\n', '\r']).to_string())
@@ -52,8 +57,51 @@ pub fn repo_digest(root: &str) -> String {
     sha1_smol::Sha1::from(root.as_bytes()).digest().to_string()[..12].to_string()
 }
 
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+/// The environment discovery reads and a started engine inherits: the
+/// process's, with overrides (tests run isolated engines side by side).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Env {
+    overrides: Vec<(String, Option<String>)>,
+}
+
+impl Env {
+    /// The process environment as it is.
+    pub fn process() -> Env {
+        Env::default()
+    }
+
+    /// Sets (or, with `None`, unsets) a variable.
+    pub fn with(mut self, name: &str, value: Option<&str>) -> Env {
+        self.overrides.retain(|(n, _)| n != name);
+        self.overrides.push((name.to_string(), value.map(str::to_string)));
+        self
+    }
+
+    /// A variable's value; empty counts as unset.
+    pub fn get(&self, name: &str) -> Option<String> {
+        match self.overrides.iter().find(|(n, _)| n == name) {
+            Some((_, v)) => v.clone(),
+            None => std::env::var(name).ok(),
+        }
+        .filter(|v| !v.is_empty())
+    }
+
+    /// The full environment, overrides applied.
+    pub fn vars(&self) -> Vec<(String, String)> {
+        let mut vars: Vec<(String, String)> =
+            std::env::vars().filter(|(n, _)| !self.overrides.iter().any(|(o, _)| o == n)).collect();
+        vars.extend(self.overrides.iter().filter_map(|(n, v)| v.clone().map(|v| (n.clone(), v))));
+        vars
+    }
+
+    fn apply(&self, cmd: &mut Command) {
+        for (n, v) in &self.overrides {
+            match v {
+                Some(v) => cmd.env(n, v),
+                None => cmd.env_remove(n),
+            };
+        }
+    }
 }
 
 /// `$XDG_RUNTIME_DIR/lazyagent/<hash>`, else `<tmp>/lazyagent-<uid>/<hash>`.
@@ -69,13 +117,13 @@ pub fn runtime_dir_with(root: &str, get: impl Fn(&str) -> Option<String>) -> Pat
     Path::new(&tmp).join(format!("lazyagent-{uid}")).join(digest)
 }
 
-pub fn runtime_dir(root: &str) -> PathBuf {
-    runtime_dir_with(root, env_var)
+pub fn runtime_dir(root: &str, env: &Env) -> PathBuf {
+    runtime_dir_with(root, |n| env.get(n))
 }
 
 /// `engine.json` when it names this repo.
-pub fn engine_info(root: &str) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(runtime_dir(root).join("engine.json")).ok()?;
+pub fn engine_info(root: &str, env: &Env) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(runtime_dir(root, env).join("engine.json")).ok()?;
     let info: serde_json::Value = serde_json::from_str(&text).ok()?;
     (info.get("repo_root")?.as_str()? == root).then_some(info)
 }
@@ -86,8 +134,8 @@ pub fn alive(path: &Path) -> bool {
 }
 
 /// The socket of a live engine serving `root`, or `None`.
-pub fn find(root: &str) -> Option<PathBuf> {
-    let info = engine_info(root)?;
+pub fn find(root: &str, env: &Env) -> Option<PathBuf> {
+    let info = engine_info(root, env)?;
     let path = PathBuf::from(info.get("socket")?.as_str()?);
     alive(&path).then_some(path)
 }
@@ -103,11 +151,11 @@ pub enum Starter {
 
 impl Starter {
     /// `LAZYAGENT_PYTHON` (set by `lazyagent desktop`), else `lazyagent` on PATH.
-    pub fn from_env() -> Option<Starter> {
-        if let Some(py) = env_var(PYTHON_ENV) {
+    pub fn from_env(env: &Env) -> Option<Starter> {
+        if let Some(py) = env.get(PYTHON_ENV) {
             return Some(Starter::Python(py.into()));
         }
-        which("lazyagent").map(Starter::Command)
+        which("lazyagent", env).map(Starter::Command)
     }
 
     fn command(&self) -> Command {
@@ -129,9 +177,9 @@ impl Starter {
     }
 }
 
-pub fn which(name: &str) -> Option<PathBuf> {
+pub fn which(name: &str, env: &Env) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH")?;
+    let path = env.get("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
         .find(|p| p.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false))
@@ -139,8 +187,9 @@ pub fn which(name: &str) -> Option<PathBuf> {
 
 /// Runs `lazyagent engine start <root>` (idempotent: it returns at once
 /// when an engine already serves the repo) and returns the socket.
-pub fn start_engine(root: &str, starter: &Starter, timeout: Duration) -> Result<PathBuf, DiscoveryError> {
+pub fn start_engine(root: &str, starter: &Starter, env: &Env, timeout: Duration) -> Result<PathBuf, DiscoveryError> {
     let mut cmd = starter.command();
+    env.apply(&mut cmd);
     cmd.args(["engine", "start", root]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for name in CLIENT_ONLY_ENV {
         cmd.env_remove(name);
@@ -173,7 +222,7 @@ pub fn start_engine(root: &str, starter: &Starter, timeout: Duration) -> Result<
     if !status.success() {
         return Err(DiscoveryError(format!("the engine did not start ({status}): {}", output.trim())));
     }
-    find(root)
+    find(root, env)
         .ok_or_else(|| DiscoveryError(format!("the engine started but its socket is not there: {}", output.trim())))
 }
 
@@ -186,16 +235,16 @@ pub struct Located {
 
 /// The engine socket for `root`: `LAZYAGENT_ENGINE_SOCKET`, else a live
 /// engine, else none.
-pub fn locate(root: &str) -> Option<Located> {
-    if let Some(s) = env_var(SOCKET_ENV) {
+pub fn locate(root: &str, env: &Env) -> Option<Located> {
+    if let Some(s) = env.get(SOCKET_ENV) {
         return Some(Located { socket: s.into(), from_env: true });
     }
-    find(root).map(|socket| Located { socket, from_env: false })
+    find(root, env).map(|socket| Located { socket, from_env: false })
 }
 
 /// Auto-start applies unless a socket is forced or it is turned off.
-pub fn autostart_enabled() -> bool {
-    env_var(SOCKET_ENV).is_none() && env_var(AUTOSTART_ENV).as_deref() != Some("0")
+pub fn autostart_enabled(env: &Env) -> bool {
+    env.get(SOCKET_ENV).is_none() && env.get(AUTOSTART_ENV).as_deref() != Some("0")
 }
 
 #[cfg(test)]
