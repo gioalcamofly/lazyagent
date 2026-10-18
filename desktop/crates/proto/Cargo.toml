@@ -1,0 +1,17 @@
+[package]
+name = "lazyagent-proto"
+description = "Client for the lazyagent engine's protocol v1 (Unix socket)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+sha1_smol.workspace = true
+
+[dev-dependencies]
+lazyagent-testkit = { path = "../testkit" }

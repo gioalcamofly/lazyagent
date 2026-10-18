@@ -30,3 +30,39 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12 (the engine the Rust tests run against)
+        run: uv python install 3.12
+
+      - name: Install the Python package
+        run: uv sync --group dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Format
+        working-directory: desktop
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: desktop
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test (integration tests against the Python engine are required)
+        working-directory: desktop
+        env:
+          LAZYAGENT_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          LAZYAGENT_REQUIRE_ENGINE: "1"
+        run: cargo test --locked

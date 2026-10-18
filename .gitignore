@@ -25,3 +25,6 @@ STATUS.md
 !.claude/skills/
 .perf/
 
+
+# Rust
+target/

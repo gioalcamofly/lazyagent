@@ -1,0 +1,14 @@
+[package]
+name = "lazyagent-testkit"
+description = "Test support: a scratch repo with a real Python engine and the fake agent"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lazyagent-proto = { path = "../proto" }
+libc.workspace = true
+tempfile = "3"
