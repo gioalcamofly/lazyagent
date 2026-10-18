@@ -64,7 +64,8 @@ def main(argv: list[str]) -> int:
         print(
             "usage: lazyagent desktop [repo] [app options]\n\n"
             "Run the native desktop app on the repo's engine (started when none\n"
-            "runs). App options: lazyagent-desktop --help."
+            "runs). `lazyagent desktop --install` adds it to the application\n"
+            "menu. App options: lazyagent-desktop --help."
         )
         return 0
     binary = find_binary()

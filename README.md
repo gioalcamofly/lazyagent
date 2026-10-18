@@ -234,6 +234,24 @@ lazyagent engine restore [repo]    # agents an earlier engine left: list them,
 A restored Claude agent resumes the conversation it was in (`--resume`), with the
 same agent id and session name.
 
+## Desktop app (experimental)
+
+A native app (Rust: egui on wgpu, `alacritty_terminal`) that talks to the repo's
+engine directly: the worktrees, every agent's terminal and the worktree shell,
+spawn / create / remove / stop, an attention queue with replies, the PR and CI
+of each worktree, and a diff viewer whose comments go back to an agent as a
+review. Agents keep running when it closes. Design and measurements:
+[docs/design/desktop-app.md](docs/design/desktop-app.md).
+
+```bash
+cargo install --locked --path desktop/crates/app   # needs a Rust toolchain (rustup.rs)
+lazyagent desktop [repo]                           # or: lazyagent-desktop [repo]
+lazyagent desktop --install                        # add it to the application menu
+```
+
+Linux only; it needs no system development packages to build. Keys: `?` in the
+app.
+
 ## Development
 
 ```bash
