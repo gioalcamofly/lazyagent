@@ -11,6 +11,7 @@ mod diff;
 mod diff_view;
 mod fonts;
 mod gpu;
+mod install;
 mod notify;
 mod pacer;
 mod panes;
@@ -42,6 +43,7 @@ options:
   --screenshot PATH        save a PNG of the window after --after-ms, then exit
   --after-ms N             delay before the screenshot (default 1500)
   --bench NAME             run a benchmark and print JSON (echo, flood, idle, attach, startup)
+  --install                add lazyagent to the application menu (a .desktop entry and its icon)
   -h, --help               this text
 
 environment:
@@ -76,10 +78,11 @@ pub struct Args {
     pub screenshot: Option<PathBuf>,
     pub after_ms: u64,
     pub bench: Option<String>,
+    pub install: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { repo: None, theme: None, screenshot: None, after_ms: 1500, bench: None };
+    let mut args = Args { repo: None, theme: None, screenshot: None, after_ms: 1500, bench: None, install: false };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().ok_or(format!("{name} needs a value"));
@@ -98,11 +101,31 @@ fn parse_args() -> Result<Args, String> {
             "--screenshot" => args.screenshot = Some(value("--screenshot")?.into()),
             "--after-ms" => args.after_ms = value("--after-ms")?.parse().map_err(|_| "--after-ms needs a number")?,
             "--bench" => args.bench = Some(value("--bench")?),
+            "--install" => args.install = true,
             s if s.starts_with('-') => return Err(format!("unknown option {s}\n\n{USAGE}")),
             s => args.repo = Some(s.into()),
         }
     }
     Ok(args)
+}
+
+/// No repo: a small window to pick one, which re-runs the app on it.
+fn pick() {
+    let rest: Vec<String> = std::env::args().skip(1).collect();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("lazyagent")
+            .with_app_id("lazyagent-desktop")
+            .with_inner_size([620.0, 420.0])
+            .with_icon(install::icon()),
+        ..Default::default()
+    };
+    let env = Env::process();
+    let _ = eframe::run_native(
+        "lazyagent-desktop-picker",
+        options,
+        Box::new(move |_cc| Ok(Box::new(install::Picker::new(&env, rest)))),
+    );
 }
 
 fn main() {
@@ -116,18 +139,40 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.install {
+        match install::install(&Env::process()) {
+            Ok(files) => {
+                for f in files {
+                    println!("{}", f.display());
+                }
+                return;
+            }
+            Err(e) => {
+                eprintln!("lazyagent-desktop: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let root = match discovery::repo_root(args.repo.as_deref(), None) {
         Ok(r) => r,
+        // Started from the menu (cwd $HOME): let the user pick a repo.
+        Err(_) if args.repo.is_none() && args.bench.is_none() => return pick(),
         Err(e) => {
             eprintln!("lazyagent-desktop: {e}");
             std::process::exit(2);
         }
     };
+    install::remember(&Env::process(), &root);
+    // From the menu the session's environment lacks the shell profile's:
+    // agents get the login shell's (probed while the window comes up).
+    let login = (std::env::var(install::LOGIN_ENV).as_deref() == Ok("1"))
+        .then(|| std::thread::spawn(|| install::login_env(&Env::process())));
     // Agents and shells get the environment we were started with.
     let mut env = Env::process();
     if hidden_gpu.is_some() {
         env = env.with(gpu::ICD_ENV, None);
     }
+    env = env.with(install::LOGIN_ENV, None);
     // Fonts load while the window and the GPU come up.
     let fonts = std::thread::spawn(fonts::FontSet::discover);
 
@@ -137,7 +182,8 @@ fn main() {
         .with_title(title)
         .with_app_id("lazyagent-desktop")
         .with_inner_size([1400.0, 880.0])
-        .with_min_inner_size([640.0, 400.0]);
+        .with_min_inner_size([640.0, 400.0])
+        .with_icon(install::icon());
     // Lowest latency the surface offers without tearing: one frame queued.
     options.wgpu_options.surface.desired_maximum_frame_latency = Some(1);
     // No vsync wait between a key and its echo (Immediate, else Mailbox,
@@ -162,6 +208,15 @@ fn main() {
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
             let (tx, rx) = mpsc::channel();
+            let mut env = env;
+            if let Some(vars) = login.and_then(|t| t.join().ok()).flatten() {
+                eprintln!("lazyagent-desktop: agents get the login shell's environment ({} variables)", vars.len());
+                for (k, v) in vars {
+                    if k != install::LOGIN_ENV && k != gpu::ICD_ENV {
+                        env = env.with(&k, Some(&v));
+                    }
+                }
+            }
             let conn = conn::Conn::new(root, env, tx, ctx.clone());
             conn.spawn_supervisor();
             let fonts = fonts.join().unwrap_or_else(|_| fonts::FontSet::bundled_only());

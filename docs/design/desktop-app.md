@@ -362,3 +362,28 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
   | a scroll step (60 px), CPU per frame p50 / p95 | **0.43-0.46 / 0.52-0.55 ms** | rows 3.0-3.4 / 4.6-6.0 ms | 17 ms frame, 2 ms CPU (mine) |
 
 - **Not done:** "open in the editor"; side-by-side long lines are clipped, not wrapped (as on the web); engine-stored review threads (U8).
+
+### D6: packaging, polish, final manual pass (2026-10-18)
+
+- **Application menu:** `lazyagent desktop --install` (or `lazyagent-desktop --install`) writes `$XDG_DATA_HOME/applications/lazyagent-desktop.desktop` (`desktop-file-validate` clean; `Exec` sets `LAZYAGENT_DESKTOP_LOGIN_ENV=1` and the `LAZYAGENT_PYTHON` it was installed with) and a generated 128 px icon under `icons/hicolor`; the window carries the same icon. Launched from the menu the cwd is `$HOME`, so a **repo picker** opens (recent repos, kept in the state dir, and a path field that has the keyboard); the choice re-execs the app on that repo.
+- **Login-shell environment** (R7, Q4): with `LAZYAGENT_DESKTOP_LOGIN_ENV=1` (the menu entry sets it) the app probes `$SHELL -lic 'env -0'` (3 s at most, behind a marker so rc-file noise is ignored) while the window comes up, and agents, shells and jobs get that environment instead of the graphical session's (the profile's PATH, `SSH_AUTH_SOCK`, …). Variables the app sets for itself never reach them.
+- **Wayland** (R5): built with winit's Wayland support (dlopen'ed, no -dev package); exercised on X11 only, the session this machine runs.
+- README section; `lazyagent desktop --help` mentions `--install`.
+- **Final manual pass** (real display, release build): the menu entry through `gtk-launch` → the picker → the app on the chosen repo, its engine auto-started and the shell carrying the login profile; in an isolated scratch world: spawn from the dialog (Ctrl+Enter and Enter), a second agent with a label, Claude hook events turning statuses into **approval / question items**, a **reply from the queue** reaching the fake agent, a real **diff from `main`**, a **comment by clicking a line number**, **Submit review → Send when idle → delivered the moment the agent finished its turn**. Found and fixed: text fields invisible on the main background (now `panel`-filled); Enter in the Spawn dialog's label field did not submit; the picker showed "Not inside a git repository: $HOME" as an error and its field did not have the keyboard; the review preview was not monospace (`small()` resets the font) and said "1 comments". Earlier phases' passes are in their notes.
+- Left on this machine afterwards: nothing (the installed entry, icon, recent list and the scratch engine's log were removed; no process left).
+- **Tests:** cargo 91 = proto 26, term 16, app 49 (+4: icon, `--install` output, recent repos, the login-shell probe with an rc file that prints noise).
+
+## 11. Final state (2026-10-18)
+
+| Web piece | Desktop | Notes |
+|---|---|---|
+| Sidebar, top bar, toasts, help, theme (U1) | ✅ D2/D3 | |
+| Native terminals, shell, reconnect, size ownership (U2) | ✅ D2 | alacritty, own renderer, 4 ms key → frame |
+| Actions, job drawer, restore (U3, PR 9) | ✅ D3 | |
+| Attention queue, PR/CI panel, notifications (U4) | ✅ D4 | notify-send |
+| Diff viewer, comments, review (U5) | ✅ D5 | comments in the app's state file |
+| Launch from a terminal / the menu | ✅ D2/D6 | `lazyagent desktop`, `--install` |
+
+- **How to run it:** `cargo install --locked --path desktop/crates/app` (or `cargo build --release --manifest-path desktop/Cargo.toml`), then `lazyagent desktop [repo]`; `lazyagent desktop --install` for the menu. Keys: `?`.
+- **Measured against the web** (details per phase): key → frame p50 ~4 ms (web 8.4), with 8 chatty hidden agents p95 ~7 ms (budget 25), 5 MB of output drawn at 57-102 MB/s (web 15-17), idle 0.2 % of a core, 35 MB private memory (web renderer ~390 MB RSS), attach 3-6 ms, launch to sidebar 0.12 s (engine running) / 0.4 s (cold), a 5,200-line diff's first screen 6 ms.
+- **Not done (later):** grid and orchestrator board (U6), engine-stored review threads (U8), phone (U9), usage/history (U10); IME pre-edit drawing, rounded box corners as arcs, "open in editor", a 1 ms frame with 100 worktrees (2.1 ms now: off-screen rows are laid out), a PyPI/manylinux build of the binary (Q1).

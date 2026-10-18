@@ -166,7 +166,11 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Label");
-                    ui.add(TextEdit::singleline(&mut d.label).hint_text("Agent N").desired_width(200.0));
+                    let label = ui.add(TextEdit::singleline(&mut d.label).hint_text("Agent N").desired_width(200.0));
+                    // Enter in a one-line field submits, as on the web.
+                    if label.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        submit = Some(Submit::Spawn);
+                    }
                 });
                 ui.checkbox(&mut d.skip, "Skip permissions (d)");
                 ui.horizontal(|ui| {
@@ -179,7 +183,9 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                     ui.label(RichText::new(format!("Provider: {}", c.agent_provider)).small().color(t.muted));
                 }
                 if !typing {
-                    if key(ui, Key::N) {
+                    if key(ui, Key::Enter) {
+                        submit = Some(Submit::Spawn);
+                    } else if key(ui, Key::N) {
                         (d.skip, d.resume) = (false, "new");
                         submit = Some(Submit::Spawn);
                     } else if key(ui, Key::D) {

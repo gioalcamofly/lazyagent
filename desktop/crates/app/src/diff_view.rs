@@ -473,7 +473,9 @@ impl App {
             let mut close = false;
             let m = egui::Modal::new(egui::Id::unique("diff-review")).show(ctx, |ui| {
                 ui.set_width(620.0);
-                ui.label(RichText::new(format!("Submit review ({} comments)", comments.len())).strong().size(15.0));
+                let n = comments.len();
+                let noun = if n == 1 { "comment" } else { "comments" };
+                ui.label(RichText::new(format!("Submit review ({n} {noun})")).strong().size(15.0));
                 if agents.is_empty() {
                     ui.label(RichText::new("No agent in this worktree to send it to.").color(t.red));
                 }
@@ -499,7 +501,8 @@ impl App {
                 );
                 ui.label(RichText::new("What the agent receives:").small().color(t.muted));
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    ui.label(RichText::new(diff::review_prompt(&comments, &r.summary)).monospace().small());
+                    // size() then monospace(): small() would reset the font to proportional.
+                    ui.label(RichText::new(diff::review_prompt(&comments, &r.summary)).size(11.5).monospace());
                 });
                 ui.checkbox(&mut r.clear, "Clear the comments once sent");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

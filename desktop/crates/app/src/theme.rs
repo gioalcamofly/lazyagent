@@ -107,6 +107,8 @@ impl Theme {
         v.panel_fill = self.surface;
         v.window_fill = self.surface;
         v.extreme_bg_color = self.bg;
+        // Fields must stand out from the main area, which is `bg` too.
+        v.text_edit_bg_color = Some(self.panel);
         v.faint_bg_color = self.panel;
         v.override_text_color = Some(self.text);
         v.hyperlink_color = self.primary;
