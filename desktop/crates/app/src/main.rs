@@ -4,6 +4,7 @@ mod app;
 mod bench;
 mod boxdraw;
 mod conn;
+mod dialogs;
 mod fonts;
 mod gpu;
 mod pacer;
