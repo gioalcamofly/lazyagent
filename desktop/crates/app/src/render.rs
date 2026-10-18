@@ -10,12 +10,15 @@ use ab_glyph::{Font, PxScale, ScaleFont};
 use eframe::egui::{self, Color32, ColorImage, Mesh, Pos2, Rect, TextureHandle, TextureOptions, Vec2};
 use lazyagent_term::{CursorKind, Frame, Rgb, attr};
 
+use crate::boxdraw;
 use crate::fonts::FontSet;
 
 const ATLAS: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct Slot {
+    /// A colour bitmap: drawn as it is, not tinted with the cell's colour.
+    color: bool,
     uv: Rect,
     /// From the cell's top-left, in physical pixels.
     offset: Vec2,
@@ -31,7 +34,8 @@ pub struct Atlas {
     pub cell_h: f32,
     ascent: f32,
     texture: Option<TextureHandle>,
-    glyphs: HashMap<(char, bool), Option<Slot>>,
+    /// (char, bold, cells wide)
+    glyphs: HashMap<(char, bool, u8), Option<Slot>>,
     x: usize,
     y: usize,
     row_h: usize,
@@ -76,22 +80,17 @@ impl Atlas {
         }
     }
 
-    fn slot(&mut self, c: char, bold: bool) -> Option<Slot> {
-        if let Some(s) = self.glyphs.get(&(c, bold)) {
+    fn slot(&mut self, c: char, bold: bool, cells: u8) -> Option<Slot> {
+        if let Some(s) = self.glyphs.get(&(c, bold, cells)) {
             return *s;
         }
-        let s = self.rasterize(c, bold);
-        self.glyphs.insert((c, bold), s);
+        let s = self.rasterize(c, bold).or_else(|| self.rasterize_color(c, cells));
+        self.glyphs.insert((c, bold, cells), s);
         s
     }
 
-    fn rasterize(&mut self, c: char, bold: bool) -> Option<Slot> {
-        let chain = if bold { &self.fonts.bold } else { &self.fonts.regular };
-        let font = chain.iter().find(|f| f.glyph_id(c).0 != 0)?.clone();
-        let glyph = font.glyph_id(c).with_scale_and_position(PxScale::from(self.px), ab_glyph::point(0.0, self.ascent));
-        let outline = font.outline_glyph(glyph)?;
-        let b = outline.px_bounds();
-        let (w, h) = (b.width().ceil() as usize + 1, b.height().ceil() as usize + 1);
+    /// Room in the atlas for a `w × h` image; its top-left corner.
+    fn place(&mut self, w: usize, h: usize) -> Option<(usize, usize)> {
         if w + 2 >= ATLAS || h + 2 >= ATLAS {
             return None;
         }
@@ -102,19 +101,62 @@ impl Atlas {
             // Full: start over. Every terminal rebuilds its mesh (generation).
             self.clear();
         }
+        let at = (self.x, self.y);
+        self.x += w + 1;
+        self.row_h = self.row_h.max(h);
+        Some(at)
+    }
+
+    fn uv(at: (usize, usize), w: usize, h: usize) -> Rect {
+        let a = ATLAS as f32;
+        Rect::from_min_size(Pos2::new(at.0 as f32 / a, at.1 as f32 / a), Vec2::new(w as f32 / a, h as f32 / a))
+    }
+
+    fn rasterize(&mut self, c: char, bold: bool) -> Option<Slot> {
+        let chain = if bold { &self.fonts.bold } else { &self.fonts.regular };
+        let font = chain.iter().find(|f| f.glyph_id(c).0 != 0)?.clone();
+        let glyph = font.glyph_id(c).with_scale_and_position(PxScale::from(self.px), ab_glyph::point(0.0, self.ascent));
+        let outline = font.outline_glyph(glyph)?;
+        let b = outline.px_bounds();
+        let (w, h) = (b.width().ceil() as usize + 1, b.height().ceil() as usize + 1);
+        let at = self.place(w, h)?;
         let mut image = ColorImage::filled([w, h], Color32::TRANSPARENT);
         outline.draw(|x, y, coverage| {
             let a = (coverage.clamp(0.0, 1.0) * 255.0) as u8;
             image.pixels[y as usize * w + x as usize] = Color32::from_white_alpha(a);
         });
-        let (ox, oy) = (self.x, self.y);
-        self.uploads.push(([ox, oy], image));
-        self.x += w + 1;
-        self.row_h = self.row_h.max(h);
-        let a = ATLAS as f32;
+        self.uploads.push(([at.0, at.1], image));
         Some(Slot {
-            uv: Rect::from_min_size(Pos2::new(ox as f32 / a, oy as f32 / a), Vec2::new(w as f32 / a, h as f32 / a)),
+            color: false,
+            uv: Atlas::uv(at, w, h),
             offset: Vec2::new(b.min.x.floor(), b.min.y.floor()),
+            size: Vec2::new(w as f32, h as f32),
+        })
+    }
+
+    /// A colour emoji: the font's PNG strike, scaled to fit the cell(s).
+    fn rasterize_color(&mut self, c: char, cells: u8) -> Option<Slot> {
+        let font = self.fonts.color.iter().find(|f| f.glyph_id(c).0 != 0)?.clone();
+        let raster = font.glyph_raster_image2(font.glyph_id(c), self.cell_h as u16)?;
+        if !matches!(raster.format, ab_glyph::GlyphImageFormat::Png) {
+            return None;
+        }
+        let png = image::load_from_memory_with_format(raster.data, image::ImageFormat::Png).ok()?.to_rgba8();
+        let (box_w, box_h) = (self.cell_w * cells as f32, self.cell_h);
+        let scale = (box_w / png.width() as f32).min(box_h / png.height() as f32);
+        let (w, h) = (
+            ((png.width() as f32 * scale).round() as u32).max(1),
+            ((png.height() as f32 * scale).round() as u32).max(1),
+        );
+        let small = image::imageops::resize(&png, w, h, image::imageops::FilterType::Triangle);
+        let (w, h) = (w as usize, h as usize);
+        let at = self.place(w, h)?;
+        let pixels = small.pixels().map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])).collect();
+        self.uploads.push(([at.0, at.1], ColorImage::new([w, h], pixels)));
+        Some(Slot {
+            color: true,
+            uv: Atlas::uv(at, w, h),
+            offset: Vec2::new(((box_w - w as f32) / 2.0).floor(), ((box_h - h as f32) / 2.0).floor()),
             size: Vec2::new(w as f32, h as f32),
         })
     }
@@ -194,12 +236,25 @@ pub fn build(
             if on_cursor {
                 color = cell.bg;
             }
-            if cell.ch != ' '
+            let cells = if cell.attrs & attr::WIDE != 0 { 2 } else { 1 };
+            let drawn = cell.ch != ' '
                 && cell.attrs & attr::SPACER == 0
-                && let Some(slot) = atlas.slot(cell.ch, cell.attrs & attr::BOLD != 0)
+                && boxdraw::draw(
+                    cell.ch,
+                    Rect::from_min_size(Pos2::new(x, y), Vec2::new(cw * cells as f32, ch)),
+                    px,
+                    rgb(color),
+                    rgb(cell.bg),
+                    &mut bg,
+                );
+            if !drawn
+                && cell.ch != ' '
+                && cell.attrs & attr::SPACER == 0
+                && let Some(slot) = atlas.slot(cell.ch, cell.attrs & attr::BOLD != 0, cells)
             {
                 let min = Pos2::new(x + slot.offset.x / ppp, y + slot.offset.y / ppp);
-                fg.add_rect_with_uv(Rect::from_min_size(min, slot.size / ppp), slot.uv, rgb(color));
+                let tint = if slot.color { Color32::WHITE } else { rgb(color) };
+                fg.add_rect_with_uv(Rect::from_min_size(min, slot.size / ppp), slot.uv, tint);
             }
             let line = |mesh: &mut Mesh, top: f32, height: f32| {
                 let w = if cell.attrs & attr::WIDE != 0 { 2.0 * cw } else { cw };
@@ -273,9 +328,9 @@ mod tests {
     fn a_full_atlas_starts_over() {
         let mut atlas = Atlas::new(FontSet::bundled_only(), 60.0);
         for c in (0x21u32..0x2600).filter_map(char::from_u32) {
-            atlas.slot(c, false);
+            atlas.slot(c, false, 1);
         }
         assert!(atlas.generation > 0, "{} glyphs fit in one atlas", atlas.glyphs.len());
-        assert!(atlas.slot('A', false).is_some(), "it keeps working after a reset");
+        assert!(atlas.slot('A', false, 1).is_some(), "it keeps working after a reset");
     }
 }

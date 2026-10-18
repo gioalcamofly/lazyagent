@@ -284,7 +284,7 @@ pub fn show(
                 Event::MouseWheel { unit, delta, modifiers, .. } if response.hovered() => {
                     let lines = match unit {
                         egui::MouseWheelUnit::Point => delta.y / ch,
-                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Line => delta.y * 3.0,
                         egui::MouseWheelUnit::Page => delta.y * rows as f32,
                     };
                     view.wheel += lines;
@@ -310,7 +310,7 @@ pub fn show(
                             out.extend(input::encode_key(k, Mods::NONE, modes).unwrap());
                         }
                     } else {
-                        pane.inner.lock().unwrap().term.scroll(whole * 3);
+                        pane.inner.lock().unwrap().term.scroll(whole);
                     }
                 }
                 _ => {}

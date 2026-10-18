@@ -19,4 +19,4 @@ alacritty_terminal = "0.26"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-debug = "line-tables-only"
+strip = "debuginfo"

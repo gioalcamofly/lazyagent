@@ -436,9 +436,10 @@ impl App {
             ui.label(RichText::new("lazyagent").strong().color(t.accent));
             let home = std::env::var("HOME").unwrap_or_default();
             let root = s.conn.root.clone();
-            let shown =
+            let full =
                 if !home.is_empty() && root.starts_with(&home) { format!("~{}", &root[home.len()..]) } else { root };
-            ui.label(RichText::new(shown).color(t.muted).monospace());
+            // The repo's name; the path on hover (a long one pushed the engine pill away).
+            ui.label(RichText::new(store::basename(&s.conn.root)).color(t.text).monospace()).on_hover_text(full);
             let (text, color) = match &s.link {
                 Link::Connected => ("connected".to_string(), t.green),
                 Link::Connecting(m) | Link::Reconnecting(m) => (m.clone(), t.yellow),
@@ -598,6 +599,7 @@ impl App {
             return;
         };
         let orchestrator = selected == ORCHESTRATOR_KEY;
+        self.link_banner(ui);
         // Header.
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -764,6 +766,37 @@ impl App {
         }
     }
 
+    /// While the engine is not reachable, say so above the (stale) view.
+    fn link_banner(&mut self, ui: &mut Ui) {
+        let t = self.state.theme;
+        let (text, color, start) = match &self.state.link {
+            Link::Connected => return,
+            Link::Stopped => (
+                "The engine was stopped (lazyagent engine stop): what is shown is no longer live.".to_string(),
+                t.red,
+                true,
+            ),
+            Link::Failed(why) => (format!("No engine: {why}"), t.red, true),
+            Link::Connecting(m) | Link::Reconnecting(m) => (m.clone(), t.yellow, false),
+        };
+        egui::Frame::new()
+            .fill(t.panel)
+            .stroke(Stroke::new(1.0, color))
+            .corner_radius(CornerRadius::same(4))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if !start {
+                        ui.spinner();
+                    }
+                    ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
+                    if start && ui.button("Start the engine").clicked() {
+                        self.state.conn.request_start();
+                    }
+                });
+            });
+    }
+
     fn link_overlay(&mut self, ui: &mut Ui) {
         let t = self.state.theme;
         ui.vertical_centered(|ui| {
@@ -803,7 +836,8 @@ impl App {
         let screen = ctx.content_rect();
         egui::Area::new(Id::unique("toasts"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(screen.right() - 380.0, screen.top() + 44.0))
+            // Below the worktree header and tabs, so no button is covered.
+            .fixed_pos(egui::pos2(screen.right() - 380.0, screen.top() + 100.0))
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 let mut dismiss = None;

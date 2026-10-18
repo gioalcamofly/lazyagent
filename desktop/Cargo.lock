@@ -1848,6 +1848,7 @@ dependencies = [
  "lazyagent-proto",
  "lazyagent-term",
  "lazyagent-testkit",
+ "memmap2",
  "serde_json",
  "tempfile",
  "winit",

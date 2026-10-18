@@ -2,6 +2,7 @@
 
 mod app;
 mod bench;
+mod boxdraw;
 mod conn;
 mod fonts;
 mod gpu;

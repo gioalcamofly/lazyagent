@@ -19,6 +19,7 @@ ab_glyph = "0.2"
 arboard = { version = "3", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 winit = { version = "0.30", default-features = false }
+memmap2 = "0.9"
 fontdb = "0.24"
 epaint_default_fonts = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 eframe = { version = "0.37", default-features = false, features = [

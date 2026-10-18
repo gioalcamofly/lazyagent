@@ -25,10 +25,15 @@ const SYMBOLS: &[&str] = &[
     "Noto Sans CJK SC",
 ];
 
+/// Colour emoji (bitmap) fonts: used for what no outline font has.
+const COLOR: &[&str] = &["Noto Color Emoji", "Twemoji", "JoyPixels", "EmojiOne Color"];
+
 #[derive(Clone)]
 pub struct FontSet {
     pub regular: Vec<FontArc>,
     pub bold: Vec<FontArc>,
+    /// Bitmap (CBDT/sbix) faces, after the outline ones.
+    pub color: Vec<FontArc>,
     /// The family of the first regular face, for display.
     pub family: String,
     /// System faces for egui's own text (names, paths, other scripts).
@@ -50,6 +55,37 @@ fn raw(db: &fontdb::Database, family: &str) -> Option<Vec<u8>> {
     db.with_face_data(id, |data, index| (index == 0).then(|| data.to_vec())).flatten()
 }
 
+/// A font file mapped into memory for the life of the process: its pages
+/// are the file's (clean, shared, reclaimable), not private memory. Noto
+/// Color Emoji alone is 10 MB.
+fn mapped(path: &std::path::Path) -> Option<&'static [u8]> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static MAPS: Mutex<Option<HashMap<std::path::PathBuf, &'static [u8]>>> = Mutex::new(None);
+    let mut maps = MAPS.lock().unwrap();
+    let maps = maps.get_or_insert_with(HashMap::new);
+    if let Some(data) = maps.get(path) {
+        return Some(data);
+    }
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: font files are not rewritten while in use; a font package
+    // upgrade replaces the file (a new inode), leaving this mapping valid.
+    let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    let data: &'static [u8] = Box::leak(Box::new(map));
+    maps.insert(path.to_path_buf(), data);
+    Some(data)
+}
+
+fn face(db: &fontdb::Database, id: fontdb::ID) -> Option<FontArc> {
+    let face = db.face(id)?;
+    let path = match &face.source {
+        fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => p,
+        fontdb::Source::Binary(_) => return None,
+    };
+    let data = mapped(path)?;
+    ab_glyph::FontRef::try_from_slice_and_index(data, face.index).ok().map(FontArc::new)
+}
+
 fn load(db: &fontdb::Database, family: &str, bold: bool) -> Option<FontArc> {
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
@@ -62,10 +98,7 @@ fn load(db: &fontdb::Database, family: &str, bold: bool) -> Option<FontArc> {
     if bold && db.face(id)?.weight.0 < 600 {
         return None;
     }
-    db.with_face_data(id, |data, index| {
-        ab_glyph::FontVec::try_from_vec_and_index(data.to_vec(), index).ok().map(FontArc::new)
-    })
-    .flatten()
+    face(db, id)
 }
 
 fn bundled() -> Vec<FontArc> {
@@ -100,12 +133,19 @@ impl FontSet {
             family = "Hack (bundled)".into();
         }
         let ui_fallbacks = UI_FALLBACKS.iter().filter_map(|f| Some((f.to_string(), raw(&db, f)?))).collect();
-        FontSet { regular, bold, family, ui_fallbacks }
+        let color = COLOR.iter().filter_map(|f| load(&db, f, false)).collect();
+        FontSet { regular, bold, color, family, ui_fallbacks }
     }
 
     /// Only the bundled fonts: deterministic, for tests.
     pub fn bundled_only() -> FontSet {
-        FontSet { regular: bundled(), bold: bundled(), family: "Hack (bundled)".into(), ui_fallbacks: vec![] }
+        FontSet {
+            regular: bundled(),
+            bold: bundled(),
+            color: vec![],
+            family: "Hack (bundled)".into(),
+            ui_fallbacks: vec![],
+        }
     }
 }
 
