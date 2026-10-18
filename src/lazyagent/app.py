@@ -320,6 +320,10 @@ class LazyAgent(App):
                 self.call_later(self._resync, data["engine_changed"])
             if data["first"] or data["engine_changed"]:
                 self._offer_restore()
+                # An engine slower than the first-connect wait was announced
+                # without a socket; a new engine has a new one.
+                if self.host is not None:
+                    self.call_later(self._announce_to_host)
 
     async def _show_agent(self, key: str, agent_id: str, kind: str) -> None:
         """Mount the view of an agent the engine has just spawned."""
