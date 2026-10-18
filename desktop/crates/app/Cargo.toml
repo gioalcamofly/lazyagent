@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 lazyagent-proto = { path = "../proto" }
 lazyagent-term = { path = "../term" }
+serde.workspace = true
 serde_json.workspace = true
 ab_glyph = "0.2"
 arboard = { version = "3", default-features = false }
