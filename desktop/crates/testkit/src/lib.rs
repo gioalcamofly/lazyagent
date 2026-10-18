@@ -149,6 +149,20 @@ impl World {
             .unwrap_or_else(|e| panic!("connect: {e}\nengine log:\n{}", self.engine_log()))
     }
 
+    /// SIGTERM to the engine processes only: each stops its agents itself
+    /// and keeps them in its restart manifest (as `lazyagent engine stop`
+    /// does), unlike [`kill_engines`](Self::kill_engines).
+    pub fn terminate_engines(&mut self) {
+        for child in &mut self.engines {
+            // SAFETY: kill(2) on our own child.
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            let _ = child.wait();
+        }
+        self.kill_engines();
+    }
+
     /// Kills every engine this world started, with their agents.
     pub fn kill_engines(&mut self) {
         for child in &mut self.engines {
