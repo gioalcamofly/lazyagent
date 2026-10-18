@@ -14,13 +14,19 @@ from pathlib import Path
 
 from lazyagent.backend import ENGINE_ENV
 from lazyagent.engine.client import Client, ConnectionClosed, RequestError, discover
+from lazyagent.engine.launcher import info as engine_info
+from lazyagent.engine.runtime import socket_path
 from lazyagent.host.server import HostServer
 from lazyagent.host.tui import HostedTui
 from lazyagent.protocol.hosted import HOST_ENV
 
 STATIC_ROOT = Path(__file__).parent / "static"
-# How long to wait for the TUI to say where its engine is.
+# How long to look for the engine before saying it is missing (the host
+# keeps looking afterwards), and how often engine.json is read meanwhile.
 DISCOVERY_TIMEOUT = 30.0
+DISCOVERY_POLL = 0.5
+# Longest Unix socket path Linux accepts (sun_path, less its NUL).
+_MAX_SOCKET_PATH = 107
 
 
 def repo_root(path: str) -> str:
@@ -87,7 +93,9 @@ class Host:
             # What the TUI passes as its own environment.
             client_env=self.tui.env,
         )
-        self._announced: asyncio.Future[str | None] | None = None
+        # The socket the TUI last announced, None while it serves none.
+        self._announced: str | None = None
+        self._announcement = asyncio.Event()
         self._stop = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
 
@@ -98,16 +106,20 @@ class Host:
         self.server.broadcast_output(data)
 
     def _on_announce(self, payload: dict) -> None:
-        if self._announced is not None and not self._announced.done():
-            socket = payload.get("socket")
-            self._announced.set_result(socket if isinstance(socket, str) else None)
+        socket = payload.get("socket")
+        if isinstance(socket, str):
+            self._announced = socket
+        self._announcement.set()
+
+    @property
+    def _remote(self) -> bool:
+        return self.tui.env.get(ENGINE_ENV, "").strip().lower() == "remote"
 
     def stop(self) -> None:
         self._stop.set()
 
     async def run(self) -> int:
         loop = asyncio.get_running_loop()
-        self._announced = loop.create_future()
         await self.server.start()
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(signum, self.stop)
@@ -115,7 +127,7 @@ class Host:
             await self.tui.start()
             self._print(f"lazyagent (pid {self.tui.pid}) is running in {self.root}")
             self._print(f"open {self.server.url}")
-            if self.tui.env.get(ENGINE_ENV, "").strip().lower() == "remote":
+            if self._remote:
                 self._print(
                     "Ctrl+C here, or q in the TUI, quits; the agents keep "
                     "running in the engine (lazyagent engine stop stops it)"
@@ -152,23 +164,48 @@ class Host:
         task.add_done_callback(self._tasks.discard)
 
     async def _discover(self) -> None:
-        """Find the engine socket: the TUI's OSC 7717, else ``engine.json``."""
-        assert self._announced is not None
+        """Find the engine socket: the TUI's OSC 7717, else ``engine.json``.
+
+        Neither may know it at first: the TUI announces no socket when
+        another lazyagent already serves the repo, or when its engine is
+        still starting (``--remote``). So this keeps looking for as long as
+        the TUI runs, and only says so past :data:`DISCOVERY_TIMEOUT`."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + DISCOVERY_TIMEOUT
-        socket: str | None = None
-        while loop.time() < deadline:
-            try:
-                socket = await asyncio.wait_for(asyncio.shield(self._announced), 0.5)
+        missing = False
+        while True:
+            socket = self._announced
+            if socket is None:
+                found = discover(self.root, self.tui.env)
+                socket = str(found) if found is not None else None
+            if socket is not None:
                 break
+            if not missing and loop.time() >= deadline:
+                missing = True
+                self._print(
+                    "no engine socket found yet: the sidebar fills once the "
+                    "engine is up"
+                )
+                path = os.fsencode(socket_path(self.root, self.tui.env))
+                if len(path) > _MAX_SOCKET_PATH:
+                    self._print(
+                        f"the engine socket path is {len(path)} bytes, over "
+                        f"the {_MAX_SOCKET_PATH} a Unix socket allows: set "
+                        "XDG_RUNTIME_DIR to a shorter directory"
+                    )
+            self._announcement.clear()
+            try:
+                await asyncio.wait_for(self._announcement.wait(), DISCOVERY_POLL)
             except asyncio.TimeoutError:
-                found = discover(self.root)
-                if found is not None:
-                    socket = str(found)
-                    break
-        if socket is None:
-            self._print("no engine socket found: the sidebar stays empty")
-            return
+                pass
+        pid = (engine_info(self.root, self.tui.env) or {}).get("pid")
+        if not self._remote and socket != self._announced and pid != self.tui.pid:
+            self._print(
+                f"another lazyagent (pid {pid}) already serves this repo: the "
+                "page shows its engine, and the TUI runs its own beside it"
+            )
+        elif missing:
+            self._print(f"found the engine at {socket}")
         self.server.set_engine(socket)
         await self._watch_engine(socket)
 
