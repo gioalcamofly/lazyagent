@@ -38,6 +38,18 @@ pub enum Focus {
     Shell,
 }
 
+/// Which main view is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Worktrees,
+    Attention,
+}
+
+/// Unix time in seconds.
+pub fn unix_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Info,
@@ -103,6 +115,24 @@ pub struct State {
     pub font_size: f32,
     pub atlas: Option<Atlas>,
     pub shell_split: f32,
+    pub view: View,
+    pub saved: crate::persist::Saved,
+    saver: crate::persist::Saver,
+    /// The attention queue, re-derived when its inputs change.
+    pub attention: Vec<crate::attention::Item>,
+    att_since: HashMap<String, f64>,
+    att_key: (u64, usize, usize, u64, u64),
+    marks_gen: u64,
+    /// Agents that exited on their own (for the queue).
+    pub exits: Vec<crate::attention::Exit>,
+    pub att_selected: Option<String>,
+    pub reply: String,
+    notified: HashSet<String>,
+    pub pr_panel: bool,
+    /// Worktree → whether `get_pr_info` could fetch (false: no gh).
+    pub pr_fetched: HashMap<String, bool>,
+    /// `g` was pressed (a view switch follows: a / w).
+    pending_g: Option<Instant>,
     pub dialog: Option<crate::dialogs::Dialog>,
     dialog_seq: u64,
     pub jobs: Vec<Job>,
@@ -125,8 +155,27 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(conn: Arc<Conn>, fonts: FontSet, theme: ThemeKind) -> State {
+    pub fn new(conn: Arc<Conn>, fonts: FontSet, theme: Option<ThemeKind>) -> State {
+        let saved_path = crate::persist::path(&conn.root, &conn.env);
+        let mut saved = crate::persist::load(&saved_path);
+        saved.marks.prune(unix_now());
+        let theme =
+            theme.unwrap_or(if saved.theme.as_deref() == Some("light") { ThemeKind::Light } else { ThemeKind::Dark });
         State {
+            view: View::Worktrees,
+            saved,
+            saver: crate::persist::Saver::new(saved_path),
+            attention: vec![],
+            att_since: HashMap::new(),
+            att_key: (u64::MAX, 0, 0, 0, 0),
+            marks_gen: 0,
+            exits: vec![],
+            att_selected: None,
+            reply: String::new(),
+            notified: HashSet::new(),
+            pr_panel: false,
+            pr_fetched: HashMap::new(),
+            pending_g: None,
             conn,
             link: Link::Connecting("Looking for the engine…".into()),
             engine_version: None,
@@ -295,6 +344,108 @@ impl State {
         });
     }
 
+    /// Re-derives the queue when its inputs changed (or every 30 s, for
+    /// snoozes running out), and notifies new items while the window is in
+    /// the background.
+    pub fn refresh_attention(&mut self, window_focused: bool) {
+        let now = unix_now();
+        let ended = self.jobs.iter().filter(|j| j.finished.is_some()).count();
+        let key = (self.store.version, self.exits.len(), ended, self.marks_gen, (now / 30.0) as u64);
+        if key == self.att_key || !self.seeded {
+            return;
+        }
+        self.att_key = key;
+        let jobs: Vec<crate::attention::JobEnd> = self
+            .jobs
+            .iter()
+            .filter_map(|j| {
+                j.finished.map(|code| crate::attention::JobEnd {
+                    id: j.id.clone(),
+                    title: j.title.clone(),
+                    exit_code: code,
+                })
+            })
+            .collect();
+        self.attention =
+            crate::attention::items(&self.store, &self.exits, &jobs, &mut self.att_since, &self.saved.marks, now);
+        let current: HashSet<String> = self.attention.iter().map(|i| i.occurrence.clone()).collect();
+        for item in &self.attention {
+            if self.notified.contains(&item.occurrence) {
+                continue;
+            }
+            self.notified.insert(item.occurrence.clone());
+            if !window_focused && self.saved.notify_on(item.kind.setting()) {
+                let place = if item.key.is_empty() { "a job".to_string() } else { self.place_name(&item.key) };
+                let urgent = item.kind.rank() <= 2;
+                crate::notify::send(
+                    &format!("{}: {}", item.kind.title(), item.label),
+                    &format!("{place} — {}", item.detail),
+                    urgent,
+                );
+            }
+        }
+        self.notified.retain(|o| current.contains(o));
+    }
+
+    pub fn move_attention(&mut self, delta: i32) {
+        if self.attention.is_empty() {
+            return;
+        }
+        let at = self.att_selected.as_ref().and_then(|id| self.attention.iter().position(|i| &i.id == id)).unwrap_or(0)
+            as i32;
+        let next = (at + delta).clamp(0, self.attention.len() as i32 - 1) as usize;
+        self.att_selected = Some(self.attention[next].id.clone());
+    }
+
+    pub fn dismiss(&mut self, item: &crate::attention::Item) {
+        self.saved.marks.dismissed.insert(item.occurrence.clone(), unix_now());
+        if item.kind == crate::attention::Kind::Exited {
+            self.exits.retain(|e| Some(e) != item.exit.as_ref());
+        }
+        self.marks_gen += 1;
+        self.saver.touch();
+    }
+
+    pub fn snooze(&mut self, item: &crate::attention::Item, secs: f64) {
+        self.saved.marks.snoozed.insert(item.id.clone(), unix_now() + secs);
+        self.marks_gen += 1;
+        self.saver.touch();
+    }
+
+    /// `send_agent_input` (the engine frames, submits and confirms it).
+    pub fn send_reply(&mut self, key: &str, agent_id: &str, text: String) {
+        let params = json!({"worktree_path": key, "agent_id": agent_id, "text": text});
+        self.conn.request("send_agent_input", params, |s, reply| match reply {
+            Ok(v) => s.toast(Severity::Info, crate::attention_view::delivery_text(v)),
+            Err(e) => s.toast(Severity::Error, format!("Not sent: {e}")),
+        });
+    }
+
+    pub fn fetch_pr(&mut self, path: &str, refresh: bool) {
+        if !refresh && self.pr_fetched.contains_key(path) {
+            return;
+        }
+        // Marked as asked, so a frame does not ask again while it is in flight.
+        self.pr_fetched.entry(path.to_string()).or_insert(true);
+        let p = path.to_string();
+        self.conn.request(
+            "get_pr_info",
+            json!({"worktree_path": path, "refresh": refresh}),
+            move |s, reply| match reply.ok().and_then(crate::attention_view::pr_result) {
+                Some(r) => {
+                    s.pr_fetched.insert(p.clone(), r.fetched);
+                    if r.fetched {
+                        s.store.pr_info.insert(p, r.pr_info);
+                        s.store.version += 1;
+                    }
+                }
+                None => {
+                    s.pr_fetched.insert(p, false);
+                }
+            },
+        );
+    }
+
     fn fetch_restorable(&mut self) {
         self.conn.request("list_restorable", json!({}), |s, reply| {
             // VALIDATION_ERROR: an engine without a manifest (nothing to offer).
@@ -404,6 +555,22 @@ impl State {
     }
 
     fn on_event(&mut self, ev: EngineEvent) {
+        // A PR going red is news (toast, notification), not just a badge.
+        if let EngineEvent::PrInfoUpdated(p) = &ev {
+            let before = self.store.pr_info.get(&p.path).cloned().flatten();
+            let was_red = before.as_ref().and_then(store::ci_summary) == Some("fail");
+            if let Some(pr) = &p.pr_info
+                && !was_red
+                && store::ci_summary(pr) == Some("fail")
+                && pr.state.eq_ignore_ascii_case("OPEN")
+            {
+                let text = format!("CI is failing on {} (#{} {})", store::basename(&p.path), pr.number, pr.title);
+                self.toast(Severity::Error, text.clone());
+                if self.saved.notify_on("ci") {
+                    crate::notify::send("CI failing", &text, false);
+                }
+            }
+        }
         self.store.apply(&ev);
         match ev {
             EngineEvent::WorktreesChanged(_) => self.after_worktrees_changed(),
@@ -421,6 +588,23 @@ impl State {
             EngineEvent::AgentExited(e) => {
                 let name = self.place_name(&e.worktree_path);
                 if e.stopped != Some(true) {
+                    let label = self
+                        .store
+                        .agents(&e.worktree_path)
+                        .iter()
+                        .find(|a| a.agent_id == e.agent_id)
+                        .map(store::agent_label)
+                        .unwrap_or_else(|| format!("Agent {}", e.agent_id));
+                    self.exits.push(crate::attention::Exit {
+                        key: e.worktree_path.clone(),
+                        agent_id: e.agent_id.clone(),
+                        label,
+                        exit_code: e.exit_code,
+                        at: unix_now(),
+                    });
+                    if self.exits.len() > 50 {
+                        self.exits.remove(0);
+                    }
                     let code = e.exit_code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
                     self.toast(Severity::Warning, format!("Agent {} in {name} exited{code}", e.agent_id));
                 }
@@ -593,7 +777,7 @@ pub struct App {
     rx: Receiver<Msg>,
     hook: Option<Box<dyn FrameHook>>,
     sidebar_id: Id,
-    title: String,
+    pub(crate) title: String,
     fonts_set: bool,
 }
 
@@ -605,6 +789,9 @@ impl App {
     fn global_keys(&mut self, ctx: &egui::Context) {
         let s = &mut self.state;
         let take = |mods: Modifiers, key: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(mods, key)));
+        if take(Modifiers::CTRL, Key::Period) {
+            s.pr_panel = !s.pr_panel;
+        }
         if take(Modifiers::CTRL, Key::K) {
             s.focus_request = Some(Focus::Sidebar);
         }
@@ -649,6 +836,7 @@ impl App {
         // Single letters belong to a terminal that has the keyboard, and to
         // text fields; otherwise they are the TUI's action keys.
         let outside = s.dialog.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
+        let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         if outside {
             use crate::dialogs::Kind;
             if take(Modifiers::NONE, Key::S) {
@@ -661,6 +849,29 @@ impl App {
                 s.open_dialog(Kind::Remove);
             } else if take(Modifiers::SHIFT, Key::R) {
                 s.restore(true);
+            } else if g_recent && take(Modifiers::NONE, Key::A) {
+                (s.view, s.pending_g) = (View::Attention, None);
+            } else if g_recent && take(Modifiers::NONE, Key::W) {
+                (s.view, s.pending_g) = (View::Worktrees, None);
+            } else if take(Modifiers::NONE, Key::G) {
+                // Its second key may arrive in the same frame.
+                if take(Modifiers::NONE, Key::A) {
+                    s.view = View::Attention;
+                } else if take(Modifiers::NONE, Key::W) {
+                    s.view = View::Worktrees;
+                } else {
+                    s.pending_g = Some(Instant::now());
+                }
+            } else if s.view == View::Attention
+                && (take(Modifiers::NONE, Key::J) || take(Modifiers::NONE, Key::ArrowDown))
+            {
+                s.move_attention(1);
+            } else if s.view == View::Attention
+                && (take(Modifiers::NONE, Key::K) || take(Modifiers::NONE, Key::ArrowUp))
+            {
+                s.move_attention(-1);
+            } else if s.view == View::Attention && take(Modifiers::NONE, Key::Enter) {
+                s.focus_request = Some(Focus::Agent);
             } else if take(Modifiers::NONE, Key::R) {
                 s.conn.notify("refresh_worktrees", json!({}));
             } else if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
@@ -708,6 +919,8 @@ impl App {
                 let icon = "◐";
                 if ui.button(icon).on_hover_text("Light / dark theme").clicked() {
                     let kind = if t.kind == ThemeKind::Dark { ThemeKind::Light } else { ThemeKind::Dark };
+                    s.saved.theme = Some(if kind == ThemeKind::Light { "light" } else { "dark" }.into());
+                    s.saver.touch();
                     s.theme = Theme::of(kind);
                     s.theme.apply(ui.ctx());
                     let palette = s.theme.palette();
@@ -715,8 +928,34 @@ impl App {
                         p.inner.lock().unwrap().term.set_palette(palette.clone());
                     }
                 }
+                ui.menu_button("Notifications ▾", |ui| {
+                    ui.label(RichText::new("Notify me (while the window is in the background) when an agent…").small());
+                    for (key, label) in crate::attention::SETTINGS {
+                        let mut on = s.saved.notify_on(key);
+                        if ui.checkbox(&mut on, *label).changed() {
+                            s.saved.notify.insert(key.to_string(), on);
+                            s.saver.touch();
+                        }
+                    }
+                });
                 if let Some(v) = &s.engine_version {
                     ui.label(RichText::new(format!("engine {v}")).small().color(t.muted));
+                }
+                ui.add_space(12.0);
+                let n = s.attention.len();
+                let att = if n > 0 { format!("Attention ({n})") } else { "Attention".to_string() };
+                if ui
+                    .selectable_label(
+                        s.view == View::Attention,
+                        RichText::new(att).color(if n > 0 { t.yellow } else { t.text }),
+                    )
+                    .on_hover_text("g a")
+                    .clicked()
+                {
+                    s.view = View::Attention;
+                }
+                if ui.selectable_label(s.view == View::Worktrees, "Worktrees").on_hover_text("g w").clicked() {
+                    s.view = View::Worktrees;
                 }
             });
         });
@@ -892,6 +1131,11 @@ impl App {
                         }
                     }
                 }
+                if !orchestrator
+                    && ui.selectable_label(self.state.pr_panel, "PR").on_hover_text("PR and CI (Ctrl+.)").clicked()
+                {
+                    self.state.pr_panel = !self.state.pr_panel;
+                }
                 if ui.button("+ Agent").on_hover_text("Spawn an agent here (s)").clicked() {
                     self.state.open_dialog(crate::dialogs::Kind::Spawn);
                 }
@@ -1007,7 +1251,7 @@ impl App {
         ui.allocate_rect(body, Sense::hover());
     }
 
-    fn terminal(&mut self, ui: &mut Ui, session: &str, kind: PaneKind, role: Focus, ctx: &egui::Context) {
+    pub(crate) fn terminal(&mut self, ui: &mut Ui, session: &str, kind: PaneKind, role: Focus, ctx: &egui::Context) {
         let pane = self.state.pane(session, kind, ctx);
         let ppp = ctx.pixels_per_point();
         let atlas_ok = self.state.atlas.as_ref().is_some_and(|a| a.px == self.state.font_size * ppp);
@@ -1178,11 +1422,11 @@ impl App {
             ctx.request_repaint_after(TOAST_FOR.saturating_sub(now.duration_since(first.at)));
         }
         let t = self.state.theme;
-        let screen = ctx.content_rect();
         egui::Area::new(Id::unique("toasts"))
             .order(egui::Order::Foreground)
-            // Below the worktree header and tabs, so no button is covered.
-            .fixed_pos(egui::pos2(screen.right() - 380.0, screen.top() + 100.0))
+            // Bottom right, above the reply box: at the top they covered the
+            // header's buttons and the PR panel.
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -120.0))
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 let mut dismiss = None;
@@ -1278,6 +1522,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.state.saver.flush(&self.state.saved);
         self.state.conn.shutdown();
     }
 }
@@ -1306,7 +1551,13 @@ impl App {
         }
         self.global_keys(&ctx);
         // A viewport command asks for a repaint: send the title only on change.
-        let title = format!("lazyagent — {}", store::basename(&self.state.conn.root));
+        self.state.refresh_attention(ctx.input(|i| i.viewport().focused.unwrap_or(true)));
+        if let Some(wait) = self.state.saver.tick(&self.state.saved) {
+            ctx.request_repaint_after(wait);
+        }
+        let n = self.state.attention.len();
+        let badge = if n > 0 { format!("({n}) ") } else { String::new() };
+        let title = format!("{badge}lazyagent — {}", store::basename(&self.state.conn.root));
         if self.title != title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -1334,10 +1585,25 @@ impl App {
                 .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(10, 6)))
                 .show(ui, |ui| self.job_drawer(ui));
         }
+        if self.state.pr_panel && self.state.view == View::Worktrees {
+            egui::Panel::right("pr-panel")
+                .resizable(true)
+                .default_size(320.0)
+                .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(10, 8)))
+                .show(ui, |ui| self.pr_panel(ui));
+        }
         self.state.terminal_focused = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(8, 0)))
-            .show(ui, |ui| self.center(ui, &ctx));
+            .show(ui, |ui| match self.state.view {
+                View::Worktrees => self.center(ui, &ctx),
+                View::Attention if !self.state.seeded => self.link_overlay(ui),
+                View::Attention => {
+                    self.link_banner(ui);
+                    ui.add_space(4.0);
+                    self.attention_view(ui, &ctx);
+                }
+            });
         crate::dialogs::show(&ctx, &mut self.state);
         self.state.pending();
         self.toasts(&ctx);
