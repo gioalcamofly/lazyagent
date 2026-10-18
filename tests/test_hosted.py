@@ -10,6 +10,8 @@ import pytest
 from textual.drivers.headless_driver import HeadlessDriver
 from textual.widgets import Footer, Header
 
+from lazyagent.backend import BACKEND_CONNECTED
+from lazyagent.engine.events import EngineEvent
 from lazyagent.protocol.hosted import encode_osc, parse_osc, tmux_passthrough
 from lazyagent.widgets.center_panel import CenterPanel, GitInfoBar
 from lazyagent.widgets.worktree_list import WorktreeList
@@ -114,6 +116,22 @@ async def test_hosted_app_announces_its_socket(
         await pilot.resize_terminal(100, 30)
         await pilot.pause()
         assert "".join(written).count(_announcement(app)) > count
+
+
+async def test_a_late_engine_connection_is_announced_again(
+    tmp_path, monkeypatch, written, backend_kind
+):
+    # A remote engine slower than the first-connect wait: the announcement
+    # at mount had no socket, so the connection must bring another one.
+    app = make_app(tmp_path, monkeypatch, hosted=True, backend_kind=backend_kind)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        count = "".join(written).count(_announcement(app))
+        app._on_engine_event(
+            EngineEvent(0, BACKEND_CONNECTED, {"first": True, "engine_changed": False})
+        )
+        await pilot.pause()
+        assert "".join(written).count(_announcement(app)) == count + 1
 
 
 async def test_inside_tmux_the_announcement_is_also_passed_through(
