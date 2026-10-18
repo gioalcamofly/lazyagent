@@ -1,0 +1,37 @@
+[package]
+name = "lazyagent-desktop"
+description = "Native desktop app for lazyagent: worktrees, agents and their terminals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lazyagent-desktop"
+path = "src/main.rs"
+
+[dependencies]
+lazyagent-proto = { path = "../proto" }
+lazyagent-term = { path = "../term" }
+serde_json.workspace = true
+ab_glyph = "0.2"
+arboard = { version = "3", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+winit = { version = "0.30", default-features = false }
+fontdb = "0.24"
+epaint_default_fonts = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "links",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+lazyagent-testkit = { path = "../testkit" }
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
