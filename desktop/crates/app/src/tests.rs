@@ -639,3 +639,172 @@ fn render_the_attention_view_and_the_pr_panel() {
     h.run_steps(3);
     h.render().unwrap().save(out.join("lazyagent-desktop-pr-panel.png")).unwrap();
 }
+
+fn sample_diff(files: usize, lines: usize) -> String {
+    let mut s = String::new();
+    for f in 0..files {
+        s.push_str(&format!("diff --git a/src/f{f}.rs b/src/f{f}.rs\n--- a/src/f{f}.rs\n+++ b/src/f{f}.rs\n@@ -1,{lines} +1,{lines} @@\n"));
+        for l in 0..lines {
+            match l % 4 {
+                0 => s.push_str(&format!("-    let old_{l} = compute({l});\n")),
+                1 => s.push_str(&format!("+    let new_{l} = compute_better({l}, &context);\n")),
+                _ => s.push_str(&format!("     // unchanged line {l} of file {f}\n")),
+            }
+        }
+    }
+    s
+}
+
+#[test]
+fn the_diff_view_comments_and_submits_a_review() {
+    let (app, tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-f", "f", vec![agent("a1", "Implementer", "running", "s1")]),
+    ]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-f".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", crate::diff::parse(&sample_diff(2, 8))));
+        s.diff_open = true;
+    }
+    h.run_steps(2);
+    h.get_by_label("2 files");
+    assert!(h.query_by_label("Submit review (0)").is_some());
+    // A comment on a removed line (from the click handler's anchor).
+    let rows = h.state().state.diff.as_ref().unwrap().diff.files[0].rows.clone();
+    let mut c = crate::diff::anchor("src/f0.rs", &rows[1]).unwrap();
+    c.text = "keep the old name".into();
+    h.state_mut().state.set_comments("/r/repo-f", &[c.clone()]);
+    h.run_steps(2);
+    let rows = &h.state().state.diff.as_ref().unwrap().rows;
+    assert!(rows.contains(&crate::diff_view::DRow::Comment(0, c.id())), "the comment sits under its line");
+    // Split keeps it, once.
+    h.get_by_label("Split").click();
+    h.run_steps(2);
+    assert!(h.state().state.saved.diff_split);
+    let rows = &h.state().state.diff.as_ref().unwrap().rows;
+    assert_eq!(rows.iter().filter(|r| matches!(r, crate::diff_view::DRow::Comment(..))).count(), 1);
+    // Submit: the agent runs, so "Send when idle" queues it…
+    h.get_by_label("Submit review (1)").click();
+    h.run_steps(2);
+    h.get_by_label("Send when idle").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.pending_reviews.len(), 1);
+    assert!(h.state().state.pending_reviews[0].text.contains("src/f0.rs:1 (removed line)"));
+    // …and it goes out when the agent finishes its turn (no engine here: it fails, and says so).
+    tx.send(event(
+        "agent.updated",
+        json!({"worktree_path": "/r/repo-f", "agent_id": "a1", "status": "waiting", "confidence": "high", "detail": ""}),
+    ))
+    .unwrap();
+    h.run_steps(3);
+    assert!(h.state().state.pending_reviews.is_empty());
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("The review was not sent")));
+    assert_eq!(h.state().state.comments("/r/repo-f").len(), 1, "not cleared when it was not sent");
+}
+
+#[test]
+fn scrolling_a_5000_line_diff_is_cheap() {
+    let (app, _tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    let mut h = Harness::builder().with_size([1400.0, 860.0]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(2);
+    let t = Instant::now();
+    let parsed = crate::diff::parse(&sample_diff(25, 200));
+    let parse_ms = t.elapsed().as_secs_f64() * 1e3;
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo", "", parsed));
+        s.diff_open = true;
+    }
+    let t = Instant::now();
+    h.step();
+    let first = t.elapsed().as_secs_f64() * 1e3;
+    h.run_steps(2);
+    let pos = egui::pos2(900.0, 500.0);
+    h.event(egui::Event::PointerMoved(pos));
+    let mut frames = vec![];
+    for _ in 0..120 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -60.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let t = Instant::now();
+        h.step();
+        frames.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    frames.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (p50, p95) = (frames[60], frames[114]);
+    println!(
+        "5,200-line diff: parse {parse_ms:.2} ms, first frame {first:.2} ms, scroll frames p50 {p50:.2} / p95 {p95:.2} ms"
+    );
+    if !cfg!(debug_assertions) {
+        assert!(first < 20.0 && p95 < 2.0, "first {first} p95 {p95}");
+    }
+}
+
+#[test]
+fn a_review_reaches_a_real_agent_from_a_real_diff() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "the prompt", |a| {
+        a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("your turn>"))
+    });
+    std::fs::write(std::path::Path::new(&world.repo).join("app.py"), "print('hello')\n").unwrap();
+    // Ctrl+Shift+D works with the agent's terminal focused.
+    h.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::D);
+    step_until(&mut h, "the diff", |a| a.state.diff.as_ref().is_some_and(|d| !d.loading && !d.diff.files.is_empty()));
+    let file = h.state().state.diff.as_ref().unwrap().diff.files[0].clone();
+    assert_eq!((file.path.as_str(), file.status), ("app.py", "added"));
+    let mut c = crate::diff::anchor("app.py", &file.rows[0]).unwrap();
+    c.text = "use logging".into();
+    h.state_mut().state.set_comments(&world.repo, &[c]);
+    h.run_steps(2);
+    h.get_by_label("Submit review (1)").click();
+    h.run_steps(2);
+    h.get_by_label("Send now").click();
+    step_until(&mut h, "the review in the agent", |a| {
+        a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("Review comments"))
+    });
+    step_until(&mut h, "comments cleared", |a| a.state.comments(&world.repo).is_empty());
+    conn.shutdown();
+}
+
+#[test]
+fn render_the_diff_view() {
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-login", "feat-login", vec![agent("a1", "Implementer", "waiting", "s1")]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1300.0, 700.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(2);
+    let text = "diff --git a/src/login.py b/src/login.py\n--- a/src/login.py\n+++ b/src/login.py\n@@ -10,7 +10,9 @@ def login(user):\n     if not user:\n         return None\n-    token = make_token(user)\n-    return token\n+    token = make_token(user, ttl=3600)\n+    audit.log(\"login\", user.id)\n+    return token\n \n def logout(user):\n     session.clear()\ndiff --git a/tests/test_login.py b/tests/test_login.py\nnew file\ndef test_login():\n    assert login(User(1))\n";
+    let parsed = crate::diff::parse(text);
+    let mut c = crate::diff::anchor("src/login.py", &parsed.files[0].rows[5]).unwrap();
+    c.text = "the TTL should come from settings".into();
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-login".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-login", "main", parsed));
+        s.diff_open = true;
+        s.set_comments("/r/repo-login", &[c]);
+    }
+    h.run_steps(3);
+    let dir = std::env::temp_dir();
+    match h.render() {
+        Ok(i) => i.save(dir.join("lazyagent-desktop-diff.png")).unwrap(),
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => return,
+    }
+    h.state_mut().state.saved.diff_split = true;
+    h.run_steps(3);
+    h.render().unwrap().save(dir.join("lazyagent-desktop-diff-split.png")).unwrap();
+}

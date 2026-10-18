@@ -7,6 +7,8 @@ mod bench;
 mod boxdraw;
 mod conn;
 mod dialogs;
+mod diff;
+mod diff_view;
 mod fonts;
 mod gpu;
 mod notify;

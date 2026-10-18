@@ -24,6 +24,9 @@ pub struct Saved {
     pub notify: BTreeMap<String, bool>,
     #[serde(default)]
     pub theme: Option<String>,
+    /// The diff viewer's layout.
+    #[serde(default)]
+    pub diff_split: bool,
     /// Review comments per worktree (D5): opaque to this module.
     #[serde(default)]
     pub comments: BTreeMap<String, serde_json::Value>,
