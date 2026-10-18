@@ -342,3 +342,23 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 - **Tests** (cargo 78 = proto 26, term 16, app 36): queue ranks, clearing, occurrences, snooze, PR kinds, exits, jobs, the CI prompt, mark pruning, the state file (round trip, debounce, corrupt file); the view: ranks, `(3)` title badge, `g a` / `g w` (after Ctrl+K: the agent's terminal otherwise has the keyboard), Dismiss and Snooze persisted, a new occurrence after the condition cleared; a PR going red: toast, CI item, the panel's checks, "Send the failures"; settings and theme back after a restart; a reply reaching a real fake agent with its delivery toast; a lavapipe render of both screens (above).
 - **Measured:** re-deriving the queue for 200 agents (160 items): p50 0.10 / p95 0.18 ms release (budget 2 ms; asserted in release only, per the rule that perf asserts stay out of debug and CI paths); the attention view adds no work to the stream path.
 - **Found on the way:** toasts at the top right covered the header buttons and the PR panel: they sit at the bottom right now, above the reply box. Not exercised on the real desktop: the notification popup itself (one `notify-send` call; `LAZYAGENT_DESKTOP_NO_NOTIFY=1` turns it off).
+
+### D5: diff viewer and review (2026-10-18)
+
+![diff](desktop-screenshots/d5-diff.png)
+![split](desktop-screenshots/d5-diff-split.png)
+
+- **Parser** (`diff.rs`, pure, the web's lib/diff.js): `git diff` plus the engine's untracked-file entries (raw contents), binary markers and the truncation notice → files (status, +/−, binary) with typed rows and line numbers; split pairs a run of removals with the run of additions after it; a comment anchors to (file, side, line); the review prompt is the web's, character for character (tested).
+- **View** (Diff in the worktree header, **Ctrl+D outside a terminal, Ctrl+Shift+D anywhere** — Ctrl+D inside a terminal stays EOF, the plan's Q6; Back or the same key returns): the base (prefilled as New worktree would, empty for the main worktree = working tree vs index; Enter or ↻ diffs again), Unified / Split (kept in the state file), the counts, "Diff truncated at 4 MiB", a file list that jumps, and **one virtualised list of fixed-height rows** (`ScrollArea::show_rows`, 18 px): only the visible rows are laid out. `get_diff {base, max_bytes: 4 MiB}`; the text is parsed on a thread, never in the frame.
+- **Comments:** click a line's numbers (either side in split) → write → Ctrl+Enter saves; shown under their line in both layouts (a context line has one anchor, so one comment row in split); click one to edit or delete. Kept per worktree in the app's state file (the web keeps them in localStorage; engine-stored threads are U8 / proposal 0008).
+- **Submit review:** pick the agent (one that is idle first), an optional summary, a preview of exactly what it receives, "clear the comments once sent"; **Send** to an idle agent, or to a busy one **Send when idle** (queued in the app, sent when its status becomes waiting / your turn) or Send now. A review that could not be sent keeps the comments.
+- **Tests** (cargo 87 = proto 26, term 16, app 45): the parser on the web's cases (modified, renamed, binary, untracked raw contents with an empty line, no-newline note, truncation), split pairs, anchors and the exact prompt; rows carrying comments in both layouts; the view: counts, a comment under its line, Split persisted, Submit → Send when idle → sent when the agent becomes idle (and comments kept when the send fails); **a real change in a real engine's worktree: Ctrl+Shift+D from the agent's terminal, the new file listed, a comment, Send now, the review text arriving in the fake agent, the comments cleared**; a lavapipe render of both layouts (above).
+- **Measured** (5,201-line diff, 25 files, 1400×860, release; asserted in release only):
+
+  | | desktop | web | budget |
+  |---|---|---|---|
+  | parse | 0.9-1.7 ms (on a thread) | 2-5 ms | — |
+  | first screen | **6.1-6.3 ms** | 29-63 ms | 100 |
+  | a scroll step (60 px), CPU per frame p50 / p95 | **0.43-0.46 / 0.52-0.55 ms** | rows 3.0-3.4 / 4.6-6.0 ms | 17 ms frame, 2 ms CPU (mine) |
+
+- **Not done:** "open in the editor"; side-by-side long lines are clipped, not wrapped (as on the web); engine-stored review threads (U8).
