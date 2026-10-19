@@ -71,6 +71,9 @@ class Entry:
     engine_id: str | None = None
     # Set on restorable entries: when the engine that ran it ended.
     ended_at: float | None = None
+    # Its session notes (engine/notes.py): a restore carries them to the
+    # new agent, whatever agent id it gets.
+    notes_id: str | None = None
 
     @staticmethod
     def new_id() -> str:

@@ -15,6 +15,7 @@
           "instruction": "review the diff",
           "kind": "agent",
           "label": "Reviewer",
+          "notes_id": null,
           "provider": "claude",
           "session_name": "repo-feat-a2",
           "skip_permissions": true,

@@ -165,6 +165,30 @@
       "$ref": "methods.json#/$defs/list_restorable.result",
       "description": "The restorable list changed without a restore: an entry became live in this engine (spawned into its slot or resuming its conversation) and was consumed, was hidden or shown again, or was dismissed. agents: what list_restorable answers now."
     },
+    "notes.updated": {
+      "type": "object",
+      "description": "An agent's session notes were written (proposal 0011). Fetch the text with notes_get when it is shown.",
+      "required": ["worktree_path", "agent_id", "notes_id", "rev", "size", "by"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "notes_id": {"type": "string"},
+        "rev": {"type": "integer", "description": "+1 per write; a write with a stale if_rev is refused."},
+        "size": {"type": "integer", "description": "UTF-8 bytes of the text."},
+        "by": {"type": "string", "x-known-values": ["user", "agent", "orchestrator"]}
+      }
+    },
+    "notes.removed": {
+      "type": "object",
+      "description": "Notes stopped being an agent's live notes, or were deleted. orphaned: the agent ended without a stop; the file is kept (orphan_days) and can be adopted.",
+      "required": ["notes_id", "worktree_path", "agent_id", "reason"],
+      "properties": {
+        "notes_id": {"type": "string"},
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "reason": {"type": "string", "x-known-values": ["deleted", "orphaned", "adopted", "pruned"], "description": "deleted: on purpose (stop, dismiss, a client); pruned: by the GC (only the latest per worktree, orphan expiry, worktree gone, a fresh agent)."}
+      }
+    },
     "engine.restored": {
       "type": "object",
       "description": "What a restore_agents brought back and what failed (a failed agent stays restorable).",
