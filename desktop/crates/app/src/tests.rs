@@ -836,6 +836,146 @@ fn the_diff_view_keeps_long_names_and_lines_in_their_columns() {
     assert!(unified > 0.0 && unified < end, "unified {unified} vs split {end}");
 }
 
+/// The centre of row `idx` of the diff, at `x` from the rows' left.
+fn diff_row_pos(h: &Harness<'static, App>, idx: usize, x: f32) -> egui::Pos2 {
+    let r = h.state().state.diff.as_ref().unwrap().rows_rect;
+    egui::pos2(r.left() + x, r.top() + (idx as f32 + 0.5) * crate::diff_view::ROW_H)
+}
+
+fn press(h: &mut Harness<'static, App>, idx: usize, x: f32, pressed: bool, modifiers: egui::Modifiers) {
+    let pos = diff_row_pos(h, idx, x);
+    h.event(egui::Event::PointerMoved(pos));
+    h.event_modifiers(
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers },
+        modifiers,
+    );
+    h.run_steps(2);
+}
+
+#[test]
+fn select_lines_then_add_to_review_or_ask_now() {
+    let (app, tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-f", "f", vec![agent("a1", "Implementer", "running", "s1")]),
+    ]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-f".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", crate::diff::parse(&sample_diff(2, 8))));
+        s.diff_open = true;
+    }
+    h.run_steps(3);
+    // Unified: rows 0 file, 1 hunk, 2 "-old_0" (old 1), 3 "+new_1" (new 1),
+    // 4 context (new 2). Drag over the code from row 2 to row 4.
+    let none = egui::Modifiers::NONE;
+    press(&mut h, 2, 260.0, true, none);
+    for y in [3, 4] {
+        let pos = diff_row_pos(&h, y, 262.0);
+        h.event(egui::Event::PointerMoved(pos));
+        h.run_steps(2);
+    }
+    press(&mut h, 4, 262.0, false, none);
+    let draft = &h.state().state.ask.as_ref().expect("the popup").comment;
+    assert_eq!(
+        (draft.start_line, draft.start_side.as_deref(), draft.side.as_str(), draft.line),
+        (Some(1), Some("old"), "new", 2)
+    );
+    assert_eq!(draft.code.lines().count(), 3);
+    h.get_by_label("src/f0.rs:-1…+2");
+    h.event(egui::Event::Text("Why both?".into()));
+    h.run_steps(2);
+    h.get_by_label("Add to review").click();
+    h.run_steps(3);
+    let all = h.state().state.comments("/r/repo-f");
+    assert_eq!((all.len(), all[0].text.as_str(), all[0].asked), (1, "Why both?", false));
+    assert!(h.state().state.ask.is_none() && h.state().state.diff.as_ref().unwrap().sel.is_none());
+    // The thread shows under its last line (row 4).
+    assert_eq!(h.state().state.diff.as_ref().unwrap().rows[5], crate::diff_view::DRow::Comment(0, all[0].id()));
+    assert!(h.query_by_label("Submit review (1)").is_some());
+
+    // Split: click a line on the right, shift-click another → the popup.
+    h.get_by_label("Split").click();
+    h.run_steps(3);
+    let right = h.state().state.diff.as_ref().unwrap().rows_rect.width() / 2.0 + 120.0;
+    // Rows: 2 (-old_0 | +new_1), 3 context (new 2), 4 the thread, 5 context
+    // (new 3), 6 (-old_4 | +new_5, new 4).
+    press(&mut h, 3, right, true, none);
+    press(&mut h, 3, right, false, none);
+    assert!(h.state().state.ask.is_none(), "a click on the code only selects");
+    press(&mut h, 6, right, true, egui::Modifiers::SHIFT);
+    press(&mut h, 6, right, false, egui::Modifiers::SHIFT);
+    let draft = &h.state().state.ask.as_ref().expect("the popup").comment;
+    // The right side only: context 2, 3, then +new_5 (new 4), no removed line.
+    assert_eq!((draft.start_line, draft.line, draft.side.as_str()), (Some(2), 4, "new"));
+    assert!(!draft.code.contains("old_4"), "{}", draft.code);
+    h.event(egui::Event::Text("Is this tested?".into()));
+    h.run_steps(2);
+    h.get_by_label("Ask now").click();
+    h.run_steps(3);
+    // No engine here: it says it was not sent, and the thread stays asked.
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("The question was not sent")));
+    assert!(h.state().state.asks.is_empty());
+    let asked = h.state().state.comments("/r/repo-f").into_iter().find(|c| c.asked).expect("the question");
+    assert!(h.query_by_label("Submit review (1)").is_some(), "a question is not part of the review");
+
+    // An answer: the agent runs, then is idle; its output is read (here it
+    // fails: the thread says where the answer is), then a real one.
+    h.state_mut().state.asks.push(crate::diff_view::PendingAsk {
+        worktree: "/r/repo-f".into(),
+        agent_id: "a1".into(),
+        id: asked.id(),
+        marker: "m1".into(),
+        sent: true,
+        ran: false,
+        reading: false,
+    });
+    h.state_mut().state.comments_gen += 1;
+    h.run_steps(2);
+    let rows = |h: &Harness<'static, App>| h.state().state.diff.as_ref().unwrap().rows.clone();
+    assert!(
+        rows(&h).iter().any(|r| matches!(r, crate::diff_view::DRow::Reply(_, id, 1) if *id == asked.id())),
+        "waiting line"
+    );
+    tx.send(event(
+        "agent.updated",
+        json!({"worktree_path": "/r/repo-f", "agent_id": "a1", "status": "waiting", "confidence": "high", "detail": ""}),
+    ))
+    .unwrap();
+    h.run_steps(3);
+    assert!(h.state().state.asks.is_empty());
+    let c = h.state().state.comments("/r/repo-f").into_iter().find(|c| c.asked).unwrap();
+    assert_eq!(
+        c.replies.last().map(|r| (r.who.as_str(), r.text.as_str())),
+        Some(("note", "Answered in the agent's terminal."))
+    );
+    let a = crate::diff_view::PendingAsk {
+        worktree: "/r/repo-f".into(),
+        agent_id: "a1".into(),
+        id: asked.id(),
+        marker: "m2".into(),
+        sent: true,
+        ran: true,
+        reading: true,
+    };
+    let out: Vec<String> = ["⏺ ⟦answer m2⟧", "  Yes: test_f0 covers it.", "  ⟦end m2⟧"].map(String::from).to_vec();
+    h.state_mut().state.answer(&a, Ok(&out));
+    h.run_steps(2);
+    let c = h.state().state.comments("/r/repo-f").into_iter().find(|c| c.asked).unwrap();
+    assert_eq!(c.replies.last().unwrap().text, "Yes: test_f0 covers it.");
+    let thread = crate::diff_view::thread_lines(&c, false);
+    assert_eq!(thread.last().unwrap(), &("agent", "agent: Yes: test_f0 covers it.".to_string()));
+    let n = rows(&h).iter().filter(|r| matches!(r, crate::diff_view::DRow::Reply(_, id, _) | crate::diff_view::DRow::Comment(_, id) if *id == c.id())).count();
+    assert_eq!(n, 3, "question, note, answer");
+    // Clicking it opens the thread, with a follow-up box.
+    let idx = rows(&h).iter().position(|r| *r == crate::diff_view::DRow::Comment(0, c.id())).unwrap();
+    press(&mut h, idx, 200.0, true, none);
+    press(&mut h, idx, 200.0, false, none);
+    assert!(h.state().state.comment_edit.is_some());
+    assert!(h.query_by_label("Agent: Yes: test_f0 covers it.").is_some());
+}
+
 #[test]
 fn scrolling_a_5000_line_diff_is_cheap() {
     let (app, _tx) = app(vec![worktree("/r/repo", "main", vec![])]);
@@ -909,6 +1049,46 @@ fn a_review_reaches_a_real_agent_from_a_real_diff() {
 }
 
 #[test]
+fn a_question_reaches_a_real_agent_and_its_answer_comes_back() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    let term =
+        |a: &App| a.state.panes.values().map(|p| p.inner.lock().unwrap().term.frame().text()).collect::<String>();
+    step_until(&mut h, "the prompt", |a| term(a).contains("your turn>"));
+    std::fs::write(std::path::Path::new(&world.repo).join("app.py"), "a = 1\nb = 2\n").unwrap();
+    h.key_press_modifiers(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::D);
+    step_until(&mut h, "the diff", |a| a.state.diff.as_ref().is_some_and(|d| !d.loading && !d.diff.files.is_empty()));
+    let file = h.state().state.diff.as_ref().unwrap().diff.files[0].clone();
+    let mut c = crate::diff::anchor_range("app.py", &file.rows).unwrap();
+    c.text = "Why two names?".into();
+    c.asked = true;
+    let id = c.id();
+    h.state_mut().state.upsert_comment(&world.repo, c);
+    h.state_mut().state.ask_agent(&world.repo, &id);
+    step_until(&mut h, "the question in the agent", |a| term(a).contains("A question about app.py:1-2"));
+    step_until(&mut h, "the question sent", |a| a.state.asks.iter().all(|q| q.sent));
+    step_until(&mut h, "its answer printed", |a| term(a).contains("⟦end "));
+    // The fake agent reports no statuses (no hooks): play the turn it took.
+    let agent_id = h.state().state.store.agents(&world.repo)[0].agent_id.clone();
+    for status in ["running", "waiting"] {
+        h.state_mut().state.store.apply(&lazyagent_proto::EngineEvent::parse(lazyagent_proto::Event {
+            seq: 0,
+            event: "agent.updated".into(),
+            data: json!({"worktree_path": world.repo, "agent_id": agent_id, "status": status, "confidence": "high", "detail": ""}),
+        }));
+        h.run_steps(1);
+    }
+    step_until(&mut h, "the answer in the thread", |a| {
+        a.state.comments(&world.repo).iter().any(|c| c.replies.iter().any(|r| r.who == "agent"))
+    });
+    let c = h.state().state.comments(&world.repo).remove(0);
+    assert_eq!(c.replies[0].text, "A fake answer\non two lines.");
+    conn.shutdown();
+}
+
+#[test]
 fn render_the_diff_view() {
     let (app, _tx) = app(vec![
         worktree("/r/repo", "main", vec![]),
@@ -928,12 +1108,22 @@ fn render_the_diff_view() {
     let parsed = crate::diff::parse(&text);
     let mut c = crate::diff::anchor("src/login.py", &parsed.files[0].rows[5]).unwrap();
     c.text = "the TTL should come from settings".into();
+    // A question on a range, answered, and lines being selected.
+    let mut q = crate::diff::anchor_range("src/login.py", &parsed.files[0].rows[9..11]).unwrap();
+    q.text = "Does logout need the audit log too?".into();
+    q.asked = true;
+    q.replies.push(crate::diff::Reply {
+        who: "agent".into(),
+        text: "Yes: audit.log(\"logout\", user.id) before the clear,\nso both ends of a session are recorded.".into(),
+    });
     {
         let s = &mut h.state_mut().state;
         s.selected = Some("/r/repo-login".into());
-        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-login", "main", parsed));
+        let mut d = crate::diff_view::DiffState::loaded("/r/repo-login", "main", parsed);
+        d.sel = Some(crate::diff_view::Sel { file: 0, side: None, from: 1, to: 2 });
+        s.diff = Some(d);
         s.diff_open = true;
-        s.set_comments("/r/repo-login", &[c]);
+        s.set_comments("/r/repo-login", &[c, q]);
     }
     h.run_steps(3);
     let dir = std::env::temp_dir();

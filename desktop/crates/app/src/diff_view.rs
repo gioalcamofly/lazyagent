@@ -1,10 +1,12 @@
 //! The diff viewer and review (ui-plan §3d / §4c, the web's U5): a base,
 //! unified or split rows in one virtualised list of fixed-height rows, a
-//! file list that jumps, comments on lines (kept in the app's state file),
-//! and "Submit review" to an agent, now or when it is idle.
+//! file list that jumps, comments on lines or ranges (kept in the app's
+//! state file), "Submit review" to an agent, now or when it is idle, and
+//! questions asked now, their answers read back under the code.
 
 use std::sync::Arc;
 
+use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, TextFormat,
@@ -27,7 +29,44 @@ pub enum DRow {
     File(usize),
     Row(usize, usize),
     Pair(usize, Pair),
+    /// A thread's first line; `Reply` its next ones (fixed-height rows).
     Comment(usize, String),
+    Reply(usize, String, usize),
+}
+
+/// Selected lines: one file, `from`..=`to` in its rows (either order); in
+/// split, one side (`Some(true)`: the old, left one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sel {
+    pub file: usize,
+    pub side: Option<bool>,
+    pub from: usize,
+    pub to: usize,
+}
+
+impl Sel {
+    fn has(&self, fi: usize, ri: usize, side: Option<bool>) -> bool {
+        let (a, b) = (self.from.min(self.to), self.from.max(self.to));
+        self.file == fi && self.side == side && (a..=b).contains(&ri)
+    }
+}
+
+/// The comment on a selection: its side's lines only, in split.
+pub fn selected_comment(d: &Diff, sel: &Sel) -> Option<Comment> {
+    let f = d.files.get(sel.file)?;
+    let rows = f.rows.get(sel.from.min(sel.to)..=sel.from.max(sel.to))?;
+    diff::anchor_range(
+        &f.path,
+        rows.iter().filter(|r| match sel.side {
+            Some(true) => r.kind != RowKind::Add,
+            Some(false) => r.kind != RowKind::Del,
+            None => true,
+        }),
+    )
+}
+
+fn code_row(row: &diff::Row) -> bool {
+    matches!(row.kind, RowKind::Ctx | RowKind::Add | RowKind::Del)
 }
 
 pub struct DiffState {
@@ -48,6 +87,11 @@ pub struct DiffState {
     cols: usize,
     /// Where the rows were drawn last frame (tests, hit-testing).
     pub rows_rect: Rect,
+    pub sel: Option<Sel>,
+    dragging: bool,
+    /// The drag began on the line numbers (or with shift): its release
+    /// opens the popup even on one line.
+    drag_pops: bool,
 }
 
 impl DiffState {
@@ -67,14 +111,40 @@ impl DiffState {
             hoff: 0.0,
             cols: 0,
             rows_rect: Rect::NOTHING,
+            sel: None,
+            dragging: false,
+            drag_pops: false,
         }
     }
 }
 
+/// A thread opened from its rows: edit, delete, ask, follow up.
 pub struct CommentEdit {
     pub worktree: String,
     pub comment: Comment,
     pub existing: bool,
+    pub follow: String,
+}
+
+/// The popup on selected lines: a comment for the review, or a question now.
+pub struct AskDraft {
+    pub worktree: String,
+    pub comment: Comment,
+    pub pos: Pos2,
+    focus: bool,
+}
+
+/// A question sent to an agent; its answer is read back from the agent's
+/// output, between `marker` lines, once the agent has run and is idle.
+pub struct PendingAsk {
+    pub worktree: String,
+    pub agent_id: String,
+    /// The comment's id.
+    pub id: String,
+    pub marker: String,
+    pub sent: bool,
+    pub ran: bool,
+    pub reading: bool,
 }
 
 pub struct ReviewForm {
@@ -147,6 +217,9 @@ impl State {
             hoff: 0.0,
             cols: 0,
             rows_rect: Rect::NOTHING,
+            sel: None,
+            dragging: false,
+            drag_pops: false,
         });
         let mut params = json!({"worktree_path": path, "max_bytes": MAX_BYTES});
         if !base.trim().is_empty() {
@@ -210,12 +283,173 @@ impl State {
             Ok(v) => {
                 s.toast(Severity::Info, format!("Review: {}", crate::attention_view::delivery_text(v)));
                 if clear {
-                    s.set_comments(&worktree, &[]);
+                    // The asked threads were not part of it.
+                    let kept: Vec<Comment> = s.comments(&worktree).into_iter().filter(|c| c.asked).collect();
+                    s.set_comments(&worktree, &kept);
                 }
             }
             Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
         });
     }
+
+    /// The comments that go with Submit review (not the asked ones).
+    pub fn review_comments(&self, worktree: &str) -> Vec<Comment> {
+        self.comments(worktree).into_iter().filter(|c| !c.asked).collect()
+    }
+
+    /// Adds `c`, or replaces the comment with its id.
+    pub fn upsert_comment(&mut self, worktree: &str, c: Comment) {
+        let mut all = self.comments(worktree);
+        match all.iter_mut().find(|x| x.id() == c.id()) {
+            Some(x) => *x = c,
+            None => all.push(c),
+        }
+        self.set_comments(worktree, &all);
+    }
+
+    /// The ids of the threads waiting for an answer.
+    pub fn asking(&self, worktree: &str) -> Vec<String> {
+        self.asks.iter().filter(|a| a.worktree == worktree).map(|a| a.id.clone()).collect()
+    }
+
+    /// Sends the thread `id` (its comment, or its last follow-up) to the
+    /// worktree's agent (an idle one first) as a question, now.
+    pub fn ask_agent(&mut self, worktree: &str, id: &str) {
+        let Some(c) = self.comments(worktree).into_iter().find(|c| c.id() == id) else { return };
+        let agents = self.store.agents(worktree);
+        let Some(agent_id) = agents.iter().find(|a| idle(&a.status)).or(agents.first()).map(|a| a.agent_id.clone())
+        else {
+            self.toast(Severity::Error, "No agent in this worktree to ask.");
+            return;
+        };
+        let marker = marker_id();
+        let base = self.diff.as_ref().filter(|d| d.path == worktree).map(|d| d.base.clone()).unwrap_or_default();
+        let params =
+            json!({"worktree_path": worktree, "agent_id": agent_id, "text": diff::ask_prompt(&c, &base, &marker)});
+        self.asks.retain(|a| !(a.worktree == worktree && a.id == id));
+        self.asks.push(PendingAsk {
+            worktree: worktree.to_string(),
+            agent_id,
+            id: id.to_string(),
+            marker,
+            sent: false,
+            ran: false,
+            reading: false,
+        });
+        self.comments_gen += 1;
+        let (worktree, id) = (worktree.to_string(), id.to_string());
+        self.conn.request("send_agent_input", params, move |s, reply| {
+            let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
+            match reply {
+                Ok(v) => {
+                    // Confirmed or busy: it has run (or runs) since.
+                    let delivery = v.get("delivery").and_then(|d| d.as_str()).unwrap_or("");
+                    s.asks[i].sent = true;
+                    s.asks[i].ran = matches!(delivery, "confirmed" | "busy");
+                    s.toast(Severity::Info, format!("Question: {}", crate::attention_view::delivery_text(v)));
+                }
+                Err(e) => {
+                    s.asks.remove(i);
+                    s.comments_gen += 1;
+                    s.toast(Severity::Error, format!("The question was not sent: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Reads the answers of the agents that ran and are idle again.
+    pub fn pending_asks(&mut self) {
+        let mut i = 0;
+        while i < self.asks.len() {
+            let a = &self.asks[i];
+            if !a.sent || a.reading {
+                i += 1;
+                continue;
+            }
+            match self.store.agent(&a.worktree, &a.agent_id).map(|x| x.status.clone()) {
+                None => {
+                    let a = self.asks.remove(i);
+                    self.answer(&a, Err("The agent is gone; it did not answer."));
+                    continue;
+                }
+                Some(status) if !idle(&status) => self.asks[i].ran = true,
+                Some(_) if a.ran => {
+                    let params = json!({"worktree_path": a.worktree, "agent_id": a.agent_id, "lines": ANSWER_LINES});
+                    let (worktree, id) = (a.worktree.clone(), a.id.clone());
+                    self.asks[i].reading = true;
+                    self.conn.request("read_agent_output", params, move |s, reply| {
+                        let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
+                        let a = s.asks.remove(i);
+                        let lines: Vec<String> = reply
+                            .ok()
+                            .and_then(|v| serde_json::from_value(v.get("lines")?.clone()).ok())
+                            .unwrap_or_default();
+                        s.answer(&a, Ok(&lines));
+                    });
+                }
+                Some(_) => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// Puts what the agent printed between the question's markers under it
+    /// (or says where the answer is).
+    pub fn answer(&mut self, a: &PendingAsk, output: Result<&[String], &str>) {
+        let reply = match output.map(|lines| diff::parse_answer(lines, &a.marker)) {
+            Ok(Some(text)) => diff::Reply { who: "agent".into(), text },
+            Ok(None) => diff::Reply { who: "note".into(), text: "Answered in the agent's terminal.".into() },
+            Err(why) => diff::Reply { who: "note".into(), text: why.into() },
+        };
+        let mut all = self.comments(&a.worktree);
+        if let Some(c) = all.iter_mut().find(|c| c.id() == a.id) {
+            if reply.who == "agent" {
+                self.toast(Severity::Info, format!("The agent answered on {}:{}", c.path, c.place()));
+            }
+            c.replies.push(reply);
+        }
+        self.set_comments(&a.worktree, &all);
+    }
+}
+
+/// How much of an agent's output is searched for an answer.
+const ANSWER_LINES: usize = 2000;
+
+/// A short id for an answer's markers.
+fn marker_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    format!("{:x}", (nanos ^ N.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9)) & 0xff_ffff)
+}
+
+/// A thread as lines: the comment, each reply (a few lines each), and a
+/// line while its answer is awaited. (who, text): "you", "agent", "note".
+pub fn thread_lines(c: &Comment, asking: bool) -> Vec<(&'static str, String)> {
+    const MAX: usize = 6;
+    let mut out = vec![];
+    let mut push = |who: &'static str, label: &str, text: &str| {
+        let lines: Vec<&str> = text.trim().lines().collect();
+        let pad = " ".repeat(label.chars().count() + 1);
+        for (k, l) in lines.iter().take(MAX).enumerate() {
+            out.push((who, if k == 0 { format!("{label} {l}") } else { format!("{pad}{l}") }));
+        }
+        if lines.len() > MAX {
+            out.push((who, format!("{pad}… (click to read it all)")));
+        }
+    };
+    push("you", if c.asked { "?" } else { "▸" }, &c.text);
+    for r in &c.replies {
+        match r.who.as_str() {
+            "agent" => push("agent", "agent:", &r.text),
+            "you" => push("you", "you:", &r.text),
+            _ => push("note", "·", &r.text),
+        }
+    }
+    if asking {
+        out.push(("note", "  ⋯ waiting for the agent's answer".into()));
+    }
+    out
 }
 
 fn row_colors(kind: RowKind) -> (Color32, Color32) {
@@ -232,6 +466,8 @@ impl App {
         let split = self.state.saved.diff_split;
         let Some(path) = self.state.diff.as_ref().map(|d| d.path.clone()) else { return };
         let comments = self.state.comments(&path);
+        let asking = self.state.asking(&path);
+        let to_review = comments.iter().filter(|c| !c.asked).count();
         // Toolbar.
         let mut reload = None;
         ui.horizontal(|ui| {
@@ -267,8 +503,8 @@ impl App {
                 if ui.button("Back (Ctrl+D)").clicked() {
                     self.state.toggle_diff();
                 }
-                let label = format!("Submit review ({})", comments.len());
-                if ui.add_enabled(!comments.is_empty(), egui::Button::new(label)).clicked() {
+                let label = format!("Submit review ({to_review})");
+                if ui.add_enabled(to_review > 0, egui::Button::new(label)).clicked() {
                     let agents = self.state.store.agents(&path);
                     let pick = agents.iter().find(|a| idle(&a.status)).or(agents.first()).map(|a| a.agent_id.clone());
                     self.state.review = Some(ReviewForm {
@@ -301,7 +537,7 @@ impl App {
         let key = (split, self.state.comments_gen);
         if self.state.diff.as_ref().unwrap().built_for != Some(key) {
             let d = self.state.diff.as_mut().unwrap();
-            d.rows = build_rows(&d.diff, split, &comments);
+            d.rows = build_rows(&d.diff, split, &comments, &asking);
             d.cols = max_cols(&d.diff);
             d.built_for = Some(key);
         }
@@ -347,20 +583,60 @@ impl App {
         let hoff = d.hoff;
         let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(rows_rect).id_salt("diff-rows"));
         rows_ui.set_clip_rect(rows_rect.intersect(ui.clip_rect()));
-        let mut area = egui::ScrollArea::vertical().id_salt(("diff-scroll", &path)).auto_shrink([false, false]);
+        // Rows touch: a selection or a thread reads as one block, and row
+        // `j` is at `j * ROW_H` (the file list's jumps).
+        rows_ui.spacing_mut().item_spacing.y = 0.0;
+        // A drag selects lines; it does not move the list.
+        let mut area = egui::ScrollArea::vertical()
+            .id_salt(("diff-scroll", &path))
+            .auto_shrink([false, false])
+            .scroll_source(ScrollSource { drag: DragScroll::Never, ..Default::default() });
         if let Some(j) = d.scroll_to.take() {
             area = area.vertical_scroll_offset(j as f32 * ROW_H);
         }
-        let mut clicked: Option<Comment> = None;
+        let mut opened: Option<Comment> = None;
+        // Selection events, applied once the rows are drawn.
+        let (sel, dragging) = (d.sel, d.dragging);
+        let mut new_sel: Option<Sel> = None;
+        let mut extend: Option<usize> = None;
+        let (mut began_drag, mut on_numbers, mut shifted) = (false, false, false);
+        let shift = ui.input(|i| i.modifiers.shift);
+        let press = ui.input(|i| i.pointer.press_origin());
+        let pointer = ui.input(|i| i.pointer.latest_pos());
         let n = d.rows.len();
         area.show_rows(&mut rows_ui, ROW_H, n, |ui, range| {
             let d = self.state.diff.as_ref().unwrap();
             let width = ui.available_width();
+            // The selected side's first and last rows on screen, to extend a
+            // drag that leaves the list.
+            let mut edges: (Option<usize>, Option<usize>) = (None, None);
             for idx in range {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click_and_drag());
                 let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
                 let p = &p;
                 let text_y = rect.center().y;
+                // What a pointer at `x` on this row selects: (file, row, side).
+                let hit = |x: f32| -> Option<(usize, usize, Option<bool>)> {
+                    match &d.rows[idx] {
+                        DRow::Row(fi, ri) => code_row(&d.diff.files[*fi].rows[*ri]).then_some((*fi, *ri, None)),
+                        DRow::Pair(fi, Pair::Sides(l, r)) => {
+                            let left = x < rect.center().x;
+                            (if left { *l } else { *r }).map(|ri| (*fi, ri, Some(left)))
+                        }
+                        _ => None,
+                    }
+                };
+                // This row's line on the selection's side.
+                let on_sel = sel.and_then(|s| {
+                    let x = match s.side {
+                        Some(true) => rect.left(),
+                        _ => rect.right() - 1.0,
+                    };
+                    hit(x).filter(|h| h.0 == s.file && h.2 == s.side).map(|h| h.1)
+                });
+                if on_sel.is_some() {
+                    edges = (edges.0.or(on_sel), on_sel);
+                }
                 match &d.rows[idx] {
                     DRow::File(fi) => {
                         let f = &d.diff.files[*fi];
@@ -379,13 +655,9 @@ impl App {
                         );
                     }
                     DRow::Row(fi, ri) => {
-                        let f = &d.diff.files[*fi];
-                        let row = &f.rows[*ri];
-                        draw_cell(p, &t, &font, rect, row, true, hoff);
-                        if resp.clicked()
-                            && resp.interact_pointer_pos().is_some_and(|pos| pos.x < rect.left() + 2.0 * NUM_W)
-                        {
-                            clicked = diff::anchor(&f.path, row);
+                        draw_cell(p, &t, &font, rect, &d.diff.files[*fi].rows[*ri], true, hoff);
+                        if sel.is_some_and(|s| s.has(*fi, *ri, None)) {
+                            p.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.18));
                         }
                     }
                     DRow::Pair(fi, pair) => {
@@ -394,104 +666,320 @@ impl App {
                         match pair {
                             Pair::Wide(ri) => draw_cell(p, &t, &font, rect, &f.rows[*ri], false, 0.0),
                             Pair::Sides(l, r) => {
-                                if let Some(l) = l {
-                                    draw_side(p, &t, &font, left, &f.rows[*l], true, hoff);
-                                }
-                                if let Some(r) = r {
-                                    draw_side(p, &t, &font, right, &f.rows[*r], false, hoff);
-                                }
-                                if resp.clicked()
-                                    && let Some(pos) = resp.interact_pointer_pos()
-                                {
-                                    let pick = if pos.x < right.left() { l } else { r };
-                                    clicked = pick.and_then(|i| diff::anchor(&f.path, &f.rows[i]));
+                                for (ri, half, old) in [(l, left, true), (r, right, false)] {
+                                    let Some(ri) = ri else { continue };
+                                    draw_side(p, &t, &font, half, &f.rows[*ri], old, hoff);
+                                    if sel.is_some_and(|s| s.has(*fi, *ri, Some(old))) {
+                                        p.rect_filled(half, 0.0, t.accent.gamma_multiply(0.18));
+                                    }
                                 }
                             }
                         }
                     }
-                    DRow::Comment(_, id) => {
+                    DRow::Comment(_, id) | DRow::Reply(_, id, _) => {
+                        let k = if let DRow::Reply(_, _, k) = &d.rows[idx] { *k } else { 0 };
                         let c = comments.iter().find(|c| &c.id() == id);
-                        p.rect_filled(rect, 3.0, t.current_bg);
-                        let text = c.map(|c| c.text.lines().next().unwrap_or("").to_string()).unwrap_or_default();
-                        p.text(
-                            Pos2::new(rect.left() + 2.0 * NUM_W + 6.0, text_y),
-                            Align2::LEFT_CENTER,
-                            format!("▸ {text}"),
-                            FontId::proportional(12.5),
-                            t.accent,
-                        );
-                        if resp.clicked()
-                            && let Some(c) = c
+                        p.rect_filled(rect, 0.0, t.current_bg);
+                        if let Some((who, text)) =
+                            c.and_then(|c| thread_lines(c, asking.contains(id)).into_iter().nth(k))
                         {
-                            self.state.comment_edit =
-                                Some(CommentEdit { worktree: path.clone(), comment: c.clone(), existing: true });
+                            let color = match who {
+                                "agent" => t.text,
+                                "you" => t.accent,
+                                _ => t.muted,
+                            };
+                            p.text(
+                                Pos2::new(rect.left() + 2.0 * NUM_W + 6.0, text_y),
+                                Align2::LEFT_CENTER,
+                                text,
+                                FontId::proportional(12.5),
+                                color,
+                            );
+                        }
+                        // A press held still can come as a drag.
+                        if resp.clicked() || (resp.drag_stopped() && resp.contains_pointer()) {
+                            opened = c.cloned();
                         }
                     }
                 }
+                // Press and drag, shift-click, or a click on the numbers (a
+                // press held still can come as a drag that does not move).
+                let start = if resp.drag_started() {
+                    press
+                } else if resp.clicked() {
+                    resp.interact_pointer_pos()
+                } else {
+                    None
+                };
+                if let Some(pos) = start
+                    && let Some(h) = hit(pos.x)
+                {
+                    began_drag = resp.drag_started();
+                    on_numbers = match h.2 {
+                        None => pos.x < rect.left() + 2.0 * NUM_W,
+                        Some(true) => pos.x < rect.left() + NUM_W,
+                        Some(false) => pos.x > rect.center().x && pos.x < rect.center().x + NUM_W,
+                    };
+                    if shift && sel.is_some_and(|s| s.file == h.0 && s.side == h.2) {
+                        extend = Some(h.1);
+                        shifted = true;
+                    } else {
+                        new_sel = Some(Sel { file: h.0, side: h.2, from: h.1, to: h.1 });
+                    }
+                }
+                if dragging && pointer.is_some_and(|p| rect.y_range().contains(p.y)) && on_sel.is_some() {
+                    extend = on_sel;
+                }
                 if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    let icon = if matches!(d.rows[idx], DRow::Comment(..) | DRow::Reply(..)) {
+                        egui::CursorIcon::PointingHand
+                    } else {
+                        egui::CursorIcon::Text
+                    };
+                    ui.ctx().set_cursor_icon(icon);
+                }
+            }
+            // A drag past the top or the bottom scrolls, and keeps selecting.
+            if dragging && let Some(p) = pointer {
+                let clip = ui.clip_rect();
+                if p.y > clip.bottom() {
+                    ui.scroll_with_delta(Vec2::new(0.0, -ROW_H / 2.0));
+                    extend = extend.or(edges.1);
+                } else if p.y < clip.top() {
+                    ui.scroll_with_delta(Vec2::new(0.0, ROW_H / 2.0));
+                    extend = extend.or(edges.0);
                 }
             }
         });
-        if let Some(c) = clicked {
-            let existing = comments.iter().find(|x| x.id() == c.id()).cloned();
+        let d = self.state.diff.as_mut().unwrap();
+        if let Some(s) = new_sel {
+            d.sel = Some(s);
+        }
+        if let (Some(to), Some(s)) = (extend, d.sel.as_mut()) {
+            s.to = to;
+        }
+        let mut popup = false;
+        if began_drag {
+            d.dragging = true;
+            d.drag_pops = on_numbers || shifted;
+        } else if new_sel.is_some() || shifted {
+            popup = on_numbers || shifted;
+        }
+        if d.dragging && !ui.input(|i| i.pointer.primary_down()) {
+            d.dragging = false;
+            popup = d.drag_pops || d.sel.is_some_and(|s| s.from != s.to);
+        }
+        if popup && let Some(c) = d.sel.and_then(|s| selected_comment(&d.diff, &s)) {
+            match comments.iter().find(|x| x.id() == c.id()) {
+                // The same lines again: that thread.
+                Some(existing) => opened = Some(existing.clone()),
+                None => {
+                    let pos = pointer.unwrap_or(rows_rect.center()) + Vec2::new(8.0, 10.0);
+                    self.state.ask = Some(AskDraft { worktree: path.clone(), comment: c, pos, focus: true });
+                }
+            }
+        }
+        if self.state.ask.is_none() && opened.is_none() && ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.state.diff.as_mut().unwrap().sel = None;
+        }
+        if let Some(c) = opened {
             self.state.comment_edit =
-                Some(CommentEdit { worktree: path, existing: existing.is_some(), comment: existing.unwrap_or(c) });
+                Some(CommentEdit { worktree: path, comment: c, existing: true, follow: String::new() });
         }
     }
 
-    /// The comment editor and the review form (modals).
+    /// The popup on selected lines, the thread, and the review form.
     pub(crate) fn diff_dialogs(&mut self, ctx: &egui::Context) {
         let t = self.state.theme;
-        if let Some(mut e) = self.state.comment_edit.take() {
-            // Some(true): save; Some(false): delete.
-            let mut done = None::<bool>;
-            let mut cancel = false;
-            let m = egui::Modal::new(egui::Id::unique("diff-comment")).show(ctx, |ui| {
-                ui.set_width(460.0);
-                let side = if e.comment.side == "old" { " (removed line)" } else { "" };
-                ui.label(RichText::new(format!("{}:{}{side}", e.comment.path, e.comment.line)).strong());
-                ui.label(RichText::new(e.comment.code.trim()).monospace().color(t.muted));
-                let edit = ui.add(
-                    TextEdit::multiline(&mut e.comment.text)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Comment (Ctrl+Enter saves)"),
-                );
-                if !edit.has_focus() && e.comment.text.is_empty() {
-                    edit.request_focus();
+        if let Some(mut a) = self.state.ask.take() {
+            // Some(false): add to the review; Some(true): ask now.
+            let mut act = None::<bool>;
+            let mut close = false;
+            egui::Area::new(egui::Id::unique("diff-ask"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(a.pos)
+                .constrain(true)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_width(400.0);
+                        ui.label(RichText::new(format!("{}:{}", a.comment.path, a.comment.place())).strong());
+                        let edit = ui.add(
+                            TextEdit::multiline(&mut a.comment.text)
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("A comment, or a question for the agent"),
+                        );
+                        if std::mem::take(&mut a.focus) {
+                            edit.request_focus();
+                        }
+                        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Enter)) {
+                            act = Some(false);
+                        }
+                        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                            close = true;
+                        }
+                        ui.horizontal(|ui| {
+                            let ok = !a.comment.text.trim().is_empty();
+                            if ui
+                                .add_enabled(ok, egui::Button::new("Add to review"))
+                                .on_hover_text("Sent with Submit review (Ctrl+Enter)")
+                                .clicked()
+                            {
+                                act = Some(false);
+                            }
+                            if ui
+                                .add_enabled(ok, egui::Button::new(RichText::new("Ask now").strong()))
+                                .on_hover_text("Send it to the agent now; its answer shows here")
+                                .clicked()
+                            {
+                                act = Some(true);
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                });
+            match act {
+                Some(ask) if !a.comment.text.trim().is_empty() => {
+                    a.comment.asked = ask;
+                    let id = a.comment.id();
+                    self.state.upsert_comment(&a.worktree, a.comment);
+                    if let Some(d) = self.state.diff.as_mut() {
+                        d.sel = None;
+                    }
+                    if ask {
+                        self.state.ask_agent(&a.worktree, &id);
+                    }
                 }
-                if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Enter)) {
-                    done = Some(true);
+                _ if close => {
+                    if let Some(d) = self.state.diff.as_mut() {
+                        d.sel = None;
+                    }
+                }
+                _ => self.state.ask = Some(a),
+            }
+        }
+        if let Some(mut e) = self.state.comment_edit.take() {
+            #[derive(PartialEq)]
+            enum Act {
+                Save,
+                Delete,
+                Ask,
+                FollowUp,
+            }
+            let mut act = None::<Act>;
+            let mut cancel = false;
+            let id = e.comment.id();
+            let asking = self.state.asks.iter().any(|a| a.worktree == e.worktree && a.id == id);
+            let m = egui::Modal::new(egui::Id::unique("diff-comment")).show(ctx, |ui| {
+                ui.set_width(520.0);
+                ui.label(RichText::new(format!("{}:{}", e.comment.path, e.comment.place())).strong());
+                egui::ScrollArea::vertical().id_salt("thread-code").max_height(120.0).show(ui, |ui| {
+                    ui.label(RichText::new(e.comment.code.trim_end()).size(11.5).monospace().color(t.muted));
+                });
+                if !e.comment.asked {
+                    let edit = ui.add(
+                        TextEdit::multiline(&mut e.comment.text)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Comment (Ctrl+Enter saves)"),
+                    );
+                    if !edit.has_focus() && e.comment.text.is_empty() {
+                        edit.request_focus();
+                    }
+                    if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Enter)) {
+                        act = Some(Act::Save);
+                    }
+                } else {
+                    egui::ScrollArea::vertical().id_salt("thread").max_height(300.0).show(ui, |ui| {
+                        ui.label(RichText::new(format!("You: {}", e.comment.text.trim())).color(t.accent));
+                        for r in &e.comment.replies {
+                            let (who, color) = match r.who.as_str() {
+                                "agent" => ("Agent: ", t.text),
+                                "you" => ("You: ", t.accent),
+                                _ => ("", t.muted),
+                            };
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(format!("{who}{}", r.text.trim())).color(color));
+                        }
+                        if asking {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new("Waiting for the agent's answer").color(t.muted));
+                            });
+                        }
+                    });
+                    let edit = ui.add(
+                        TextEdit::multiline(&mut e.follow)
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("A follow-up question (Ctrl+Enter asks)"),
+                    );
+                    if !asking && !edit.has_focus() && e.follow.is_empty() {
+                        edit.request_focus();
+                    }
+                    if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Enter)) && !asking {
+                        act = Some(Act::FollowUp);
+                    }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Save").clicked() {
-                        done = Some(true);
+                    if e.comment.asked {
+                        let ok = !asking && !e.follow.trim().is_empty();
+                        if ui.add_enabled(ok, egui::Button::new(RichText::new("Ask now").strong())).clicked() {
+                            act = Some(Act::FollowUp);
+                        }
+                    } else {
+                        if ui.button("Save").clicked() {
+                            act = Some(Act::Save);
+                        }
+                        if ui
+                            .add_enabled(!e.comment.text.trim().is_empty(), egui::Button::new("Ask now"))
+                            .on_hover_text("Send it to the agent now instead of with the review")
+                            .clicked()
+                        {
+                            act = Some(Act::Ask);
+                        }
                     }
                     if e.existing && ui.button("Delete").clicked() {
-                        done = Some(false);
+                        act = Some(Act::Delete);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(if e.comment.asked { "Close" } else { "Cancel" }).clicked() {
                         cancel = true;
                     }
                 });
             });
             cancel |= m.should_close();
-            match done {
-                Some(save) => {
+            match act {
+                Some(Act::Delete) => {
                     let mut all = self.state.comments(&e.worktree);
-                    all.retain(|c| c.id() != e.comment.id());
-                    if save && !e.comment.text.trim().is_empty() {
-                        all.push(e.comment.clone());
-                    }
+                    all.retain(|c| c.id() != id);
+                    self.state.asks.retain(|a| !(a.worktree == e.worktree && a.id == id));
                     self.state.set_comments(&e.worktree, &all);
                 }
-                None if !cancel => self.state.comment_edit = Some(e),
-                None => {}
+                Some(Act::Save) | Some(Act::Ask) if e.comment.text.trim().is_empty() => {
+                    let mut all = self.state.comments(&e.worktree);
+                    all.retain(|c| c.id() != id);
+                    self.state.set_comments(&e.worktree, &all);
+                }
+                Some(a @ (Act::Save | Act::Ask)) => {
+                    e.comment.asked = a == Act::Ask;
+                    self.state.upsert_comment(&e.worktree, e.comment);
+                    if a == Act::Ask {
+                        self.state.ask_agent(&e.worktree, &id);
+                    }
+                }
+                Some(Act::FollowUp) if !e.follow.trim().is_empty() => {
+                    e.comment.replies.push(diff::Reply { who: "you".into(), text: e.follow.trim().to_string() });
+                    self.state.upsert_comment(&e.worktree, e.comment);
+                    self.state.ask_agent(&e.worktree, &id);
+                }
+                _ if !cancel => self.state.comment_edit = Some(e),
+                _ => {}
             }
         }
         if let Some(mut r) = self.state.review.take() {
-            let comments = self.state.comments(&r.worktree);
+            let comments = self.state.review_comments(&r.worktree);
             let agents = self.state.store.agents(&r.worktree).to_vec();
             let mut action = None::<bool>;
             let mut close = false;
@@ -730,36 +1218,44 @@ fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, code: Re
 }
 
 /// The flat row list: a header per file, its rows (or pairs), and each
-/// comment under its line (in split, under the pair holding it).
-pub fn build_rows(d: &Diff, split: bool, comments: &[Comment]) -> Vec<DRow> {
+/// thread under its (last) line, a row per line of it (in split, under the
+/// pair holding it). `asking`: the threads waiting for an answer.
+pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String]) -> Vec<DRow> {
     let mut out = Vec::with_capacity(d.files.iter().map(|f| f.rows.len() + 1).sum());
     for (fi, f) in d.files.iter().enumerate() {
         out.push(DRow::File(fi));
-        let on = |ri: usize| -> Vec<String> {
+        let on = |ri: usize| -> Vec<DRow> {
             let Some(a) = diff::anchor(&f.path, &f.rows[ri]) else { return vec![] };
-            let id = a.id();
-            comments.iter().filter(|c| c.id() == id).map(|c| c.id()).collect()
+            let at = a.id();
+            let mut rows = vec![];
+            for c in comments.iter().filter(|c| c.anchor_id() == at) {
+                let id = c.id();
+                let n = thread_lines(c, asking.contains(&id)).len();
+                rows.push(DRow::Comment(fi, id.clone()));
+                rows.extend((1..n).map(|k| DRow::Reply(fi, id.clone(), k)));
+            }
+            rows
         };
         if split {
             for pair in diff::split_rows(&f.rows) {
-                let ids: Vec<String> = match &pair {
+                let threads: Vec<DRow> = match &pair {
                     Pair::Sides(l, r) => {
-                        let mut ids: Vec<String> = l.map(on).unwrap_or_default();
-                        // A context line is one row on both sides: one comment.
+                        let mut threads: Vec<DRow> = l.map(on).unwrap_or_default();
+                        // A context line is one row on both sides: one thread.
                         if l != r {
-                            ids.extend(r.map(on).unwrap_or_default());
+                            threads.extend(r.map(on).unwrap_or_default());
                         }
-                        ids
+                        threads
                     }
                     Pair::Wide(_) => vec![],
                 };
                 out.push(DRow::Pair(fi, pair));
-                out.extend(ids.into_iter().map(|id| DRow::Comment(fi, id)));
+                out.extend(threads);
             }
         } else {
             for ri in 0..f.rows.len() {
                 out.push(DRow::Row(fi, ri));
-                out.extend(on(ri).into_iter().map(|id| DRow::Comment(fi, id)));
+                out.extend(on(ri));
             }
         }
     }
@@ -778,7 +1274,7 @@ mod tests {
         c1.text = "on ctx".into();
         let mut c2 = diff::anchor("a.py", &rows[2]).unwrap();
         c2.text = "on old".into();
-        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()]);
+        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()], &[]);
         assert_eq!(
             unified,
             [
@@ -791,7 +1287,7 @@ mod tests {
                 DRow::Row(0, 3)
             ]
         );
-        let split = build_rows(&d, true, &[c1.clone(), c2.clone()]);
+        let split = build_rows(&d, true, &[c1.clone(), c2.clone()], &[]);
         assert_eq!(split.iter().filter(|r| matches!(r, DRow::Comment(..))).count(), 2, "the context comment once");
         assert_eq!(split.len(), 1 + 3 + 2);
     }

@@ -193,20 +193,70 @@ pub fn split_rows(rows: &[Row]) -> Vec<Pair> {
     out
 }
 
-/// A review comment, anchored to a file, a side and a line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A review comment, anchored to a file, a side and a line (its last
+/// line, for a range), with the thread that follows when it was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Comment {
     pub path: String,
     /// "old" (a removed line) or "new"
     pub side: String,
     pub line: u32,
+    /// The selected lines; a range's are prefixed `+`, `-` or ` `.
     pub code: String,
+    pub text: String,
+    /// A range's first line (absent: one line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_side: Option<String>,
+    /// Sent to the agent as a question, not kept for the review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Reply>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    /// "you" or "agent"
+    pub who: String,
     pub text: String,
 }
 
 impl Comment {
     pub fn id(&self) -> String {
+        match (&self.start_side, self.start_line) {
+            (Some(ss), Some(sl)) => format!("{}:{ss}:{sl}-{}:{}", self.path, self.side, self.line),
+            _ => self.anchor_id(),
+        }
+    }
+
+    /// The line it shows under.
+    pub fn anchor_id(&self) -> String {
         format!("{}:{}:{}", self.path, self.side, self.line)
+    }
+
+    /// `12`, `12 (removed line)`, `12-15`, or `-3…+5` across sides.
+    pub fn place(&self) -> String {
+        let old = self.side == "old";
+        match (&self.start_side, self.start_line) {
+            (Some(ss), Some(sl)) if *ss == self.side => {
+                format!("{sl}-{}{}", self.line, if old { " (removed lines)" } else { "" })
+            }
+            (Some(ss), Some(sl)) => {
+                let mark = |side: &str| if side == "old" { '-' } else { '+' };
+                format!("{}{sl}…{}{}", mark(ss), mark(&self.side), self.line)
+            }
+            _ => format!("{}{}", self.line, if old { " (removed line)" } else { "" }),
+        }
+    }
+
+    /// The code as quoted to the agent.
+    fn quoted(&self) -> String {
+        if self.start_line.is_none() {
+            return format!("  > {}", self.code.trim());
+        }
+        self.code.lines().map(|l| format!("  > {}", l.trim_end())).collect::<Vec<_>>().join("\n")
     }
 }
 
@@ -217,7 +267,33 @@ pub fn anchor(path: &str, row: &Row) -> Option<Comment> {
         RowKind::Add | RowKind::Ctx => ("new", row.new?),
         _ => return None,
     };
-    Some(Comment { path: path.to_string(), side: side.into(), line, code: row.text.clone(), text: String::new() })
+    Some(Comment { path: path.to_string(), side: side.into(), line, code: row.text.clone(), ..Default::default() })
+}
+
+/// A comment on the selected rows (hunk headers and notes skipped): one
+/// line is a plain anchor, more are a range ending at the last one.
+pub fn anchor_range<'a>(path: &str, rows: impl IntoIterator<Item = &'a Row>) -> Option<Comment> {
+    let rows: Vec<&Row> = rows.into_iter().filter(|r| anchor(path, r).is_some()).collect();
+    let (first, last) = (rows.first()?, rows.last()?);
+    let mut c = anchor(path, last)?;
+    if rows.len() > 1 {
+        let start = anchor(path, first)?;
+        c.start_line = Some(start.line);
+        c.start_side = Some(start.side);
+        c.code = rows
+            .iter()
+            .map(|r| {
+                let mark = match r.kind {
+                    RowKind::Add => '+',
+                    RowKind::Del => '-',
+                    _ => ' ',
+                };
+                format!("{mark}{}", r.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    Some(c)
 }
 
 /// The prompt that sends a review to an agent (ui-plan §4c step 3).
@@ -238,15 +314,64 @@ pub fn review_prompt(comments: &[Comment], summary: &str) -> String {
     for path in order {
         parts.push(String::new());
         let mut list = by_file[path].clone();
-        list.sort_by_key(|c| c.line);
+        list.sort_by_key(|c| c.start_line.unwrap_or(c.line));
         for c in list {
-            let removed = if c.side == "old" { " (removed line)" } else { "" };
-            parts.push(format!("- {path}:{}{removed}", c.line));
-            parts.push(format!("  > {}", c.code.trim()));
+            parts.push(format!("- {path}:{}", c.place()));
+            parts.push(c.quoted());
             parts.push(format!("  {}", c.text.trim().replace('\n', "\n  ")));
         }
     }
     parts.join("\n")
+}
+
+/// The markers the agent is asked to put around its answer.
+pub fn answer_markers(id: &str) -> (String, String) {
+    (format!("⟦answer {id}⟧"), format!("⟦end {id}⟧"))
+}
+
+/// The prompt that asks the agent about a comment now: where, the code,
+/// the thread so far, and how to mark the answer for the diff view.
+pub fn ask_prompt(c: &Comment, base: &str, marker_id: &str) -> String {
+    let against = if base.trim().is_empty() { String::new() } else { format!(" (diff against {})", base.trim()) };
+    let mut parts = vec![format!("A question about {}:{}{against}:", c.path, c.place()), c.quoted()];
+    // The question is the comment, or the last of the follow-ups.
+    let asking = match c.replies.iter().rposition(|r| r.who == "you") {
+        Some(i) => {
+            parts.push(String::new());
+            parts.push("So far:".into());
+            parts.push(format!("- me: {}", c.text.trim()));
+            for r in c.replies[..i].iter().filter(|r| r.who != "note") {
+                let who = if r.who == "agent" { "you" } else { "me" };
+                parts.push(format!("- {who}: {}", r.text.trim()));
+            }
+            c.replies[i].text.trim()
+        }
+        None => c.text.trim(),
+    };
+    parts.push(String::new());
+    parts.push(asking.to_string());
+    let (start, end) = answer_markers(marker_id);
+    parts.push(String::new());
+    parts.push(format!(
+        "Answer it (change files only if it asks you to). Start your answer with the line {start} and end it with the line {end}, so the diff view can show it next to the code."
+    ));
+    parts.join("\n")
+}
+
+/// The answer between the markers in an agent's output (the last one),
+/// without the CLI's bullet and the indentation it adds; `None` without
+/// both markers on lines of their own.
+pub fn parse_answer(lines: &[String], marker_id: &str) -> Option<String> {
+    let (start, end) = answer_markers(marker_id);
+    let bare = |l: &str| l.trim().trim_start_matches('⏺').trim().to_string();
+    let from = lines.iter().rposition(|l| bare(l) == start)?;
+    let to = from + 1 + lines[from + 1..].iter().position(|l| bare(l) == end)?;
+    let body: Vec<String> =
+        lines[from + 1..to].iter().map(|l| l.trim_end().trim_start_matches('⏺').trim_end().to_string()).collect();
+    let indent = body.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min()?;
+    let text = body.iter().map(|l| l.get(indent..).unwrap_or("")).collect::<Vec<_>>().join("\n");
+    let text = text.trim_matches('\n').to_string();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 #[cfg(test)]
@@ -309,6 +434,75 @@ mod tests {
                 Pair::Wide(6)
             ]
         );
+    }
+
+    #[test]
+    fn ranges_in_the_review_prompt() {
+        let d = parse(MODIFIED);
+        let rows = &d.files[0].rows;
+        // The hunk header is skipped; three lines across both sides.
+        let mut mixed = anchor_range("src/app.py", &rows[0..4]).unwrap();
+        assert_eq!((mixed.start_line, mixed.start_side.as_deref(), mixed.line), (Some(1), Some("new"), 2));
+        assert_eq!(mixed.code, " import os\n-x = 1\n+x = 2");
+        assert_eq!(mixed.id(), "src/app.py:new:1-new:2");
+        assert_eq!(mixed.anchor_id(), "src/app.py:new:2");
+        mixed.text = "why?".into();
+        let mut old = anchor_range("src/app.py", [&rows[1], &rows[2]]).unwrap();
+        old.start_side = Some("old".into());
+        old.side = "old".into();
+        old.text = "keep".into();
+        assert_eq!(old.place(), "1-2 (removed lines)");
+        let one = anchor_range("src/app.py", [&rows[0], &rows[4]]).unwrap();
+        assert_eq!((one.start_line, one.line, one.code.as_str()), (None, 3, "y = 3"), "one line is a plain anchor");
+        assert!(anchor_range("src/app.py", [&rows[0]]).is_none());
+        assert_eq!(
+            review_prompt(&[mixed, old], ""),
+            "Review comments on your changes. Please address each one:\n\n\
+             - src/app.py:1-2\n  >  import os\n  > -x = 1\n  > +x = 2\n  why?\n\
+             - src/app.py:1-2 (removed lines)\n  >  import os\n  > -x = 1\n  keep"
+        );
+        let mut across = anchor_range("src/app.py", &rows[2..4]).unwrap();
+        across.text = "x".into();
+        assert_eq!(across.place(), "-2…+2");
+    }
+
+    #[test]
+    fn the_ask_prompt_and_its_answer() {
+        let d = parse(MODIFIED);
+        let mut c = anchor_range("src/app.py", &d.files[0].rows[2..4]).unwrap();
+        c.text = "Why 2?".into();
+        let p = ask_prompt(&c, "main", "k3");
+        assert!(
+            p.starts_with("A question about src/app.py:-2…+2 (diff against main):\n  > -x = 1\n  > +x = 2\n\nWhy 2?\n")
+        );
+        assert!(p.contains("Start your answer with the line ⟦answer k3⟧ and end it with the line ⟦end k3⟧"));
+        // A follow-up carries the thread.
+        c.replies = vec![
+            Reply { who: "agent".into(), text: "The spec says so.".into() },
+            Reply { who: "you".into(), text: "Which spec?".into() },
+        ];
+        let p = ask_prompt(&c, "", "k4");
+        assert!(p.contains("about src/app.py:-2…+2:\n"));
+        assert!(p.contains("So far:\n- me: Why 2?\n- you: The spec says so.\n\nWhich spec?\n"), "{p}");
+        // The answer as a CLI prints it: the prompt echoed (markers inside
+        // a sentence), a bullet, an indent, the answer wrapped.
+        let out: Vec<String> = [
+            "> A question about src/app.py … with the line ⟦answer k4⟧ and end it with the line ⟦end k4⟧, so",
+            "",
+            "⏺ ⟦answer k4⟧",
+            "  The ticket's spec, section 2:",
+            "    x must be even.",
+            "",
+            "  ⟦end k4⟧",
+            "",
+            "> ",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(parse_answer(&out, "k4").as_deref(), Some("The ticket's spec, section 2:\n  x must be even."));
+        assert_eq!(parse_answer(&out, "k3"), None, "another question's markers");
+        assert_eq!(parse_answer(&out[..5], "k4"), None, "no end yet");
     }
 
     #[test]
