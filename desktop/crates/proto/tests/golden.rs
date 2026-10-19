@@ -120,7 +120,8 @@ const METHODS_USED: &[&str] = &[
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
-const IGNORED_EVENTS: &[&str] = &["ui.command", "ui.view_changed"];
+// notes.* until the notes panel (N4) handles them.
+const IGNORED_EVENTS: &[&str] = &["ui.command", "ui.view_changed", "notes.updated", "notes.removed"];
 
 #[test]
 fn methods_we_call_are_in_the_schema() {

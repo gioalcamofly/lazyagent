@@ -535,7 +535,8 @@
         "instruction": {"type": ["string", "null"], "description": "The last instruction sent to it, when known (first 4,096 characters)."},
         "started_at": {"type": "number"},
         "engine_id": {"type": ["string", "null"]},
-        "ended_at": {"type": ["number", "null"]}
+        "ended_at": {"type": ["number", "null"]},
+        "notes_id": {"type": ["string", "null"], "description": "Its session notes, carried to the restored agent (proposal 0011); null when it has none."}
       }
     },
     "restore_ids": {"type": "array", "items": {"type": "string"}, "description": "Default: every restorable agent."},

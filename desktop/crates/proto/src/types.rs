@@ -246,6 +246,9 @@ pub struct RestorableAgent {
     pub started_at: f64,
     pub engine_id: Option<String>,
     pub ended_at: Option<f64>,
+    /// Its session notes (proposal 0011); absent from older engines.
+    #[serde(default)]
+    pub notes_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
