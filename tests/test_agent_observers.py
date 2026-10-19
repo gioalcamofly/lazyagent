@@ -12,6 +12,7 @@ from lazyagent.agent_observers import (
     GeminiPromptObserver,
     LifecycleConfidence,
 )
+from lazyagent.engine.manifest import INSTRUCTION_LIMIT
 from lazyagent.models import AgentStatus
 
 
@@ -275,6 +276,79 @@ class TestClaudeSubagentAfterStop:
             {"hook_event_name": "PreToolUse", "tool_name": "Bash"},
         )
         assert statuses == [AgentStatus.WAITING, AgentStatus.RUNNING]
+
+
+class TestClaudeFirstPrompt:
+    """The first main-agent prompt: the notes' pinned instruction (N3)."""
+
+    @staticmethod
+    def _observer(tmp_path, *hooks: dict) -> ClaudeHooksObserver:
+        log_path = tmp_path / "hooks.jsonl"
+        observer = ClaudeHooksObserver(str(log_path))
+        with log_path.open("a", encoding="utf-8") as handle:
+            for hook in hooks:
+                handle.write(json.dumps(hook) + "\n")
+        observer.poll()
+        return observer
+
+    def test_from_the_first_user_prompt_submit(self, tmp_path):
+        observer = self._observer(
+            tmp_path,
+            {"hook_event_name": "SessionStart", "source": "startup"},
+            {"hook_event_name": "UserPromptSubmit", "prompt": "Build the importer"},
+        )
+        assert observer.first_prompt == "Build the importer"
+
+    def test_not_from_a_subagent(self, tmp_path):
+        observer = self._observer(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit", "prompt": "sub", "agent_id": "s1"},
+        )
+        assert observer.first_prompt is None
+
+    def test_not_overwritten_by_later_prompts(self, tmp_path):
+        log_path = tmp_path / "hooks.jsonl"
+        observer = self._observer(
+            tmp_path, {"hook_event_name": "UserPromptSubmit", "prompt": "first"}
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "second"})
+                + "\n"
+            )
+        observer.poll()
+        assert observer.first_prompt == "first"
+
+    def test_blank_or_missing_prompts_are_skipped(self, tmp_path):
+        observer = self._observer(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "UserPromptSubmit", "prompt": "  "},
+            {"hook_event_name": "UserPromptSubmit", "prompt": "real one"},
+        )
+        assert observer.first_prompt == "real one"
+
+    def test_clipped(self, tmp_path):
+        observer = self._observer(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit", "prompt": "x" * (INSTRUCTION_LIMIT + 9)},
+        )
+        assert observer.first_prompt == "x" * INSTRUCTION_LIMIT
+
+    def test_session_start_sets_the_conversation_id(self, tmp_path):
+        observer = self._observer(
+            tmp_path,
+            {"hook_event_name": "SessionStart", "source": "startup", "session_id": "c1"},
+        )
+        assert observer.conversation_id == "c1"
+        assert observer.first_prompt is None
+
+    def test_a_composite_forwards_it(self, tmp_path):
+        observer = self._observer(
+            tmp_path, {"hook_event_name": "UserPromptSubmit", "prompt": "first"}
+        )
+        assert CompositeObserver([AgentObserver(), observer]).first_prompt == "first"
+        assert CompositeObserver([AgentObserver()]).first_prompt is None
 
 
 class TestCodexAppServerObserver:

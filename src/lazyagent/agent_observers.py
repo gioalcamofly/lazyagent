@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from lazyagent.engine.manifest import clip_instruction
 from lazyagent.models import AgentStatus, LifecycleConfidence
 
 
@@ -23,6 +24,10 @@ class AgentObserver:
     #: The provider's id of the conversation the agent runs, once seen
     #: (Claude's ``session_id``); a restore resumes exactly that one.
     conversation_id: str | None = None
+
+    #: The first prompt the agent got (typed, or sent by lazyagent), clipped:
+    #: the notes' pinned instruction. None when the provider does not say.
+    first_prompt: str | None = None
 
     #: Whether :meth:`on_screen_update` reads the screen. Those that get
     #: their status from hooks or logs do not, and the session then skips
@@ -69,6 +74,10 @@ class CompositeObserver(AgentObserver):
         return next(
             (o.conversation_id for o in self._observers if o.conversation_id), None
         )
+
+    @property
+    def first_prompt(self) -> str | None:  # type: ignore[override]
+        return next((o.first_prompt for o in self._observers if o.first_prompt), None)
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return _flatten(observer.on_process_started() for observer in self._observers)
@@ -198,6 +207,14 @@ class ClaudeHooksObserver(JsonlTailObserver):
             return None
         if event_name == "UserPromptSubmit":
             self._turn_open = True
+            prompt = data.get("prompt")
+            if (
+                self.first_prompt is None
+                and not data.get("agent_id")
+                and isinstance(prompt, str)
+                and prompt.strip()
+            ):
+                self.first_prompt = clip_instruction(prompt)
             # The start of every turn. Without it a turn that uses no tools
             # never leaves WAITING, so nothing can tell it happened — and it
             # is the direct confirmation that programmatic input was submitted.
