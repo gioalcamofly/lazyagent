@@ -61,6 +61,16 @@ EVENT_SAMPLES = {
         ],
         "failed": [{"id": "9d8c7b6a5f4e", "reason": "Unknown worktree: /gone"}],
     },
+    "restorable.changed": {
+        "agents": [
+            {
+                "id": "3f2a9c1d0b7e", "worktree_path": "/r", "agent_id": "a2", "kind": "agent",
+                "provider": "claude", "label": "Agent 2", "session_name": "r-a2",
+                "skip_permissions": False, "conversation_id": None, "instruction": None,
+                "started_at": 1699990000.0, "engine_id": None, "ended_at": 1699999000.0,
+            },
+        ],
+    },
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",
