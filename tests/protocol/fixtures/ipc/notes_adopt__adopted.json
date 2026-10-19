@@ -1,0 +1,22 @@
+{
+  "case": "notes_adopt/adopted",
+  "method": "notes_adopt",
+  "params": {
+    "agent_id": "a2",
+    "notes_id": "0f0e0d0c0b0a",
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a2",
+      "by": "user",
+      "max_bytes": 8192,
+      "notes_id": "0a1b2c3d4e51",
+      "rev": 1,
+      "size": 26,
+      "updated_at": 1700000000.0,
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

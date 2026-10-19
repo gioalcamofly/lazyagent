@@ -1,0 +1,40 @@
+{
+  "case": "notes_list/orphan",
+  "method": "notes_list",
+  "params": {
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "notes": [
+        {
+          "agent_id": "a2",
+          "by": null,
+          "empty": true,
+          "ended_at": null,
+          "expires_at": null,
+          "kind": "agent",
+          "notes_id": "0a1b2c3d4e51",
+          "size": 75,
+          "state": "live",
+          "updated_at": 1700000000.0,
+          "worktree_path": "/tmp/repo-feat"
+        },
+        {
+          "agent_id": "a1",
+          "by": "agent",
+          "empty": false,
+          "ended_at": 1700000000.0,
+          "expires_at": 1700604800.0,
+          "kind": "agent",
+          "notes_id": "0f0e0d0c0b0a",
+          "size": 26,
+          "state": "orphan",
+          "updated_at": 1700000000.0,
+          "worktree_path": "/tmp/repo-feat"
+        }
+      ]
+    }
+  }
+}

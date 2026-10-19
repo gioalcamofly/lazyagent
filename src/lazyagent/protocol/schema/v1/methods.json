@@ -123,7 +123,8 @@
           "type": "object",
           "additionalProperties": {"type": "string"},
           "description": "v1: environment of the calling client; the agent inherits it."
-        }
+        },
+        "notes_mode": {"$ref": "#/$defs/notes_mode", "description": "How the agent may write its session notes; default: [notes] mode. Orchestrator workers get free."}
       }
     },
     "spawn_agent.result": {
@@ -143,7 +144,8 @@
       "required": ["worktree_path"],
       "properties": {
         "worktree_path": {"$ref": "#/$defs/worktree_path"},
-        "agent_id": {"$ref": "#/$defs/agent_id"}
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "notes": {"enum": ["delete", "keep"], "default": "delete", "description": "The agent's session notes: deleted, or kept as an orphan (orphan_days) that notes_adopt can recover."}
       }
     },
     "stop_agent.result": {
@@ -152,7 +154,8 @@
       "properties": {
         "worktree_path": {"type": "string"},
         "agent_id": {"type": "string"},
-        "status": {"const": "stopped"}
+        "status": {"const": "stopped"},
+        "notes": {"type": "string", "description": "The agent's final session notes, when not empty: the handoff of a caller with no UI to offer one."}
       }
     },
 
@@ -559,6 +562,148 @@
       "type": "object",
       "required": ["dismissed"],
       "properties": {"dismissed": {"type": "array", "items": {"type": "string"}}}
+    },
+    "notes_mode": {"type": "string", "x-known-values": ["manual", "propose", "free"], "description": "manual: the agent writes only when the user asks (advisory); propose: its writes are proposals (behaves as manual until propose lands); free: it writes directly."},
+    "notes_by": {"type": ["string", "null"], "x-known-values": ["user", "agent", "orchestrator", null], "description": "Who wrote last; null for the untouched template."},
+    "notes_caller": {"type": ["string", "null"], "description": "The calling agent's token (LAZYAGENT_AGENT_TOKEN in its MCP server's env). Without worktree_path the target is the caller's own notes. Another agent's token may read but not write; no token writes as the orchestrator."},
+    "notes_written": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "notes_id", "rev", "size", "max_bytes", "by", "updated_at"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "notes_id": {"type": "string"},
+        "rev": {"type": "integer", "minimum": 0, "description": "+1 per write; what if_rev takes."},
+        "size": {"type": "integer", "minimum": 0, "description": "UTF-8 bytes of the text."},
+        "max_bytes": {"type": "integer", "minimum": 1, "description": "A write above it is refused (VALIDATION_ERROR: condense them)."},
+        "by": {"$ref": "#/$defs/notes_by"},
+        "updated_at": {"type": "number"},
+        "warning": {"type": "string", "description": "From 80 % of max_bytes on."}
+      }
+    },
+    "notes_get.params": {
+      "type": "object",
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "caller": {"$ref": "#/$defs/notes_caller"},
+        "notes_id": {"type": "string", "description": "Any notes by id (an ended agent's too), instead of a target."}
+      }
+    },
+    "notes_get.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "notes_id", "rev", "size", "max_bytes", "by", "updated_at", "text", "state", "kind", "mode", "conversation_id", "instruction", "created_at", "ended_at", "empty"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "notes_id": {"type": "string"},
+        "rev": {"type": "integer", "minimum": 0},
+        "size": {"type": "integer", "minimum": 0},
+        "max_bytes": {"type": "integer", "minimum": 1},
+        "by": {"$ref": "#/$defs/notes_by"},
+        "updated_at": {"type": "number"},
+        "warning": {"type": "string"},
+        "text": {"type": "string", "description": "Markdown; sections are '## <name>' headings."},
+        "state": {"type": "string", "x-known-values": ["live", "restorable", "orphan"]},
+        "kind": {"type": "string", "x-known-values": ["agent", "orchestrator"]},
+        "mode": {"$ref": "#/$defs/notes_mode"},
+        "conversation_id": {"type": ["string", "null"]},
+        "instruction": {"type": ["string", "null"], "description": "The pinned instruction (the agent's first prompt), read-only."},
+        "created_at": {"type": "number"},
+        "ended_at": {"type": ["number", "null"]},
+        "empty": {"type": "boolean", "description": "Nothing but headings (the template)."}
+      }
+    },
+    "notes_put.params": {
+      "type": "object",
+      "required": ["worktree_path", "text", "if_rev"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "caller": {"$ref": "#/$defs/notes_caller"},
+        "text": {"type": "string", "description": "The whole new text."},
+        "if_rev": {"type": "integer", "minimum": 0, "description": "The rev the edit started from; a stale one is a CONFLICT carrying the current {rev, text}."}
+      }
+    },
+    "notes_put.result": {"$ref": "#/$defs/notes_written"},
+    "notes_append.params": {
+      "type": "object",
+      "required": ["section", "text"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "caller": {"$ref": "#/$defs/notes_caller"},
+        "section": {"type": "string", "minLength": 1, "description": "A '## ' heading name, matched case-insensitively; created at the end when missing."},
+        "text": {"type": "string", "description": "Each line becomes a list item ('- ') unless it already is one or is indented."},
+        "if_rev": {"type": "integer", "minimum": 0}
+      }
+    },
+    "notes_append.result": {"$ref": "#/$defs/notes_written"},
+    "notes_replace_section.params": {
+      "type": "object",
+      "required": ["section", "text", "if_rev"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "caller": {"$ref": "#/$defs/notes_caller"},
+        "section": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "description": "The section's new body, up to the next '## ' heading."},
+        "if_rev": {"type": "integer", "minimum": 0}
+      }
+    },
+    "notes_replace_section.result": {"$ref": "#/$defs/notes_written"},
+    "notes_list.params": {
+      "type": "object",
+      "properties": {"worktree_path": {"type": ["string", "null"], "description": "Only this worktree's (the orchestrator's key for its notes)."}}
+    },
+    "notes_list.result": {
+      "type": "object",
+      "required": ["notes"],
+      "properties": {
+        "notes": {
+          "type": "array",
+          "description": "Newest first.",
+          "items": {
+            "type": "object",
+            "required": ["notes_id", "state", "worktree_path", "agent_id", "kind", "size", "empty", "by", "updated_at", "ended_at", "expires_at"],
+            "properties": {
+              "notes_id": {"type": "string"},
+              "state": {"type": "string", "x-known-values": ["live", "restorable", "orphan"]},
+              "worktree_path": {"type": "string"},
+              "agent_id": {"type": "string"},
+              "kind": {"type": "string", "x-known-values": ["agent", "orchestrator"]},
+              "size": {"type": "integer", "minimum": 0},
+              "empty": {"type": "boolean"},
+              "by": {"$ref": "#/$defs/notes_by"},
+              "updated_at": {"type": "number"},
+              "ended_at": {"type": ["number", "null"]},
+              "expires_at": {"type": ["number", "null"], "description": "When an orphan is deleted; null for the others."}
+            }
+          }
+        }
+      }
+    },
+    "notes_adopt.params": {
+      "type": "object",
+      "required": ["notes_id", "worktree_path"],
+      "properties": {
+        "notes_id": {"type": "string", "description": "Ended notes (orphan or restorable) to recover."},
+        "worktree_path": {"type": "string", "description": "The live agent that takes them (its text is replaced)."},
+        "agent_id": {"$ref": "#/$defs/agent_id"},
+        "caller": {"$ref": "#/$defs/notes_caller"},
+        "if_rev": {"type": "integer", "minimum": 0, "description": "The live notes' rev; a stale one is a CONFLICT."}
+      }
+    },
+    "notes_adopt.result": {"$ref": "#/$defs/notes_written"},
+    "notes_delete.params": {
+      "type": "object",
+      "required": ["notes_id"],
+      "properties": {"notes_id": {"type": "string", "description": "Ended notes; a live agent's go with it (stop_agent)."}}
+    },
+    "notes_delete.result": {
+      "type": "object",
+      "required": ["deleted"],
+      "properties": {"deleted": {"type": "string"}}
     },
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {

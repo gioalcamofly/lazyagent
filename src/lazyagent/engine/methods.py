@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
 from lazyagent.engine.events import ENGINE_RESTORED
+from lazyagent.engine.notes import MODES as NOTES_MODES
+from lazyagent.engine.notes import Notes, NotesConflict, NotesStore
+from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.engine.types import AGENT_KIND, ORCHESTRATOR_KIND
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManagerError
@@ -31,6 +34,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 Handler = Callable[[dict], Awaitable[Any]]
+
+# notes.updated ``by``: who wrote.
+USER_BY = "user"
+AGENT_BY = "agent"
+ORCHESTRATOR_BY = "orchestrator"
 
 # How long a spawn may take before the caller is told it timed out.
 _OP_TIMEOUT = 30.0
@@ -56,16 +64,20 @@ _INPUT_CONFIRM_TIMEOUT = _env_seconds("LAZYAGENT_INPUT_CONFIRM_TIMEOUT", 5.0)
 _BLOCKED_STATUSES = STATUS_GROUPS["blocked"]
 
 
-def classify(error: Exception) -> tuple[str, str]:
-    """``(code, message)`` for an exception a method raised."""
+def classify(error: Exception) -> tuple[str, str, Any]:
+    """``(code, message, data)`` for an exception a method raised; ``data``
+    is None unless the error carries detail (v1 sends it as ``error.data``,
+    the legacy socket only the code and message)."""
+    if isinstance(error, NotesConflict):
+        return "CONFLICT", str(error), {"rev": error.rev, "text": error.text}
     if isinstance(error, WorktreeManagerError):
-        return "WORKTREE_ERROR", str(error)
+        return "WORKTREE_ERROR", str(error), None
     if isinstance(error, ValueError):
-        return "VALIDATION_ERROR", str(error)
+        return "VALIDATION_ERROR", str(error), None
     # Distinct from the builtin before Python 3.11.
     if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
-        return "TIMEOUT", "Operation timed out"
-    return "INTERNAL_ERROR", str(error)
+        return "TIMEOUT", "Operation timed out", None
+    return "INTERNAL_ERROR", str(error), None
 
 
 def check_env(env: Any) -> dict[str, str] | None:
@@ -97,6 +109,13 @@ class EngineMethods:
             "list_restorable": self.list_restorable,
             "restore_agents": self.restore_agents,
             "dismiss_restorable": self.dismiss_restorable,
+            "notes_get": self.notes_get,
+            "notes_put": self.notes_put,
+            "notes_append": self.notes_append,
+            "notes_replace_section": self.notes_replace_section,
+            "notes_list": self.notes_list,
+            "notes_adopt": self.notes_adopt,
+            "notes_delete": self.notes_delete,
         }
 
     async def list_worktrees(self, params: dict) -> Any:
@@ -223,6 +242,12 @@ class EngineMethods:
                 f"Must be one of: {', '.join(m.value for m in ResumeMode)}"
             )
         env = check_env(params.get("env"))
+        notes_mode = params.get("notes_mode")
+        if notes_mode is not None and notes_mode not in NOTES_MODES:
+            raise ValueError(
+                f"Invalid notes_mode: {notes_mode!r}. "
+                f"Must be one of: {', '.join(NOTES_MODES)}"
+            )
 
         # Before the spawn, so every event of the new agent is after it.
         cursor = self._engine.events.cursor
@@ -235,6 +260,7 @@ class EngineMethods:
                 label=label,
                 kind=kind,
                 env=env,
+                notes_mode=notes_mode,
             ),
             timeout=_OP_TIMEOUT,
         )
@@ -248,25 +274,37 @@ class EngineMethods:
         }
 
     async def stop_agent(self, params: dict) -> Any:
-        """Stop an agent in a worktree. Params: worktree_path, agent_id (optional).
+        """Stop an agent in a worktree. Params: worktree_path, agent_id
+        (optional), notes (optional: ``"delete"``, the default, or ``"keep"``
+        to leave its session notes as an orphan).
 
         ``agent_id`` may be omitted when the worktree has exactly one agent.
+        The result carries the agent's final ``notes`` text when they were
+        not empty: the handoff of a caller with no UI to offer one.
         """
         worktree_path = params.get("worktree_path", "")
         if not worktree_path:
             raise ValueError("worktree_path is required")
+        notes = params.get("notes", "delete")
+        if notes not in ("delete", "keep"):
+            raise ValueError(f"notes must be 'delete' or 'keep', not {notes!r}")
 
         agent_ids = self._engine.agent_ids(worktree_path)
         if not agent_ids:
             raise ValueError("No running agent in this worktree")
 
         agent_id = resolve_agent_id(agent_ids, params.get("agent_id"))
-        self._engine.stop_agent(worktree_path, agent_id)
-        return {
+        _, text = self._engine.stop_agent_with_notes(
+            worktree_path, agent_id, notes=notes
+        )
+        result: dict[str, Any] = {
             "worktree_path": worktree_path,
             "agent_id": agent_id,
             "status": "stopped",
         }
+        if text is not None:
+            result["notes"] = text
+        return result
 
     async def get_agent_status(self, params: dict) -> Any:
         """Get agent status for a worktree. Params: worktree_path, agent_id
@@ -473,6 +511,210 @@ class EngineMethods:
     async def dismiss_restorable(self, params: dict) -> Any:
         """Stop offering restorable agents (all of them without ``ids``)."""
         return {"dismissed": self._engine.dismiss_restorable(self._ids(params))}
+
+    # ------------------------------------------------------------------
+    # Session notes (proposal 0011)
+    # ------------------------------------------------------------------
+
+    def _notes_store(self) -> NotesStore:
+        store = self._engine.notes
+        if store is None:
+            raise ValueError("Session notes are off ([notes] enabled = false)")
+        return store
+
+    def _notes_target(
+        self, params: dict, *, writing: bool
+    ) -> tuple[tuple[str, str], str, str]:
+        """``(slot, notes_id, by)`` of a notes call.
+
+        The target is ``worktree_path`` (+ ``agent_id`` unless it has one
+        agent) when given, else the calling agent (its ``caller`` token).
+        The writer is the agent itself (its own notes) or the orchestrator
+        (the orchestrator agent's token, or a caller with no token: an
+        outside session); another agent's token may read but not write.
+        """
+        caller = params.get("caller")
+        if caller is not None and not isinstance(caller, str):
+            raise ValueError("caller must be a string")
+        caller_slot = None
+        if caller:
+            caller_slot = self._engine.token_slot(caller)
+            if caller_slot is None:
+                raise ValueError("Unknown caller token: its agent is gone")
+        worktree_path = params.get("worktree_path") or ""
+        agent_id = params.get("agent_id")
+        if worktree_path:
+            agent_ids = self._engine.agent_ids(worktree_path)
+            if not agent_ids:
+                raise ValueError("No running agent in this worktree")
+            slot = (worktree_path, resolve_agent_id(agent_ids, agent_id))
+        elif agent_id:
+            raise ValueError("agent_id needs worktree_path")
+        elif caller_slot is not None:
+            slot = caller_slot
+        else:
+            raise ValueError("no target: pass worktree_path and agent_id")
+
+        if caller_slot is None:
+            by = ORCHESTRATOR_BY
+        elif caller_slot == slot:
+            by = AGENT_BY
+        elif caller_slot[0] == ORCHESTRATOR_KEY:
+            by = ORCHESTRATOR_BY
+        elif writing:
+            raise ValueError(
+                "An agent may only write its own notes: "
+                f"{slot[1] or 'the orchestrator'} in {slot[0]} is another agent"
+            )
+        else:
+            by = AGENT_BY
+
+        self._notes_store()
+        notes_id = self._engine.notes_id(*slot)
+        if notes_id is None:
+            raise ValueError(f"Agent {slot[1]!r} in {slot[0]} has no notes")
+        return slot, notes_id, by
+
+    @staticmethod
+    def _text(params: dict, name: str = "text") -> str:
+        text = params.get(name)
+        if not isinstance(text, str):
+            raise ValueError(f"{name} is required and must be a string")
+        return text
+
+    @staticmethod
+    def _rev(params: dict, *, required: bool) -> int | None:
+        rev = params.get("if_rev")
+        if rev is None and not required:
+            return None
+        if type(rev) is not int or rev < 0:
+            raise ValueError("if_rev must be a non-negative integer (the rev read)")
+        return rev
+
+    @staticmethod
+    def _written(notes: Notes) -> dict[str, Any]:
+        meta = notes.meta
+        result: dict[str, Any] = {
+            "worktree_path": meta.worktree_path,
+            "agent_id": meta.agent_id,
+            "notes_id": meta.notes_id,
+            "rev": meta.rev,
+            "size": notes.size,
+            "max_bytes": notes.max_bytes,
+            "by": meta.by,
+            "updated_at": meta.updated_at,
+        }
+        if notes.warning:
+            result["warning"] = notes.warning
+        return result
+
+    async def notes_get(self, params: dict) -> Any:
+        """An agent's session notes. Params: worktree_path + agent_id, or
+        notes_id (any notes, an ended agent's too), or neither with a
+        ``caller`` token (the calling agent's own)."""
+        store = self._notes_store()
+        notes_id = params.get("notes_id")
+        if notes_id is not None:
+            if not isinstance(notes_id, str) or notes_id not in store:
+                raise ValueError(f"No notes {notes_id!r}")
+        else:
+            _, notes_id, _ = self._notes_target(params, writing=False)
+        notes = store.get(notes_id)
+        meta = notes.meta
+        result = self._written(notes)
+        result.update(
+            {
+                "text": notes.text,
+                "state": meta.state,
+                "kind": meta.kind,
+                "mode": meta.mode,
+                "conversation_id": meta.conversation_id,
+                "instruction": meta.instruction,
+                "created_at": meta.created_at,
+                "ended_at": meta.ended_at,
+                "empty": notes.empty,
+            }
+        )
+        return result
+
+    async def notes_put(self, params: dict) -> Any:
+        """Replace the whole text (a user's editor). Params: worktree_path,
+        agent_id, text, if_rev (the rev the edit started from: a stale one
+        is a CONFLICT carrying the current ``{rev, text}``)."""
+        text = self._text(params)
+        if_rev = self._rev(params, required=True)
+        _, notes_id, by = self._notes_target(params, writing=True)
+        if not params.get("caller"):
+            by = USER_BY
+        return self._written(self._notes_store().put(notes_id, text, if_rev, by))
+
+    async def notes_append(self, params: dict) -> Any:
+        """Add lines at the end of a section (created when missing).
+        Params: section, text, if_rev (optional), the target (see
+        notes_get), caller."""
+        section = self._text(params, "section")
+        text = self._text(params)
+        if_rev = self._rev(params, required=False)
+        _, notes_id, by = self._notes_target(params, writing=True)
+        notes = self._notes_store().append(notes_id, section, text, by, if_rev)
+        return self._written(notes)
+
+    async def notes_replace_section(self, params: dict) -> Any:
+        """Replace a section's body. Params: section, text, if_rev, the
+        target (see notes_get), caller."""
+        section = self._text(params, "section")
+        text = self._text(params)
+        if_rev = self._rev(params, required=True)
+        _, notes_id, by = self._notes_target(params, writing=True)
+        notes = self._notes_store().replace_section(
+            notes_id, section, text, if_rev, by
+        )
+        return self._written(notes)
+
+    async def notes_list(self, params: dict) -> Any:
+        """Every notes this engine knows: live, restorable and orphan (of
+        ``worktree_path`` only, when given), newest first."""
+        store = self._notes_store()
+        worktree_path = params.get("worktree_path") or None
+        items = []
+        for meta in store.list(worktree_path):
+            notes = store.get(meta.notes_id)
+            items.append(
+                {
+                    "notes_id": meta.notes_id,
+                    "state": meta.state,
+                    "worktree_path": meta.worktree_path,
+                    "agent_id": meta.agent_id,
+                    "kind": meta.kind,
+                    "size": notes.size,
+                    "empty": notes.empty,
+                    "by": meta.by,
+                    "updated_at": meta.updated_at,
+                    "ended_at": meta.ended_at,
+                    "expires_at": store.expires_at(meta),
+                }
+            )
+        return {"notes": items}
+
+    async def notes_adopt(self, params: dict) -> Any:
+        """Recover ended notes into a live agent: they replace its text and
+        go (``notes.removed`` reason ``adopted``). Params: notes_id,
+        worktree_path, agent_id, if_rev (optional: the live notes' rev)."""
+        notes_id = self._text(params, "notes_id")
+        if_rev = self._rev(params, required=False)
+        slot, _, by = self._notes_target(params, writing=True)
+        if not params.get("caller"):
+            by = USER_BY
+        notes = self._engine.adopt_notes(notes_id, *slot, if_rev=if_rev, by=by)
+        return self._written(notes)
+
+    async def notes_delete(self, params: dict) -> Any:
+        """Drop ended notes (an orphan, or a restorable agent's). Params:
+        notes_id."""
+        notes_id = self._text(params, "notes_id")
+        self._notes_store()
+        self._engine.delete_notes(notes_id)
+        return {"deleted": notes_id}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

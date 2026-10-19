@@ -169,6 +169,9 @@ pub struct StopResult {
     pub worktree_path: String,
     pub agent_id: String,
     pub status: String,
+    /// The agent's final session notes, when they were not empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

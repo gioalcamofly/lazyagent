@@ -1,0 +1,30 @@
+{
+  "case": "notes_get/template",
+  "method": "notes_get",
+  "params": {
+    "agent_id": "a1",
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "by": null,
+      "conversation_id": null,
+      "created_at": 1700000000.0,
+      "empty": true,
+      "ended_at": null,
+      "instruction": null,
+      "kind": "agent",
+      "max_bytes": 8192,
+      "mode": "propose",
+      "notes_id": "0a1b2c3d4e51",
+      "rev": 0,
+      "size": 75,
+      "state": "live",
+      "text": "## Goal\n\n## Constraints (don't touch)\n\n## Decisions\n\n## Doubts\n\n## Pending\n",
+      "updated_at": 1700000000.0,
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

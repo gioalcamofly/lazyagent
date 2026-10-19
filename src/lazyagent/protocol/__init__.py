@@ -40,6 +40,14 @@ LEGACY_METHODS: tuple[str, ...] = (
     "list_restorable",
     "restore_agents",
     "dismiss_restorable",
+    # Session notes (proposal 0011), on the legacy socket for the MCP tools.
+    "notes_get",
+    "notes_put",
+    "notes_append",
+    "notes_replace_section",
+    "notes_list",
+    "notes_adopt",
+    "notes_delete",
 )
 
 # The methods protocol v1 adds.

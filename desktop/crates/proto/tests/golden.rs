@@ -75,6 +75,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "dismiss_restorable" => round_trip::<DismissResult>(case, result),
             // Not used by the desktop app (MCP-only).
             "get_agent_status" | "list_events" => continue,
+            // Not decoded until the notes panel (N4) types them.
+            m if m.starts_with("notes_") => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;

@@ -1,0 +1,16 @@
+{
+  "case": "notes_put/conflict",
+  "method": "notes_put",
+  "params": {
+    "if_rev": 0,
+    "text": "## Goal\n",
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "error": {
+      "code": "CONFLICT",
+      "message": "notes changed (rev 1): read them again"
+    },
+    "id": "req-1"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "case": "notes_delete/orphan",
+  "method": "notes_delete",
+  "params": {
+    "notes_id": "0f0e0d0c0b0a"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "deleted": "0f0e0d0c0b0a"
+    }
+  }
+}

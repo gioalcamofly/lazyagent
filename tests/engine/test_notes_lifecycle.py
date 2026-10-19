@@ -411,3 +411,52 @@ async def test_notes_disabled(world):
     assert engine.stop_agent_with_notes(str(world.feat), agent.agent_id)[1] is None
     await engine.stop()
     assert mf.read(world.manifest) == ([], [])
+
+
+# --- the per-spawn token (N2) ---------------------------------------------
+
+
+def _token(engine: Engine, key: str, agent_id: str) -> str:
+    [token] = [t for t, slot in engine._tokens.items() if slot == (key, agent_id)]
+    return token
+
+
+async def test_a_token_resolves_to_its_agent_and_dies_with_it(world):
+    engine = world.engine()
+    feat = str(world.feat)
+    first = await engine.spawn_agent(feat)
+    second = await engine.spawn_agent(feat)
+    orchestrator = await engine.spawn_agent("", kind="orchestrator")
+    tokens = {
+        info.agent_id or "orch": _token(engine, info.worktree_path, info.agent_id)
+        for info in (first, second, orchestrator)
+    }
+    assert len(set(tokens.values())) == 3
+    assert engine.token_slot(tokens[first.agent_id]) == (feat, first.agent_id)
+    assert engine.token_slot(tokens["orch"]) == (ORCHESTRATOR_KEY, "")
+    assert engine.token_slot("forged") is None
+
+    engine.stop_agent(feat, first.agent_id)  # a stop
+    assert engine.token_slot(tokens[first.agent_id]) is None
+    session = engine.get_session(feat, second.agent_id)
+    await _until(lambda: "your turn>" in session.screen_text())
+    await engine.send_agent_input(feat, second.agent_id, "exit 0")  # its own exit
+    await _until(lambda: engine.get_session(feat, second.agent_id) is None)
+    assert engine.token_slot(tokens[second.agent_id]) is None
+    assert engine.token_slot(tokens["orch"]) == (ORCHESTRATOR_KEY, "")
+
+
+async def test_a_restored_agent_gets_a_new_token(world):
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    old = _token(first, feat, agent.agent_id)
+    await first.stop()
+    assert first._tokens == {}
+
+    second = world.engine()
+    [restored] = (await second.restore_agents())["restored"]
+    assert restored["agent_id"] == agent.agent_id
+    new = _token(second, feat, agent.agent_id)
+    assert new != old and second.token_slot(old) is None
+    assert second.token_slot(new) == (feat, agent.agent_id)
