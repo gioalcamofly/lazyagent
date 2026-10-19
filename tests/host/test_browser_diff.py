@@ -62,18 +62,22 @@ async def test_a_review_reaches_the_agent(fake_claude, host, browser, tmp_path):
     session = await shown_session(page)
     await native_has(page, session, "your turn>")
 
-    # Ctrl+D from the agent's terminal: the diff against the base branch,
-    # the commit and the working tree together.
+    # Ctrl+D from the agent's terminal: the diff like the PR (the commit,
+    # against main, the base the engine picked), then the working tree's
+    # changes apart.
     await page.keyboard.press("Control+d")
     await page.wait_for_selector(".diff-rows .drow")
     assert await page.input_value(".diff-head input.base") == "main"
+    assert "(default branch)" in await page.inner_text(".diff-head")
     files = page.locator(".diff-files .dfile")
-    assert await files.evaluate_all("(els) => els.map((e) => e.dataset.path)") == ["calc.py", "notes.md"]
+    assert await files.evaluate_all("(els) => els.map((e) => e.dataset.path)") == ["calc.py", "calc.py", "notes.md"]
+    assert await page.locator(".diff-files .dfile.uncommitted").count() == 2
+    assert await page.locator(".drow.section").count() == 1
     assert await page.locator(".drow.add", has_text="def mul(a, b):").count() == 1
 
     # Comments: one on an added line, one on the new file; kept in the page.
     await _comment(page, "return a * b", "use operator.mul")
-    await files.nth(1).click()
+    await files.nth(2).click()
     await _comment(page, "review me", "drop this file")
     assert await page.locator(".drow.comment").count() == 2
     assert "2 comments" in await page.inner_text(".diff-head")

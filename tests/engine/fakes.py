@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from lazyagent.agent_providers import AgentProvider
 from lazyagent.config import Config
+from lazyagent.worktree_manager import PrDiff
 from lazyagent.engine.engine import Engine
 from lazyagent.engine.session import AgentSession
 from lazyagent.models import GitStatus, WorktreeInfo
@@ -86,6 +87,14 @@ class FakeManager:
         if base == "no-such-branch":
             raise ValueError(f"No merge-base between {base!r} and HEAD")
         return ""
+
+    def resolve_base_ref(self, path, branch):
+        """The fake world has no branches: nothing to diff against."""
+        return None
+
+    def get_pr_diff(self, path, base, *, max_bytes=None):
+        self.get_diff(path, base=base)
+        return PrDiff("", "", "")
 
     def is_gh_available(self) -> bool:
         return False

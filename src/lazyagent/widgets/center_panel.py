@@ -62,6 +62,38 @@ def _cap_diff(diff_text: str) -> str:
     return "\n".join(capped)
 
 
+def base_label(base: dict) -> str:
+    """Where a ``get_diff`` (``pr``) base came from, for its heading."""
+    source = base.get("source")
+    if source == "pr":
+        number = base.get("pr_number")
+        return f"PR #{number} base" if number else "PR base"
+    if source == "default":
+        return "default branch"
+    return "override" if source == "override" else str(source or "")
+
+
+def pr_diff_text(reply: dict) -> str:
+    """The Diff tab's text for a ``get_diff`` reply with ``pr``: what the
+    pull request shows, then what is not committed yet, under its own
+    heading (agents mostly work uncommitted)."""
+    base = reply.get("base")
+    if base:
+        head = f"Against {base['ref']} ({base_label(base)}) · merge-base {base['merge_base'][:10]}"
+        committed = reply.get("diff") or "No committed changes"
+    else:
+        head = f"No base to diff against: {reply.get('base_error') or 'unknown'}"
+        committed = ""
+    parts = [head]
+    if reply.get("fetch_error"):
+        parts.append(f"Fetch failed: {reply['fetch_error']}")
+    if committed:
+        parts.append(committed)
+    parts.append("── Uncommitted (staged, unstaged, untracked) ──")
+    parts.append(reply.get("uncommitted") or "Nothing uncommitted")
+    return "\n\n".join(parts)
+
+
 def _agent_tab_id(agent_id: str) -> str:
     return f"agent-tab-{agent_id}"
 

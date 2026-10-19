@@ -23,6 +23,7 @@ subscriber calls stay on the loop that drives the service.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Collection, Coroutine, Iterable
 from dataclasses import dataclass
@@ -51,6 +52,10 @@ PR_INFO_UPDATED = "pr_info.updated"
 # for one on demand (Alt+G in the TUI).
 GIT_STATUS_INTERVAL = 60.0
 PR_INFO_INTERVAL = 60.0
+
+# How long a diff waits for a PR lookup already running before it falls
+# back to the default base.
+_PR_WAIT = 15.0
 
 # Concurrency gauge for PR fetches (diagnostics only).
 _PR_STATUS_GAUGE = diag.Gauge()
@@ -98,6 +103,8 @@ class WorktreeService:
         self._pollers: list[asyncio.Task] = []
         self._ticks: set[asyncio.Task] = set()
         self._pr_in_flight: set[str] = set()
+        # Set when the fetch a path is in flight with ends.
+        self._pr_done: dict[str, asyncio.Event] = {}
         self._gh_available: bool | None = None
         self._github_repo: Any = _UNRESOLVED
 
@@ -254,6 +261,89 @@ class WorktreeService:
             self._diffs[path] = text
         return text
 
+    async def get_pr_diff(
+        self,
+        path: str,
+        *,
+        base: str | None = None,
+        default_branch: str | None = None,
+        max_bytes: int | None = None,
+        fetch: bool = False,
+    ) -> dict[str, Any]:
+        """The diff the branch's pull request shows, and its uncommitted
+        changes apart (``WorktreeManager.get_pr_diff``), as ``get_diff``
+        returns it with ``pr``.
+
+        Without ``base`` it is resolved: the open PR's base branch (from the
+        PR cache; fetched once when not cached yet), else ``default_branch``,
+        else the main worktree's branch, else ``main``; each as
+        ``origin/<name>`` when that exists, else the local branch (but never
+        the worktree's own branch). ``base`` is used as given. ``fetch`` runs ``git fetch origin <branch>`` in the
+        worktree first (refreshing the PR info too). Raises ``ValueError``
+        only for a ``base`` with no merge-base.
+        """
+        manager = self._manager_cls()
+        fetch_error: str | None = None
+        info = None
+        candidates: list[tuple[str, str]] = []
+        if base is not None:
+            ref, branch, source = base, None, "override"
+            if fetch and base.startswith("origin/"):
+                fetch_error = await asyncio.to_thread(manager.fetch_branch, path, base[len("origin/"):])
+        else:
+            info = await self.ensure_pr_info(path, refresh=fetch)
+            if info is not None and info.state == "OPEN" and info.base_ref:
+                candidates.append((info.base_ref, "pr"))
+            main = next((wt.branch for wt in self.worktrees if wt.is_main and wt.branch), None)
+            for name in (default_branch, main, "main"):
+                if name and all(name != c for c, _ in candidates):
+                    candidates.append((name, "default"))
+            if fetch:
+                fetch_error = await asyncio.to_thread(manager.fetch_branch, path, candidates[0][0])
+            ref = branch = source = None
+            wt = self.worktree(path)
+            own = wt.branch if wt is not None else None
+            for name, kind in candidates:
+                found = await asyncio.to_thread(manager.resolve_base_ref, path, name)
+                # The worktree's own local branch: always an empty diff.
+                if found is not None and found != own:
+                    ref, branch, source = found, name, kind
+                    break
+        base_error: str | None = None
+        with diag.timed(log, "worker.pr_diff", worktree=path) as span:
+            try:
+                result = await asyncio.to_thread(
+                    partial(manager.get_pr_diff, path, ref, max_bytes=max_bytes)
+                )
+            except ValueError as e:
+                if source == "override":
+                    raise
+                base_error = str(e)
+                ref = None
+                result = await asyncio.to_thread(
+                    partial(manager.get_pr_diff, path, None, max_bytes=max_bytes)
+                )
+            span["bytes"] = len(result.committed) + len(result.uncommitted)
+        reply: dict[str, Any] = {
+            "worktree_path": path,
+            "diff": result.committed,
+            "uncommitted": result.uncommitted,
+            "base": None if ref is None else {
+                "ref": ref,
+                "branch": branch,
+                "source": source,
+                "merge_base": result.merge_base,
+                "pr_number": info.number if source == "pr" and info is not None else None,
+            },
+        }
+        if ref is None:
+            reply["base_error"] = base_error or "No base branch found (none of: " + ", ".join(
+                c for c, _ in candidates
+            ) + ")"
+        if fetch_error:
+            reply["fetch_error"] = fetch_error
+        return reply
+
     def diff(self, path: str) -> str | None:
         """The last diff fetched for ``path``, if any."""
         return self._diffs.get(path)
@@ -272,6 +362,17 @@ class WorktreeService:
     def pr_info(self, path: str) -> PrInfo | None:
         return self._pr_infos.get(path)
 
+    async def ensure_pr_info(self, path: str, *, refresh: bool = False) -> PrInfo | None:
+        """``path``'s PR info, fetched when not cached yet (or ``refresh``).
+        A fetch already in flight is waited for, not doubled."""
+        done = self._pr_done.get(path)
+        if done is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(done.wait(), _PR_WAIT)
+        elif refresh or not self.has_pr_info(path):
+            await self.refresh_pr_info([path])
+        return self.pr_info(path)
+
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         """Fetch PR info for ``paths``, batched into as few ``gh`` calls as possible.
 
@@ -286,6 +387,9 @@ class WorktreeService:
         # Claimed before the first await, so a concurrent caller sees them.
         claimed = {wt.path for wt in targets}
         self._pr_in_flight |= claimed
+        done = asyncio.Event()
+        for path in claimed:
+            self._pr_done[path] = done
         try:
             if self._gh_available is None:
                 with diag.timed(log, "worker.gh_auth_status"):
@@ -309,6 +413,11 @@ class WorktreeService:
                 span["found"] = sum(info is not None for info in infos.values())
         finally:
             self._pr_in_flight -= claimed
+            # Waiters run at the next await, after the cache is updated below.
+            done.set()
+            for path in claimed:
+                if self._pr_done.get(path) is done:
+                    del self._pr_done[path]
 
         live = {wt.path for wt in self.worktrees}
         for path, info in infos.items():

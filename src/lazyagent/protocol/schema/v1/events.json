@@ -35,7 +35,8 @@
         "checks": {"type": "array", "items": {"$ref": "#/$defs/ci_check"}},
         "url": {"type": "string"},
         "review_decision": {"type": "string"},
-        "mergeable": {"type": "string"}
+        "mergeable": {"type": "string"},
+        "base_ref": {"type": "string", "description": "The branch the PR merges into (baseRefName); empty when unknown."}
       }
     },
     "stream_geometry": {

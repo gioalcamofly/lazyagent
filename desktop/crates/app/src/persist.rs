@@ -27,6 +27,9 @@ pub struct Saved {
     /// The diff viewer's layout.
     #[serde(default)]
     pub diff_split: bool,
+    /// The diff viewer leaves out the uncommitted changes.
+    #[serde(default)]
+    pub diff_hide_uncommitted: bool,
     /// Review comments per worktree (D5): opaque to this module.
     #[serde(default)]
     pub comments: BTreeMap<String, serde_json::Value>,
