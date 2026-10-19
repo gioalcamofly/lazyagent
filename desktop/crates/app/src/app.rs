@@ -1130,25 +1130,10 @@ impl App {
         let orchestrator = selected == ORCHESTRATOR_KEY;
         self.link_banner(ui);
         self.restore_banner(ui);
-        // Header.
+        // Header: the buttons first, right to left, so the names truncate
+        // into what they leave instead of running under them.
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if orchestrator {
-                ui.label(RichText::new("Orchestrator").strong().size(15.0).color(t.accent));
-            } else if let Some(w) = self.state.selected_worktree() {
-                ui.label(RichText::new(store::basename(&w.path)).strong().size(15.0));
-                if let Some(b) = &w.branch {
-                    ui.label(RichText::new(b).color(t.cyan).monospace());
-                }
-                if let Some(g) = self.state.store.git.get(&w.path)
-                    && let Some(subject) = &g.last_commit_subject
-                {
-                    ui.add(
-                        egui::Label::new(RichText::new(format!("last: \"{subject}\"")).color(t.muted).small())
-                            .truncate(),
-                    );
-                }
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if !orchestrator {
                     let hidden = self.state.shell_hidden.contains(&selected);
@@ -1190,6 +1175,33 @@ impl App {
                         self.state.open_dialog(crate::dialogs::Kind::Stop);
                     }
                 }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    if orchestrator {
+                        ui.label(RichText::new("Orchestrator").strong().size(15.0).color(t.accent));
+                    } else if let Some(w) = self.state.selected_worktree() {
+                        ui.add(
+                            egui::Label::new(RichText::new(store::basename(&w.path)).strong().size(15.0)).truncate(),
+                        );
+                        if let Some(b) = &w.branch {
+                            // Most of the room, not all: the subject keeps some.
+                            let label = egui::Label::new(RichText::new(b).color(t.cyan).monospace()).truncate();
+                            let room = ui.available_width() * 0.6;
+                            ui.scope(|ui| {
+                                ui.set_max_width(room);
+                                ui.add(label);
+                            });
+                        }
+                        if let Some(g) = self.state.store.git.get(&w.path)
+                            && let Some(subject) = &g.last_commit_subject
+                            && ui.available_width() > 60.0
+                        {
+                            ui.add(
+                                egui::Label::new(RichText::new(format!("last: \"{subject}\"")).color(t.muted).small())
+                                    .truncate(),
+                            );
+                        }
+                    }
+                });
             });
         });
         if self.state.diff_open {

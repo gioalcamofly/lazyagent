@@ -5,8 +5,10 @@
 
 use std::sync::Arc;
 
+use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, Ui, Vec2,
+    self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, TextFormat,
+    Ui, Vec2,
 };
 use lazyagent_proto::types::DiffResult;
 use serde_json::json;
@@ -18,6 +20,7 @@ use crate::store::{self, ORCHESTRATOR_KEY};
 pub const ROW_H: f32 = 18.0;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const NUM_W: f32 = 44.0;
+const HBAR_H: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DRow {
@@ -39,6 +42,12 @@ pub struct DiffState {
     /// Which load a reply belongs to.
     seq: u64,
     pub scroll_to: Option<usize>,
+    /// How far the code is scrolled sideways (px); line numbers stay put.
+    pub hoff: f32,
+    /// The longest code line, in columns (tabs as four).
+    cols: usize,
+    /// Where the rows were drawn last frame (tests, hit-testing).
+    pub rows_rect: Rect,
 }
 
 impl DiffState {
@@ -55,6 +64,9 @@ impl DiffState {
             built_for: None,
             seq: 1,
             scroll_to: None,
+            hoff: 0.0,
+            cols: 0,
+            rows_rect: Rect::NOTHING,
         }
     }
 }
@@ -132,6 +144,9 @@ impl State {
             built_for: None,
             seq,
             scroll_to: None,
+            hoff: 0.0,
+            cols: 0,
+            rows_rect: Rect::NOTHING,
         });
         let mut params = json!({"worktree_path": path, "max_bytes": MAX_BYTES});
         if !base.trim().is_empty() {
@@ -287,50 +302,64 @@ impl App {
         if self.state.diff.as_ref().unwrap().built_for != Some(key) {
             let d = self.state.diff.as_mut().unwrap();
             d.rows = build_rows(&d.diff, split, &comments);
+            d.cols = max_cols(&d.diff);
             d.built_for = Some(key);
         }
-        let body = ui.available_rect_before_wrap();
-        let list_w = 220.0f32.min(body.width() * 0.25);
-        let list = Rect::from_min_size(body.min, Vec2::new(list_w, body.height()));
-        let rows_rect = Rect::from_min_max(Pos2::new(list.max.x + 6.0, body.min.y), body.max);
-        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).id_salt("diff-files"));
         let mut jump = None;
-        egui::ScrollArea::vertical().id_salt("diff-file-list").show(&mut list_ui, |ui| {
-            let d = self.state.diff.as_ref().unwrap();
-            for (fi, f) in d.diff.files.iter().enumerate() {
-                let resp = ui
-                    .horizontal(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(store::basename(&f.path)).monospace().small()).truncate(),
-                        );
-                        ui.label(RichText::new(format!("+{}", f.added)).small().color(t.green));
-                        ui.label(RichText::new(format!("−{}", f.removed)).small().color(t.red));
-                    })
-                    .response
-                    .interact(Sense::click())
-                    .on_hover_text(&f.path);
-                if resp.clicked() {
-                    jump = d.rows.iter().position(|r| *r == DRow::File(fi));
-                }
-            }
-        });
+        egui::Panel::left("diff-files")
+            .resizable(true)
+            .default_size(260.0)
+            .size_range(120.0..=640.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin { right: 6, ..Default::default() }))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("diff-file-list").auto_shrink([false, false]).show(ui, |ui| {
+                    let d = self.state.diff.as_ref().unwrap();
+                    for (fi, f) in d.diff.files.iter().enumerate() {
+                        if file_entry(ui, &t, f).clicked() {
+                            jump = d.rows.iter().position(|r| *r == DRow::File(fi));
+                        }
+                    }
+                });
+            });
         if let Some(j) = jump {
             self.state.diff.as_mut().unwrap().scroll_to = Some(j);
         }
+        let font = FontId::monospace(12.0);
+        let char_w = ui.painter().layout_no_wrap("x".into(), font.clone(), t.text).size().x;
+        let mut rows_rect = ui.available_rect_before_wrap();
+        let d = self.state.diff.as_mut().unwrap();
+        // The code's own width, against the narrowest place it is shown in
+        // (a split pane, or the unified column), minus the vertical bar.
+        let gutter = if split { NUM_W } else { 2.0 * NUM_W + 12.0 };
+        let view_w = if split { rows_rect.width() / 2.0 - 1.0 } else { rows_rect.width() } - gutter - 12.0;
+        let max_hoff = (d.cols as f32 * char_w + 8.0 - view_w).max(0.0);
+        if max_hoff > 0.0 {
+            // Shift+wheel, or a sideways trackpad swipe, over the code.
+            if ui.rect_contains_pointer(rows_rect) {
+                d.hoff -= ui.input(|i| i.smooth_scroll_delta.x);
+            }
+            let bar = Rect::from_min_max(Pos2::new(rows_rect.left(), rows_rect.bottom() - HBAR_H), rows_rect.max);
+            rows_rect.max.y = bar.top();
+            hscrollbar(ui, &t, bar, view_w, max_hoff, &mut d.hoff);
+        }
+        d.hoff = d.hoff.clamp(0.0, max_hoff);
+        d.rows_rect = rows_rect;
+        let hoff = d.hoff;
         let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(rows_rect).id_salt("diff-rows"));
+        rows_ui.set_clip_rect(rows_rect.intersect(ui.clip_rect()));
         let mut area = egui::ScrollArea::vertical().id_salt(("diff-scroll", &path)).auto_shrink([false, false]);
-        if let Some(j) = self.state.diff.as_mut().unwrap().scroll_to.take() {
+        if let Some(j) = d.scroll_to.take() {
             area = area.vertical_scroll_offset(j as f32 * ROW_H);
         }
         let mut clicked: Option<Comment> = None;
-        let n = self.state.diff.as_ref().unwrap().rows.len();
+        let n = d.rows.len();
         area.show_rows(&mut rows_ui, ROW_H, n, |ui, range| {
             let d = self.state.diff.as_ref().unwrap();
-            let font = FontId::monospace(12.0);
             let width = ui.available_width();
             for idx in range {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click());
-                let p = ui.painter();
+                let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                let p = &p;
                 let text_y = rect.center().y;
                 match &d.rows[idx] {
                     DRow::File(fi) => {
@@ -352,7 +381,7 @@ impl App {
                     DRow::Row(fi, ri) => {
                         let f = &d.diff.files[*fi];
                         let row = &f.rows[*ri];
-                        draw_cell(p, &t, &font, rect, row, true);
+                        draw_cell(p, &t, &font, rect, row, true, hoff);
                         if resp.clicked()
                             && resp.interact_pointer_pos().is_some_and(|pos| pos.x < rect.left() + 2.0 * NUM_W)
                         {
@@ -361,25 +390,20 @@ impl App {
                     }
                     DRow::Pair(fi, pair) => {
                         let f = &d.diff.files[*fi];
-                        let half = rect.width() / 2.0;
-                        let left = Rect::from_min_size(rect.min, Vec2::new(half - 1.0, ROW_H));
-                        let right = Rect::from_min_size(
-                            Pos2::new(rect.left() + half + 1.0, rect.top()),
-                            Vec2::new(half - 1.0, ROW_H),
-                        );
+                        let (left, right) = halves(rect);
                         match pair {
-                            Pair::Wide(ri) => draw_cell(p, &t, &font, rect, &f.rows[*ri], false),
+                            Pair::Wide(ri) => draw_cell(p, &t, &font, rect, &f.rows[*ri], false, 0.0),
                             Pair::Sides(l, r) => {
                                 if let Some(l) = l {
-                                    draw_side(p, &t, &font, left, &f.rows[*l], true);
+                                    draw_side(p, &t, &font, left, &f.rows[*l], true, hoff);
                                 }
                                 if let Some(r) = r {
-                                    draw_side(p, &t, &font, right, &f.rows[*r], false);
+                                    draw_side(p, &t, &font, right, &f.rows[*r], false, hoff);
                                 }
                                 if resp.clicked()
                                     && let Some(pos) = resp.interact_pointer_pos()
                                 {
-                                    let pick = if pos.x < rect.left() + half { l } else { r };
+                                    let pick = if pos.x < right.left() { l } else { r };
                                     clicked = pick.and_then(|i| diff::anchor(&f.path, &f.rows[i]));
                                 }
                             }
@@ -561,13 +585,86 @@ impl App {
     }
 }
 
+/// A split row's two panes.
+fn halves(rect: Rect) -> (Rect, Rect) {
+    let half = rect.width() / 2.0;
+    let left = Rect::from_min_size(rect.min, Vec2::new(half - 1.0, rect.height()));
+    let right =
+        Rect::from_min_size(Pos2::new(rect.left() + half + 1.0, rect.top()), Vec2::new(half - 1.0, rect.height()));
+    (left, right)
+}
+
+/// The longest code line, in columns.
+fn max_cols(d: &Diff) -> usize {
+    d.files
+        .iter()
+        .flat_map(|f| &f.rows)
+        .filter(|r| !matches!(r.kind, RowKind::Hunk | RowKind::Note))
+        .map(|r| r.text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>())
+        .max()
+        .unwrap_or(0)
+}
+
+/// One file in the list: its counts on the right, its name elided into
+/// what is left (the full path on hover), all inside the list's width.
+fn file_entry(ui: &mut Ui, t: &crate::theme::Theme, f: &diff::File) -> egui::Response {
+    let font = FontId::monospace(11.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H + 2.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &f.path));
+    let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    if resp.hovered() {
+        p.rect_filled(rect, 3.0, t.current_bg);
+    }
+    let y = rect.center().y;
+    let del =
+        p.text(Pos2::new(rect.right() - 2.0, y), Align2::RIGHT_CENTER, format!("−{}", f.removed), font.clone(), t.red);
+    let add =
+        p.text(Pos2::new(del.left() - 5.0, y), Align2::RIGHT_CENTER, format!("+{}", f.added), font.clone(), t.green);
+    let mut job = LayoutJob::single_section(
+        store::basename(&f.path).to_string(),
+        TextFormat::simple(FontId::monospace(11.5), t.text),
+    );
+    job.wrap = TextWrapping::truncate_at_width((add.left() - 8.0 - rect.left() - 4.0).max(0.0));
+    let name = ui.painter().layout_job(job);
+    p.galley(Pos2::new(rect.left() + 4.0, y - name.size().y / 2.0), name, t.text);
+    resp.on_hover_text(&f.path)
+}
+
+/// A sideways scrollbar for the code: drag the thumb, or click the track.
+fn hscrollbar(ui: &mut Ui, t: &crate::theme::Theme, bar: Rect, view_w: f32, max_hoff: f32, hoff: &mut f32) {
+    let resp = ui.interact(bar, egui::Id::unique("diff-hscroll"), Sense::click_and_drag());
+    let track = bar.shrink2(Vec2::new(2.0, 2.0));
+    let thumb_w = (track.width() * view_w / (view_w + max_hoff)).max(24.0).min(track.width());
+    let span = (track.width() - thumb_w).max(1.0);
+    if resp.dragged() {
+        *hoff += resp.drag_delta().x * max_hoff / span;
+    } else if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        *hoff = (pos.x - track.left() - thumb_w / 2.0) / span * max_hoff;
+    }
+    *hoff = hoff.clamp(0.0, max_hoff);
+    let x = track.left() + *hoff / max_hoff * span;
+    let thumb = Rect::from_min_size(Pos2::new(x, track.top()), Vec2::new(thumb_w, track.height()));
+    let color = if resp.hovered() || resp.dragged() { t.muted } else { t.border };
+    ui.painter().rect_filled(thumb, 3.0, color);
+}
+
 fn draw_number(p: &egui::Painter, t: &crate::theme::Theme, rect: Rect, x: f32, n: Option<u32>) {
     if let Some(n) = n {
         p.text(Pos2::new(x, rect.center().y), Align2::RIGHT_CENTER, n.to_string(), FontId::monospace(11.0), t.muted);
     }
 }
 
-fn draw_cell(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, rect: Rect, row: &diff::Row, numbers: bool) {
+fn draw_cell(
+    p: &egui::Painter,
+    t: &crate::theme::Theme,
+    font: &FontId,
+    rect: Rect,
+    row: &diff::Row,
+    numbers: bool,
+    hoff: f32,
+) {
     let (bg, sign) = row_colors(row.kind);
     if bg != Color32::TRANSPARENT {
         p.rect_filled(rect, 0.0, bg);
@@ -595,24 +692,36 @@ fn draw_cell(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, rect: Re
                 font.clone(),
                 if sign == Color32::TRANSPARENT { t.muted } else { sign },
             );
-            p.text(Pos2::new(x + 12.0, y), Align2::LEFT_CENTER, row.text.replace('\t', "    "), font.clone(), t.text);
+            let code = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), rect.max);
+            draw_code(p, t, font, code, row, hoff);
         }
     }
 }
 
-fn draw_side(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, rect: Rect, row: &diff::Row, old: bool) {
-    let painter = p.with_clip_rect(rect);
+fn draw_side(
+    p: &egui::Painter,
+    t: &crate::theme::Theme,
+    font: &FontId,
+    rect: Rect,
+    row: &diff::Row,
+    old: bool,
+    hoff: f32,
+) {
+    let painter = p.with_clip_rect(rect.intersect(p.clip_rect()));
     let (bg, _) = row_colors(row.kind);
     if bg != Color32::TRANSPARENT {
         painter.rect_filled(rect, 0.0, bg);
     }
     draw_number(&painter, t, rect, rect.left() + NUM_W - 6.0, if old { row.old } else { row.new });
-    draw_cell_text(&painter, t, font, rect, row);
+    let code = Rect::from_min_max(Pos2::new(rect.left() + NUM_W, rect.top()), rect.max);
+    draw_code(&painter, t, font, code, row, hoff);
 }
 
-fn draw_cell_text(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, rect: Rect, row: &diff::Row) {
-    p.text(
-        Pos2::new(rect.left() + NUM_W, rect.center().y),
+/// A line's code, scrolled `hoff` to the left and clipped to `code`, so
+/// it never runs over the line numbers or the other pane.
+fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, code: Rect, row: &diff::Row, hoff: f32) {
+    p.with_clip_rect(code.intersect(p.clip_rect())).text(
+        Pos2::new(code.left() - hoff, code.center().y),
         Align2::LEFT_CENTER,
         row.text.replace('\t', "    "),
         font.clone(),

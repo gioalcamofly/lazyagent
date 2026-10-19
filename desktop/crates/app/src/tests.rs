@@ -754,6 +754,89 @@ fn the_diff_view_comments_and_submits_a_review() {
 }
 
 #[test]
+fn the_diff_view_keeps_long_names_and_lines_in_their_columns() {
+    // The shape that broke: long file names, a long branch and subject,
+    // lines wider than a split pane, in a narrow window.
+    let branch = "PROJ-26001-dashboard-court-and-government-agency-in-caller-intake";
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-f", branch, vec![agent("a1", "Implementer", "running", "s1")]),
+    ]);
+    let mut h = Harness::builder().with_size([1000.0, 700.0]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(2);
+    let long = "caller-intake-renders-the-legal-sections-and-keeps-them-in-order.spec.ts";
+    let mut text = sample_diff(3, 8);
+    text.push_str(&format!(
+        "diff --git a/src/{long} b/src/{long}\n--- a/src/{long}\n+++ b/src/{long}\n@@ -1,1 +1,1 @@\n-{}\n+{}\n",
+        "old ".repeat(60),
+        "new ".repeat(60)
+    ));
+    {
+        let s = &mut h.state_mut().state;
+        s.store.git.insert(
+            "/r/repo-f".into(),
+            lazyagent_proto::types::GitStatus {
+                last_commit_subject: Some(format!("Merge remote-tracking branch 'origin/{branch}' into {branch}")),
+                ..Default::default()
+            },
+        );
+        s.selected = Some("/r/repo-f".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", crate::diff::parse(&text)));
+        s.diff_open = true;
+        s.saved.diff_split = true;
+    }
+    h.run_steps(3);
+    // The header's names end before its buttons start.
+    let stop = h.get_by_label("Stop").rect();
+    let buttons = stop.min.x.min(h.get_by_label("Remove").rect().min.x);
+    let in_header = |r: egui::Rect| stop.y_range().contains(r.center().y);
+    let names: Vec<egui::Rect> = h
+        .query_all_by_label(branch)
+        .chain(h.query_all_by_label_contains("last: "))
+        .map(|n| n.rect())
+        .filter(|r| in_header(*r))
+        .collect();
+    assert_eq!(names.len(), 2, "the branch and the subject in the header");
+    for r in names {
+        assert!(r.max.x <= buttons, "{r:?} runs under the buttons at {buttons}");
+    }
+    // Every file entry stays in the list, left of the rows.
+    let rows = h.state().state.diff.as_ref().unwrap().rows_rect;
+    assert!(rows.width() > 300.0, "{rows:?}");
+    let entry = h.get_by_label(&format!("src/{long}")).rect();
+    assert!(entry.max.x <= rows.min.x, "the file entry {entry:?} overlaps the rows at {rows:?}");
+    for f in 0..3 {
+        assert!(h.get_by_label(&format!("src/f{f}.rs")).rect().max.x <= rows.min.x);
+    }
+    // The lines are wider than a pane: shift+wheel scrolls them sideways,
+    // up to their end and no further.
+    let wheel = |h: &mut Harness<'static, App>, dx: f32| {
+        h.event(egui::Event::PointerMoved(rows.center()));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(dx, 0.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(4);
+        h.state().state.diff.as_ref().unwrap().hoff
+    };
+    assert_eq!(h.state().state.diff.as_ref().unwrap().hoff, 0.0);
+    let a = wheel(&mut h, -80.0);
+    assert!(a > 0.0, "scrolled sideways: {a}");
+    let end = wheel(&mut h, -100_000.0);
+    // 240 columns of 7-ish px against a pane of ~(rows/2 - gutter).
+    assert!(end > a && end < 240.0 * 9.0, "clamped at the end: {end}");
+    assert_eq!(wheel(&mut h, 100_000.0), 0.0);
+    // Unified scrolls the same way, by less (one wider column).
+    h.state_mut().state.saved.diff_split = false;
+    h.run_steps(2);
+    let unified = wheel(&mut h, -100_000.0);
+    assert!(unified > 0.0 && unified < end, "unified {unified} vs split {end}");
+}
+
+#[test]
 fn scrolling_a_5000_line_diff_is_cheap() {
     let (app, _tx) = app(vec![worktree("/r/repo", "main", vec![])]);
     let mut h = Harness::builder().with_size([1400.0, 860.0]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
@@ -835,7 +918,14 @@ fn render_the_diff_view() {
         Harness::builder().with_size([1300.0, 700.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
     h.run_steps(2);
     let text = "diff --git a/src/login.py b/src/login.py\n--- a/src/login.py\n+++ b/src/login.py\n@@ -10,7 +10,9 @@ def login(user):\n     if not user:\n         return None\n-    token = make_token(user)\n-    return token\n+    token = make_token(user, ttl=3600)\n+    audit.log(\"login\", user.id)\n+    return token\n \n def logout(user):\n     session.clear()\ndiff --git a/tests/test_login.py b/tests/test_login.py\nnew file\ndef test_login():\n    assert login(User(1))\n";
-    let parsed = crate::diff::parse(text);
+    // A long name and a line wider than a pane, which stay in their columns.
+    let long = "caller-intake-renders-the-legal-sections-and-keeps-them.spec.ts";
+    let text = format!(
+        "{text}diff --git a/{long} b/{long}\n--- a/{long}\n+++ b/{long}\n@@ -1,1 +1,1 @@\n-{}\n+{}\n",
+        "expect(screen.getByRole('option', { name: 'Attorney or Court Staff' })).toBeVisible(); ".repeat(2),
+        "expect(screen.getByRole('option', { name: 'Government Agency' })).toBeVisible(); ".repeat(2),
+    );
+    let parsed = crate::diff::parse(&text);
     let mut c = crate::diff::anchor("src/login.py", &parsed.files[0].rows[5]).unwrap();
     c.text = "the TTL should come from settings".into();
     {
