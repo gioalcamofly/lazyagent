@@ -164,6 +164,13 @@ pub struct State {
     pub pacer: Arc<crate::pacer::Pacer>,
     /// Frames in which a terminal mesh was rebuilt (benches).
     pub terminal_draws: u64,
+    /// What the engine serves (`hello`); `None` before one answered.
+    pub capabilities: Option<Vec<String>>,
+    /// The session notes panel of the active agent.
+    pub notes_open: bool,
+    /// Give the notes editor the keyboard once drawn (`n`).
+    pub notes_focus: bool,
+    pub notes: HashMap<crate::notes_view::NotesKey, crate::notes_view::NotesDoc>,
 }
 
 impl State {
@@ -233,6 +240,10 @@ impl State {
             last_frame_cpu: None,
             pacer: Arc::new(crate::pacer::Pacer::new(Duration::from_micros(16_000))),
             terminal_draws: 0,
+            capabilities: None,
+            notes_open: false,
+            notes_focus: false,
+            notes: HashMap::new(),
         }
     }
 
@@ -542,6 +553,8 @@ impl State {
                         "Started an engine for this repo. Agents keep running when you close the app.",
                     );
                 }
+                self.notes_reconnected(engine_changed);
+                self.capabilities = Some(hello.capabilities);
                 self.engine_version = Some(hello.engine_version);
             }
             Msg::Seed(state, config) => {
@@ -701,6 +714,8 @@ impl State {
             // An offered agent started again here (or was dismissed): the
             // banner follows without a fetch.
             EngineEvent::RestorableChanged(list) => self.restorable = list.agents,
+            EngineEvent::NotesUpdated(u) => self.on_notes_updated(&u),
+            EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
             _ => {}
         }
     }
@@ -908,6 +923,8 @@ impl App {
                 s.focus_request = Some(Focus::Agent);
             } else if take(Modifiers::NONE, Key::R) {
                 s.conn.notify("refresh_worktrees", json!({}));
+            } else if s.view == View::Worktrees && take(Modifiers::NONE, Key::N) {
+                s.toggle_notes();
             } else if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
                 s.open_dialog(Kind::Help);
             }
@@ -1154,6 +1171,14 @@ impl App {
                             self.state.shell_hidden.insert(selected.clone());
                         }
                     }
+                }
+                if self.state.notes_supported()
+                    && ui
+                        .selectable_label(self.state.notes_open, "Notes")
+                        .on_hover_text("The active agent's session notes (n outside a terminal)")
+                        .clicked()
+                {
+                    self.state.toggle_notes();
                 }
                 if !orchestrator
                     && ui.selectable_label(self.state.pr_panel, "PR").on_hover_text("PR and CI (Ctrl+.)").clicked()
@@ -1663,6 +1688,14 @@ impl App {
                 .default_size(320.0)
                 .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(10, 8)))
                 .show(ui, |ui| self.pr_panel(ui));
+        }
+        if self.state.notes_open && self.state.view == View::Worktrees && self.state.seeded {
+            egui::Panel::right("notes-panel")
+                .resizable(true)
+                .default_size(380.0)
+                .size_range(260.0..=760.0)
+                .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(10, 8)))
+                .show(ui, |ui| self.notes_panel(ui));
         }
         self.state.terminal_focused = false;
         egui::CentralPanel::default()

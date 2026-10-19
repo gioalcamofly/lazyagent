@@ -23,7 +23,7 @@ fn kind_color(t: &Theme, kind: Kind) -> Color32 {
     }
 }
 
-fn age(since: f64, now: f64) -> String {
+pub(crate) fn age(since: f64, now: f64) -> String {
     let s = (now - since).max(0.0) as u64;
     match s {
         0..=59 => format!("{s}s"),

@@ -1184,3 +1184,273 @@ fn sidebar_keys_walk_a_long_list() {
     press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowDown);
     assert_eq!(sel(&h), "/r/repo-04");
 }
+
+fn notes_json(rev: u64, text: &str, by: Option<&str>, max: u64) -> lazyagent_proto::types::Notes {
+    serde_json::from_value(json!({
+        "worktree_path": "/r/repo", "agent_id": "a1", "notes_id": "n1", "rev": rev, "size": text.len(),
+        "max_bytes": max, "by": by, "updated_at": crate::app::unix_now() - 120.0, "text": text, "state": "live",
+        "kind": "agent", "mode": "manual", "conversation_id": null, "instruction": "fix the login bug",
+        "created_at": 1.0, "ended_at": null, "empty": false
+    }))
+    .unwrap()
+}
+
+/// An app with one agent whose notes are already loaded (no engine).
+fn notes_app(text: &str, max: u64) -> (Harness<'static, App>, mpsc::Sender<Msg>) {
+    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![agent("a1", "Implementer", "running", "s1")])]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    let mut doc = crate::notes_view::NotesDoc::default();
+    doc.loaded(notes_json(1, text, Some("agent"), max));
+    h.state_mut().state.notes.insert(("/r/repo".into(), "a1".into()), doc);
+    (h, tx)
+}
+
+fn notes_doc<'a>(h: &'a Harness<'static, App>) -> &'a crate::notes_view::NotesDoc {
+    &h.state().state.notes[&("/r/repo".to_string(), "a1".to_string())]
+}
+
+#[test]
+fn n_toggles_the_notes_panel_outside_a_terminal_only() {
+    let (mut h, _tx) = notes_app("## Goal\n- ship\n", 8192);
+    h.run_steps(2);
+    let pane = h.state().state.panes.get("s1").cloned().expect("the agent's terminal has the keyboard");
+    // A real key press is a key event and its text.
+    h.key_press(egui::Key::N);
+    h.event(egui::Event::Text("n".into()));
+    h.run_steps(2);
+    assert!(!h.state().state.notes_open, "inside a terminal n is the agent's");
+    assert_eq!(pane.inner.lock().unwrap().held, b"n");
+    // Outside a terminal it opens the panel, with the editor focused.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    h.run_steps(3);
+    assert!(h.state().state.notes_open);
+    assert!(h.query_all_by_label("Session notes").count() >= 1);
+    assert!(h.query_all_by_label("fix the login bug").count() >= 1, "the pinned instruction");
+    assert!(h.query_all_by_label("last edit 2m ago by agent · rev 1 · mode manual").count() >= 1);
+    assert!(h.ctx.text_edit_focused(), "n puts the keyboard in the notes");
+    // Typing there is text: s and x open no dialog, n does not close it.
+    h.event(egui::Event::Text("sxn".into()));
+    h.run_steps(2);
+    assert!(h.state().state.dialog.is_none());
+    assert!(h.state().state.notes_open);
+    assert!(notes_doc(&h).draft.contains("sxn"), "{:?}", notes_doc(&h).draft);
+    assert!(notes_doc(&h).dirty());
+    assert!(h.query_all_by_label("unsaved").count() >= 1);
+    // Esc leaves the editor; n then closes the panel. The header button too.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    h.run_steps(2);
+    assert!(!h.state().state.notes_open);
+    h.get_by_label("Notes").click();
+    h.run_steps(2);
+    assert!(h.state().state.notes_open);
+    // Revert drops the edit.
+    h.get_by_label("Revert").click();
+    h.run_steps(2);
+    assert!(!notes_doc(&h).dirty());
+}
+
+#[test]
+fn notes_panel_hidden_against_an_engine_without_notes() {
+    let (mut h, _tx) = notes_app("x", 8192);
+    h.state_mut().state.capabilities = Some(vec!["get_sidebar_state".into()]);
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    h.run_steps(2);
+    assert!(!h.state().state.notes_open);
+    assert_eq!(h.query_all_by_label("Notes").count(), 0, "no header button");
+    assert!(h.state().state.toasts.iter().any(|t| t.text.contains("no session notes")));
+}
+
+#[test]
+fn a_dirty_draft_gets_a_banner_instead_of_a_reload() {
+    let (mut h, tx) = notes_app("## Goal\n- ship\n", 8192);
+    h.state_mut().state.notes_open = true;
+    h.run_steps(2);
+    // Clean: a newer text replaces it silently.
+    let key = ("/r/repo".to_string(), "a1".to_string());
+    h.state_mut().state.notes.get_mut(&key).unwrap().loaded(notes_json(2, "## Goal\n- ship it\n", Some("agent"), 8192));
+    h.run_steps(2);
+    assert_eq!(notes_doc(&h).draft, "## Goal\n- ship it\n");
+    assert_eq!(h.query_all_by_label("Reload (lose mine)").count(), 0);
+    // Dirty: the event marks a newer rev; its text (fetched) waits behind a banner.
+    h.state_mut().state.notes.get_mut(&key).unwrap().draft.push_str("- mine\n");
+    tx.send(event(
+        "notes.updated",
+        json!({"worktree_path": "/r/repo", "agent_id": "a1", "notes_id": "n1", "rev": 3, "size": 10, "by": "orchestrator"}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    assert_eq!(notes_doc(&h).latest, 3);
+    {
+        let d = h.state_mut().state.notes.get_mut(&key).unwrap();
+        // The fetch failed (no engine here); answer it as the engine would.
+        d.error = None;
+        d.loaded(notes_json(3, "## Goal\n- theirs\n", Some("orchestrator"), 8192));
+    }
+    h.run_steps(2);
+    assert_eq!(notes_doc(&h).draft, "## Goal\n- ship it\n- mine\n", "the user's draft is kept");
+    assert!(h.query_all_by_label("Changed by orchestrator while you edit (rev 3)").count() >= 1);
+    h.get_by_label("Keep editing (save will conflict)").click();
+    h.run_steps(2);
+    assert_eq!(h.query_all_by_label("Reload (lose mine)").count(), 0);
+    assert_eq!(notes_doc(&h).base_rev, 2, "a save will still send if_rev 2");
+    // Reload takes theirs.
+    h.state_mut().state.notes.get_mut(&key).unwrap().incoming.as_mut().unwrap().dismissed = false;
+    h.run_steps(2);
+    h.get_by_label("Reload (lose mine)").click();
+    h.run_steps(2);
+    assert_eq!((notes_doc(&h).draft.as_str(), notes_doc(&h).base_rev), ("## Goal\n- theirs\n", 3));
+}
+
+#[test]
+fn a_conflict_keeps_the_draft_and_shows_both() {
+    let (mut h, _tx) = notes_app("## Goal\n", 8192);
+    h.state_mut().state.notes_open = true;
+    h.run_steps(2);
+    let key = ("/r/repo".to_string(), "a1".to_string());
+    {
+        let d = h.state_mut().state.notes.get_mut(&key).unwrap();
+        d.draft = "## Goal\n- MY DRAFT\n".into();
+        d.save_failed(&lazyagent_proto::ClientError::Rpc(lazyagent_proto::RpcError {
+            code: "CONFLICT".into(),
+            message: "notes changed (rev 5): read them again".into(),
+            data: Some(json!({"rev": 5, "text": "## Goal\n- THEIR TEXT\n"})),
+        }));
+    }
+    h.run_steps(3);
+    assert!(h.query_all_by_label("Not saved: the notes changed (rev 5). Yours are kept above theirs.").count() >= 1);
+    assert!(h.query_all_by_label("Theirs (rev 5)").count() >= 1);
+    assert!(h.query_all_by_label("## Goal\n- THEIR TEXT\n").count() >= 1, "their text is shown");
+    assert_eq!(notes_doc(&h).draft, "## Goal\n- MY DRAFT\n");
+    // Overwrite re-puts with their rev (no engine: it fails and says so, the draft stays).
+    h.get_by_label("Overwrite with mine").click();
+    h.run_steps(3);
+    let d = notes_doc(&h);
+    assert_eq!(d.draft, "## Goal\n- MY DRAFT\n");
+    assert!(d.error.as_deref().is_some_and(|e| e.contains("not connected")), "{:?}", d.error);
+    h.state_mut().state.notes.get_mut(&key).unwrap().error = None;
+    h.run_steps(2);
+    h.get_by_label("Take theirs").click();
+    h.run_steps(2);
+    let d = notes_doc(&h);
+    assert_eq!((d.draft.as_str(), d.base_rev, d.conflict.is_none()), ("## Goal\n- THEIR TEXT\n", 5, true));
+}
+
+#[test]
+fn the_size_meter_turns_amber_then_red() {
+    use crate::notes_view::{Meter, meter, meter_color};
+    let (mut h, _tx) = notes_app(&"x".repeat(79), 100);
+    h.state_mut().state.notes_open = true;
+    h.run_steps(2);
+    let t = h.state().state.theme;
+    let key = ("/r/repo".to_string(), "a1".to_string());
+    let level = |h: &mut Harness<'static, App>, n: usize| {
+        h.state_mut().state.notes.get_mut(&key).unwrap().draft = "x".repeat(n);
+        h.run_steps(2);
+        let label = format!("{n} / 100 bytes");
+        assert!(h.query_all_by_label(&label).count() >= 1, "{label}");
+        meter(n, 100)
+    };
+    assert_eq!(level(&mut h, 79), Meter::Ok);
+    assert_eq!(level(&mut h, 80), Meter::Warn);
+    assert_eq!(level(&mut h, 100), Meter::Full);
+    assert_eq!(h.query_all_by_label("over the cap: condense them").count(), 0, "at the cap it still saves");
+    assert_eq!(level(&mut h, 101), Meter::Full);
+    assert!(h.query_all_by_label("over the cap: condense them").count() >= 1);
+    // Over the cap Save is off: a click sends nothing (here it would fail: no engine).
+    h.get_by_label("Save").click();
+    h.run_steps(2);
+    assert!(notes_doc(&h).error.is_none() && !notes_doc(&h).saving);
+    assert_eq!(meter_color(&t, Meter::Warn), t.yellow);
+    assert_eq!(meter_color(&t, Meter::Full), t.red);
+}
+
+/// The notes file the engine of `world` keeps for `notes_id`.
+fn notes_file(world: &lazyagent_testkit::World, notes_id: &str) -> std::path::PathBuf {
+    let root = world.tmp.path().join("state/lazyagent/notes");
+    let mut dirs = vec![root];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == format!("{notes_id}.md")) {
+                return p;
+            }
+        }
+    }
+    panic!("no {notes_id}.md under the world's state dir");
+}
+
+#[test]
+fn notes_edited_in_the_panel_reach_the_file_and_the_agents_next_turn() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    let key = (world.repo.clone(), h.state().state.store.agents(&world.repo)[0].agent_id.clone());
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    step_until(&mut h, "the notes loaded", |a| a.state.notes.get(&key).is_some_and(|d| d.meta.is_some()));
+    assert_eq!(h.state().state.notes[&key].base_rev, 0);
+    h.run_steps(3);
+    assert!(h.ctx.text_edit_focused());
+    h.event(egui::Event::Text("from the panel".into()));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    step_until(&mut h, "saved", |a| a.state.notes[&key].base_rev == 1 && !a.state.notes[&key].dirty());
+    let d = &h.state().state.notes[&key];
+    assert_eq!(d.meta.as_ref().unwrap().by.as_deref(), Some("user"));
+    let notes_id = d.meta.as_ref().unwrap().notes_id.clone();
+    let draft = d.draft.clone();
+    assert!(draft.contains("from the panel"));
+    let path = notes_file(&world, &notes_id);
+    let on_disk = || std::fs::read_to_string(&path).unwrap_or_default();
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while on_disk() != draft && Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(on_disk(), draft, "the engine wrote the panel's text");
+    // The agent's next turn: N3's hook (as Claude runs it) prints the notice.
+    let hook = lazyagent_testkit::source_root().join("src/lazyagent/notes_hook.py");
+    let mut child = std::process::Command::new(&world.python)
+        .arg(&hook)
+        .env("LAZYAGENT_NOTES_PATH", &path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"hook_event_name": "UserPromptSubmit", "prompt": "go on", "session_id": "c1"}"#)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let out = String::from_utf8_lossy(&out.stdout);
+    assert!(out.contains("Your session notes were updated by user"), "{out}");
+    assert!(out.contains("from the panel"), "{out}");
+    // An edit by someone else meanwhile: the panel's next save conflicts, nothing is overwritten.
+    let (probe, _, _rx) = world.connect();
+    let mut put = json!({"worktree_path": key.0, "agent_id": key.1, "text": "## Goal\n- by the orchestrator\n"});
+    put["if_rev"] = json!(1);
+    probe.request("notes_put", put, lazyagent_testkit::TIMEOUT).unwrap();
+    h.state_mut().state.notes.get_mut(&key).unwrap().draft.push_str("\nmore of mine");
+    step_until(&mut h, "the banner", |a| a.state.notes[&key].incoming.is_some());
+    h.state_mut().state.save_notes(&key, None);
+    step_until(&mut h, "the conflict", |a| a.state.notes[&key].conflict.is_some());
+    let d = &h.state().state.notes[&key];
+    assert!(d.draft.ends_with("more of mine"));
+    assert_eq!(d.conflict.as_ref().unwrap().text, "## Goal\n- by the orchestrator\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "## Goal\n- by the orchestrator\n");
+    conn.shutdown();
+}

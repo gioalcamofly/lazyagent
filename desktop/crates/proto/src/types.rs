@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::envelope::Event;
+use crate::client::ClientError;
+use crate::envelope::{Event, codes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Size {
@@ -290,6 +291,100 @@ pub struct DismissResult {
     pub dismissed: Vec<String>,
 }
 
+/// `notes_get`: one agent's session notes (proposal 0011).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notes {
+    pub worktree_path: String,
+    pub agent_id: String,
+    pub notes_id: String,
+    pub rev: u64,
+    /// UTF-8 bytes of `text`.
+    pub size: u64,
+    pub max_bytes: u64,
+    /// `user`, `agent`, `orchestrator`; `None` for the untouched template.
+    pub by: Option<String>,
+    pub updated_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// Markdown; sections are `## <name>` headings.
+    pub text: String,
+    /// `live`, `restorable`, `orphan`.
+    pub state: String,
+    pub kind: String,
+    /// `manual`, `propose`, `free`.
+    pub mode: String,
+    pub conversation_id: Option<String>,
+    /// The pinned first instruction.
+    pub instruction: Option<String>,
+    pub created_at: f64,
+    pub ended_at: Option<f64>,
+    /// Only the template.
+    pub empty: bool,
+}
+
+/// What a notes write answers (`notes_put`, `notes_append`,
+/// `notes_replace_section`, `notes_adopt`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesWritten {
+    pub worktree_path: String,
+    pub agent_id: String,
+    pub notes_id: String,
+    pub rev: u64,
+    pub size: u64,
+    pub max_bytes: u64,
+    pub by: Option<String>,
+    pub updated_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesListItem {
+    pub notes_id: String,
+    pub state: String,
+    pub worktree_path: String,
+    pub agent_id: String,
+    pub kind: String,
+    pub size: u64,
+    pub empty: bool,
+    pub by: Option<String>,
+    pub updated_at: f64,
+    pub ended_at: Option<f64>,
+    /// When an orphan is deleted.
+    pub expires_at: Option<f64>,
+}
+
+/// `notes_list`, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesList {
+    pub notes: Vec<NotesListItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesDeleted {
+    pub deleted: String,
+}
+
+/// The `data` of a `CONFLICT` error: the notes as they are now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesConflict {
+    pub rev: u64,
+    pub text: String,
+}
+
+impl NotesConflict {
+    /// The current notes a stale `if_rev` was refused with; `None` for any
+    /// other error (or a `CONFLICT` without its data).
+    pub fn of(error: &ClientError) -> Option<NotesConflict> {
+        match error {
+            ClientError::Rpc(e) if e.code == codes::CONFLICT => {
+                e.data.as_ref().and_then(|d| NotesConflict::deserialize(d).ok())
+            }
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------- events
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -390,6 +485,26 @@ pub struct EngineShutdown {
     pub reason: String,
 }
 
+/// `notes.updated`: fetch the text with `notes_get` when it is shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesUpdated {
+    pub worktree_path: String,
+    pub agent_id: String,
+    pub notes_id: String,
+    pub rev: u64,
+    pub size: u64,
+    pub by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotesRemoved {
+    pub notes_id: String,
+    pub worktree_path: String,
+    pub agent_id: String,
+    /// `deleted`, `orphaned`, `adopted`, `pruned`.
+    pub reason: String,
+}
+
 /// The events the desktop app acts on; everything else is `Other` and
 /// ignored by design (§4c: unknown events are tolerated).
 #[derive(Debug, Clone, PartialEq)]
@@ -413,6 +528,8 @@ pub enum EngineEvent {
     /// The restorable list as it is now (an entry became live, was
     /// dismissed, or was shown again), without a restore.
     RestorableChanged(RestorableList),
+    NotesUpdated(NotesUpdated),
+    NotesRemoved(NotesRemoved),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -437,6 +554,8 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "engine.shutdown",
     "engine.restored",
     "restorable.changed",
+    "notes.updated",
+    "notes.removed",
 ];
 
 impl EngineEvent {
@@ -462,6 +581,8 @@ impl EngineEvent {
             "engine.shutdown" => de(&event).map(EngineEvent::EngineShutdown),
             "engine.restored" => de(&event).map(EngineEvent::EngineRestored),
             "restorable.changed" => de(&event).map(EngineEvent::RestorableChanged),
+            "notes.updated" => de(&event).map(EngineEvent::NotesUpdated),
+            "notes.removed" => de(&event).map(EngineEvent::NotesRemoved),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))
@@ -491,6 +612,16 @@ mod tests {
         };
         let EngineEvent::AgentUpdated(u) = EngineEvent::parse(e) else { panic!() };
         assert_eq!((u.status.as_str(), u.confidence.as_str()), ("brand_new", "cosmic"));
+    }
+
+    #[test]
+    fn a_conflict_carries_the_current_notes() {
+        let err = |code: &str, data| ClientError::Rpc(crate::RpcError { code: code.into(), message: "m".into(), data });
+        let c = NotesConflict::of(&err(codes::CONFLICT, Some(json!({"rev": 3, "text": "theirs"})))).unwrap();
+        assert_eq!((c.rev, c.text.as_str()), (3, "theirs"));
+        assert_eq!(NotesConflict::of(&err(codes::CONFLICT, None)), None);
+        assert_eq!(NotesConflict::of(&err(codes::VALIDATION_ERROR, Some(json!({"rev": 3, "text": ""})))), None);
+        assert_eq!(NotesConflict::of(&ClientError::Timeout), None);
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod diff_view;
 mod fonts;
 mod gpu;
 mod install;
+mod notes_view;
 mod notify;
 mod pacer;
 mod panes;

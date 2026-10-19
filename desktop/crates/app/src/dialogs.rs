@@ -115,6 +115,8 @@ pub const KEYMAP: &[(&str, &str, &str)] = &[
     ("D", "Remove the worktree", "Outside a terminal"),
     ("R", "Refresh the worktree list", "Outside a terminal"),
     ("Shift+R", "Restore the agents an earlier session ran", "Outside a terminal"),
+    ("N", "The active agent's session notes", "Outside a terminal"),
+    ("Ctrl+S", "Save the notes", "Notes panel"),
     ("?", "This help", "Outside a terminal"),
     ("Ctrl+C", "Copy the selection; without one, ^C to the program", "In a terminal"),
     ("Ctrl+Shift+C  Ctrl+Shift+V", "Copy, paste (also Shift+Insert, middle click)", "In a terminal"),

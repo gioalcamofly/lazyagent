@@ -109,6 +109,42 @@ fn spawn_attach_type_resize_and_stop() {
 }
 
 #[test]
+fn session_notes_get_put_event_and_conflict() {
+    let Some(mut world) = World::new() else { return };
+    world.start_engine();
+    let (client, hello, rx) = world.connect();
+    for cap in ["notes_get", "notes_put"] {
+        assert!(hello.capabilities.iter().any(|c| c == cap), "{cap} missing from {:?}", hello.capabilities);
+    }
+    let spawned = spawn(&world, &client, &rx);
+    let target = json!({"worktree_path": world.repo, "agent_id": spawned.agent_id});
+    let notes: Notes = client.call("notes_get", target.clone(), TIMEOUT).unwrap();
+    assert!(notes.empty);
+    assert_eq!((notes.rev, notes.by.as_deref(), notes.state.as_str()), (0, None, "live"));
+    assert!(notes.text.starts_with("## Goal\n"), "{:?}", notes.text);
+    assert_eq!(notes.size, notes.text.len() as u64);
+
+    let mut put = target.clone();
+    put["text"] = json!("## Goal\n- ship N4\n");
+    put["if_rev"] = json!(0);
+    let written: NotesWritten = client.call("notes_put", put.clone(), TIMEOUT).unwrap();
+    assert_eq!((written.rev, written.by.as_deref()), (1, Some("user")));
+    let ev = next_event(&rx, event_named("notes.updated"));
+    let EngineEvent::NotesUpdated(u) = ev else { panic!("{ev:?}") };
+    assert_eq!((u.rev, u.by.as_str(), u.notes_id.as_str()), (1, "user", notes.notes_id.as_str()));
+    assert_eq!(u.agent_id, spawned.agent_id);
+
+    // The same if_rev again: refused, with what is there now.
+    put["text"] = json!("## Goal\n- mine\n");
+    let err = client.request("notes_put", put, TIMEOUT).unwrap_err();
+    assert_eq!(err.code(), Some(codes::CONFLICT));
+    let current = NotesConflict::of(&err).expect("CONFLICT carries {rev, text}");
+    assert_eq!((current.rev, current.text.as_str()), (1, "## Goal\n- ship N4\n"));
+    let after: Notes = client.call("notes_get", target, TIMEOUT).unwrap();
+    assert_eq!(after.text, "## Goal\n- ship N4\n", "a conflict never overwrites");
+}
+
+#[test]
 fn reattach_resumes_with_a_tail() {
     let Some(mut world) = World::new() else { return };
     world.start_engine();
