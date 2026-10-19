@@ -479,7 +479,9 @@ async def list_restorable() -> dict:
 
     Read this after a restart before spawning agents again: restoring one
     resumes its own conversation, with the same worktree, agent id and
-    session name, where a new spawn would start from scratch.
+    session name, where a new spawn would start from scratch. Agents that
+    already run in this engine (the orchestrator started again with
+    --continue, an agent resuming the same conversation) are not listed.
 
     Returns:
         Object with ``agents``: each has ``id`` (what restore_agents takes),
@@ -506,7 +508,8 @@ async def restore_agents(ids: list[str] | None = None) -> dict:
         Object with ``restored`` (id, worktree_path, agent_id, session_id,
         label, session_name, kind, and ``resumed``: "conversation" for the
         exact one, "last" for the provider's last in that worktree) and
-        ``failed`` (id, reason; a failed agent stays restorable). The same
+        ``failed`` (id, reason; a failed agent stays restorable, except one
+        refused because its conversation already runs here). The same
         object shows up in list_events as a ``restores`` entry.
     """
     params: dict[str, Any] = {}

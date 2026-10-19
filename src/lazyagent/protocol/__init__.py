@@ -95,6 +95,7 @@ EVENTS: tuple[str, ...] = (
     "job.finished",
     "engine.shutdown",
     "engine.restored",
+    "restorable.changed",
     "ui.command",
     "ui.view_changed",
 )

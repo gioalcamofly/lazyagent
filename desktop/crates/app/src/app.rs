@@ -692,6 +692,9 @@ impl State {
                 }
                 self.fetch_restorable();
             }
+            // An offered agent started again here (or was dismissed): the
+            // banner follows without a fetch.
+            EngineEvent::RestorableChanged(list) => self.restorable = list.agents,
             _ => {}
         }
     }
@@ -1343,8 +1346,13 @@ impl App {
                         .iter()
                         .take(4)
                         .map(|a| {
-                            let label =
-                                if a.label.is_empty() { format!("Agent {}", a.agent_id) } else { a.label.clone() };
+                            let label = if !a.label.is_empty() {
+                                a.label.clone()
+                            } else if a.kind == "orchestrator" {
+                                "Orchestrator".to_string()
+                            } else {
+                                format!("Agent {}", a.agent_id)
+                            };
                             format!("{label} ({})", self.state.place_name(&a.worktree_path))
                         })
                         .collect();

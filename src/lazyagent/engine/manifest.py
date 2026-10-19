@@ -235,10 +235,11 @@ class Manifest:
     def get(self, worktree_path: str, agent_id: str) -> Entry | None:
         return self.agents.get((worktree_path, agent_id))
 
-    def update(self, worktree_path: str, agent_id: str, **changes: Any) -> None:
+    def update(self, worktree_path: str, agent_id: str, **changes: Any) -> bool:
+        """Change a live entry; whether anything changed."""
         entry = self.agents.get((worktree_path, agent_id))
         if entry is None:
-            return
+            return False
         changed = False
         for name, value in changes.items():
             if getattr(entry, name) != value:
@@ -246,6 +247,7 @@ class Manifest:
                 changed = True
         if changed:
             self.mark_dirty()
+        return changed
 
     def take(self, ids: Iterable[str]) -> list[Entry]:
         """Remove restorable entries (to restore or dismiss them)."""

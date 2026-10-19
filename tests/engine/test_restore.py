@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from lazyagent.agent_providers import AgentProvider
+from lazyagent.agent_providers import AgentProvider, ResumeMode
 from lazyagent.config import Config, EngineConfig
 from lazyagent.engine import manifest as mf
 from lazyagent.engine.engine import ORCHESTRATOR_KEY, Engine
@@ -191,17 +191,213 @@ async def test_entries_of_a_removed_worktree_are_pruned(world):
 
 async def test_a_failed_restore_stays_restorable(world):
     first = world.engine()
+    await first.spawn_agent(str(world.feat))
+    await first.stop()
+    second = world.engine()
+    [entry] = second.list_restorable()
+
+    def broken(name):
+        raise KeyError(name)
+
+    second._provider = broken
+    result = await second.restore_agents([entry.id, "nope"])
+    assert result["restored"] == []
+    reasons = {f["id"]: f["reason"] for f in result["failed"]}
+    assert "not restorable" in reasons["nope"]
+    assert entry.id in reasons
+    assert [e.id for e in second.list_restorable()] == [entry.id]
+
+
+# --- Entries whose agent already runs here (not restored, but started again:
+# --- the UIs launch the orchestrator with --continue) ------------------------
+
+
+def _conversation(engine: Engine, key: str, agent_id: str, conversation: str):
+    """What Claude's hooks report, noted on the next poll."""
+    engine.get_session(key, agent_id)._observer.conversation_id = conversation
+    engine.poll_agents()
+
+
+def _changes(events: list[EngineEvent]) -> list[list[str]]:
+    return [
+        [a["id"] for a in e.data["agents"]]
+        for e in events
+        if e.event == "restorable.changed"
+    ]
+
+
+async def test_an_orchestrator_started_again_consumes_its_entry(world):
+    """The bug: a new engine starts the orchestrator with --continue (the
+    same conversation), and the old entry was still offered; restoring it
+    would put a second Claude on one transcript."""
+    first = world.engine()
+    await first.spawn_agent("", kind="orchestrator")
+    _conversation(first, ORCHESTRATOR_KEY, "", "186b11b6")
+    await first.stop()
+
+    second = world.engine()
+    events = _events(second)
+    [entry] = second.list_restorable()
+    assert entry.kind == "orchestrator" and entry.conversation_id == "186b11b6"
+    await second.spawn_agent(
+        "", kind="orchestrator", resume_mode=ResumeMode.RESUME_LAST
+    )
+    assert second.list_restorable() == []
+    assert _changes(events) == [[]]  # the UIs drop their banner
+    # Consumed, not just hidden: gone from the file, and not offered when
+    # this orchestrator stops.
+    second.stop_agent(ORCHESTRATOR_KEY, "")
+    assert second.list_restorable() == []
+    await second.manifest.flush()
+    assert mf.read(world.manifest) == ([], [])
+
+    result = await second.restore_agents([entry.id])
+    assert result["restored"] == []
+    [failure] = result["failed"]
+    assert failure["reason"] == "already running in this engine (the orchestrator)"
+
+
+async def test_a_restore_of_a_live_orchestrator_is_refused(world):
+    first = world.engine()
     await first.spawn_agent("", kind="orchestrator")
     await first.stop()
     second = world.engine()
     [entry] = second.list_restorable()
-    await second.spawn_agent("", kind="orchestrator")  # one runs already
-    result = await second.restore_agents([entry.id, "nope"])
+    live = await second.spawn_agent("", kind="orchestrator")
+    result = await second.restore_agents([entry.id])
     assert result["restored"] == []
-    reasons = {f["id"]: f["reason"] for f in result["failed"]}
-    assert "already running" in reasons[entry.id]
-    assert "not restorable" in reasons["nope"]
+    [failure] = result["failed"]
+    assert "already running in this engine" in failure["reason"]
+    # Not spawned: the same orchestrator still runs.
+    assert second.get_agent(ORCHESTRATOR_KEY, "").session_id == live.session_id
+    assert second.list_restorable() == []
+
+
+async def test_an_agent_resuming_the_conversation_consumes_its_entry(world):
+    """--resume <id> of the entry's conversation (another agent id, even)."""
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    _conversation(first, feat, agent.agent_id, "conv-a1")
+    await first.stop()
+
+    second = world.engine()
+    events = _events(second)
+    [entry] = second.list_restorable()
+    await second.spawn_agent(
+        feat, resume_mode=ResumeMode.RESUME_LAST, resume_conversation="conv-a1"
+    )
+    assert second.list_restorable() == []
+    assert _changes(events) == [[]]
+    result = await second.restore_agents([entry.id])
+    assert result["restored"] == []
+    assert "already running in this engine (agent" in result["failed"][0]["reason"]
+
+
+async def test_an_agent_continuing_in_its_slot_hides_then_consumes(world):
+    """--continue in the same worktree: the conversation id comes later,
+    from the hooks. Until then the entry is hidden and a restore refused;
+    once it is known to be the same, the entry is consumed."""
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    _conversation(first, feat, agent.agent_id, "conv-a1")
+    await first.stop()
+
+    second = world.engine()
+    events = _events(second)
+    [entry] = second.list_restorable()
+    live = await second.spawn_agent(
+        feat, resume_mode=ResumeMode.RESUME_LAST, agent_id=agent.agent_id
+    )
+    assert live.agent_id == agent.agent_id
+    assert second.list_restorable() == []
+    result = await second.restore_agents([entry.id])
+    assert result["restored"] == []
+    assert "may be running in this engine" in result["failed"][0]["reason"]
+    assert entry.id in second.manifest.restorable  # kept, for now
+
+    _conversation(second, feat, live.agent_id, "conv-a1")
+    assert entry.id not in second.manifest.restorable
+    assert second.list_restorable() == []
+    assert _changes(events) == [[]]
+
+
+async def test_an_agent_continuing_another_conversation_shows_it_again(world):
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    _conversation(first, feat, agent.agent_id, "conv-a1")
+    await first.stop()
+
+    second = world.engine()
+    events = _events(second)
+    [entry] = second.list_restorable()
+    live = await second.spawn_agent(feat, resume_mode=ResumeMode.RESUME_LAST)
+    assert second.list_restorable() == []
+    _conversation(second, feat, live.agent_id, "conv-other")
     assert [e.id for e in second.list_restorable()] == [entry.id]
+    assert _changes(events) == [[], [entry.id]]
+
+
+async def test_an_entry_with_no_conversation_id_and_a_continue_is_consumed(world):
+    """Another provider (no hooks): both resume the worktree's last
+    conversation, so they are the same one."""
+    first = world.engine()
+    feat = str(world.feat)
+    await first.spawn_agent(feat)
+    await first.stop()
+    second = world.engine()
+    [entry] = second.list_restorable()
+    assert entry.conversation_id is None
+    await second.spawn_agent(feat, resume_mode=ResumeMode.RESUME_LAST)
+    assert second.list_restorable() == []
+    assert entry.id not in second.manifest.restorable
+
+
+async def test_agents_that_are_not_live_are_still_offered(world):
+    """No over-filtering: a fresh agent in the same slot, a --continue in
+    another worktree, an agent on another conversation and a live
+    orchestrator leave the agent entries offered."""
+    first = world.engine()
+    feat, repo = str(world.feat), str(world.repo)
+    one = await first.spawn_agent(feat)
+    _conversation(first, feat, one.agent_id, "conv-one")
+    await first.spawn_agent(feat)  # no conversation id known
+    await first.stop()
+
+    second = world.engine()
+    events = _events(second)
+    offered = sorted(e.id for e in second.list_restorable())
+    assert len(offered) == 2
+    await second.spawn_agent(feat, agent_id=one.agent_id)  # fresh: a new one
+    other = await second.spawn_agent(feat)
+    _conversation(second, feat, other.agent_id, "conv-two")
+    await second.spawn_agent(repo, resume_mode=ResumeMode.RESUME_LAST)
+    await second.spawn_agent("", kind="orchestrator", resume_mode=ResumeMode.RESUME_LAST)
+    assert sorted(e.id for e in second.list_restorable()) == offered
+    assert _changes(events) == []
+    result = await second.restore_agents()
+    assert result["failed"] == [] and len(result["restored"]) == 2
+
+
+async def test_one_restore_never_brings_a_conversation_back_twice(world):
+    """Two entries of one conversation (another slot each): the first is
+    restored, the second refused."""
+    first = world.engine()
+    feat = str(world.feat)
+    a = await first.spawn_agent(feat)
+    b = await first.spawn_agent(feat)
+    _conversation(first, feat, a.agent_id, "conv-same")
+    _conversation(first, feat, b.agent_id, "conv-same")
+    await first.stop()
+    second = world.engine()
+    assert len(second.list_restorable()) == 2
+    result = await second.restore_agents()
+    assert len(result["restored"]) == 1
+    [failure] = result["failed"]
+    assert "already running in this engine" in failure["reason"]
+    assert second.list_restorable() == []
 
 
 async def test_dismiss(world):

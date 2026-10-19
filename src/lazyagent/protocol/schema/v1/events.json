@@ -161,6 +161,10 @@
         "exit_code": {"type": ["integer", "null"], "description": "null when the job was killed by a signal."}
       }
     },
+    "restorable.changed": {
+      "$ref": "methods.json#/$defs/list_restorable.result",
+      "description": "The restorable list changed without a restore: an entry became live in this engine (spawned into its slot or resuming its conversation) and was consumed, was hidden or shown again, or was dismissed. agents: what list_restorable answers now."
+    },
     "engine.restored": {
       "type": "object",
       "description": "What a restore_agents brought back and what failed (a failed agent stays restorable).",

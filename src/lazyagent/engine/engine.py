@@ -48,6 +48,7 @@ from lazyagent.engine.events import (
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
+    RESTORABLE_CHANGED,
     UI_COMMAND,
     UI_VIEW_CHANGED,
     EngineEvent,
@@ -203,6 +204,18 @@ class Engine:
             persist_ids if persist_manifest is None else persist_manifest
         )
         self.manifest: Manifest | None = None
+        # The live agents spawned resuming their worktree's last conversation
+        # (--continue): until their provider reports which one, they may be
+        # running a restorable entry (see _live_match).
+        self._resumed_last: set[tuple[str, str]] = set()
+        # Restorable ids consumed because their agent is live here, and
+        # where it runs: why restore_agents refuses them.
+        self._consumed: dict[str, str] = {}
+        # The restorable ids clients were last told about (at load, by
+        # list_restorable; then by restorable.changed).
+        self._offered: list[str] = []
+        # While restore_agents runs: its engine.restored is the change notice.
+        self._restoring = False
         # Random per engine process: the v1 engine_id, and the manifest's.
         self.instance_id = uuid.uuid4().hex
         self.worktree_service = WorktreeService(
@@ -869,7 +882,14 @@ class Engine:
                 provider_name=provider_name,
                 resume_conversation=resume_conversation,
             )
-            self._remember(info, provider_name, skip_permissions, instruction)
+            self._remember(
+                info,
+                provider_name,
+                skip_permissions,
+                instruction,
+                resume_mode=resume_mode,
+                resume_conversation=resume_conversation,
+            )
             return info
         if kind != AGENT_KIND:
             raise ValueError(f"Unknown agent kind: {kind!r}")
@@ -904,7 +924,14 @@ class Engine:
             spawn_id=spawn_id,
         )
         info = self._start_agent(session, label, session_name, AGENT_KIND)
-        self._remember(info, provider_name, skip_permissions, instruction)
+        self._remember(
+            info,
+            provider_name,
+            skip_permissions,
+            instruction,
+            resume_mode=resume_mode,
+            resume_conversation=resume_conversation,
+        )
         return info
 
     def _spawn_orchestrator(
@@ -1066,8 +1093,12 @@ class Engine:
         if agent is None:
             return
         agent.remove_listener()
+        self._resumed_last.discard((key, agent_id))
         if self.manifest is not None:
             self.manifest.remove(key, agent_id)
+            # An entry hidden while this agent might have been running it is
+            # offered again.
+            self._reconcile_restorable()
         self.registry.drop(key, agent_id)
         self.registry.unregister(key, agent_id)
         self.events.emit(
@@ -1226,6 +1257,7 @@ class Engine:
                 engine_id=self.instance_id,
             )
             self.manifest.load(self._restorable_exists)
+            self._offered = [e.id for e in self._offerable()]
             count = len(self.manifest.restorable)
             if count:
                 log.info("%d agent(s) of an earlier engine can be restored", count)
@@ -1242,9 +1274,15 @@ class Engine:
         provider_name: str,
         skip_permissions: bool,
         instruction: str | None,
+        *,
+        resume_mode: ResumeMode = ResumeMode.NEW,
+        resume_conversation: str | None = None,
     ) -> None:
         if self.manifest is None:
             return
+        slot = (info.worktree_path, info.agent_id)
+        if resume_mode == ResumeMode.RESUME_LAST and not resume_conversation:
+            self._resumed_last.add(slot)
         self.manifest.add(
             Entry(
                 id=Entry.new_id(),
@@ -1255,17 +1293,109 @@ class Engine:
                 label=info.label,
                 session_name=info.session_name,
                 skip_permissions=skip_permissions,
+                conversation_id=resume_conversation,
                 instruction=clip_instruction(instruction),
             )
         )
+        self._reconcile_restorable()
 
     def _note_conversation(self, key: str, agent_id: str) -> None:
         if self.manifest is None:
             return
         session = self.get_session(key, agent_id)
         conversation = session.conversation_id if session is not None else None
-        if conversation:
-            self.manifest.update(key, agent_id, conversation_id=conversation)
+        if conversation and self.manifest.update(
+            key, agent_id, conversation_id=conversation
+        ):
+            # Now known: an entry hidden until then is consumed or shown.
+            self._reconcile_restorable()
+
+    def _live_match(self, entry: Entry) -> tuple[bool, Entry] | None:
+        """The live agent that is (or may be) running ``entry``'s
+        conversation: ``(True, live)`` when it is, so restoring it would
+        start a second process on one conversation; ``(False, live)`` when
+        it may be, until ``live``'s provider reports its conversation id;
+        None when ``entry`` is not live here.
+
+        - The orchestrator has one slot: any live orchestrator is it (the
+          UIs start it with ``--continue`` in the repo root).
+        - Known conversation ids are compared.
+        - An agent spawned with ``--continue`` (``resume_mode=last``) in
+          the entry's worktree resumes that directory's last conversation:
+          the one a restore of an entry with no known id would resume too.
+          An entry with a known id waits for the agent's.
+        """
+        assert self.manifest is not None
+        maybe: Entry | None = None
+        for slot, live in self.manifest.agents.items():
+            if entry.kind == ORCHESTRATOR_KIND:
+                if live.kind == ORCHESTRATOR_KIND:
+                    return True, live
+                continue
+            if live.kind == ORCHESTRATOR_KIND:
+                continue
+            if entry.conversation_id and live.conversation_id:
+                if entry.conversation_id == live.conversation_id:
+                    return True, live
+                continue
+            if (
+                live.worktree_path == entry.worktree_path
+                and slot in self._resumed_last
+                and not live.conversation_id
+            ):
+                if not entry.conversation_id:
+                    return True, live
+                maybe = maybe or live
+        return (False, maybe) if maybe is not None else None
+
+    @staticmethod
+    def _live_where(live: Entry) -> str:
+        if live.kind == ORCHESTRATOR_KIND:
+            return "the orchestrator"
+        return f"agent {live.agent_id} in {live.worktree_path}"
+
+    def _offerable(self) -> list[Entry]:
+        """Restorable entries not hidden by a live agent, oldest first."""
+        assert self.manifest is not None
+        return sorted(
+            (e for e in self.manifest.restorable.values() if not self._live_match(e)),
+            key=lambda e: e.started_at,
+        )
+
+    def _reconcile_restorable(self) -> None:
+        """Consume the restorable entries whose agent is live here (they
+        must not be offered again: it already runs), and tell clients
+        (``restorable.changed``) when what is offered changed."""
+        manifest = self.manifest
+        if manifest is None:
+            return
+        live = [
+            (entry.id, match[1])
+            for entry in manifest.restorable.values()
+            if (match := self._live_match(entry)) is not None and match[0]
+        ]
+        for entry_id, by in live:
+            self._consumed[entry_id] = self._live_where(by)
+            log.info(
+                "restorable %s is live here (%s); no longer offered",
+                entry_id,
+                self._live_where(by),
+            )
+        manifest.take(entry_id for entry_id, _ in live)
+        self._announce_restorable()
+
+    def _announce_restorable(self, *, quiet: bool = False) -> None:
+        if self.manifest is None or (self._restoring and not quiet):
+            return
+        offered = self._offerable()
+        ids = [e.id for e in offered]
+        if ids != self._offered:
+            self._offered = ids
+            if quiet:
+                return
+            self.events.emit(
+                RESTORABLE_CHANGED, {"agents": [e.to_dict() for e in offered]}
+            )
 
     def _require_manifest(self) -> Manifest:
         if self.manifest is None:
@@ -1273,16 +1403,19 @@ class Engine:
         return self.manifest
 
     def list_restorable(self) -> list[Entry]:
-        """Agents earlier engines ran when they ended, oldest first."""
-        manifest = self._require_manifest()
-        manifest.prune(self._restorable_exists)
-        return sorted(manifest.restorable.values(), key=lambda e: e.started_at)
+        """Agents earlier engines ran when they ended and that do not run
+        here now, oldest first."""
+        self._require_manifest().prune(self._restorable_exists)
+        self._reconcile_restorable()
+        return self._offerable()
 
     def dismiss_restorable(self, ids: Iterable[str] | None = None) -> list[str]:
         """Stop offering these agents (every one when ``ids`` is None)."""
         manifest = self._require_manifest()
         wanted = list(manifest.restorable) if ids is None else list(ids)
-        return [entry.id for entry in manifest.take(wanted)]
+        dismissed = [entry.id for entry in manifest.take(wanted)]
+        self._announce_restorable()
+        return dismissed
 
     async def restore_agents(
         self,
@@ -1294,17 +1427,70 @@ class Engine:
         each resuming its conversation: the one its provider reported, else
         its provider's "last" (``resume_mode=last``). Same worktree, kind,
         provider, label, permissions and, when free, agent id. Emits
-        ``engine.restored``; a failed entry stays restorable."""
+        ``engine.restored``; a failed entry stays restorable.
+
+        An entry whose conversation already runs here is refused, never
+        spawned twice: consumed when it surely runs, kept when it may (its
+        live agent has not reported its conversation yet)."""
         manifest = self._require_manifest()
+        self._restoring = True
+        try:
+            result = await self._restore_agents(manifest, ids, env)
+        finally:
+            self._restoring = False
+        # Clients fetch the list again on engine.restored.
+        self._announce_restorable(quiet=True)
+        self.events.emit(ENGINE_RESTORED, result)
+        return result
+
+    async def _restore_agents(
+        self,
+        manifest: Manifest,
+        ids: Iterable[str] | None,
+        env: Mapping[str, str] | None,
+    ) -> dict[str, list[dict[str, Any]]]:
         manifest.prune(self._restorable_exists)
-        wanted = list(manifest.restorable if ids is None else dict.fromkeys(ids))
+        self._reconcile_restorable()
+        wanted = (
+            [e.id for e in self._offerable()]
+            if ids is None
+            else list(dict.fromkeys(ids))
+        )
         restored: list[dict[str, Any]] = []
-        failed: list[dict[str, Any]] = [
-            {"id": i, "reason": "not restorable (unknown id, or its worktree is gone)"}
-            for i in wanted
-            if i not in manifest.restorable
-        ]
+        failed: list[dict[str, Any]] = []
+        for entry_id in wanted:
+            if entry_id in manifest.restorable:
+                continue
+            reason = "not restorable (unknown id, or its worktree is gone)"
+            if entry_id in self._consumed:
+                reason = f"already running in this engine ({self._consumed[entry_id]})"
+            failed.append({"id": entry_id, "reason": reason})
         for entry in manifest.take(wanted):
+            # Checked for each: an agent restored a moment ago may be this
+            # entry's conversation too.
+            match = self._live_match(entry)
+            if match is not None:
+                sure, live = match
+                where = self._live_where(live)
+                if sure:
+                    self._consumed[entry.id] = where
+                    reason = f"already running in this engine ({where})"
+                else:
+                    manifest.restorable[entry.id] = entry
+                    reason = (
+                        f"may be running in this engine ({where} resumed the "
+                        "worktree's last conversation; its id is not known yet)"
+                    )
+                manifest.mark_dirty()
+                failed.append(
+                    {
+                        "id": entry.id,
+                        "worktree_path": entry.worktree_path,
+                        "agent_id": entry.agent_id,
+                        "reason": reason,
+                    }
+                )
+                continue
             try:
                 info = await self.spawn_agent(
                     entry.worktree_path,
@@ -1342,9 +1528,7 @@ class Engine:
                     "resumed": "conversation" if entry.conversation_id else "last",
                 }
             )
-        result = {"restored": restored, "failed": failed}
-        self.events.emit(ENGINE_RESTORED, result)
-        return result
+        return {"restored": restored, "failed": failed}
 
 
 def _kill(proc: asyncio.subprocess.Process) -> None:
