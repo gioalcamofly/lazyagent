@@ -28,9 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lazyagent",
         description="TUI for managing coding agents across git worktrees",
-        epilog="Subcommands: lazyagent engine {start,stop,status,logs} [repo] "
-        "(the engine that owns the agents); lazyagent host [repo] (the TUI in "
-        "a web page, experimental); lazyagent desktop [repo] (the native desktop "
+        epilog="Subcommands: lazyagent engine {start,stop,status,logs,restore} [repo] "
+        "(the engine that owns the agents); lazyagent host [repo] (the web "
+        "UI, experimental); lazyagent desktop [repo] (the native desktop "
         "app); lazyagent mcp (the MCP server). A repo "
         "dir literally named like a subcommand must be passed as ./engine.",
     )
