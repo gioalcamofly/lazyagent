@@ -1,4 +1,4 @@
-"""``lazyagent engine {start,stop,status,logs} [repo]``: run or manage the
+"""``lazyagent engine {start,stop,status,logs,restore} [repo]``: run or manage the
 repo's engine (docs/design/engine-split.md §5d).
 
 - ``start``: start a detached engine unless one already serves the repo;
