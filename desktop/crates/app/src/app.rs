@@ -171,6 +171,13 @@ pub struct State {
     /// Give the notes editor the keyboard once drawn (`n`).
     pub notes_focus: bool,
     pub notes: HashMap<crate::notes_view::NotesKey, crate::notes_view::NotesDoc>,
+    /// Ended notes per worktree (or the orchestrator key), for the panel's
+    /// list and the spawn dialog's warning.
+    pub earlier: HashMap<String, crate::notes_view::Earlier>,
+    /// Text to put on the clipboard at the next frame (stop handoff).
+    pub clipboard: Option<String>,
+    /// What the app last put there (tests read it).
+    pub last_copied: Option<String>,
 }
 
 impl State {
@@ -244,6 +251,9 @@ impl State {
             notes_open: false,
             notes_focus: false,
             notes: HashMap::new(),
+            earlier: HashMap::new(),
+            clipboard: None,
+            last_copied: None,
         }
     }
 
@@ -289,7 +299,24 @@ impl State {
                     self.toast(Severity::Info, "No agent to stop here.");
                     return;
                 };
+                // The handoff is offered only when its notes are not empty:
+                // read them as they are now.
+                if self.notes_supported() {
+                    let key = (target.clone(), agent.clone());
+                    let doc = self.notes.entry(key.clone()).or_default();
+                    (doc.stale, doc.error) = (true, None);
+                    if !doc.loading && !doc.saving {
+                        self.fetch_notes(&key);
+                    }
+                }
                 d.agent_id = Some(agent);
+            }
+            // A new conversation would delete the worktree's ended notes.
+            Kind::Spawn if self.notes_supported() => {
+                if let Some(e) = self.earlier.get_mut(&target) {
+                    (e.stale, e.error) = (true, None);
+                }
+                self.fetch_earlier(&target);
             }
             _ => {}
         }
@@ -612,6 +639,7 @@ impl State {
         match ev {
             EngineEvent::WorktreesChanged(_) => self.after_worktrees_changed(),
             EngineEvent::AgentSpawned(s) if s.kind != "shell" => {
+                self.earlier_changed_in(&s.worktree_path);
                 let ours = self.focus_session.as_deref() == Some(s.session_id.as_str());
                 if ours || !self.tabs.contains_key(&s.worktree_path) {
                     self.tabs.insert(s.worktree_path.clone(), s.agent_id.clone());
@@ -713,7 +741,10 @@ impl State {
             }
             // An offered agent started again here (or was dismissed): the
             // banner follows without a fetch.
-            EngineEvent::RestorableChanged(list) => self.restorable = list.agents,
+            EngineEvent::RestorableChanged(list) => {
+                self.restorable = list.agents;
+                self.earlier_changed();
+            }
             EngineEvent::NotesUpdated(u) => self.on_notes_updated(&u),
             EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
             _ => {}
@@ -1647,6 +1678,10 @@ impl App {
             p.visible.store(false, Ordering::Relaxed);
         }
         self.global_keys(&ctx);
+        if let Some(text) = self.state.clipboard.take() {
+            ctx.copy_text(text.clone());
+            self.state.last_copied = Some(text);
+        }
         // A viewport command asks for a repaint: send the title only on change.
         self.state.refresh_attention(ctx.input(|i| i.viewport().focused.unwrap_or(true)));
         if let Some(wait) = self.state.saver.tick(&self.state.saved) {

@@ -165,7 +165,7 @@ All of it exists in v1 today; the desktop app needs **no engine change for the M
 | Restore | `list_restorable`, `restore_agents`, `dismiss_restorable`, `engine.restored`, `restorable.changed` |
 | Attention | `send_agent_input`, `read_agent_output`, `get_pr_info` |
 | Diff | `get_diff {worktree_path, pr: true, base?, fetch?, max_bytes}` (the PR's diff since 2026-10-19, §10) |
-| Session notes (proposal 0011, N4) | `notes_get`, `notes_put {if_rev}` (`CONFLICT` carries `{rev, text}` in `error.data`), `notes.updated`, `notes.removed`; the panel is hidden when `hello.capabilities` lacks `notes_get` |
+| Session notes (proposal 0011, N4, N5) | `notes_get`, `notes_put {if_rev}` (`CONFLICT` carries `{rev, text}` in `error.data`), `notes.updated`, `notes.removed`; the panel is hidden when `hello.capabilities` lacks `notes_get`. N5: `notes_list {worktree_path}`, `notes_get {notes_id}`, `notes_adopt`, `notes_delete` (the panel's earlier notes), `stop_agent {notes}` + `StopResult.notes` (the stop handoff) |
 
 - Unknown events and fields are ignored; unknown status values are shown raw (§4c of engine-split).
 - **Env (D5):** the app passes its own environment to `spawn_agent` / `open_shell` / `create_worktree` / `remove_worktree` / `restore_agents`, as the TUI does. A `.desktop` launch gets the session's environment, which can lack the shell profile's PATH additions: the app logs the PATH it sends, and `lazyagent desktop` from a shell is the recommended launch until D6 adds a login-shell env probe (Q4).
@@ -443,6 +443,14 @@ The active agent's notes in a right side panel: `n` outside a terminal (it opens
 - **State per agent** (`State.notes`, keyed by worktree + agent id): `base_rev` / `base_text` (what was last read), `draft`, the newest announced rev, an `incoming` text, a `conflict`. `notes.updated` only bumps the announced rev; the shown agent's notes are then fetched. A clean draft takes the new text silently; a dirty one gets "Changed by <by> — Reload (lose mine) / Keep editing (save will conflict)". Save is `notes_put {if_rev: base_rev}`; a `CONFLICT` keeps the draft and shows theirs below it with **Overwrite with mine** (re-put with their rev) and **Take theirs**.
 - **Keys:** the editor is a text field, so the single-letter keys are off while it has the keyboard (`ctx.text_edit_focused()`); `n` / `Ctrl+S` rows in the `?` sheet.
 - **B1 with the panel open:** `LAZYAGENT_BENCH_NOTES=1 lazyagent-desktop --bench echo` opens it on ~6 KiB of notes. On this (busy) machine, three runs each: key → frame built p50 / p95 6.1-9.4 / 11.6-16.9 ms closed, 7.3-8.0 / 13.9-15.2 ms open; frame build 0.8-2.4 ms either way. No difference above the run-to-run noise.
+
+### Recover and stop handoff (session-notes plan N5, 2026-10-19)
+
+Closes the session-notes MVP. Details in [session-notes-plan.md](session-notes-plan.md) §5 N5.
+
+- **Earlier notes** under the panel's editor: the worktree's orphan and restorable notes (`notes_list`), each with View, **Adopt into this agent** (`notes_adopt`, asks before replacing non-empty notes) and Delete (asks). Shown also when the worktree has no live agent. An agent that exits on its own in the visible worktree gives "Agent a2 exited; its notes are kept 7 days".
+- **Stop** (`x`): with non-empty notes, **Copy notes and stop** (`c`, the final text to the clipboard), **Stop, keep notes** (`k`, `y`, Enter: an orphan) and **Stop and delete notes** (`d`) replace the plain Stop.
+- **Spawn** (`s`): a New session in a worktree with ended notes warns that it deletes them, offers **Carry them into the new agent** and links to the panel's list.
 
 ## 11. Final state (2026-10-18)
 
