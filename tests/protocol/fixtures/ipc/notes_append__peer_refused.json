@@ -1,0 +1,18 @@
+{
+  "case": "notes_append/peer_refused",
+  "method": "notes_append",
+  "params": {
+    "agent_id": "a1",
+    "caller": "tok-a2",
+    "section": "Decisions",
+    "text": "use postgres",
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "An agent may only write its own notes: a1 in /tmp/repo-feat is another agent"
+    },
+    "id": "req-1"
+  }
+}

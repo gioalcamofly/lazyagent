@@ -59,6 +59,7 @@ STATES = (LIVE, RESTORABLE, ORPHAN)
 DELETED = "deleted"  # on purpose: stop, dismiss, a client
 ORPHANED = "orphaned"  # the agent ended without a stop: kept, but no longer live
 PRUNED = "pruned"  # by the GC rules
+ADOPTED = "adopted"  # their text moved into a live agent's notes
 
 _HEADING = re.compile(r"^##[ \t]+(.*?)\s*$")
 

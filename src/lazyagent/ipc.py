@@ -115,7 +115,7 @@ class IpcServer:
         try:
             return _ok(request_id, await handler(params))
         except Exception as e:
-            code, message = classify(e)
+            code, message, _ = classify(e)
             if code == "INTERNAL_ERROR":
                 log.exception("IPC handler error for method=%s", method)
             return _err(request_id, code, message)

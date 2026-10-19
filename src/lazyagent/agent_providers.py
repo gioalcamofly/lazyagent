@@ -32,6 +32,8 @@ DEFAULT_AGENT_PROVIDER = "claude"
 # setup for standalone sessions) takes precedence over the per-agent one and
 # may run another lazyagent install entirely.
 MCP_SERVER_NAME = "lazyagent_app"
+# The per-spawn token the engine maps to the agent (who calls it over MCP).
+AGENT_TOKEN_ENV = "LAZYAGENT_AGENT_TOKEN"
 
 # Values Claude Code accepts for its crossSessionInbound setting.
 CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
@@ -163,20 +165,27 @@ class AgentProvider:
         worktree_path: str,
         socket_path: str | None = None,
         cross_session_inbound: str | None = None,
+        agent_token: str | None = None,
     ) -> ProviderRuntimeContext:
         """Build provider-specific runtime metadata for the spawned session.
 
         ``cross_session_inbound`` only applies to Claude, the one provider
-        with cross-session messaging.
+        with cross-session messaging. ``agent_token`` goes into the MCP
+        server's env (``LAZYAGENT_AGENT_TOKEN``): how the engine tells which
+        agent calls it (the notes tools' "my notes").
         """
         if self.name == "claude":
             return _build_claude_runtime_context(
-                self, worktree_path, socket_path, cross_session_inbound
+                self, worktree_path, socket_path, cross_session_inbound, agent_token
             )
         if self.name == "codex":
-            return _build_codex_runtime_context(self, worktree_path, socket_path)
+            return _build_codex_runtime_context(
+                self, worktree_path, socket_path, agent_token
+            )
         if self.name == "gemini":
-            return _build_gemini_runtime_context(self, worktree_path, socket_path)
+            return _build_gemini_runtime_context(
+                self, worktree_path, socket_path, agent_token
+            )
         return ProviderRuntimeContext(
             provider_name=self.name,
             worktree_path=worktree_path,
@@ -304,10 +313,19 @@ def get_agent_provider(provider: str | None) -> AgentProvider:
     return PROVIDERS[normalize_provider_name(provider)]
 
 
+def _mcp_env(socket_path: str, agent_token: str | None) -> dict[str, str]:
+    """The lazyagent MCP server's environment."""
+    env = {"PYTHONUNBUFFERED": "1", "LAZYAGENT_SOCKET": socket_path}
+    if agent_token:
+        env[AGENT_TOKEN_ENV] = agent_token
+    return env
+
+
 def _build_gemini_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
     socket_path: str | None = None,
+    agent_token: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-gemini-telemetry-"))
     telemetry_log_path = temp_dir / "telemetry.jsonl"
@@ -330,10 +348,7 @@ def _build_gemini_runtime_context(
                 MCP_SERVER_NAME: {
                     "command": sys.executable,
                     "args": ["-m", "lazyagent.mcp_server"],
-                    "env": {
-                        "PYTHONUNBUFFERED": "1",
-                        "LAZYAGENT_SOCKET": socket_path,
-                    },
+                    "env": _mcp_env(socket_path, agent_token),
                 }
             }
         }
@@ -359,6 +374,7 @@ def _build_codex_runtime_context(
     provider: AgentProvider,
     worktree_path: str,
     socket_path: str | None = None,
+    agent_token: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-codex-events-"))
     app_server_log_path = temp_dir / "app-server-events.jsonl"
@@ -383,8 +399,10 @@ def _build_codex_runtime_context(
             f'command = {json.dumps(sys.executable)}\n'
             f'args = ["-m", "lazyagent.mcp_server"]\n'
             f'\n[mcp_servers.{MCP_SERVER_NAME}.env]\n'
-            'PYTHONUNBUFFERED = "1"\n'
-            f'LAZYAGENT_SOCKET = {json.dumps(socket_path)}\n'
+            + "".join(
+                f"{key} = {json.dumps(value)}\n"
+                for key, value in _mcp_env(socket_path, agent_token).items()
+            )
         )
         (codex_home / "config.toml").write_text(config_toml, encoding="utf-8")
         env_overrides["CODEX_HOME"] = str(codex_home)
@@ -407,6 +425,7 @@ def _build_claude_runtime_context(
     worktree_path: str,
     socket_path: str | None = None,
     cross_session_inbound: str | None = None,
+    agent_token: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -458,10 +477,7 @@ def _build_claude_runtime_context(
                 MCP_SERVER_NAME: {
                     "command": sys.executable,
                     "args": ["-m", "lazyagent.mcp_server"],
-                    "env": {
-                        "PYTHONUNBUFFERED": "1",
-                        "LAZYAGENT_SOCKET": socket_path,
-                    },
+                    "env": _mcp_env(socket_path, agent_token),
                 }
             }
         }

@@ -36,6 +36,8 @@ class ErrorCode:
     NOT_SIZE_OWNER = "NOT_SIZE_OWNER"
     # A ui.* command reached an engine with no hosted UI to carry it out.
     NO_HOSTED_UI = "NO_HOSTED_UI"
+    # A write whose if_rev is stale (session notes); data has {rev, text}.
+    CONFLICT = "CONFLICT"
     # Raised locally when a message or frame cannot be parsed.
     PROTOCOL_ERROR = "PROTOCOL_ERROR"
 

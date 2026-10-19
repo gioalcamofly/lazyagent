@@ -301,8 +301,8 @@ Done in PR 6: every row except `shutdown` (PR 8). The ten legacy methods are ans
 | `list_worktrees` | ipc.py:167 | unchanged |
 | `create_worktree` | ipc.py:195 | Custom create always runs as an engine job; its output is streamed via `job.output` / `job.finished` events (D6). `remove_worktree` custom commands likewise |
 | `remove_worktree` | ipc.py:302 | unchanged (keeps `git worktree remove`, Q1) |
-| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"` (`worktree_path` is then optional and ignored), `system_prompt` composed by the engine, `env` from the calling client (D5; MCP forwards the requesting agent's env); returns `session_id` + `cursor` |
-| `stop_agent` | ipc.py:403 | unchanged |
+| `spawn_agent` | ipc.py:335 | + `kind: "agent"\|"orchestrator"` (`worktree_path` is then optional and ignored), `system_prompt` composed by the engine, `env` from the calling client (D5; MCP forwards the requesting agent's env); returns `session_id` + `cursor`. Session notes N2: `notes_mode: manual\|propose\|free` (default `[notes] mode`) |
+| `stop_agent` | ipc.py:403 | Session notes N2: `notes: "delete"\|"keep"` (default delete; keep = an orphan); the result gains `notes`, the final text, when not empty |
 | `get_agent_status` | ipc.py:442 | unchanged |
 | `read_agent_output` | ipc.py:470 | Reads the engine headless screen |
 | `send_agent_input` | ipc.py:523 | unchanged semantics (framing, ack, delivery) |
@@ -328,6 +328,12 @@ Done in PR 6: every row except `shutdown` (PR 8). The ten legacy methods are ans
 | `publish_view {view}` | PR 7 | A UI announces what it shows (`ui.view_changed` unless unchanged; `{published}`): every TUI publishes its view, a remote one through this |
 | `shutdown {stop_agents?}` | PR 8 | `lazyagent engine stop`. Stops a detached engine once the reply is sent: `{stopping: true, agents}` (agents stopped with it, orchestrator included), then `engine.shutdown {reason: "shutdown"}`. `stop_agents` defaults to true; false only stops an engine that runs no agent (`VALIDATION_ERROR` otherwise), because an agent cannot outlive its engine (its PTY closes). An engine inside a TUI answers `VALIDATION_ERROR` (quit that TUI instead) |
 | `list_restorable` / `restore_agents {ids?, env?}` / `dismiss_restorable {ids?}` | PR 9 | The restart manifest (§6e): agents earlier engines ran when they ended; restore spawns them again, each resuming its conversation; `ids` default to all. `VALIDATION_ERROR` for an engine without a manifest. Since the MCP follow-up they are legacy methods too (`EngineMethods`, both sockets, golden fixtures), and the legacy `list_events` gains `restores` |
+
+| `notes_get {worktree_path?, agent_id?, notes_id?, caller?}` | N2 | Session notes (proposal 0011, [session-notes-plan.md](session-notes-plan.md)): `{worktree_path, agent_id, notes_id, text, rev, size, max_bytes, by, updated_at, warning?, state, kind, mode, conversation_id, instruction, created_at, ended_at, empty}`. The target is `worktree_path` (+ `agent_id` unless it has one agent; the orchestrator's key for the orchestrator), any notes by `notes_id`, or the calling agent's own (`caller` = its token, `LAZYAGENT_AGENT_TOKEN`) |
+| `notes_put {target, text, if_rev}` | N2 | A user's editor: replaces the whole text, `by: user`. Stale `if_rev` → `CONFLICT` with `data: {rev, text}` (the legacy socket: code + message only) |
+| `notes_append {target, section, text, if_rev?}` / `notes_replace_section {target, section, text, if_rev}` | N2 | Agents (MCP) and the orchestrator. Writer: the target's own token → `agent`; the orchestrator's token or no token → `orchestrator`; another agent's token → `VALIDATION_ERROR` (it may read). Above `max_bytes` → `VALIDATION_ERROR "… condense them"`; results `{…, rev, size, max_bytes, by, updated_at, warning?}` |
+| `notes_list {worktree_path?}` | N2 | `{notes: [{notes_id, state, worktree_path, agent_id, kind, size, empty, by, updated_at, ended_at, expires_at}]}`, live, restorable and orphan, newest first |
+| `notes_adopt {notes_id, target, if_rev?}` / `notes_delete {notes_id}` | N2 | Ended notes into a live agent (replaces its text, then `notes.removed {reason: adopted}`) / drop ended notes. A live agent's notes → `VALIDATION_ERROR` |
 
 Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, which avoids base64 for keystrokes.
 
@@ -405,6 +411,11 @@ Input bytes are sent as **binary frames** (`type=2`), not as a JSON method, whic
 | `list_restorable` | `list_restorable` (MCP follow-up to PR 9) |
 | `restore_agents` | `restore_agents` (no `env`: the engine's, as for MCP spawns, K4) |
 | `dismiss_restorable` | `dismiss_restorable` |
+| `notes_read(worktree_path?, agent_id?)` | `notes_get` (+ `caller`: the agent's `LAZYAGENT_AGENT_TOKEN`; no target = its own notes) |
+| `notes_append(section, text, worktree_path?, agent_id?)` | `notes_append` (+ `caller`) |
+| `notes_replace_section(section, text, if_rev, worktree_path?, agent_id?)` | `notes_replace_section` (+ `caller`) |
+
+`spawn_agent` gains `notes_mode` and `stop_agent` gains `notes` (N2). The engine mints a token per spawn (`secrets.token_urlsafe(24)`, in memory, dropped with the agent and on engine stop) and writes it into the agent's MCP server env (Claude's mcp-config, Codex's `config.toml`, Gemini's settings), never into the agent's own env.
 
 - **Phase 1:** the MCP server keeps talking NDJSON to the legacy socket, with **zero changes**.
 - **Later:** swap `IpcClient` (mcp_server.py:26-64) for `lazyagent.protocol.client` (v1, `client:"mcp"`). The tools stay 1:1, so it becomes just another client.

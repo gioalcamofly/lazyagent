@@ -155,3 +155,88 @@ async def test_create_worktree_leaves_the_base_to_the_engine(monkeypatch):
         ("create_worktree", {"branch": "feat"}),
         ("create_worktree", {"branch": "feat2", "base_branch": "develop"}),
     ]
+
+
+class TestNotesTools:
+    """The notes tools forward the optional target, and who calls: this
+    agent's token from its env, when lazyagent spawned it."""
+
+    @pytest.fixture
+    def calls(self, monkeypatch):
+        from lazyagent import mcp_server
+
+        calls = []
+
+        class Client:
+            async def call(self, method, params=None):
+                calls.append((method, params))
+                return {}
+
+        monkeypatch.setattr(mcp_server, "_get_client", lambda: Client())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_the_token_goes_as_caller(self, calls, monkeypatch):
+        from lazyagent import mcp_server
+
+        monkeypatch.setenv("LAZYAGENT_AGENT_TOKEN", "tok-1")
+        await mcp_server.notes_read()
+        await mcp_server.notes_append("Decisions", "use sqlite")
+        await mcp_server.notes_replace_section("Pending", "- [x] tests", 3)
+        assert calls == [
+            ("notes_get", {"caller": "tok-1"}),
+            (
+                "notes_append",
+                {"section": "Decisions", "text": "use sqlite", "caller": "tok-1"},
+            ),
+            (
+                "notes_replace_section",
+                {
+                    "section": "Pending",
+                    "text": "- [x] tests",
+                    "if_rev": 3,
+                    "caller": "tok-1",
+                },
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_target_is_forwarded(self, calls, monkeypatch):
+        from lazyagent import mcp_server
+
+        monkeypatch.setenv("LAZYAGENT_AGENT_TOKEN", "tok-1")
+        await mcp_server.notes_read("/wt", "a2")
+        await mcp_server.notes_append("Doubts", "which db?", worktree_path="/wt")
+        assert calls == [
+            ("notes_get", {"worktree_path": "/wt", "agent_id": "a2", "caller": "tok-1"}),
+            (
+                "notes_append",
+                {
+                    "section": "Doubts",
+                    "text": "which db?",
+                    "worktree_path": "/wt",
+                    "caller": "tok-1",
+                },
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_token_no_caller(self, calls, monkeypatch):
+        from lazyagent import mcp_server
+
+        monkeypatch.delenv("LAZYAGENT_AGENT_TOKEN", raising=False)
+        await mcp_server.notes_read("/wt")
+        assert calls == [("notes_get", {"worktree_path": "/wt"})]
+
+    @pytest.mark.asyncio
+    async def test_spawn_and_stop_carry_the_notes_options(self, calls):
+        from lazyagent import mcp_server
+
+        await mcp_server.spawn_agent("/wt", notes_mode="free")
+        await mcp_server.stop_agent("/wt")
+        await mcp_server.stop_agent("/wt", notes="keep")
+        assert calls[0][1]["notes_mode"] == "free"
+        assert calls[1:] == [
+            ("stop_agent", {"worktree_path": "/wt"}),
+            ("stop_agent", {"worktree_path": "/wt", "notes": "keep"}),
+        ]

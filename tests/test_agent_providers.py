@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import shlex
+from pathlib import Path
+
+import pytest
+
 from lazyagent.agent_observers import (
     ClaudeHooksObserver,
     CodexAppServerObserver,
 )
 from lazyagent.agent_providers import (
+    AGENT_TOKEN_ENV,
     DEFAULT_AGENT_PROVIDER,
     MCP_SERVER_NAME,
     ObservationMode,
@@ -423,3 +428,47 @@ def test_a_hosted_tuis_marker_is_not_passed_on():
     script = env_exports(base={"LAZYAGENT_HOST": "lazyagent-host-1", "KEEP": "1"})
     assert "LAZYAGENT_HOST" not in script
     assert "KEEP" in script
+
+
+class TestAgentToken:
+    """The per-spawn token reaches each provider's lazyagent MCP server env."""
+
+    def _env(self, name: str, **kwargs) -> dict[str, str]:
+        context = get_agent_provider(name).build_runtime_context(
+            "/tmp/wt", socket_path="/tmp/test.sock", **kwargs
+        )
+        if name == "claude":
+            config = json.loads(Path(context.metadata["mcp_config_path"]).read_text())
+        elif name == "gemini":
+            home = Path(context.env_overrides["GEMINI_CLI_HOME"])
+            config = json.loads((home / ".gemini" / "settings.json").read_text())
+        else:
+            text = (Path(context.env_overrides["CODEX_HOME"]) / "config.toml").read_text()
+            table = text.partition(f"[mcp_servers.{MCP_SERVER_NAME}.env]\n")[2]
+            return {
+                key: json.loads(value)
+                for key, _, value in (
+                    line.partition(" = ") for line in table.splitlines() if line
+                )
+            }
+        return config["mcpServers"][MCP_SERVER_NAME]["env"]
+
+    @pytest.mark.parametrize("name", ["claude", "codex", "gemini"])
+    def test_the_token_lands_in_the_mcp_env(self, name):
+        env = self._env(name, agent_token="tok-123")
+        assert env == {
+            "PYTHONUNBUFFERED": "1",
+            "LAZYAGENT_SOCKET": "/tmp/test.sock",
+            AGENT_TOKEN_ENV: "tok-123",
+        }
+
+    @pytest.mark.parametrize("name", ["claude", "codex", "gemini"])
+    def test_no_token_without_one(self, name):
+        assert AGENT_TOKEN_ENV not in self._env(name)
+
+    def test_the_token_stays_out_of_the_agents_own_env(self):
+        provider = get_agent_provider("claude")
+        context = provider.build_runtime_context(
+            "/tmp/wt", socket_path="/tmp/test.sock", agent_token="tok-123"
+        )
+        assert "tok-123" not in provider.build_command("/tmp/wt", runtime_context=context)

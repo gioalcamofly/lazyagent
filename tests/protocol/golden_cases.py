@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -425,6 +426,157 @@ async def _():
     return await _call(engine, "list_events", {"since": cursor})
 
 
+# --- session notes (proposal 0011) ----------------------------------------
+
+FEAT = "/tmp/repo-feat"
+
+
+def _notes_engine(*agents: str, max_bytes: int = 8192):
+    """An engine whose agents ``agents`` in /tmp/repo-feat have notes
+    (``0a1b2c3d4e5<n>``) and tokens (``tok-<agent id>``), on a fixed clock."""
+    from lazyagent.engine.notes import NotesStore
+
+    engine = _make_engine(worktrees=[_make_worktree(FEAT, "feat", is_main=False)])
+    engine.notes = NotesStore(
+        Path(tempfile.mkdtemp()),
+        max_bytes=max_bytes,
+        clock=lambda: FIXED_TIME,
+        listener=engine._on_notes_event,
+    )
+    for n, agent_id in enumerate(agents, 1):
+        session = _session_in(FEAT, agent_id)
+        add_session(engine, session)
+        meta = engine.notes.create(FEAT, agent_id, notes_id=f"0a1b2c3d4e5{n}")
+        engine._notes_ids[(FEAT, agent_id)] = meta.notes_id
+        engine._tokens[f"tok-{agent_id}"] = (FEAT, agent_id)
+    return engine
+
+
+def _session_in(path: str, agent_id: str):
+    from unittest.mock import AsyncMock, MagicMock
+
+    session = MagicMock()
+    session.worktree_path = path
+    session.agent_id = agent_id
+    session.running = True
+    session.exit_code = None
+    session.send_input = AsyncMock()
+    return session
+
+
+def _orphan(engine, text: str = "## Decisions\n- use sqlite\n") -> str:
+    """Notes of an agent a1 that exited on its own (an orphan)."""
+    from lazyagent.engine.notes import ORPHAN
+
+    meta = engine.notes.create(FEAT, "a1", notes_id="0f0e0d0c0b0a")
+    engine.notes.put(meta.notes_id, text, 0, "agent")
+    engine.notes.mark(meta.notes_id, ORPHAN)
+    return meta.notes_id
+
+
+@case("notes_get/template")
+async def _():
+    return await _call(
+        _notes_engine("a1"), "notes_get", {"worktree_path": FEAT, "agent_id": "a1"}
+    )
+
+
+@case("notes_put/written")
+async def _():
+    return await _call(
+        _notes_engine("a1"),
+        "notes_put",
+        {"worktree_path": FEAT, "text": "## Goal\n- ship notes\n", "if_rev": 0},
+    )
+
+
+@case("notes_put/conflict")
+async def _():
+    engine = _notes_engine("a1")
+    engine.notes.append("0a1b2c3d4e51", "Decisions", "use sqlite", "agent")
+    return await _call(
+        engine, "notes_put", {"worktree_path": FEAT, "text": "## Goal\n", "if_rev": 0}
+    )
+
+
+@case("notes_append/by_token")
+async def _():
+    return await _call(
+        _notes_engine("a1", "a2"),
+        "notes_append",
+        {"section": "Decisions", "text": "use sqlite", "caller": "tok-a2"},
+    )
+
+
+@case("notes_append/too_large")
+async def _():
+    return await _call(
+        _notes_engine("a1", max_bytes=1024),
+        "notes_append",
+        {"section": "Pending", "text": "x" * 1100, "caller": "tok-a1"},
+    )
+
+
+@case("notes_append/peer_refused")
+async def _():
+    return await _call(
+        _notes_engine("a1", "a2"),
+        "notes_append",
+        {
+            "worktree_path": FEAT,
+            "agent_id": "a1",
+            "section": "Decisions",
+            "text": "use postgres",
+            "caller": "tok-a2",
+        },
+    )
+
+
+@case("notes_replace_section/written")
+async def _():
+    return await _call(
+        _notes_engine("a1"),
+        "notes_replace_section",
+        {
+            "worktree_path": FEAT,
+            "section": "Pending",
+            "text": "- [ ] tests\n- [x] schema",
+            "if_rev": 0,
+        },
+    )
+
+
+@case("notes_list/orphan")
+async def _():
+    engine = _notes_engine("a2")
+    _orphan(engine)
+    return await _call(engine, "notes_list", {"worktree_path": FEAT})
+
+
+@case("notes_adopt/adopted")
+async def _():
+    engine = _notes_engine("a2")
+    notes_id = _orphan(engine)
+    return await _call(
+        engine,
+        "notes_adopt",
+        {"notes_id": notes_id, "worktree_path": FEAT, "agent_id": "a2"},
+    )
+
+
+@case("notes_delete/orphan")
+async def _():
+    engine = _notes_engine("a2")
+    return await _call(engine, "notes_delete", {"notes_id": _orphan(engine)})
+
+
+@case("stop_agent/with_notes")
+async def _():
+    engine = _notes_engine("a1")
+    engine.notes.append("0a1b2c3d4e51", "Decisions", "use sqlite", "agent")
+    return await _call(engine, "stop_agent", {"worktree_path": FEAT})
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):
@@ -455,6 +607,9 @@ def dump(fixture: dict[str, Any]) -> str:
 
 
 async def _write_all() -> None:
+    # As the test suite's conftest: the engines here must not keep notes (or
+    # anything else) in the real state dir.
+    os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="golden-state-")
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     for stale in FIXTURE_DIR.glob("*.json"):
         stale.unlink()

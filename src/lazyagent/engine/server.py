@@ -464,10 +464,10 @@ class _Connection:
             self.send_error(request.id, e.code, e.message, e.data)
             return
         except Exception as e:
-            code, message = classify(e)
+            code, message, data = classify(e)
             if code == ErrorCode.INTERNAL_ERROR:
                 log.exception("v1 handler error for method=%s", request.method)
-            self.send_error(request.id, code, message)
+            self.send_error(request.id, code, message, data)
             return
         if isinstance(result, _Reply):
             self.send_message(Response(request.id, result=result.result).to_dict())

@@ -22,6 +22,7 @@ import codecs
 import itertools
 import logging
 import os
+import secrets
 import shlex
 import uuid
 from collections.abc import Callable, Collection, Coroutine, Iterable, Mapping
@@ -69,10 +70,12 @@ from lazyagent.engine.manifest import (
     manifest_path,
 )
 from lazyagent.engine.notes import (
+    ADOPTED,
     DELETED,
     MODES as NOTES_MODES,
     ORPHAN,
     Meta,
+    Notes,
     NotesStore,
     is_empty,
     notes_dir,
@@ -235,6 +238,9 @@ class Engine:
         # id by slot.
         self.notes: NotesStore | None = None
         self._notes_ids: dict[tuple[str, str], str] = {}
+        # Each live agent's token (in its MCP server's env) → its slot: who
+        # calls the notes methods. In memory only: agents die with us.
+        self._tokens: dict[str, tuple[str, str]] = {}
         # Random per engine process: the v1 engine_id, and the manifest's.
         self.instance_id = uuid.uuid4().hex
         self.worktree_service = WorktreeService(
@@ -355,6 +361,7 @@ class Engine:
                 agent.remove_listener()
                 agent.session.stop()
         self._agents.clear()
+        self._tokens.clear()
         for shell in list(self._shells.values()):
             shell.stop()
         self._shells.clear()
@@ -943,6 +950,7 @@ class Engine:
             agent_session_name(key, agent_id) if provider.session_name_flag else ""
         )
         self.registry.register(key, agent_id, label=label, session_name=session_name)
+        token = secrets.token_urlsafe(24)
         command, observer = self._agent_command(
             provider,
             worktree_path,
@@ -953,6 +961,7 @@ class Engine:
             env=env,
             spawn_id=spawn_id,
             resume_conversation=resume_conversation,
+            agent_token=token,
         )
         session = AgentSession(
             command,
@@ -969,6 +978,7 @@ class Engine:
             resume_mode=resume_mode,
             mode=notes_mode,
         )
+        self._tokens[token] = (key, agent_id)
         info = self._start_agent(session, label, session_name, AGENT_KIND)
         self._remember(
             info,
@@ -1003,6 +1013,7 @@ class Engine:
             else ""
         )
         self.registry.register(ORCHESTRATOR_KEY, "", session_name=session_name)
+        token = secrets.token_urlsafe(24)
         command, observer = self._agent_command(
             provider,
             repo_root,
@@ -1013,6 +1024,7 @@ class Engine:
             session_name=session_name,
             env=env,
             resume_conversation=resume_conversation,
+            agent_token=token,
         )
         session = AgentSession(
             command, worktree_path=ORCHESTRATOR_KEY, observer=observer
@@ -1025,6 +1037,7 @@ class Engine:
             resume_mode=resume_mode,
             mode=notes_mode,
         )
+        self._tokens[token] = (ORCHESTRATOR_KEY, "")
         return self._start_agent(session, "", session_name, ORCHESTRATOR_KIND)
 
     def _agent_command(
@@ -1040,6 +1053,7 @@ class Engine:
         system_prompt: str | None = None,
         spawn_id: str = "",
         resume_conversation: str | None = None,
+        agent_token: str | None = None,
     ):
         # build_runtime_context touches the filesystem for some providers
         # (hook scripts, settings files), so it is timed separately.
@@ -1054,6 +1068,7 @@ class Engine:
                 cwd,
                 socket_path=self.socket_path,
                 cross_session_inbound=self.config.agent.cross_session_inbound,
+                agent_token=agent_token,
             )
         command = provider.build_command(
             cwd,
@@ -1177,6 +1192,9 @@ class Engine:
             return None
         agent.remove_listener()
         self._resumed_last.discard((key, agent_id))
+        for token, slot in list(self._tokens.items()):
+            if slot == (key, agent_id):
+                del self._tokens[token]
         if self.manifest is not None:
             self.manifest.remove(key, agent_id)
             # An entry hidden while this agent might have been running it is
@@ -1391,6 +1409,52 @@ class Engine:
     def notes_id(self, key: str, agent_id: str = "") -> str | None:
         """The live agent's notes id."""
         return self._notes_ids.get((key, agent_id))
+
+    def adopt_notes(
+        self,
+        notes_id: str,
+        key: str,
+        agent_id: str = "",
+        *,
+        if_rev: int | None = None,
+        by: str = "user",
+    ) -> Notes:
+        """Recover ended notes (an orphan, or a restorable entry's) into a
+        live agent: its notes take their text (its notes id, so its path,
+        stays), then the ended ones go (``notes.removed`` reason
+        ``adopted``). ``if_rev`` guards the live agent's current text."""
+        store = self.notes
+        target = self._notes_ids.get((key, agent_id))
+        if store is None or target is None:
+            raise ValueError(f"No notes for agent {agent_id!r} in {key}")
+        if notes_id == target or notes_id in self._notes_ids.values():
+            raise ValueError(f"Notes {notes_id!r} belong to a live agent")
+        source = store.get(notes_id)
+        current = store.get(target).meta.rev
+        notes = store.put(
+            target, source.text, current if if_rev is None else if_rev, by
+        )
+        store.delete(notes_id, ADOPTED)
+        self._notes_gc()
+        return notes
+
+    def delete_notes(self, notes_id: str) -> None:
+        """Drop ended notes (an orphan, or a restorable entry's); a live
+        agent's go with it (stop_agent)."""
+        store = self.notes
+        if store is None or notes_id not in store:
+            raise ValueError(f"No notes {notes_id!r}")
+        if notes_id in self._notes_ids.values():
+            raise ValueError(
+                f"Notes {notes_id!r} belong to a live agent: stop it to drop them"
+            )
+        store.delete(notes_id, DELETED)
+        self._notes_gc()
+
+    def token_slot(self, token: str) -> tuple[str, str] | None:
+        """The live agent (``(key, agent_id)``) an agent token was minted
+        for; None once it is gone, or for a token this engine never gave."""
+        return self._tokens.get(token)
 
     def _open_notes(
         self,

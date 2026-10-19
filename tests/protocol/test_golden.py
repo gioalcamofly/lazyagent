@@ -96,6 +96,8 @@ def test_error_fixtures_cover_every_legacy_code():
         "VALIDATION_ERROR",
         "TIMEOUT",
         "INTERNAL_ERROR",
+        # Session notes: a stale if_rev (the legacy socket has no error data).
+        "CONFLICT",
     }
 
 

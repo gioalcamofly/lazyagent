@@ -1,0 +1,16 @@
+{
+  "case": "stop_agent/with_notes",
+  "method": "stop_agent",
+  "params": {
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "notes": "## Goal\n\n## Constraints (don't touch)\n\n## Decisions\n- use sqlite\n\n## Doubts\n\n## Pending\n",
+      "status": "stopped",
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "case": "notes_append/by_token",
+  "method": "notes_append",
+  "params": {
+    "caller": "tok-a2",
+    "section": "Decisions",
+    "text": "use sqlite"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a2",
+      "by": "agent",
+      "max_bytes": 8192,
+      "notes_id": "0a1b2c3d4e52",
+      "rev": 1,
+      "size": 88,
+      "updated_at": 1700000000.0,
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

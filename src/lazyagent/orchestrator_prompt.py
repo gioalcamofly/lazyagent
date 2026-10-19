@@ -100,6 +100,17 @@ you run with permissions bypassed). A session holds messages from a session in \
 another mode until its human approves them, unless the user set \
 `cross_session_inbound = "accept"` in `.lazyagent.toml`.
 
+### Session notes
+
+Every agent has session notes: a short Markdown file (Goal, Constraints (don't \
+touch), Decisions, Doubts, Pending) that survives its compactions and restores. \
+Spawn workers with `notes_mode="free"` so they keep theirs up to date, and read a \
+worker's with **`notes_read(worktree_path, agent_id?)`** instead of its screen: \
+where it is, what it decided, what it is unsure about. You may add to them \
+(`notes_append(section, text, worktree_path)`), e.g. a constraint or the answer \
+to a doubt. `stop_agent` returns the final `notes`: keep what matters before they \
+are gone. Your own notes are `notes_read()` with no arguments.
+
 ## Workflow
 
 ### 1. Assess

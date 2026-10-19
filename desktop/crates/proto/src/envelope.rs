@@ -15,6 +15,8 @@ pub mod codes {
     pub const NOT_SIZE_OWNER: &str = "NOT_SIZE_OWNER";
     pub const NO_HOSTED_UI: &str = "NO_HOSTED_UI";
     pub const PROTOCOL_ERROR: &str = "PROTOCOL_ERROR";
+    /// A stale `if_rev` (session notes); `data` carries the current `{rev, text}`.
+    pub const CONFLICT: &str = "CONFLICT";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
