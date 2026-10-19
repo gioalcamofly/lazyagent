@@ -4,17 +4,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import re
+import shlex
+import subprocess
 import threading
 
 import pytest
 import pytest_asyncio
 
-from lazyagent.agent_providers import ResumeMode
+from lazyagent.agent_providers import NOTES_PATH_ENV, ResumeMode
 from lazyagent.engine import manifest as mf
 from lazyagent.engine import notes as nt
 from lazyagent.engine.engine import ORCHESTRATOR_KEY, Engine
 from lazyagent.engine.notes import LIVE, ORPHAN, RESTORABLE
-from tests.engine.fakes import make_engine, worktree
+from tests.engine.fakes import fake_agent_provider, hooks_dir, make_engine, worktree
 from tests.engine.test_restore import World, _conversation, _events, _until
 
 pytestmark = [
@@ -460,3 +465,180 @@ async def test_a_restored_agent_gets_a_new_token(world):
     new = _token(second, feat, agent.agent_id)
     assert new != old and second.token_slot(old) is None
     assert second.token_slot(new) == (feat, agent.agent_id)
+
+
+# --- the hooks (N3) --------------------------------------------------------
+
+
+def _hook_line(engine: Engine, key: str, agent_id: str, **data) -> None:
+    """What Claude's log hook appends, picked up on the next poll."""
+    log = hooks_dir(engine.get_session(key, agent_id)) / "hook-events.jsonl"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(data) + "\n")
+    engine.poll_agents()
+
+
+def _notes_hook(engine: Engine, key: str, agent_id: str, payload: dict) -> str:
+    """Run the agent's copy of notes_hook.py as Claude would: its own
+    executable, the env the agent got."""
+    session = engine.get_session(key, agent_id)
+    [path] = re.findall(rf"{NOTES_PATH_ENV}=(\S+)", session.command)
+    result = subprocess.run(
+        [str(hooks_dir(session) / "notes_hook.py")],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        env={**os.environ, NOTES_PATH_ENV: shlex.split(path)[0]},
+        timeout=10,
+        check=True,
+    )
+    return result.stdout.decode()
+
+
+async def test_the_first_prompt_is_pinned_and_survives_a_restore(world):
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat, "Build the importer")
+    notes_id = first.notes_id(feat, agent.agent_id)
+    assert first.notes.get(notes_id).meta.instruction is None  # Claude reports it
+    _hook_line(
+        first, feat, agent.agent_id,
+        hook_event_name="SessionStart", source="startup", session_id="conv-1",
+    )
+    assert first.notes.get(notes_id).meta.conversation_id == "conv-1"
+    _hook_line(
+        first, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="Build the importer, typed",
+    )
+    _hook_line(
+        first, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="and now the tests",
+    )
+    assert first.notes.get(notes_id).meta.instruction == "Build the importer, typed"
+    await first.stop()
+
+    second = world.engine()
+    await second.restore_agents()
+    _hook_line(
+        second, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="carry on",
+    )
+    assert second.notes.get(notes_id).meta.instruction == "Build the importer, typed"
+    await second.notes.flush()
+    meta = json.loads(second.notes.path(notes_id).with_suffix(".json").read_text())
+    assert meta["instruction"] == "Build the importer, typed"
+
+
+async def test_a_resumed_conversations_first_prompt_is_not_pinned(world):
+    """Q-N24: after --continue the first prompt is not the original one."""
+    engine = world.engine()
+    feat = str(world.feat)
+    agent = await engine.spawn_agent(feat, resume_mode=ResumeMode.RESUME_LAST)
+    _hook_line(
+        engine, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="carry on",
+    )
+    notes_id = engine.notes_id(feat, agent.agent_id)
+    assert engine.notes.get(notes_id).meta.instruction is None
+
+
+async def test_a_pinned_instruction_alone_survives_a_restart(world):
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    notes_id = first.notes_id(feat, agent.agent_id)
+    _hook_line(
+        first, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="Build the importer",
+    )
+    await first.stop()
+    second = world.engine()
+    await second.restore_agents()
+    assert second.notes_id(feat, agent.agent_id) == notes_id
+    assert second.notes.get(notes_id).meta.instruction == "Build the importer"
+
+
+async def test_without_hooks_the_spawn_instruction_is_pinned(tmp_path):
+    """Q-N8: a provider whose hooks do not report the first prompt."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    engine = make_engine(
+        [worktree(str(repo))], repo_root=str(repo), provider=fake_agent_provider(tmp_path)
+    )
+    try:
+        agent = await engine.spawn_agent(str(repo), "hello there")
+        meta = engine.notes.get(engine.notes_id(str(repo), agent.agent_id)).meta
+        assert meta.instruction == "hello there"
+        assert NOTES_PATH_ENV not in engine.get_session(str(repo), agent.agent_id).command
+    finally:
+        await engine.stop()
+
+
+async def test_the_agents_hook_reads_the_engines_notes(world):
+    """The acceptance: a SessionStart compact payload prints the notes the
+    engine wrote; a user's edit is noticed on the next prompt, once."""
+    engine = world.engine()
+    feat = str(world.feat)
+    agent = await engine.spawn_agent(feat)
+    notes_id = _write(engine, feat, agent.agent_id, "use sqlite")
+    _hook_line(
+        engine, feat, agent.agent_id, hook_event_name="UserPromptSubmit",
+        session_id="conv-1", prompt="Build the importer",
+    )
+    await engine.notes.flush()
+    out = json.loads(
+        _notes_hook(
+            engine, feat, agent.agent_id,
+            {"hook_event_name": "SessionStart", "source": "compact", "session_id": "c"},
+        )
+    )["hookSpecificOutput"]
+    assert out["hookEventName"] == "SessionStart"
+    assert "by agent" in out["additionalContext"]
+    assert "Original instruction (pinned):\nBuild the importer" in out["additionalContext"]
+    assert "## Decisions\n- use sqlite" in out["additionalContext"]
+
+    prompt = {"hook_event_name": "UserPromptSubmit", "prompt": "go", "session_id": "c"}
+    assert _notes_hook(engine, feat, agent.agent_id, prompt) == ""
+    rev = engine.notes.get(notes_id).meta.rev
+    engine.notes.append(notes_id, "Constraints (don't touch)", "the CLI", by="user")
+    assert engine.notes.get(notes_id).meta.rev == rev + 1
+    await engine.notes.flush()
+    out = json.loads(_notes_hook(engine, feat, agent.agent_id, prompt))
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert "updated by user" in context and "+- the CLI" in context
+    assert _notes_hook(engine, feat, agent.agent_id, prompt) == ""
+
+    # Stopped: the hook's sidecar goes with the notes.
+    seen = engine.notes.path(notes_id).with_name(f"{notes_id}.seen.json")
+    assert seen.exists()
+    engine.stop_agent(feat, agent.agent_id)
+    await engine.notes.flush()
+    assert not seen.exists()
+
+
+async def test_a_restored_agent_gets_the_same_notes_path(world):
+    first = world.engine()
+    feat = str(world.feat)
+    agent = await first.spawn_agent(feat)
+    notes_id = _write(first, feat, agent.agent_id, "use sqlite")
+    path = str(first.notes.path(notes_id))
+    assert f"{NOTES_PATH_ENV}={path}" in first.get_session(feat, agent.agent_id).command
+    await first.stop()
+
+    second = world.engine()
+    [restored] = (await second.restore_agents())["restored"]
+    session = second.get_session(feat, restored["agent_id"])
+    assert f"{NOTES_PATH_ENV}={path}" in session.command
+
+
+async def test_a_command_that_cannot_be_built_keeps_no_live_notes(world):
+    engine = world.engine()
+    feat = str(world.feat)
+
+    def broken(*args, **kwargs):
+        raise OSError("no temp dir")
+
+    engine._agent_command = broken
+    with pytest.raises(OSError):
+        await engine.spawn_agent(feat)
+    assert engine._notes_ids == {}
+    assert engine.notes.list() == []  # a template: pruned as empty (Q-N15)

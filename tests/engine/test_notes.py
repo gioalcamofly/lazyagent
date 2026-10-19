@@ -361,6 +361,17 @@ def test_gc_drops_unreferenced_and_empty_ended_notes(store, events):
     assert {(k, d["reason"]) for k, d in events} == {("removed", "pruned")}
 
 
+def test_gc_keeps_a_restorable_pinned_instruction(store):
+    """Q-N23: template text, but the instruction its restore resumes."""
+    pinned = store.create("/r/feat", "a1").notes_id
+    store.set_instruction(pinned, "Build the importer")
+    orphan = store.create("/r/other", "a1").notes_id
+    store.set_instruction(orphan, "Nothing to adopt")
+    store.mark(orphan, ORPHAN)
+    assert store.gc(set(), {pinned: 100.0}, _everywhere) == [orphan]
+    assert store.get(pinned).meta.state == RESTORABLE
+
+
 def test_gc_without_a_manifest_only_expires(tmp_path, clock):
     store = NotesStore(tmp_path, clock=clock)
     mine = _filled(store, "/r/feat", "a1")  # live, not told: kept

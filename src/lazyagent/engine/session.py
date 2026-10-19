@@ -839,6 +839,11 @@ class AgentSession(TerminalSession):
         """The provider's conversation id, once its observer saw one."""
         return self._observer.conversation_id
 
+    @property
+    def first_prompt(self) -> str | None:
+        """The first prompt the agent got, once its observer saw it."""
+        return self._observer.first_prompt
+
     def start(self) -> None:
         """Spawn the agent and report it RUNNING."""
         if self.running:
