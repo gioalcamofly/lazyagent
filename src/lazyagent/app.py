@@ -44,7 +44,7 @@ from lazyagent.engine.registry import AgentRegistry
 from lazyagent.engine.types import ORCHESTRATOR_KIND
 from lazyagent.models import AgentState, GitStatus, WorktreeInfo, default_base
 from lazyagent.protocol.hosted import encode_osc, host, tmux_passthrough
-from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel
+from lazyagent.widgets.center_panel import CenterPanel, WorktreePanel, pr_diff_text
 from lazyagent.widgets.confirm_modal import ConfirmModal
 from lazyagent.widgets.help_modal import HelpModal
 from lazyagent.widgets.job_log import JobLog
@@ -535,10 +535,10 @@ class LazyAgent(App):
 
     async def _fetch_diff(self, worktree_path: str) -> None:
         try:
-            diff_text = await self.backend.get_diff(worktree_path)
+            reply = await self.backend.get_pr_diff(worktree_path)
         except EngineUnavailable:
             return  # the backend reports the outage itself
-        self._apply_diff(worktree_path, diff_text)
+        self._apply_diff(worktree_path, pr_diff_text(reply))
 
     def _apply_diff(self, worktree_path: str, diff_text: str) -> None:
         """Apply diff text to the panel — runs on the main thread."""

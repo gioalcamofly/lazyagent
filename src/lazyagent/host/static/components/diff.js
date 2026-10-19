@@ -16,13 +16,15 @@ const OVERSCAN = 30;
  * The flat list the viewer scrolls: a header per file, then its rows (or
  * split pairs), and a row under every commented line.
  */
-export function flatten(files, mode, comments) {
+export function flatten(files, mode, comments, { uncommitted = true } = {}) {
   const byAnchor = new Map(comments.map((c) => [c.id, c]));
   const out = [];
   const starts = [];
   let width = 20;
   files.forEach((file, index) => {
-    starts.push(out.length);
+    if (file.uncommitted && !uncommitted) return;
+    if (file.uncommitted && !files[index - 1]?.uncommitted) out.push({ type: "section" });
+    starts[index] = out.length;
     out.push({ type: "file", file, index });
     const rows = mode === "split" ? splitRows(file.rows) : file.rows;
     for (const row of rows) {
@@ -34,14 +36,14 @@ export function flatten(files, mode, comments) {
         const sides = row.left && row.left === row.right ? [row.right] : [row.left, row.right];
         for (const side of sides) {
           if (!side || !COMMENTABLE.has(side.kind)) continue;
-          const anchor = anchorOf(file.path, side);
+          const anchor = anchorOf(file.path, side, file.uncommitted);
           if (byAnchor.has(anchor.id)) out.push({ type: "comment", comment: byAnchor.get(anchor.id) });
         }
       } else {
         out.push({ type: "row", file, row });
         if (row.text.length > width) width = row.text.length;
         if (COMMENTABLE.has(row.kind)) {
-          const anchor = anchorOf(file.path, row);
+          const anchor = anchorOf(file.path, row, file.uncommitted);
           if (byAnchor.has(anchor.id)) out.push({ type: "comment", comment: byAnchor.get(anchor.id) });
         }
       }
@@ -73,11 +75,17 @@ function renderRow(item, index, mode, onComment) {
   const style = `top:${index * ROW}px`;
   if (item.type === "file") {
     const f = item.file;
-    return html`<div key=${index} class="drow file" style=${style} data-file=${f.path}>
+    return html`<div key=${index} class=${`drow file${f.uncommitted ? " uncommitted" : ""}`} style=${style} data-file=${f.path}>
       <span class=${`fstatus ${f.status}`}>${f.status}</span>
       <strong>${f.path}</strong>
       ${f.oldPath !== f.path && html`<span class="muted">from ${f.oldPath}</span>`}
       <span class="adds">+${f.added}</span><span class="dels">−${f.removed}</span>
+      ${f.uncommitted && html`<span class="part">uncommitted</span>`}
+    </div>`;
+  }
+  if (item.type === "section") {
+    return html`<div key=${index} class="drow section" style=${style}>
+      Uncommitted: staged, unstaged and untracked (not in the pull request yet)
     </div>`;
   }
   if (item.type === "comment") {
@@ -258,6 +266,20 @@ export class SubmitDialog extends Component {
   }
 }
 
+/** Where a resolved base came from (get_diff's base.source). */
+export function baseLabel(base) {
+  if (base.source === "pr") return base.pr_number ? `PR #${base.pr_number} base` : "PR base";
+  if (base.source === "default") return "default branch";
+  return base.source;
+}
+
+/** The base a Base field edit asks for: "" (let the engine pick) when it is
+ * cleared, or still shows the base the engine picked. */
+export function baseRequest(value, requested, resolved) {
+  const v = value.trim();
+  return !requested && resolved && v === resolved.ref ? "" : v;
+}
+
 export class DiffView extends Component {
   constructor(props) {
     super(props);
@@ -267,7 +289,7 @@ export class DiffView extends Component {
   }
   onComment(file, row) {
     if (!COMMENTABLE.has(row.kind)) return;
-    const anchor = anchorOf(file.path, row);
+    const anchor = anchorOf(file.path, row, file.uncommitted);
     this.setState({ editing: anchor });
   }
   saveComment(text) {
@@ -282,7 +304,11 @@ export class DiffView extends Component {
     const comments = (path && store.comments.value[path]) || [];
     if (!path) return html`<div class="diff-view"><div class="empty">Select a worktree to see its diff.</div></div>`;
     const current = diff && diff.path === path ? diff : null;
-    const flat = current?.parsed ? flatten(current.parsed.files, mode, comments) : null;
+    const showUncommitted = store.diffUncommitted.value;
+    const flat = current?.parsed ? flatten(current.parsed.files, mode, comments, { uncommitted: showUncommitted }) : null;
+    const requested = store.diffBase.value;
+    const resolved = current?.base;
+    const files = current?.parsed ? current.parsed.files.filter((f) => showUncommitted || !f.uncommitted) : [];
     const editing = this.state.editing;
     const existing = editing && comments.find((c) => c.id === editing.id);
     return html`<div class="diff-view">
@@ -293,18 +319,24 @@ export class DiffView extends Component {
           <input
             type="text"
             class="base"
-            size="12"
-            value=${store.diffBase.value}
-            placeholder="working tree"
-            title="A branch to diff from (its merge-base); empty: the working tree against the index"
-            onChange=${(e) => actions.loadDiff(path, e.target.value.trim())}
+            size="24"
+            value=${requested || resolved?.ref || ""}
+            placeholder="PR base"
+            title="Any ref (its merge-base with HEAD); empty: the pull request's base, else the default branch"
+            onChange=${(e) => actions.loadDiff(path, baseRequest(e.target.value, requested, resolved))}
           />
+        </label>
+        ${resolved && html`<span class="muted base-source" title=${`from merge-base ${resolved.merge_base.slice(0, 10)}`}>(${baseLabel(resolved)})</span>`}
+        ${requested && html`<button type="button" class="link" title="Back to the base the engine picks" onClick=${() => actions.loadDiff(path, "")}>PR base</button>`}
+        <label class="inline muted" title="Staged, unstaged and untracked changes">
+          <input type="checkbox" class="show-uncommitted" checked=${showUncommitted} onChange=${(e) => actions.diffUncommitted(e.target.checked)} />
+          Uncommitted
         </label>
         <div class="seg" role="group" aria-label="Layout">
           <button type="button" class=${mode === "unified" ? "on" : ""} onClick=${() => actions.diffMode("unified")}>Unified</button>
           <button type="button" class=${mode === "split" ? "on" : ""} onClick=${() => actions.diffMode("split")}>Split</button>
         </div>
-        <button type="button" class="link" title="Refresh" onClick=${() => actions.loadDiff(path, store.diffBase.value)}>↻</button>
+        <button type="button" class="link" title="Fetch the base from origin and diff again" onClick=${() => actions.loadDiff(path, requested, { fetch: true })}>↻</button>
         <span class="spacer"></span>
         <span class="muted" title="Comments are kept in this browser until the engine stores them (U8)">
           ${comments.length} comment${comments.length === 1 ? "" : "s"} · in this browser
@@ -319,16 +351,17 @@ export class DiffView extends Component {
           Submit review
         </button>
       </div>
+      ${current?.note && html`<div class="diff-note">${current.note}</div>`}
       ${current?.loading && !current.parsed && html`<div class="empty">Loading the diff…</div>`}
       ${current?.error && html`<div class="empty form-error">${current.error}</div>`}
       ${flat &&
       (flat.rows.length === 0
-        ? html`<div class="empty">No changes${store.diffBase.value ? ` against ${store.diffBase.value}` : ""}.</div>`
+        ? html`<div class="empty">No changes${resolved ? ` against ${resolved.ref}` : ""}.</div>`
         : html`<div class="diff-body">
             <nav class="diff-files" aria-label="Files">
               ${current.parsed.truncated && html`<p class="form-error">Diff truncated: open the rest in your editor.</p>`}
-              ${current.parsed.files.map(
-                (f, i) => html`<button type="button" class="dfile" data-path=${f.path} onClick=${() => this.rows?.scrollToRow(flat.starts[i])}>
+              ${files.map(
+                (f, i) => html`${f.uncommitted && !files[i - 1]?.uncommitted && html`<p class="dsection">Uncommitted</p>`}<button type="button" class=${`dfile${f.uncommitted ? " uncommitted" : ""}`} data-path=${f.path} onClick=${() => this.rows?.scrollToRow(flat.starts[i])}>
                   <span class=${`fstatus ${f.status}`}>${f.status[0].toUpperCase()}</span>
                   <span class="dname" title=${f.path}>${f.path}</span>
                   <span class="adds">+${f.added}</span><span class="dels">−${f.removed}</span>

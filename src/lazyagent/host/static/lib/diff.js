@@ -9,7 +9,7 @@ const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 export const TRUNCATED = "… diff truncated";
 
 /** @typedef {{kind: "hunk"|"ctx"|"add"|"del"|"note", text: string, old?: number, new?: number}} Row */
-/** @typedef {{path: string, oldPath: string, status: string, rows: Row[], added: number, removed: number, binary: boolean}} DiffFile */
+/** @typedef {{path: string, oldPath: string, status: string, rows: Row[], added: number, removed: number, binary: boolean, uncommitted?: boolean}} DiffFile */
 
 function newFile(header) {
   // "diff --git a/x b/y": take b/ (a rename's new name).
@@ -105,6 +105,17 @@ export function parseDiff(text) {
 }
 
 /**
+ * get_diff's answer with `pr`: the committed part (what the pull request
+ * shows), then the uncommitted one, its files last and marked.
+ */
+export function parsePrDiff(committed, uncommitted) {
+  const c = parseDiff(committed || "");
+  const u = parseDiff(uncommitted || "");
+  for (const f of u.files) f.uncommitted = true;
+  return { files: [...c.files, ...u.files], truncated: c.truncated || u.truncated };
+}
+
+/**
  * Side-by-side rows: context on both sides, a run of deletions paired with
  * the run of additions after it.
  * @returns {{left: Row|null, right: Row|null, kind?: string}[]}
@@ -130,11 +141,16 @@ export function splitRows(rows) {
   return out;
 }
 
-/** Where a comment points: the file, the side and the line number. */
-export function anchorOf(path, row) {
+/**
+ * Where a comment points: the file, the side and the line number, and the
+ * part (a file can be both committed and uncommitted, with other lines).
+ */
+export function anchorOf(path, row, uncommitted = false) {
   const side = row.kind === "del" ? "old" : "new";
   const line = side === "old" ? row.old : row.new;
-  return { path, side, line, code: row.text, id: `${path}:${side}:${line}` };
+  const anchor = { path, side, line, code: row.text, id: `${path}:${side}:${line}${uncommitted ? ":u" : ""}` };
+  if (uncommitted) anchor.uncommitted = true;
+  return anchor;
 }
 
 /** The prompt that sends a review's comments to an agent (§4c step 3). */
@@ -149,7 +165,7 @@ export function reviewPrompt(comments, { summary = "" } = {}) {
   for (const [path, list] of byFile) {
     parts.push("");
     for (const c of list.sort((a, b) => a.line - b.line)) {
-      const where = `${path}:${c.line}${c.side === "old" ? " (removed line)" : ""}`;
+      const where = `${path}:${c.line}${c.side === "old" ? " (removed line)" : ""}${c.uncommitted ? " (uncommitted)" : ""}`;
       parts.push(`- ${where}`, `  > ${c.code.trim()}`, `  ${c.text.trim().replace(/\n/g, "\n  ")}`);
     }
   }

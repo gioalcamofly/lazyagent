@@ -36,6 +36,9 @@ pub struct File {
     pub added: u32,
     pub removed: u32,
     pub binary: bool,
+    /// From the uncommitted part (staged, unstaged, untracked), not what
+    /// the pull request shows.
+    pub uncommitted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -51,7 +54,7 @@ fn new_file(header: &str) -> File {
         Some((a, b)) => (a.to_string(), b.to_string()),
         None => (rest.to_string(), rest.to_string()),
     };
-    File { path, old_path, status: "modified", rows: vec![], added: 0, removed: 0, binary: false }
+    File { path, old_path, status: "modified", rows: vec![], added: 0, removed: 0, binary: false, uncommitted: false }
 }
 
 /// `@@ -a,b +c,d @@ …` → (a, c)
@@ -153,6 +156,16 @@ pub fn parse(text: &str) -> Diff {
     diff
 }
 
+/// `get_diff`'s committed part, then its uncommitted one (`pr`), as one
+/// list of files: the uncommitted ones last, and marked.
+pub fn parse_pr(committed: &str, uncommitted: &str) -> Diff {
+    let mut d = parse(committed);
+    let u = parse(uncommitted);
+    d.truncated |= u.truncated;
+    d.files.extend(u.files.into_iter().map(|f| File { uncommitted: true, ..f }));
+    d
+}
+
 /// One side-by-side row: context on both sides, a run of deletions paired
 /// with the run of additions after it; hunk headers and notes span both.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +227,10 @@ pub struct Comment {
     pub asked: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<Reply>,
+    /// On the uncommitted part: its lines are the working tree's, and the
+    /// same file can be in both parts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uncommitted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,14 +243,23 @@ pub struct Reply {
 impl Comment {
     pub fn id(&self) -> String {
         match (&self.start_side, self.start_line) {
-            (Some(ss), Some(sl)) => format!("{}:{ss}:{sl}-{}:{}", self.path, self.side, self.line),
+            (Some(ss), Some(sl)) => format!("{}:{ss}:{sl}-{}:{}{}", self.path, self.side, self.line, self.part()),
             _ => self.anchor_id(),
         }
     }
 
     /// The line it shows under.
     pub fn anchor_id(&self) -> String {
-        format!("{}:{}:{}", self.path, self.side, self.line)
+        format!("{}:{}:{}{}", self.path, self.side, self.line, self.part())
+    }
+
+    fn part(&self) -> &'static str {
+        if self.uncommitted { ":u" } else { "" }
+    }
+
+    /// Its place as the agent reads it: `path:12`, and which part.
+    fn located(&self) -> String {
+        format!("{}:{}{}", self.path, self.place(), if self.uncommitted { " (uncommitted)" } else { "" })
     }
 
     /// `12`, `12 (removed line)`, `12-15`, or `-3…+5` across sides.
@@ -258,6 +284,11 @@ impl Comment {
         }
         self.code.lines().map(|l| format!("  > {}", l.trim_end())).collect::<Vec<_>>().join("\n")
     }
+}
+
+/// Where a comment on `row` of `file` points, in its part.
+pub fn anchor_in(file: &File, row: &Row) -> Option<Comment> {
+    anchor(&file.path, row).map(|c| Comment { uncommitted: file.uncommitted, ..c })
 }
 
 /// Where a comment on `row` points (`None` for hunk headers and notes).
@@ -316,7 +347,7 @@ pub fn review_prompt(comments: &[Comment], summary: &str) -> String {
         let mut list = by_file[path].clone();
         list.sort_by_key(|c| c.start_line.unwrap_or(c.line));
         for c in list {
-            parts.push(format!("- {path}:{}", c.place()));
+            parts.push(format!("- {}", c.located()));
             parts.push(c.quoted());
             parts.push(format!("  {}", c.text.trim().replace('\n', "\n  ")));
         }
@@ -332,8 +363,12 @@ pub fn answer_markers(id: &str) -> (String, String) {
 /// The prompt that asks the agent about a comment now: where, the code,
 /// the thread so far, and how to mark the answer for the diff view.
 pub fn ask_prompt(c: &Comment, base: &str, marker_id: &str) -> String {
-    let against = if base.trim().is_empty() { String::new() } else { format!(" (diff against {})", base.trim()) };
-    let mut parts = vec![format!("A question about {}:{}{against}:", c.path, c.place()), c.quoted()];
+    let against = if c.uncommitted || base.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" (diff against {})", base.trim())
+    };
+    let mut parts = vec![format!("A question about {}{against}:", c.located()), c.quoted()];
     // The question is the comment, or the last of the follow-ups.
     let asking = match c.replies.iter().rposition(|r| r.who == "you") {
         Some(i) => {
@@ -525,5 +560,36 @@ mod tests {
              - src/app.py:3\n  > y = 3\n  name it better\n  and test it\n\n\
              - README.md:1\n  > import os\n  typo"
         );
+    }
+
+    #[test]
+    fn the_uncommitted_part_is_marked_and_anchored_apart() {
+        let d = parse_pr(MODIFIED, MODIFIED);
+        assert_eq!(d.files.len(), 2);
+        assert!(!d.files[0].uncommitted && d.files[1].uncommitted);
+        let committed = anchor_in(&d.files[0], &d.files[0].rows[2]).unwrap();
+        let mut open = anchor_in(&d.files[1], &d.files[1].rows[2]).unwrap();
+        assert_ne!(committed.id(), open.id(), "the same line in both parts is two anchors");
+        assert_eq!(committed.anchor_id(), "src/app.py:old:2");
+        assert_eq!(open.anchor_id(), "src/app.py:old:2:u");
+        open.text = "why?".into();
+        assert!(review_prompt(std::slice::from_ref(&open), "").contains("- src/app.py:2 (removed line) (uncommitted)"));
+        assert!(
+            ask_prompt(&open, "origin/main", "k")
+                .starts_with("A question about src/app.py:2 (removed line) (uncommitted):")
+        );
+        // Saved before the parts: still the committed anchor.
+        let old: Comment = serde_json::from_value(serde_json::json!({
+            "path": "src/app.py", "side": "old", "line": 2, "code": "x = 1", "text": "t"
+        }))
+        .unwrap();
+        assert_eq!(old.id(), committed.id());
+        assert!(!serde_json::to_string(&old).unwrap().contains("uncommitted"));
+    }
+
+    #[test]
+    fn a_truncated_uncommitted_part_marks_the_diff() {
+        let d = parse_pr("", &format!("{MODIFIED}\n{TRUNCATED} (too large to display)"));
+        assert!(d.truncated && d.files[0].uncommitted);
     }
 }

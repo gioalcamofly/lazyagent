@@ -138,7 +138,9 @@ export function createStore() {
     // The diff view: {path, base, loading, error, parsed}.
     diff: signal(null),
     diffMode: signal(loadJson("lazyagent-diff", {}).mode === "split" ? "split" : "unified"),
+    // The base asked for; "" lets the engine pick (the PR's base).
     diffBase: signal(""),
+    diffUncommitted: signal(loadJson("lazyagent-diff", {}).uncommitted !== false),
     // Review comments per worktree path, kept in this browser (Q12).
     comments: signal(loadJson("lazyagent-comments", {})),
     // A review waiting for its agent to be idle: path → {agent_id, text}.
@@ -204,7 +206,8 @@ export function createStore() {
   };
   store.notifies = (kind) => store.notifySettings.value[kind] !== false;
   store.saveComments = () => saveJson("lazyagent-comments", store.comments.value);
-  store.saveDiffMode = () => saveJson("lazyagent-diff", { mode: store.diffMode.value });
+  store.saveDiffMode = () =>
+    saveJson("lazyagent-diff", { mode: store.diffMode.value, uncommitted: store.diffUncommitted.value });
 
   // ------------------------------------------------------------ queue
 

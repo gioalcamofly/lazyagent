@@ -572,6 +572,23 @@ class Engine:
             return await self.worktree_service.get_diff(path)
         return await self.worktree_service.get_diff(path, base=base, max_bytes=max_bytes)
 
+    async def get_pr_diff(
+        self,
+        path: str,
+        *,
+        base: str | None = None,
+        max_bytes: int | None = None,
+        fetch: bool = False,
+    ) -> dict[str, Any]:
+        """``get_diff`` with ``pr``: see ``WorktreeService.get_pr_diff``."""
+        return await self.worktree_service.get_pr_diff(
+            path,
+            base=base,
+            default_branch=self.config.default_branch,
+            max_bytes=max_bytes,
+            fetch=fetch,
+        )
+
     def get_pr_info(self, path: str) -> PrInfo | None:
         """The cached PR info of a worktree (``None`` also when not fetched
         yet; see :meth:`has_pr_info`)."""

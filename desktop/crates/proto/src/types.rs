@@ -96,6 +96,9 @@ pub struct PrInfo {
     pub review_decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mergeable: Option<String>,
+    /// The branch it merges into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -232,7 +235,33 @@ pub struct PrInfoResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiffResult {
     pub worktree_path: String,
+    /// With `pr`: the committed part only (what the pull request shows).
     pub diff: String,
+    /// With `pr`: staged, unstaged and untracked changes.
+    #[serde(default)]
+    pub uncommitted: Option<String>,
+    /// With `pr`: what `diff` is against (`None` when nothing could be).
+    #[serde(default)]
+    pub base: Option<DiffBase>,
+    #[serde(default)]
+    pub base_error: Option<String>,
+    #[serde(default)]
+    pub fetch_error: Option<String>,
+}
+
+/// `get_diff`'s base, with `pr`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffBase {
+    /// The ref diffed against: `origin/<branch>` when it exists.
+    #[serde(rename = "ref")]
+    pub ref_: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// `pr`, `default` or `override` (an open set).
+    pub source: String,
+    pub merge_base: String,
+    #[serde(default)]
+    pub pr_number: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

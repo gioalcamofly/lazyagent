@@ -1454,3 +1454,62 @@ fn notes_edited_in_the_panel_reach_the_file_and_the_agents_next_turn() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "## Goal\n- by the orchestrator\n");
     conn.shutdown();
 }
+
+#[test]
+fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-f", "PROJ-26001-f", vec![agent("a1", "Implementer", "running", "s1")]),
+    ]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-f".into());
+        let committed = sample_diff(1, 4);
+        let uncommitted = sample_diff(2, 4).replace("src/f0.rs", "src/wip.rs");
+        let mut d =
+            crate::diff_view::DiffState::loaded("/r/repo-f", "", crate::diff::parse_pr(&committed, &uncommitted));
+        d.applied(
+            Some(lazyagent_proto::types::DiffBase {
+                ref_: "origin/PROJ-25996-intake".into(),
+                branch: Some("PROJ-25996-intake".into()),
+                source: "pr".into(),
+                merge_base: "0123456789abcdef".into(),
+                pr_number: Some(20163),
+            }),
+            None,
+            None,
+        );
+        s.diff = Some(d);
+        s.diff_open = true;
+    }
+    h.run_steps(2);
+    // What is used, and where it came from; the uncommitted files apart.
+    assert_eq!(h.state().state.diff.as_ref().unwrap().base, "origin/PROJ-25996-intake");
+    h.get_by_label("(PR #20163 base)");
+    h.get_by_label("3 files");
+    h.get_by_label("2 uncommitted");
+    assert!(h.state().state.diff.as_ref().unwrap().rows.contains(&crate::diff_view::DRow::Uncommitted));
+    assert!(h.query_by_label("PR base").is_none(), "no way back needed: it is the PR base");
+    // Hidden, then shown again.
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Uncommitted").click();
+    h.run_steps(2);
+    assert!(h.state().state.saved.diff_hide_uncommitted);
+    h.get_by_label("1 files");
+    assert!(!h.state().state.diff.as_ref().unwrap().rows.contains(&crate::diff_view::DRow::Uncommitted));
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Uncommitted").click();
+    h.run_steps(2);
+    assert!(!h.state().state.saved.diff_hide_uncommitted);
+    // An override: any ref, diffed again (fetching) from the refresh button.
+    h.state_mut().state.diff.as_mut().unwrap().base = "origin/master".into();
+    h.get_by_label("↻ Fetch").click();
+    h.run_steps(2);
+    let d = h.state().state.diff.as_ref().unwrap();
+    assert_eq!((d.requested.as_str(), d.base.as_str()), ("origin/master", "origin/master"));
+    // Back to the engine's pick.
+    h.get_by_label("PR base").click();
+    h.run_steps(2);
+    let d = h.state().state.diff.as_ref().unwrap();
+    assert_eq!(d.requested, "");
+}

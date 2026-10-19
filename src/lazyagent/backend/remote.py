@@ -729,6 +729,12 @@ class RemoteBackend(Backend):
     async def get_diff(self, path: str) -> str:
         return (await self.request("get_diff", worktree_path=path))["diff"]
 
+    async def get_pr_diff(self, path: str, *, fetch: bool = False) -> dict[str, Any]:
+        params: dict[str, Any] = {"worktree_path": path, "pr": True}
+        if fetch:
+            params["fetch"] = True
+        return await self.request("get_diff", **params)
+
     async def list_restorable(self) -> list[dict[str, Any]]:
         try:
             return (await self.request("list_restorable"))["agents"]

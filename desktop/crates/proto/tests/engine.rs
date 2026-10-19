@@ -195,6 +195,13 @@ fn shell_worktrees_and_diff() {
     std::fs::write(std::path::Path::new(&created.path).join("new.txt"), "hello\n").unwrap();
     let diff: DiffResult = client.call("get_diff", json!({"worktree_path": created.path}), TIMEOUT).unwrap();
     assert!(diff.diff.contains("new.txt"), "{}", diff.diff);
+    // Like the PR: nothing committed on feat, the new file apart, against
+    // main (no origin, no PR; the configured master does not exist).
+    let pr: DiffResult = client.call("get_diff", json!({"worktree_path": created.path, "pr": true}), TIMEOUT).unwrap();
+    let base = pr.base.clone().expect("a base");
+    assert_eq!((base.ref_.as_str(), base.source.as_str()), ("main", "default"), "{pr:?}");
+    assert_eq!(pr.diff, "");
+    assert!(pr.uncommitted.as_deref().unwrap_or("").contains("new.txt"), "{pr:?}");
 
     let removed: RemoveWorktreeResult =
         client.call("remove_worktree", json!({"worktree_path": created.path, "force": true}), TIMEOUT).unwrap();

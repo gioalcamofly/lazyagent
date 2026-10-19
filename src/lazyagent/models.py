@@ -162,6 +162,7 @@ class PrInfo:
     url: str = ""
     review_decision: str = ""   # "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""
     mergeable: str = ""         # "MERGEABLE", "CONFLICTING", "UNKNOWN", ""
+    base_ref: str = ""          # the branch it merges into (baseRefName)
 
     @property
     def checks_summary(self) -> str:

@@ -188,6 +188,10 @@ class Backend(ABC):
     async def get_diff(self, path: str) -> str: ...
 
     @abstractmethod
+    async def get_pr_diff(self, path: str, *, fetch: bool = False) -> dict[str, Any]:
+        """``get_diff`` with ``pr``: the result as the protocol has it."""
+
+    @abstractmethod
     async def list_restorable(self) -> list[dict[str, Any]]:
         """The agents an earlier engine ran when it ended (§6e); empty when
         the engine keeps no restart manifest."""

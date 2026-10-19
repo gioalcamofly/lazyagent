@@ -1058,6 +1058,13 @@ class V1Server:
             _is_int(max_bytes) and 1 <= max_bytes <= MAX_DIFF_BYTES_LIMIT
         ):
             raise ValueError(f"max_bytes must be an integer from 1 to {MAX_DIFF_BYTES_LIMIT}")
+        pr, fetch = params.get("pr", False), params.get("fetch", False)
+        if type(pr) is not bool or type(fetch) is not bool:
+            raise ValueError("pr and fetch must be booleans")
+        if fetch and not pr:
+            raise ValueError("fetch needs pr")
+        if pr:
+            return await self.engine.get_pr_diff(path, base=base, max_bytes=max_bytes, fetch=fetch)
         diff = await self.engine.get_diff(path, base=base, max_bytes=max_bytes)
         return {"worktree_path": path, "diff": diff}
 

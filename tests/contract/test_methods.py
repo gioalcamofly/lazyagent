@@ -179,6 +179,14 @@ async def test_get_diff_from_a_base_with_a_cap(harness, client):
     assert isinstance(result["diff"], str)
 
 
+async def test_get_diff_like_the_pr(harness, client):
+    result = await checked(client, "get_diff", worktree_path=harness.feat, pr=True)
+    assert result["worktree_path"] == harness.feat
+    assert isinstance(result["diff"], str) and isinstance(result["uncommitted"], str)
+    # The fake world has no branches: no base, said so, not an error.
+    assert result["base"] is None and result["base_error"]
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -188,6 +196,10 @@ async def test_get_diff_from_a_base_with_a_cap(harness, client):
         {"max_bytes": 4 * 1024 * 1024 + 1},
         {"max_bytes": "64"},
         {"base": "no-such-branch"},
+        {"pr": "yes"},
+        {"fetch": True},
+        {"pr": True, "fetch": 1},
+        {"pr": True, "base": "no-such-branch"},
     ],
 )
 async def test_get_diff_refuses_bad_options(harness, client, params):

@@ -518,6 +518,16 @@ a { color: var(--primary); }
   background: var(--panel); color: var(--text); gap: 10px; align-items: center; padding-left: 8px;
   font-family: var(--sans); border-top: 1px solid var(--border);
 }
+.drow.file.uncommitted { box-shadow: inset 3px 0 0 var(--yellow); }
+.drow.file .part, .base-source { font-size: 11px; }
+.drow.file .part { color: var(--yellow); text-transform: uppercase; font-family: var(--mono); }
+.drow.section {
+  color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  padding-left: 8px; font-family: var(--sans); align-items: center;
+}
+.dsection { margin: 8px 10px 2px; color: var(--yellow); font-size: 11px; text-transform: uppercase; }
+.dfile.uncommitted .dname { color: var(--yellow); }
+.diff-note { padding: 4px 10px; color: var(--yellow); font-size: 12px; }
 .drow.comment { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font-family: var(--sans); }
 .drow.split { gap: 0; }
 .half { flex: 1 1 50%; display: flex; min-width: 0; overflow: hidden; }

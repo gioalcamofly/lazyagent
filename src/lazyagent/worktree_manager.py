@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -52,6 +53,61 @@ _MAX_DIFF_BYTES = 64 * 1024
 MAX_DIFF_BYTES_LIMIT = 4 * 1024 * 1024
 _MAX_UNTRACKED_FILE_BYTES = 32 * 1024
 _DIFF_TRUNCATED = "… diff truncated (too large to display)"
+# `git fetch origin <base>` from the Diff view's refresh.
+_FETCH_TIMEOUT = 60
+
+
+def _budget(max_bytes: int | None) -> int:
+    if max_bytes is None:
+        return _MAX_DIFF_BYTES
+    return max(1, min(max_bytes, MAX_DIFF_BYTES_LIMIT))
+
+
+class _Capped:
+    """Diff entries joined by blank lines, cut off once a byte budget is spent."""
+
+    def __init__(self, budget: int) -> None:
+        self.budget = budget
+        self.parts: list[str] = []
+
+    @property
+    def full(self) -> bool:
+        return self.budget <= 0
+
+    def add(self, entry: str) -> bool:
+        """Append an entry within budget. Returns False once full."""
+        if self.budget <= 0:
+            return False
+        cost = len(entry) + 2  # entries are joined with "\n\n"
+        if cost > self.budget:
+            self.parts.append(entry[: max(self.budget - 2, 0)])
+            self.parts.append(_DIFF_TRUNCATED)
+            self.budget = 0
+            return False
+        self.parts.append(entry)
+        self.budget -= cost
+        return True
+
+    def text(self) -> str:
+        return "\n\n".join(self.parts)
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` cut to about ``limit`` bytes, with the truncation notice."""
+    if len(text) <= limit:
+        return text
+    out = _Capped(limit)
+    out.add(text)
+    return out.text()
+
+
+@dataclass(frozen=True)
+class PrDiff:
+    """What :meth:`WorktreeManager.get_pr_diff` returns."""
+
+    committed: str
+    uncommitted: str
+    merge_base: str
 
 
 # Branches per ``gh api graphql`` request. Each one asks for up to
@@ -65,7 +121,7 @@ _PR_NODES_PER_BRANCH = 30
 
 _PR_FIELDS = """
 fragment pr on PullRequest {
-  number title state url reviewDecision mergeable isCrossRepository
+  number title state url reviewDecision mergeable isCrossRepository baseRefName
   commits(last: 1) {
     nodes {
       commit {
@@ -324,33 +380,10 @@ class WorktreeManager:
         either, so the cap costs nothing real.
         """
         cwd = str(worktree_path)
-        parts: list[str] = []
-        budget = _MAX_DIFF_BYTES
-        if max_bytes is not None:
-            budget = max(1, min(max_bytes, MAX_DIFF_BYTES_LIMIT))
+        out = _Capped(_budget(max_bytes))
         since: list[str] = []
         if base is not None:
-            found = _run(
-                ["git", "merge-base", base, "HEAD"], capture_output=True, cwd=cwd
-            )
-            if found.returncode != 0 or not found.stdout.strip():
-                raise ValueError(f"No merge-base between {base!r} and HEAD")
-            since = [found.stdout.decode().strip()]
-
-        def add(entry: str) -> bool:
-            """Append an entry within budget. Returns False once full."""
-            nonlocal budget
-            if budget <= 0:
-                return False
-            cost = len(entry) + 2  # entries are joined with "\n\n"
-            if cost > budget:
-                parts.append(entry[: max(budget - 2, 0)])
-                parts.append(_DIFF_TRUNCATED)
-                budget = 0
-                return False
-            parts.append(entry)
-            budget -= cost
-            return True
+            since = [WorktreeManager._merge_base(cwd, base)]
 
         try:
             # Tracked changes (staged + unstaged)
@@ -360,7 +393,7 @@ class WorktreeManager:
                 cwd=cwd,
             )
             if result.returncode == 0 and result.stdout.strip():
-                add(result.stdout.decode("utf-8", errors="replace").strip())
+                out.add(result.stdout.decode("utf-8", errors="replace").strip())
 
             # Staged binary files — git diff skips these, show a marker
             # (a diff from a merge-base already lists them).
@@ -373,40 +406,143 @@ class WorktreeManager:
                 for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
                     if entry.startswith("-\t-\t"):
                         f = entry[len("-\t-\t"):]
-                        add(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
+                        out.add(f"diff --git a/{f} b/{f}\nstaged\nBinary file")
 
-            # Untracked files — show contents or binary marker
-            result = _run(
-                ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-                capture_output=True,
-                cwd=cwd,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                files = [f for f in result.stdout.decode("utf-8", errors="replace").split("\0") if f]
-                for f in files:
-                    if budget <= 0:
-                        break
-                    filepath = Path(cwd) / f
-                    header = f"diff --git a/{f} b/{f}\nnew file"
-                    try:
-                        # Size first: the old code sniffed 8 KB for binary and
-                        # then read the *whole* file, so a 30 MB dump was
-                        # inlined in full.
-                        size = filepath.stat().st_size
-                        if size > _MAX_UNTRACKED_FILE_BYTES:
-                            add(f"{header}\n{_format_size(size)} — too large to show")
-                            continue
-                        chunk = filepath.read_bytes()
-                    except OSError:
-                        continue
-                    if b"\x00" in chunk[:8000] or chunk.startswith(b"%PDF"):
-                        add(f"{header}\nBinary file")
-                    else:
-                        add(f"{header}\n{chunk.decode('utf-8', errors='replace')}")
-
-            return "\n\n".join(parts)
+            WorktreeManager._add_untracked(cwd, out)
+            return out.text()
         except OSError:
             return ""
+
+    @staticmethod
+    def get_pr_diff(
+        worktree_path: str | Path,
+        base: str | None,
+        *,
+        max_bytes: int | None = None,
+    ) -> PrDiff:
+        """The diff a pull request from ``HEAD`` into ``base`` would show,
+        and apart from it what is not committed yet.
+
+        ``committed`` is ``git diff $(git merge-base base HEAD) HEAD``,
+        GitHub's three-dot "Files changed" (commits not pushed yet included).
+        ``uncommitted`` is ``HEAD`` against the working tree (staged and
+        unstaged together) plus the untracked files, as in :meth:`get_diff`.
+        Without ``base`` only ``uncommitted`` is filled in. Raises
+        :class:`ValueError` when there is no merge-base.
+
+        The two share one byte budget (see :meth:`get_diff`): each gets at
+        least half of it, and what one does not use the other may.
+        """
+        cwd = str(worktree_path)
+        budget = _budget(max_bytes)
+        merge_base = WorktreeManager._merge_base(cwd, base) if base is not None else ""
+        committed = ""
+        try:
+            if merge_base:
+                result = _run(["git", "diff", merge_base, "HEAD"], capture_output=True, cwd=cwd)
+                if result.returncode == 0:
+                    committed = result.stdout.decode("utf-8", errors="replace").strip()
+            out = _Capped(budget)
+            result = _run(["git", "diff", "HEAD"], capture_output=True, cwd=cwd)
+            if result.returncode == 0 and result.stdout.strip():
+                out.add(result.stdout.decode("utf-8", errors="replace").strip())
+            WorktreeManager._add_untracked(cwd, out)
+            uncommitted = out.text()
+        except OSError:
+            return PrDiff("", "", merge_base)
+        half = budget // 2
+        return PrDiff(
+            committed=_clip(committed, max(half, budget - len(uncommitted))),
+            uncommitted=_clip(uncommitted, max(half, budget - len(committed))),
+            merge_base=merge_base,
+        )
+
+    @staticmethod
+    def resolve_base_ref(worktree_path: str | Path, branch: str) -> str | None:
+        """``origin/<branch>`` when that remote-tracking branch exists, else
+        ``branch`` when it is a local branch, else ``None``.
+
+        The remote-tracking one wins because the local branch is often far
+        behind (nobody pulls the base in a feature worktree), and GitHub
+        diffs against what is on the remote.
+        """
+        candidates = (
+            (f"origin/{branch}", f"refs/remotes/origin/{branch}"),
+            (branch, f"refs/heads/{branch}"),
+        )
+        for ref, full in candidates:
+            try:
+                found = _run(
+                    ["git", "rev-parse", "--verify", "--quiet", full],
+                    capture_output=True,
+                    cwd=str(worktree_path),
+                )
+            except OSError:
+                return None
+            if found.returncode == 0:
+                return ref
+        return None
+
+    @staticmethod
+    def fetch_branch(worktree_path: str | Path, branch: str) -> str | None:
+        """``git fetch origin <branch>``, which also moves ``origin/<branch>``.
+        Returns ``None`` on success, else why it failed."""
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        try:
+            result = _run(
+                ["git", "fetch", "--quiet", "origin", branch],
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_path),
+                env=env,
+                timeout=_FETCH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return f"git fetch origin {branch} timed out"
+        except OSError as e:
+            return str(e)
+        if result.returncode != 0:
+            return result.stderr.strip() or f"git fetch origin {branch} failed"
+        return None
+
+    @staticmethod
+    def _merge_base(cwd: str, base: str) -> str:
+        found = _run(["git", "merge-base", base, "HEAD"], capture_output=True, cwd=cwd)
+        if found.returncode != 0 or not found.stdout.strip():
+            raise ValueError(f"No merge-base between {base!r} and HEAD")
+        return found.stdout.decode().strip()
+
+    @staticmethod
+    def _add_untracked(cwd: str, out: _Capped) -> None:
+        """Untracked files — their contents, or a binary / too-large marker."""
+        result = _run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            cwd=cwd,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return
+        files = [f for f in result.stdout.decode("utf-8", errors="replace").split("\0") if f]
+        for f in files:
+            if out.full:
+                break
+            filepath = Path(cwd) / f
+            header = f"diff --git a/{f} b/{f}\nnew file"
+            try:
+                # Size first: the old code sniffed 8 KB for binary and
+                # then read the *whole* file, so a 30 MB dump was
+                # inlined in full.
+                size = filepath.stat().st_size
+                if size > _MAX_UNTRACKED_FILE_BYTES:
+                    out.add(f"{header}\n{_format_size(size)} — too large to show")
+                    continue
+                chunk = filepath.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in chunk[:8000] or chunk.startswith(b"%PDF"):
+                out.add(f"{header}\nBinary file")
+            else:
+                out.add(f"{header}\n{chunk.decode('utf-8', errors='replace')}")
 
     @staticmethod
     def _parse_pr_info(raw: str) -> PrInfo | None:
@@ -442,6 +578,7 @@ class WorktreeManager:
             url=data.get("url", ""),
             review_decision=data.get("reviewDecision") or "",
             mergeable=data.get("mergeable") or "",
+            base_ref=data.get("baseRefName") or "",
         )
 
     @staticmethod
@@ -474,6 +611,7 @@ class WorktreeManager:
             "url": node.get("url", ""),
             "reviewDecision": node.get("reviewDecision") or "",
             "mergeable": node.get("mergeable") or "",
+            "baseRefName": node.get("baseRefName") or "",
         }
 
     @staticmethod
@@ -658,7 +796,8 @@ class WorktreeManager:
             result = _run(
                 [
                     "gh", "pr", "view",
-                    "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable",
+                    "--json",
+                    "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName",
                 ],
                 capture_output=True,
                 text=True,
