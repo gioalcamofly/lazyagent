@@ -165,6 +165,7 @@ All of it exists in v1 today; the desktop app needs **no engine change for the M
 | Restore | `list_restorable`, `restore_agents`, `dismiss_restorable`, `engine.restored`, `restorable.changed` |
 | Attention | `send_agent_input`, `read_agent_output`, `get_pr_info` |
 | Diff | `get_diff {worktree_path, pr: true, base?, fetch?, max_bytes}` (the PR's diff since 2026-10-19, §10) |
+| Session notes (proposal 0011, N4) | `notes_get`, `notes_put {if_rev}` (`CONFLICT` carries `{rev, text}` in `error.data`), `notes.updated`, `notes.removed`; the panel is hidden when `hello.capabilities` lacks `notes_get` |
 
 - Unknown events and fields are ignored; unknown status values are shown raw (§4c of engine-split).
 - **Env (D5):** the app passes its own environment to `spawn_agent` / `open_shell` / `create_worktree` / `remove_worktree` / `restore_agents`, as the TUI does. A `.desktop` launch gets the session's environment, which can lack the shell profile's PATH additions: the app logs the PATH it sends, and `lazyagent desktop` from a shell is the recommended launch until D6 adds a login-shell env probe (Q4).
@@ -433,6 +434,15 @@ Doubts (defaults picked, not blocking):
 - *A PR lookup in flight* is waited for up to 15 s; a slower one falls back to the default base for that diff (↻ again picks the PR's once it is cached). The view does not re-diff by itself when `pr_info.updated` later changes the base.
 - *Line numbers of committed-part comments* are `HEAD`'s; when the file also has uncommitted edits they can differ from the working tree's. The quoted code goes with every comment, so the agent can find it.
 - *The old `get_diff` (no `pr`)* stays as it was for compatibility (working tree vs index, or merge-base to the working tree with `base`); nothing in lazyagent uses it now except `lazyagent diagnostics`.
+
+### Session notes panel (session-notes plan N4, 2026-10-19)
+
+The active agent's notes in a right side panel: `n` outside a terminal (it opens with the editor focused; Esc leaves it, `n` again closes) or the header's **Notes** button; also for the orchestrator. Details in [session-notes-plan.md](session-notes-plan.md) §5 N4.
+
+- **Panel** (`notes_view.rs`): the pinned instruction (collapsible, read-only), a monospace `TextEdit` over the raw Markdown (egui has no Markdown widget), a size meter (amber from 80 %, red at the cap, Save off above it), "last edit 2m ago by agent · rev N · mode …", Save (Ctrl+S) and Revert.
+- **State per agent** (`State.notes`, keyed by worktree + agent id): `base_rev` / `base_text` (what was last read), `draft`, the newest announced rev, an `incoming` text, a `conflict`. `notes.updated` only bumps the announced rev; the shown agent's notes are then fetched. A clean draft takes the new text silently; a dirty one gets "Changed by <by> — Reload (lose mine) / Keep editing (save will conflict)". Save is `notes_put {if_rev: base_rev}`; a `CONFLICT` keeps the draft and shows theirs below it with **Overwrite with mine** (re-put with their rev) and **Take theirs**.
+- **Keys:** the editor is a text field, so the single-letter keys are off while it has the keyboard (`ctx.text_edit_focused()`); `n` / `Ctrl+S` rows in the `?` sheet.
+- **B1 with the panel open:** `LAZYAGENT_BENCH_NOTES=1 lazyagent-desktop --bench echo` opens it on ~6 KiB of notes. On this (busy) machine, three runs each: key → frame built p50 / p95 6.1-9.4 / 11.6-16.9 ms closed, 7.3-8.0 / 13.9-15.2 ms open; frame build 0.8-2.4 ms either way. No difference above the run-to-run noise.
 
 ## 11. Final state (2026-10-18)
 

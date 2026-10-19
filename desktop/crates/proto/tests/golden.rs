@@ -75,13 +75,17 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "dismiss_restorable" => round_trip::<DismissResult>(case, result),
             // Not used by the desktop app (MCP-only).
             "get_agent_status" | "list_events" => continue,
-            // Not decoded until the notes panel (N4) types them.
-            m if m.starts_with("notes_") => continue,
+            "notes_get" => round_trip::<Notes>(case, result),
+            "notes_put" | "notes_append" | "notes_replace_section" | "notes_adopt" => {
+                round_trip::<NotesWritten>(case, result)
+            }
+            "notes_list" => round_trip::<NotesList>(case, result),
+            "notes_delete" => round_trip::<NotesDeleted>(case, result),
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
     }
-    assert!(checked >= 19, "only {checked} fixtures checked");
+    assert!(checked >= 26, "only {checked} fixtures checked");
 }
 
 #[test]
@@ -119,11 +123,12 @@ const METHODS_USED: &[&str] = &[
     "list_restorable",
     "restore_agents",
     "dismiss_restorable",
+    "notes_get",
+    "notes_put",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
-// notes.* until the notes panel (N4) handles them.
-const IGNORED_EVENTS: &[&str] = &["ui.command", "ui.view_changed", "notes.updated", "notes.removed"];
+const IGNORED_EVENTS: &[&str] = &["ui.command", "ui.view_changed"];
 
 #[test]
 fn methods_we_call_are_in_the_schema() {

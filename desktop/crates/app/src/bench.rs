@@ -160,6 +160,9 @@ impl Setup {
         if self.session.is_none() {
             let tab = state.tabs.get(&main)?;
             self.session = state.store.agent(&main, tab)?.session_id.clone();
+            // LAZYAGENT_BENCH_NOTES=1: the same, with the notes panel open on
+            // ~6 KiB of text (plan N4: no measurable cost to B1).
+            state.notes_open = std::env::var("LAZYAGENT_BENCH_NOTES").is_ok();
         }
         let pane = state.panes.get(self.session.as_ref()?)?.clone();
         let text = pane.inner.lock().unwrap().term.frame().text();
@@ -194,6 +197,14 @@ impl FrameHook for Echo {
         let now = Instant::now();
         let Some(pane) = self.pane.clone().or_else(|| self.setup.ready(state, ctx)) else { return };
         self.pane = Some(pane.clone());
+        if state.notes_open
+            && let Some(key) = state.notes_key()
+            && let Some(doc) = state.notes.get_mut(&key)
+            && doc.meta.is_some()
+            && doc.draft.len() < 1024
+        {
+            doc.draft = "- a decision the agent and the user agreed on, kept in the notes\n".repeat(90);
+        }
         let busy: usize = std::env::var("LAZYAGENT_BENCH_BUSY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         if busy > 0 {
             let main = state.selected.clone().unwrap();
@@ -268,6 +279,7 @@ impl FrameHook for Echo {
                 json!({
                     "bench": "echo",
                     "busy_hidden_agents": std::env::var("LAZYAGENT_BENCH_BUSY").unwrap_or_default(),
+                    "notes_panel": state.notes_open,
                     "key_to_bytes_ms": percentiles(std::mem::take(&mut self.round_trip)),
                     "bytes_to_frame_start_ms": percentiles(std::mem::take(&mut self.wait_frame)),
                     "frame_build_ms": percentiles(std::mem::take(&mut self.build)),
