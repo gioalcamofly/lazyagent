@@ -10,6 +10,8 @@ import time
 
 import pytest
 
+from lazyagent.agent_providers import ResumeMode
+from lazyagent.engine.engine import ORCHESTRATOR_KEY
 from lazyagent.engine.manifest import Entry
 from tests.engine.fakes import fake_agent_provider, make_engine, worktree
 from tests.tui_backends import settle, tui_app
@@ -94,4 +96,35 @@ async def test_no_offer_when_nothing_is_restorable(tmp_path, backend_kind):
         assert not any("can be brought back" in t for t in toasts)
         titles = [command.title for command in app.get_system_commands(app.screen)]
         assert "Restore agents" in titles
+    await engine.stop()
+
+
+async def test_no_offer_for_an_orchestrator_that_runs_again(tmp_path, backend_kind):
+    """The earlier engine's orchestrator is offered, but this engine already
+    started it again with --continue (the same conversation): no toast, and
+    R does not start a second one."""
+    engine, _ = _engine(tmp_path, restorable=False)
+    entry = Entry(
+        id="186b11b6aaaa",
+        worktree_path=ORCHESTRATOR_KEY,
+        agent_id="",
+        kind="orchestrator",
+        provider="fake",
+        conversation_id="186b11b6-24d7-49f0-9d24-8b1638b42cea",
+        ended_at=1.0,
+    )
+    engine.manifest.restorable = {entry.id: entry}
+    live = await engine.spawn_agent(
+        "", kind="orchestrator", resume_mode=ResumeMode.RESUME_LAST
+    )
+    app = tui_app(backend_kind, engine=engine, repo_path=engine.repo_path)
+    toasts = _toasts(app)
+    async with app.run_test() as pilot:
+        await settle(pilot)
+        await asyncio.sleep(0.2)
+        assert not any("can be brought back" in t for t in toasts)
+        await pilot.press("ctrl+k")
+        await pilot.press("R")
+        await _until(lambda: "Nothing to restore" in toasts)
+        assert engine.get_agent(ORCHESTRATOR_KEY, "").session_id == live.session_id
     await engine.stop()
