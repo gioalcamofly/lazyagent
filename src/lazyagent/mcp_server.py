@@ -259,6 +259,7 @@ async def spawn_agent(
     skip_permissions: bool = True,
     resume_mode: str = "new",
     label: str | None = None,
+    notes_mode: str | None = None,
 ) -> dict:
     """Spawn a NEW coding agent in a worktree.
 
@@ -281,6 +282,10 @@ async def spawn_agent(
             replace the prior task. For a clean restart with new instructions,
             use the default ``resume_mode="new"``.
         label: Optional human-facing tab label (defaults to "Agent N").
+        notes_mode: How the agent may write its session notes: "manual"
+            (only when the user asks), "propose" or "free" (directly).
+            Default: the repo's ``[notes] mode``. Spawn workers you
+            orchestrate with "free", so their notes tell you where they are.
 
     Returns:
         Object with worktree_path, agent_id, status, and ``cursor`` (event
@@ -296,6 +301,8 @@ async def spawn_agent(
         params["instruction"] = instruction
     if label is not None:
         params["label"] = label
+    if notes_mode is not None:
+        params["notes_mode"] = notes_mode
     return await _get_client().call("spawn_agent", params)
 
 
@@ -317,7 +324,9 @@ async def list_agents(worktree_path: str) -> dict:
 
 
 @mcp.tool()
-async def stop_agent(worktree_path: str, agent_id: str | None = None) -> dict:
+async def stop_agent(
+    worktree_path: str, agent_id: str | None = None, notes: str = "delete"
+) -> dict:
     """Stop a running agent in a worktree.
 
     Args:
@@ -325,13 +334,20 @@ async def stop_agent(worktree_path: str, agent_id: str | None = None) -> dict:
         agent_id: Which agent to stop. May be omitted when the worktree has
             exactly one agent; required (else an error lists the choices) when
             there are several.
+        notes: What happens to the agent's session notes: "delete" (default)
+            or "keep" (kept a few days as an orphan the user can recover).
 
     Returns:
-        Object confirming the agent was stopped (includes agent_id).
+        Object confirming the agent was stopped (includes agent_id), and
+        ``notes``: the agent's final session notes when they were not empty.
+        Keep what matters from them (a PR description, a decisions log):
+        with "delete" they are gone.
     """
     params: dict[str, Any] = {"worktree_path": worktree_path}
     if agent_id is not None:
         params["agent_id"] = agent_id
+    if notes != "delete":
+        params["notes"] = notes
     return await _get_client().call("stop_agent", params)
 
 
@@ -530,6 +546,121 @@ async def dismiss_restorable(ids: list[str] | None = None) -> dict:
     if ids is not None:
         params["ids"] = ids
     return await _get_client().call("dismiss_restorable", params)
+
+
+# ------------------------------------------------------------------
+# Session notes
+# ------------------------------------------------------------------
+
+
+def _notes_params(
+    worktree_path: str | None, agent_id: str | None, **params: Any
+) -> dict[str, Any]:
+    """A notes call's params: the optional target, and who calls (this
+    agent's token, when lazyagent spawned it), so no target = "my notes"."""
+    if worktree_path is not None:
+        params["worktree_path"] = worktree_path
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    caller = os.environ.get("LAZYAGENT_AGENT_TOKEN")
+    if caller:
+        params["caller"] = caller
+    return params
+
+
+@mcp.tool()
+async def notes_read(
+    worktree_path: str | None = None, agent_id: str | None = None
+) -> dict:
+    """Read session notes: a short Markdown cheat sheet per agent (Goal,
+    Constraints (don't touch), Decisions, Doubts, Pending) that the user,
+    the agent and the orchestrator share. lazyagent keeps it outside the
+    worktree and gives it back to the agent after a compaction, a /clear
+    or a restore.
+
+    Without arguments: your own notes (when lazyagent spawned you). With
+    worktree_path (+ agent_id when it has several agents): that agent's,
+    e.g. an orchestrator checking on a worker without reading its screen.
+
+    Returns:
+        Object with text, rev (pass it as if_rev to notes_replace_section),
+        size, max_bytes, by (who wrote last: user, agent, orchestrator),
+        updated_at, mode, instruction (the pinned first prompt), and the
+        target's worktree_path and agent_id.
+    """
+    return await _get_client().call(
+        "notes_get", _notes_params(worktree_path, agent_id)
+    )
+
+
+@mcp.tool()
+async def notes_append(
+    section: str,
+    text: str,
+    worktree_path: str | None = None,
+    agent_id: str | None = None,
+) -> dict:
+    """Add lines to a section of session notes (see notes_read). Each line
+    becomes a list item; a missing section is created at the end.
+
+    Write in your own notes only what the user agreed or asked to keep
+    (goal, what not to touch, decisions, open doubts, pending steps): in
+    "manual" mode (notes_read's ``mode``) write only when the user asks.
+    Keep them short: they are re-read after every compaction. Above
+    max_bytes (8 KiB by default) a write is refused: condense first.
+
+    Without worktree_path / agent_id: your own notes. An orchestrator may
+    write a worker's; an agent may not write another agent's.
+
+    Args:
+        section: The heading as in notes_read (case does not matter), e.g.
+            "Decisions", "Doubts", "Pending", "Constraints (don't touch)".
+        text: One or more lines ("- [ ] ..." for a checklist item).
+        worktree_path: Another agent's worktree (orchestrator only).
+        agent_id: Which agent there, when it has several.
+
+    Returns:
+        Object with rev, size, max_bytes, by, and ``warning`` from 80 % full.
+    """
+    return await _get_client().call(
+        "notes_append",
+        _notes_params(worktree_path, agent_id, section=section, text=text),
+    )
+
+
+@mcp.tool()
+async def notes_replace_section(
+    section: str,
+    text: str,
+    if_rev: int,
+    worktree_path: str | None = None,
+    agent_id: str | None = None,
+) -> dict:
+    """Replace the body of one section of session notes (see notes_read),
+    e.g. to tick "- [x]" items under Pending or condense Decisions. The
+    whole file is never rewritten this way: other sections stay as they are.
+
+    Same rules as notes_append (manual mode: only when the user asks; the
+    size cap). ``if_rev`` is the rev from your last notes_read: if someone
+    edited since, the call fails with CONFLICT ("notes changed"): read them
+    again and redo the change on the new text.
+
+    Args:
+        section: The heading whose body is replaced.
+        text: The new body (Markdown lines; may be empty).
+        if_rev: The rev the change is based on.
+        worktree_path: Another agent's worktree (orchestrator only).
+        agent_id: Which agent there, when it has several.
+
+    Returns:
+        Object with the new rev, size, max_bytes, by, and ``warning``.
+    """
+    return await _get_client().call(
+        "notes_replace_section",
+        _notes_params(
+            worktree_path, agent_id, section=section, text=text, if_rev=if_rev
+        ),
+    )
 
 
 if __name__ == "__main__":
