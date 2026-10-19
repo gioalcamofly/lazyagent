@@ -13,3 +13,4 @@ Improvement ideas for lazyagent, one file each. Ranked and motivated in [engine-
 | 0007 | Persistent history | Proposed | ★★ | PRs 2, 8 | [0007](0007-persistent-history.md) |
 | 0008 | Diff review with comments | Proposed | ★★ | Phase 3, after H2 or PR 10+ | [0008](0008-diff-review-comments.md) |
 | 0009 | Restore after reboot | Proposed | ★ | PR 9 | [0009](0009-restore-after-reboot.md) |
+| 0011 | Session notes per agent | Accepted | ★★ (★★★ orchestrator) | PR 9; desktop D2/D3 | [0011](0011-session-notes.md) |
