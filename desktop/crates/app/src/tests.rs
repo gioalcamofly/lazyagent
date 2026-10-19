@@ -1455,6 +1455,357 @@ fn notes_edited_in_the_panel_reach_the_file_and_the_agents_next_turn() {
     conn.shutdown();
 }
 
+fn ended_item(notes_id: &str, agent_id: &str, state: &str) -> lazyagent_proto::types::NotesListItem {
+    let now = crate::app::unix_now();
+    serde_json::from_value(json!({
+        "notes_id": notes_id, "state": state, "worktree_path": "/r/repo", "agent_id": agent_id, "kind": "agent",
+        "size": 2048, "empty": false, "by": "agent", "updated_at": now - 3.0 * 3600.0,
+        "ended_at": now - 3.0 * 3600.0, "expires_at": (state == "orphan").then_some(now + 7.0 * 86_400.0 - 3.0 * 3600.0)
+    }))
+    .unwrap()
+}
+
+/// The worktree's ended notes, as a `notes_list` would have left them.
+fn set_earlier(h: &mut Harness<'static, App>, items: Vec<lazyagent_proto::types::NotesListItem>) {
+    let e = crate::notes_view::Earlier { items, loaded: true, ..Default::default() };
+    h.state_mut().state.earlier.insert("/r/repo".into(), e);
+}
+
+#[test]
+fn the_stop_dialog_offers_the_handoff_only_with_notes() {
+    let (mut h, _tx) = notes_app("## Goal\n- ship\n", 8192);
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::X);
+    h.run_steps(3);
+    // Not empty: three ways to stop, no plain Stop button.
+    for label in ["Copy notes and stop (c)", "Stop, keep notes (k)", "Stop and delete notes (d)"] {
+        assert_eq!(h.query_all_by_label(label).count(), 1, "{label}");
+    }
+    assert_eq!(h.query_all_by_label("Stop").count(), 1, "only the header's: the dialog has no plain Stop");
+    assert!(h.query_all_by_label("Its session notes are not empty. Before they go:").count() >= 1);
+    // Unsaved edits in the panel are called out.
+    let key = ("/r/repo".to_string(), "a1".to_string());
+    h.state_mut().state.notes.get_mut(&key).unwrap().draft.push_str("- unsaved\n");
+    h.run_steps(2);
+    assert!(h.query_all_by_label("The notes panel has unsaved edits: they are not in them (save first).").count() >= 1);
+    // c submits the copy (no engine here: the stop fails and says so in the dialog).
+    h.key_press(egui::Key::C);
+    h.run_steps(3);
+    let d = h.state().state.dialog.as_ref().unwrap();
+    assert!(d.error.as_deref().is_some_and(|e| e.contains("Could not stop")), "{:?}", d.error);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    // Only the template: a plain stop.
+    {
+        let d = h.state_mut().state.notes.get_mut(&key).unwrap();
+        d.revert();
+        d.meta.as_mut().unwrap().empty = true;
+    }
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Stop);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Copy notes and stop (c)").count(), 0);
+    assert_eq!(h.query_all_by_label("Stop").count(), 2, "the header's and the dialog's");
+    // Not read yet: a plain stop too (it keeps them, to be safe).
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.state_mut().state.notes.clear();
+    let s = &h.state().state;
+    assert_eq!(crate::dialogs::handoff(s, "/r/repo", Some("a1")), crate::dialogs::Handoff::Checking);
+    // An engine without notes: as before N5.
+    h.state_mut().state.capabilities = Some(vec!["stop_agent".into()]);
+    let s = &h.state().state;
+    assert_eq!(crate::dialogs::handoff(s, "/r/repo", Some("a1")), crate::dialogs::Handoff::Unsupported);
+}
+
+#[test]
+fn text_for_the_clipboard_goes_out_with_the_next_frame() {
+    let (mut h, _tx) = notes_app("x", 8192);
+    h.state_mut().state.clipboard = Some("## Goal\n- handed off\n".into());
+    h.run();
+    h.step();
+    assert_eq!(h.state().state.last_copied.as_deref(), Some("## Goal\n- handed off\n"));
+    assert!(h.state().state.clipboard.is_none());
+}
+
+#[test]
+fn the_spawn_dialog_warns_only_with_ended_notes() {
+    let (mut h, _tx) = notes_app("x", 8192);
+    let warning = |h: &Harness<'static, App>| {
+        h.query_all_by_label_contains(
+            "A new conversation deletes the earlier notes of Agent a2 (orphan, 2.0 KiB, ended 3h ago, deleted in 7d)",
+        )
+        .count()
+    };
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::S);
+    h.run_steps(3);
+    assert!(h.state().state.dialog.is_some());
+    assert_eq!(warning(&h), 0, "no ended notes: no warning");
+    assert_eq!(h.query_all_by_label("Carry them into the new agent").count(), 0);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    set_earlier(&mut h, vec![ended_item("o2", "a2", "orphan")]);
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Spawn);
+    h.run_steps(3);
+    assert_eq!(warning(&h), 1);
+    assert_eq!(h.state().state.earlier["/r/repo"].items.len(), 1, "a failed refresh keeps what was listed");
+    h.get_by_label("Carry them into the new agent").click();
+    h.run_steps(2);
+    assert!(h.state().state.dialog.as_ref().unwrap().carry);
+    // Resuming deletes nothing (no rule 5): no warning.
+    h.get_by_label("Resume the last (l)").click();
+    h.run_steps(2);
+    assert_eq!(warning(&h), 0);
+    h.get_by_label("New").click();
+    h.run_steps(2);
+    // The link opens the panel's list.
+    h.get_by_label("See them in the notes panel").click();
+    h.run_steps(3);
+    assert!(h.state().state.dialog.is_none());
+    assert!(h.state().state.notes_open);
+    assert!(h.query_all_by_label("Earlier notes in this worktree (1)").count() >= 1);
+}
+
+#[test]
+fn the_panel_lists_earlier_notes_to_view_adopt_or_delete() {
+    let (mut h, _tx) = notes_app("## Goal\n- mine\n", 8192);
+    set_earlier(&mut h, vec![ended_item("o2", "a2", "orphan"), ended_item("r1", "a0", "restorable")]);
+    h.state_mut().state.notes_open = true;
+    h.run_steps(3);
+    assert!(h.query_all_by_label("Earlier notes in this worktree (2)").count() >= 1);
+    assert!(h.query_all_by_label("Agent a2").count() >= 1);
+    assert!(h.query_all_by_label("orphan, 2.0 KiB, ended 3h ago, deleted in 7d").count() >= 1);
+    assert!(h.query_all_by_label("restorable, 2.0 KiB, ended 3h ago").count() >= 1);
+    // View fetches the text (no engine: says it could not).
+    h.get_all_by_label("View").next().unwrap().click();
+    h.run_steps(3);
+    let e = &h.state().state.earlier["/r/repo"];
+    assert_eq!(e.viewing.as_ref().map(|(id, _)| id.as_str()), Some("o2"));
+    assert!(e.viewing.as_ref().unwrap().1.as_deref().is_some_and(|t| t.contains("could not read")));
+    h.get_by_label("Hide").click();
+    h.run_steps(2);
+    assert!(h.state().state.earlier["/r/repo"].viewing.is_none());
+    // This agent's notes are not empty: Adopt asks first.
+    h.get_all_by_label("Adopt into this agent").next().unwrap().click();
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Replace this agent's notes with them?").count() >= 1);
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().state.earlier["/r/repo"].confirm.is_none());
+    h.get_all_by_label("Delete").nth(1).unwrap().click();
+    h.run_steps(2);
+    let e = &h.state().state.earlier["/r/repo"];
+    assert_eq!(e.confirm, Some((crate::notes_view::Confirm::Delete, "r1".to_string())));
+    assert!(h.query_all_by_label("Delete them for good?").count() >= 1);
+    h.get_by_label("Delete them").click();
+    h.run_steps(3);
+    assert!(h.state().state.toasts.iter().any(|t| t.text.contains("Could not delete the notes")), "no engine");
+    // A worktree with no agent still lists them; Adopt waits for one.
+    h.state_mut().state.store.worktrees[0].agents.clear();
+    h.run_steps(3);
+    assert!(h.query_all_by_label("No agent here: notes belong to an agent.").count() >= 1);
+    assert!(h.query_all_by_label("Earlier notes in this worktree (2)").count() >= 1);
+    use egui_kittest::kittest::NodeT;
+    assert!(h.get_all_by_label("Adopt into this agent").next().unwrap().accesskit_node().is_disabled());
+}
+
+#[test]
+fn a_crashed_agents_notes_are_offered_adopted_and_handed_off() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    let (probe, _, _rx) = world.connect();
+    let repo = world.repo.clone();
+    let notes_of = |agent: &str| {
+        probe.request("notes_get", json!({"worktree_path": repo, "agent_id": agent}), lazyagent_testkit::TIMEOUT)
+    };
+    let ended = || {
+        let v = probe.request("notes_list", json!({"worktree_path": repo}), lazyagent_testkit::TIMEOUT).unwrap();
+        v["notes"].as_array().unwrap().iter().filter(|n| n["state"] != "live").cloned().collect::<Vec<_>>()
+    };
+    let only_agent =
+        |h: &Harness<'static, App>| h.state().state.store.agents(&repo).first().map(|a| a.agent_id.clone());
+    // a1 writes its notes, then exits on its own: an orphan, announced.
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "the agent's prompt", |a| {
+        a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("your turn>"))
+    });
+    let a1 = only_agent(&h).unwrap();
+    let text = "## Goal\n- carried from a1\n";
+    let put = json!({"worktree_path": repo, "agent_id": a1, "text": text, "if_rev": 0});
+    probe.request("notes_put", put, lazyagent_testkit::TIMEOUT).unwrap();
+    h.event(egui::Event::Text("exit 3".into()));
+    h.key_press(egui::Key::Enter);
+    step_until(&mut h, "the orphan announced", |a| {
+        a.state
+            .toasts
+            .iter()
+            .any(|t| t.text == format!("Agent {a1} exited; its notes are kept 7 days (Notes, n: Earlier notes)."))
+    });
+    let orphan = ended();
+    assert_eq!((orphan.len(), orphan[0]["state"].as_str()), (1, Some("orphan")));
+    // The panel lists it even with no agent here.
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    step_until(&mut h, "the list", |a| a.state.earlier.get(&repo).is_some_and(|e| e.items.len() == 1));
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Earlier notes in this worktree (1)").count() >= 1);
+    // Resuming deletes nothing: a2 starts and adopts them from the panel.
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Spawn);
+    h.run_steps(3);
+    h.get_by_label("Resume the last (l)").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "a2", |a| a.state.store.agents(&repo).len() == 1);
+    let a2 = only_agent(&h).unwrap();
+    let k2 = (repo.clone(), a2.clone());
+    step_until(&mut h, "a2's notes in the panel", |a| a.state.notes.get(&k2).is_some_and(|d| d.meta.is_some()));
+    h.run_steps(3);
+    h.get_by_label("Adopt into this agent").click();
+    step_until(&mut h, "adopted", |a| {
+        a.state.notes.get(&k2).is_some_and(|d| d.draft == text && !d.dirty())
+            && a.state.earlier.get(&repo).is_some_and(|e| e.loaded && e.items.is_empty())
+    });
+    assert_eq!(notes_of(&a2).unwrap()["text"], text);
+    assert!(ended().is_empty(), "the orphan is gone");
+    // Stop a2 keeping its notes: an orphan again.
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Stop);
+    step_until(&mut h, "the handoff", |a| {
+        matches!(crate::dialogs::handoff(&a.state, &repo, Some(&a2)), crate::dialogs::Handoff::Offer { .. })
+    });
+    h.run_steps(2);
+    h.get_by_label("Stop, keep notes (k)").click();
+    step_until(&mut h, "a2 stopped, notes kept", |a| {
+        a.state.store.agents(&repo).is_empty()
+            && a.state
+                .toasts
+                .iter()
+                .any(|t| t.text.starts_with(&format!("Agent {a2} stopped; its notes are kept 7 days")))
+    });
+    assert_eq!(ended().len(), 1);
+    // A new conversation would delete them: the dialog says so and carries them.
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Spawn);
+    step_until(&mut h, "the warning", |a| {
+        a.state.earlier.get(&repo).is_some_and(|e| e.loaded && !e.stale && e.items.len() == 1)
+    });
+    h.run_steps(2);
+    assert!(
+        h.query_all_by_label_contains(&format!("A new conversation deletes the earlier notes of Agent {a2}")).count()
+            >= 1
+    );
+    h.get_by_label("Carry them into the new agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "a3", |a| a.state.store.agents(&repo).len() == 1);
+    let a3 = only_agent(&h).unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while notes_of(&a3).unwrap()["text"] != text && Instant::now() < deadline {
+        h.step();
+    }
+    assert_eq!(notes_of(&a3).unwrap()["text"], text, "carried into the new agent");
+    assert!(ended().is_empty(), "the new conversation pruned the old ones");
+    // Stop a3 copying them: on the clipboard, and gone.
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Stop);
+    step_until(&mut h, "the handoff", |a| {
+        matches!(crate::dialogs::handoff(&a.state, &repo, Some(&a3)), crate::dialogs::Handoff::Offer { .. })
+    });
+    h.run_steps(2);
+    h.get_by_label("Copy notes and stop (c)").click();
+    step_until(&mut h, "copied", |a| a.state.last_copied.as_deref() == Some(text));
+    step_until(&mut h, "a3 stopped", |a| a.state.store.agents(&repo).is_empty());
+    assert!(ended().is_empty(), "copy then delete");
+    conn.shutdown();
+}
+
+/// Runs N3's hook on `path` with `payload`, as Claude would; its stdout.
+fn run_notes_hook(world: &lazyagent_testkit::World, path: &std::path::Path, payload: &str) -> String {
+    use std::io::Write;
+    let hook = lazyagent_testkit::source_root().join("src/lazyagent/notes_hook.py");
+    let mut child = std::process::Command::new(&world.python)
+        .arg(&hook)
+        .env("LAZYAGENT_NOTES_PATH", path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned()
+}
+
+/// The MVP demo (plan N5's acceptance), with the fake agent: notes written
+/// in the panel, a compaction re-injects them, the engine restarts, the
+/// agent is restored with the same notes, then stopped with the handoff.
+#[test]
+fn the_mvp_demo_notes_survive_compaction_and_restore_then_hand_off() {
+    let Some((mut world, mut h, conn)) = world_app() else { return };
+    let repo = world.repo.clone();
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    let key = (repo.clone(), h.state().state.store.agents(&repo)[0].agent_id.clone());
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    step_until(&mut h, "the notes loaded", |a| a.state.notes.get(&key).is_some_and(|d| d.meta.is_some()));
+    h.run_steps(3);
+    h.event(egui::Event::Text("- [ ] keep the API stable\n".into()));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    step_until(&mut h, "saved", |a| a.state.notes[&key].base_rev == 1 && !a.state.notes[&key].dirty());
+    let text = h.state().state.notes[&key].draft.clone();
+    let notes_id = h.state().state.notes[&key].meta.as_ref().unwrap().notes_id.clone();
+    let path = notes_file(&world, &notes_id);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::read_to_string(&path).unwrap_or_default() != text && Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Compaction: the hook gives the notes back as context.
+    let out = run_notes_hook(
+        &world,
+        &path,
+        r#"{"hook_event_name": "SessionStart", "source": "compact", "session_id": "c1"}"#,
+    );
+    assert!(out.contains("additionalContext") && out.contains("keep the API stable"), "{out}");
+    // The engine restarts: the agent's notes are a restorable agent's now.
+    world.terminate_engines();
+    world.start_engine();
+    step_until(&mut h, "the restore offer", |a| a.state.link == Link::Connected && a.state.restorable.len() == 1);
+    assert_eq!(h.state().state.restorable[0].notes_id.as_deref(), Some(notes_id.as_str()));
+    step_until(&mut h, "listed as earlier notes", |a| {
+        a.state
+            .earlier
+            .get(&repo)
+            .is_some_and(|e| e.items.iter().any(|n| n.notes_id == notes_id && n.state == "restorable"))
+    });
+    h.get_by_label("Restore all (Shift+R)").click();
+    step_until(&mut h, "the agent back", |a| a.state.store.agent_count() == 1 && a.state.restorable.is_empty());
+    let back = (repo.clone(), h.state().state.store.agents(&repo)[0].agent_id.clone());
+    step_until(&mut h, "its notes in the panel", |a| {
+        a.state.notes.get(&back).and_then(|d| d.meta.as_ref()).is_some_and(|m| m.notes_id == notes_id && m.text == text)
+    });
+    step_until(&mut h, "no earlier notes left", |a| {
+        a.state.earlier.get(&repo).is_some_and(|e| e.loaded && e.items.is_empty())
+    });
+    let out =
+        run_notes_hook(&world, &path, r#"{"hook_event_name": "SessionStart", "source": "resume", "session_id": "c1"}"#);
+    assert!(out.contains("keep the API stable"), "{out}");
+    // Stop with the handoff.
+    h.state_mut().state.open_dialog(crate::dialogs::Kind::Stop);
+    step_until(&mut h, "the handoff", |a| {
+        matches!(crate::dialogs::handoff(&a.state, &back.0, Some(&back.1)), crate::dialogs::Handoff::Offer { .. })
+    });
+    h.run_steps(2);
+    h.key_press(egui::Key::C);
+    step_until(&mut h, "copied", |a| a.state.last_copied.as_deref() == Some(text.as_str()));
+    step_until(&mut h, "stopped", |a| a.state.store.agent_count() == 0);
+    assert!(!path.exists(), "copied, then deleted");
+    conn.shutdown();
+}
+
 #[test]
 fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
     let (app, _tx) = app(vec![
