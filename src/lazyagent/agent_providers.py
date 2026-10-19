@@ -34,6 +34,8 @@ DEFAULT_AGENT_PROVIDER = "claude"
 MCP_SERVER_NAME = "lazyagent_app"
 # The per-spawn token the engine maps to the agent (who calls it over MCP).
 AGENT_TOKEN_ENV = "LAZYAGENT_AGENT_TOKEN"
+# The agent's notes file, for Claude's notes hook (notes_hook.py reads it).
+NOTES_PATH_ENV = "LAZYAGENT_NOTES_PATH"
 
 # Values Claude Code accepts for its crossSessionInbound setting.
 CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
@@ -166,17 +168,25 @@ class AgentProvider:
         socket_path: str | None = None,
         cross_session_inbound: str | None = None,
         agent_token: str | None = None,
+        notes_path: str | None = None,
     ) -> ProviderRuntimeContext:
         """Build provider-specific runtime metadata for the spawned session.
 
         ``cross_session_inbound`` only applies to Claude, the one provider
         with cross-session messaging. ``agent_token`` goes into the MCP
         server's env (``LAZYAGENT_AGENT_TOKEN``): how the engine tells which
-        agent calls it (the notes tools' "my notes").
+        agent calls it (the notes tools' "my notes"). ``notes_path`` (the
+        agent's notes file) is for Claude's notes hook, the one provider
+        whose hooks can re-inject them.
         """
         if self.name == "claude":
             return _build_claude_runtime_context(
-                self, worktree_path, socket_path, cross_session_inbound, agent_token
+                self,
+                worktree_path,
+                socket_path,
+                cross_session_inbound,
+                agent_token,
+                notes_path,
             )
         if self.name == "codex":
             return _build_codex_runtime_context(
@@ -426,6 +436,7 @@ def _build_claude_runtime_context(
     socket_path: str | None = None,
     cross_session_inbound: str | None = None,
     agent_token: str | None = None,
+    notes_path: str | None = None,
 ) -> ProviderRuntimeContext:
     temp_dir = Path(tempfile.mkdtemp(prefix="lazyagent-claude-hooks-"))
     hook_log_path = temp_dir / "hook-events.jsonl"
@@ -436,6 +447,26 @@ def _build_claude_runtime_context(
     hook_script_path.chmod(hook_script_path.stat().st_mode | stat.S_IXUSR)
 
     hook_command = {"type": "command", "command": str(hook_script_path)}
+    # On SessionStart and UserPromptSubmit; SessionStart is logged too: it
+    # brings the conversation id before the first prompt (and the new one
+    # right after a /clear).
+    notes_hooks = [hook_command]
+    env_overrides = {"LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path)}
+    metadata = {
+        "temp_dir": str(temp_dir),
+        "hook_log_path": str(hook_log_path),
+        "hook_script_path": str(hook_script_path),
+        "settings_path": str(settings_path),
+    }
+    if notes_path:
+        # Copied, not run from the package: like log_hook.py it must work
+        # with whatever python3 the agent finds (pipx installs included).
+        notes_hook_path = temp_dir / "notes_hook.py"
+        notes_hook_path.write_text(_notes_hook_script(), encoding="utf-8")
+        notes_hook_path.chmod(notes_hook_path.stat().st_mode | stat.S_IXUSR)
+        notes_hooks.append({"type": "command", "command": str(notes_hook_path)})
+        env_overrides[NOTES_PATH_ENV] = notes_path
+        metadata["notes_hook_path"] = str(notes_hook_path)
 
     hooks_settings: dict = {
         "hooks": {
@@ -445,7 +476,8 @@ def _build_claude_runtime_context(
                     "hooks": [hook_command],
                 }
             ],
-            "UserPromptSubmit": [{"hooks": [hook_command]}],
+            "SessionStart": [{"hooks": notes_hooks}],
+            "UserPromptSubmit": [{"hooks": notes_hooks}],
             "Stop": [{"hooks": [hook_command]}],
             "TaskCompleted": [{"hooks": [hook_command]}],
             "SessionEnd": [{"hooks": [hook_command]}],
@@ -459,12 +491,6 @@ def _build_claude_runtime_context(
         # another permission mode; "accept" delivers it anyway.
         hooks_settings["crossSessionInbound"] = cross_session_inbound
 
-    metadata = {
-        "temp_dir": str(temp_dir),
-        "hook_log_path": str(hook_log_path),
-        "hook_script_path": str(hook_script_path),
-        "settings_path": str(settings_path),
-    }
     if socket_path:
         # Claude Code reads MCP servers from --mcp-config files, not from a
         # --settings file (an mcpServers key there is silently ignored).
@@ -490,11 +516,13 @@ def _build_claude_runtime_context(
         provider_name=provider.name,
         worktree_path=worktree_path,
         observation_mode=provider.observation_mode,
-        env_overrides={
-            "LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path),
-        },
+        env_overrides=env_overrides,
         metadata=metadata,
     )
+
+
+def _notes_hook_script() -> str:
+    return Path(__file__).with_name("notes_hook.py").read_text(encoding="utf-8")
 
 
 def _claude_hook_script() -> str:

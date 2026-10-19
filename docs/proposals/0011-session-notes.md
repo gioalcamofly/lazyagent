@@ -1,6 +1,6 @@
 # 0011. Session notes per agent
 
-- **Status:** Accepted (open questions P1-P8 answered 2026-10-19); plan in [session-notes-plan.md](../design/session-notes-plan.md); N1 (store and lifecycle, engine only) and N2 (protocol, per-spawn token, MCP tools) landed 2026-10-19
+- **Status:** Accepted (open questions P1-P8 answered 2026-10-19); plan in [session-notes-plan.md](../design/session-notes-plan.md); N1 (store and lifecycle, engine only) N2 (protocol, per-spawn token, MCP tools) and N3 (Claude hooks: re-injection, change notice, pinned instruction; the real-Claude check pending) landed 2026-10-19
 - **Design refs:** [engine-split.md](../design/engine-split.md) §4d, §4e, §4g, §6e (manifest); [ui-plan.md](../design/ui-plan.md) §3a, §3b; [desktop-app.md](../design/desktop-app.md) §5
 
 Each agent has one Markdown notes file, outside the worktree, that the user, the agent and the orchestrator read and edit as a shared cheat sheet. The engine owns it, re-injects it after a compaction, a `/clear` or a resume, and deletes it when the agent is gone for good.

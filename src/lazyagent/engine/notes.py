@@ -617,8 +617,12 @@ class NotesStore:
             if expires is not None and expires <= now:
                 drop(meta)
                 continue
-            if is_empty(self._texts[notes_id]):
-                drop(meta)  # nothing to keep
+            if is_empty(self._texts[notes_id]) and not (
+                meta.state == RESTORABLE and meta.instruction
+            ):
+                # Nothing to keep; a restorable agent's pinned instruction
+                # is (its restore brings the same conversation back, Q-N23).
+                drop(meta)
                 continue
             kept.setdefault(meta.worktree_path, []).append(meta)
         if restorable is not None:

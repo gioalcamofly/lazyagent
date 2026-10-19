@@ -14,6 +14,7 @@ from lazyagent.agent_providers import (
     AGENT_TOKEN_ENV,
     DEFAULT_AGENT_PROVIDER,
     MCP_SERVER_NAME,
+    NOTES_PATH_ENV,
     ObservationMode,
     ResumeMode,
     agent_session_name,
@@ -472,3 +473,70 @@ class TestAgentToken:
             "/tmp/wt", socket_path="/tmp/test.sock", agent_token="tok-123"
         )
         assert "tok-123" not in provider.build_command("/tmp/wt", runtime_context=context)
+
+
+class TestClaudeNotesHook:
+    """Claude's notes hook (N3): copied next to log_hook.py, registered on
+    SessionStart and as a second UserPromptSubmit command."""
+
+    NOTES = "/state/notes/abc/0123456789ab.md"
+
+    def _settings(self, context) -> dict:
+        return json.loads(Path(context.metadata["settings_path"]).read_text())
+
+    def _commands(self, settings: dict, event: str) -> list[str]:
+        return [
+            hook["command"]
+            for group in settings["hooks"][event]
+            for hook in group["hooks"]
+        ]
+
+    def test_registered_on_session_start_and_user_prompt_submit(self):
+        context = get_agent_provider("claude").build_runtime_context(
+            "/tmp/wt", notes_path=self.NOTES
+        )
+        settings = self._settings(context)
+        log_hook = context.metadata["hook_script_path"]
+        notes_hook = context.metadata["notes_hook_path"]
+        assert self._commands(settings, "SessionStart") == [log_hook, notes_hook]
+        assert self._commands(settings, "UserPromptSubmit") == [log_hook, notes_hook]
+        for event in ("Stop", "PreToolUse", "PostToolUse", "Notification"):
+            assert notes_hook not in self._commands(settings, event)
+        # Every source: the script filters.
+        assert "matcher" not in settings["hooks"]["SessionStart"][0]
+
+    def test_the_script_is_copied_and_executable(self):
+        context = get_agent_provider("claude").build_runtime_context(
+            "/tmp/wt", notes_path=self.NOTES
+        )
+        script = Path(context.metadata["notes_hook_path"])
+        assert script.parent == Path(context.metadata["temp_dir"])
+        assert script.stat().st_mode & 0o100
+        source = Path(__file__).parents[1] / "src" / "lazyagent" / "notes_hook.py"
+        assert script.read_text() == source.read_text()
+        assert script.read_text().startswith("#!/usr/bin/env python3\n")
+
+    def test_the_notes_path_reaches_the_agents_env(self):
+        provider = get_agent_provider("claude")
+        context = provider.build_runtime_context("/tmp/wt", notes_path=self.NOTES)
+        assert context.env_overrides[NOTES_PATH_ENV] == self.NOTES
+        script = shlex.split(provider.build_command("/tmp/wt", runtime_context=context))[2]
+        assert f"{NOTES_PATH_ENV}={self.NOTES}" in script
+
+    def test_without_notes_only_the_logger_runs(self):
+        context = get_agent_provider("claude").build_runtime_context("/tmp/wt")
+        settings = self._settings(context)
+        log_hook = context.metadata["hook_script_path"]
+        # SessionStart is still logged: the conversation id comes earlier.
+        assert self._commands(settings, "SessionStart") == [log_hook]
+        assert self._commands(settings, "UserPromptSubmit") == [log_hook]
+        assert "notes_hook_path" not in context.metadata
+        assert NOTES_PATH_ENV not in context.env_overrides
+        assert not (Path(context.metadata["temp_dir"]) / "notes_hook.py").exists()
+
+    @pytest.mark.parametrize("name", ["codex", "gemini"])
+    def test_other_providers_get_no_notes_path(self, name):
+        context = get_agent_provider(name).build_runtime_context(
+            "/tmp/wt", notes_path=self.NOTES
+        )
+        assert NOTES_PATH_ENV not in context.env_overrides

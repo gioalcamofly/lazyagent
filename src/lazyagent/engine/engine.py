@@ -238,6 +238,10 @@ class Engine:
         # id by slot.
         self.notes: NotesStore | None = None
         self._notes_ids: dict[tuple[str, str], str] = {}
+        # Notes whose agent's first prompt is still to pin: fresh
+        # conversations only (a resumed one's first prompt is not the
+        # original instruction, Q-N24).
+        self._unpinned: set[str] = set()
         # Each live agent's token (in its MCP server's env) → its slot: who
         # calls the notes methods. In memory only: agents die with us.
         self._tokens: dict[str, tuple[str, str]] = {}
@@ -951,25 +955,7 @@ class Engine:
         )
         self.registry.register(key, agent_id, label=label, session_name=session_name)
         token = secrets.token_urlsafe(24)
-        command, observer = self._agent_command(
-            provider,
-            worktree_path,
-            skip_permissions=skip_permissions,
-            resume_mode=resume_mode,
-            instruction=instruction,
-            session_name=session_name,
-            env=env,
-            spawn_id=spawn_id,
-            resume_conversation=resume_conversation,
-            agent_token=token,
-        )
-        session = AgentSession(
-            command,
-            worktree_path=key,
-            agent_id=agent_id,
-            observer=observer,
-            spawn_id=spawn_id,
-        )
+        # Before the command: Claude's notes hook gets the file's path.
         self._open_notes(
             key,
             agent_id,
@@ -977,6 +963,32 @@ class Engine:
             notes_id=notes_id,
             resume_mode=resume_mode,
             mode=notes_mode,
+            instruction=instruction,
+            provider=provider,
+        )
+        try:
+            command, observer = self._agent_command(
+                provider,
+                worktree_path,
+                skip_permissions=skip_permissions,
+                resume_mode=resume_mode,
+                instruction=instruction,
+                session_name=session_name,
+                env=env,
+                spawn_id=spawn_id,
+                resume_conversation=resume_conversation,
+                agent_token=token,
+                notes_path=self._notes_path(key, agent_id),
+            )
+        except Exception:
+            self._end_notes(self._notes_ids.pop((key, agent_id), None), keep=True)
+            raise
+        session = AgentSession(
+            command,
+            worktree_path=key,
+            agent_id=agent_id,
+            observer=observer,
+            spawn_id=spawn_id,
         )
         self._tokens[token] = (key, agent_id)
         info = self._start_agent(session, label, session_name, AGENT_KIND)
@@ -1014,21 +1026,6 @@ class Engine:
         )
         self.registry.register(ORCHESTRATOR_KEY, "", session_name=session_name)
         token = secrets.token_urlsafe(24)
-        command, observer = self._agent_command(
-            provider,
-            repo_root,
-            skip_permissions=skip_permissions,
-            resume_mode=resume_mode,
-            instruction=instruction,
-            system_prompt=compose_orchestrator_prompt(self.config, repo_root),
-            session_name=session_name,
-            env=env,
-            resume_conversation=resume_conversation,
-            agent_token=token,
-        )
-        session = AgentSession(
-            command, worktree_path=ORCHESTRATOR_KEY, observer=observer
-        )
         self._open_notes(
             ORCHESTRATOR_KEY,
             "",
@@ -1036,6 +1033,29 @@ class Engine:
             notes_id=notes_id,
             resume_mode=resume_mode,
             mode=notes_mode,
+            instruction=instruction,
+            provider=provider,
+        )
+        try:
+            command, observer = self._agent_command(
+                provider,
+                repo_root,
+                skip_permissions=skip_permissions,
+                resume_mode=resume_mode,
+                instruction=instruction,
+                system_prompt=compose_orchestrator_prompt(self.config, repo_root),
+                session_name=session_name,
+                env=env,
+                resume_conversation=resume_conversation,
+                agent_token=token,
+                notes_path=self._notes_path(ORCHESTRATOR_KEY, ""),
+            )
+        except Exception:
+            slot = (ORCHESTRATOR_KEY, "")
+            self._end_notes(self._notes_ids.pop(slot, None), keep=True)
+            raise
+        session = AgentSession(
+            command, worktree_path=ORCHESTRATOR_KEY, observer=observer
         )
         self._tokens[token] = (ORCHESTRATOR_KEY, "")
         return self._start_agent(session, "", session_name, ORCHESTRATOR_KIND)
@@ -1054,6 +1074,7 @@ class Engine:
         spawn_id: str = "",
         resume_conversation: str | None = None,
         agent_token: str | None = None,
+        notes_path: str | None = None,
     ):
         # build_runtime_context touches the filesystem for some providers
         # (hook scripts, settings files), so it is timed separately.
@@ -1069,6 +1090,7 @@ class Engine:
                 socket_path=self.socket_path,
                 cross_session_inbound=self.config.agent.cross_session_inbound,
                 agent_token=agent_token,
+                notes_path=notes_path,
             )
         command = provider.build_command(
             cwd,
@@ -1465,6 +1487,8 @@ class Engine:
         notes_id: str | None,
         resume_mode: ResumeMode,
         mode: str | None,
+        instruction: str | None = None,
+        provider: AgentProvider | None = None,
     ) -> None:
         store = self._notes_store()
         if store is None:
@@ -1479,11 +1503,26 @@ class Engine:
                 key, agent_id, kind, mode=mode or self.config.notes.mode
             ).notes_id
         self._notes_ids[(key, agent_id)] = notes_id
+        if resume_mode != ResumeMode.NEW:
+            return
+        if provider is not None and provider.name != "claude":
+            # Only Claude's hooks report the first prompt (Q-N8): pin the
+            # spawn's instruction for the others.
+            store.set_instruction(notes_id, clip_instruction(instruction))
+        else:
+            self._unpinned.add(notes_id)
+
+    def _notes_path(self, key: str, agent_id: str) -> str | None:
+        notes_id = self._notes_ids.get((key, agent_id))
+        if notes_id is None or self.notes is None:
+            return None
+        return str(self.notes.path(notes_id))
 
     def _end_notes(self, notes_id: str | None, *, keep: bool) -> str | None:
         """An agent ended: its notes become an orphan (``keep``) or go.
         Their text when not empty."""
         store = self.notes
+        self._unpinned.discard(notes_id)
         if store is None or notes_id is None or notes_id not in store:
             return None
         text = store.get(notes_id).text
@@ -1563,9 +1602,13 @@ class Engine:
         session = self.get_session(key, agent_id)
         conversation = session.conversation_id if session is not None else None
         notes_id = self._notes_ids.get((key, agent_id))
-        if conversation and notes_id and self.notes is not None:
-            # A /clear starts a new conversation; the notes follow the agent.
-            self.notes.set_conversation(notes_id, conversation)
+        if notes_id and self.notes is not None:
+            if conversation:
+                # A /clear starts a new conversation; the notes follow the agent.
+                self.notes.set_conversation(notes_id, conversation)
+            if notes_id in self._unpinned and session and session.first_prompt:
+                self._unpinned.discard(notes_id)
+                self.notes.set_instruction(notes_id, session.first_prompt)
         if self.manifest is None:
             return
         if conversation and self.manifest.update(
