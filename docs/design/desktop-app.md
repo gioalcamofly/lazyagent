@@ -165,6 +165,7 @@ All of it exists in v1 today; the desktop app needs **no engine change for the M
 | Restore | `list_restorable`, `restore_agents`, `dismiss_restorable`, `engine.restored`, `restorable.changed` |
 | Attention | `send_agent_input`, `read_agent_output`, `get_pr_info` |
 | Diff | `get_diff {worktree_path, base, max_bytes}` |
+| Session notes (proposal 0011, N4) | `notes_get`, `notes_put {if_rev}` (`CONFLICT` carries `{rev, text}` in `error.data`), `notes.updated`, `notes.removed`; the panel is hidden when `hello.capabilities` lacks `notes_get` |
 
 - Unknown events and fields are ignored; unknown status values are shown raw (§4c of engine-split).
 - **Env (D5):** the app passes its own environment to `spawn_agent` / `open_shell` / `create_worktree` / `remove_worktree` / `restore_agents`, as the TUI does. A `.desktop` launch gets the session's environment, which can lack the shell profile's PATH additions: the app logs the PATH it sends, and `lazyagent desktop` from a shell is the recommended launch until D6 adds a login-shell env probe (Q4).
@@ -410,6 +411,16 @@ As landed:
 - The answer is read with `read_agent_output {lines: 2000}` and searched by marker, not sliced by `total_lines`: an agent that clears its screen (the fake one does) keeps the count still.
 - Found on the way: rows were 21 px apart, not 18 (egui's item spacing), so the file list's jumps landed short and tints had gaps; the rows now touch. egui can report a press held still as a drag that does not move, so a one-line "drag" counts as a click (popup only from the numbers or with shift), and a thread opens on either.
 - **Tests:** the range, the prompts and the answer parser (`diff.rs`); `select_lines_then_add_to_review_or_ask_now` (kittest): drag over three unified lines across both sides → popup `src/f0.rs:-1…+2` → Add to review → the thread under its last line, Submit review (1); split: a click on the code only selects, shift-click another → the right side's lines only → Ask now (no engine: "not sent", the thread stays asked and out of the review); a pending question shows its waiting line, an idle agent whose output cannot be read → "Answered in the agent's terminal.", a marked answer → an `agent` reply and its rows; a click opens the thread. `a_question_reaches_a_real_agent_and_its_answer_comes_back` (real engine): the question in the fake agent's terminal, the fake agent's marked answer (it answers marked questions now) read back into the thread. The render test shows a selection and an answered question.
+
+### Session notes panel (session-notes plan N4, 2026-10-19)
+
+The active agent's notes in a right side panel: `n` outside a terminal (it opens with the editor focused; Esc leaves it, `n` again closes) or the header's **Notes** button; also for the orchestrator. Details in [session-notes-plan.md](session-notes-plan.md) §5 N4.
+
+- **Panel** (`notes_view.rs`): the pinned instruction (collapsible, read-only), a monospace `TextEdit` over the raw Markdown (egui has no Markdown widget), a size meter (amber from 80 %, red at the cap, Save off above it), "last edit 2m ago by agent · rev N · mode …", Save (Ctrl+S) and Revert.
+- **State per agent** (`State.notes`, keyed by worktree + agent id): `base_rev` / `base_text` (what was last read), `draft`, the newest announced rev, an `incoming` text, a `conflict`. `notes.updated` only bumps the announced rev; the shown agent's notes are then fetched. A clean draft takes the new text silently; a dirty one gets "Changed by <by> — Reload (lose mine) / Keep editing (save will conflict)". Save is `notes_put {if_rev: base_rev}`; a `CONFLICT` keeps the draft and shows theirs below it with **Overwrite with mine** (re-put with their rev) and **Take theirs**.
+- **Keys:** the editor is a text field, so the single-letter keys are off while it has the keyboard (`ctx.text_edit_focused()`); `n` / `Ctrl+S` rows in the `?` sheet.
+- **B1 with the panel open:** `LAZYAGENT_BENCH_NOTES=1 lazyagent-desktop --bench echo` opens it on ~6 KiB of notes. On this (busy) machine, three runs each: key → frame built p50 / p95 6.1-9.4 / 11.6-16.9 ms closed, 7.3-8.0 / 13.9-15.2 ms open; frame build 0.8-2.4 ms either way. No difference above the run-to-run noise.
+
 
 ## 11. Final state (2026-10-18)
 
