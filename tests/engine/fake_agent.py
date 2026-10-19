@@ -12,7 +12,10 @@ output for the protocol tests:
 - ``spew N``: prints N bytes of 99-character lines as fast as it can;
 - ``size``: prints the terminal size as ``size <rows>x<cols>``.
 
-Each ends with ``done`` and the prompt.
+Each ends with ``done`` and the prompt. A submitted text that asks for an
+answer between ``⟦answer ID⟧`` and ``⟦end ID⟧`` lines (the desktop diff
+view's questions) gets one after the ``got:`` line, the way Claude Code
+prints it (a bullet, then an indent).
 
 ``--paste`` turns bracketed paste (DECSET 2004) on at startup.
 ``--env=NAME`` prints ``env NAME=<value>`` (``<unset>`` when it is not set)
@@ -22,6 +25,7 @@ before the banner, to show which environment the agent was started with.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import tty
@@ -87,7 +91,10 @@ def main() -> int:
             continue
         out("\x1b[2J\x1b[Hworking\r\n")
         time.sleep(0.3)
-        out(f"got: {submitted!r} paste={pasted}\r\nyour turn> ")
+        out(f"got: {submitted!r} paste={pasted}\r\n")
+        if m := re.search(r"⟦answer (\w+)⟧", submitted):
+            out(f"⏺ ⟦answer {m[1]}⟧\r\n  A fake answer\r\n  on two lines.\r\n  ⟦end {m[1]}⟧\r\n")
+        out("your turn> ")
         pasted = False
 
 

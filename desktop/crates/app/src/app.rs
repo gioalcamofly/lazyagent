@@ -122,6 +122,10 @@ pub struct State {
     pub comment_edit: Option<crate::diff_view::CommentEdit>,
     pub review: Option<crate::diff_view::ReviewForm>,
     pub pending_reviews: Vec<crate::diff_view::PendingReview>,
+    /// The popup on selected diff lines.
+    pub ask: Option<crate::diff_view::AskDraft>,
+    /// Questions waiting for their agent's answer.
+    pub asks: Vec<crate::diff_view::PendingAsk>,
     /// Bumped when comments change (the diff rows carry them).
     pub comments_gen: u64,
     pub saved: crate::persist::Saved,
@@ -176,6 +180,8 @@ impl State {
             comment_edit: None,
             review: None,
             pending_reviews: vec![],
+            ask: None,
+            asks: vec![],
             comments_gen: 0,
             saved,
             saver: crate::persist::Saver::new(saved_path),
@@ -863,7 +869,7 @@ impl App {
         }
         // Single letters belong to a terminal that has the keyboard, and to
         // text fields; otherwise they are the TUI's action keys.
-        let outside = s.dialog.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
+        let outside = s.dialog.is_none() && s.ask.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
         let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         if outside {
             use crate::dialogs::Kind;
@@ -1673,6 +1679,7 @@ impl App {
         crate::dialogs::show(&ctx, &mut self.state);
         self.diff_dialogs(&ctx);
         self.state.pending_reviews();
+        self.state.pending_asks();
         self.state.pending();
         self.toasts(&ctx);
         self.state.stream_policy();
