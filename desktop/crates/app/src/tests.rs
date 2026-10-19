@@ -371,6 +371,54 @@ fn agents_of_a_stopped_engine_are_offered_back_and_restored() {
     conn.shutdown();
 }
 
+fn restorable(id: &str, worktree_path: &str, agent_id: &str, kind: &str) -> serde_json::Value {
+    json!({"id": id, "worktree_path": worktree_path, "agent_id": agent_id, "kind": kind, "provider": "claude",
+           "label": "", "session_name": "", "skip_permissions": false, "conversation_id": null,
+           "instruction": null, "started_at": 1.0, "engine_id": null, "ended_at": 2.0})
+}
+
+#[test]
+fn the_restore_banner_follows_restorable_changed() {
+    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    tx.send(event("restorable.changed", json!({"agents": [restorable("e1", "__orchestrator__", "", "orchestrator")]})))
+        .unwrap();
+    h.run_steps(3);
+    let banner = "1 agent(s) from an earlier session can be brought back: Orchestrator (the orchestrator)";
+    assert_eq!(h.query_all_by_label(banner).count(), 1);
+    // The orchestrator started again in this engine: its entry is consumed.
+    tx.send(event("restorable.changed", json!({"agents": []}))).unwrap();
+    h.run_steps(3);
+    assert!(h.state().state.restorable.is_empty());
+    assert_eq!(h.query_all_by_label(banner).count(), 0);
+    assert_eq!(h.query_all_by_label("Restore all (Shift+R)").count(), 0);
+}
+
+#[test]
+fn an_offered_agent_started_again_leaves_the_banner() {
+    let Some((mut world, mut h, conn)) = world_app() else { return };
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.get_by_label("Spawn").click();
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    world.terminate_engines();
+    world.start_engine();
+    step_until(&mut h, "the restore offer", |a| a.state.link == Link::Connected && a.state.restorable.len() == 1);
+    // Started again with --continue in its worktree, not through the banner:
+    // the engine consumes the entry and says so.
+    let worktree = h.state().state.restorable[0].worktree_path.clone();
+    let (probe, _, _rx) = world.connect();
+    let spawned = probe.request(
+        "spawn_agent",
+        json!({"worktree_path": worktree, "resume_mode": "last", "skip_permissions": false}),
+        lazyagent_testkit::TIMEOUT,
+    );
+    eprintln!("spawned: {spawned:?}");
+    step_until(&mut h, "the banner gone", |a| a.state.restorable.is_empty() && a.state.store.agent_count() == 1);
+    conn.shutdown();
+}
+
 #[test]
 fn single_letter_keys_open_the_dialogs_outside_a_terminal() {
     use crate::dialogs::Kind;

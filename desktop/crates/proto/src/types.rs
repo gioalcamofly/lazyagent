@@ -404,6 +404,9 @@ pub enum EngineEvent {
     JobFinished(JobFinished),
     EngineShutdown(EngineShutdown),
     EngineRestored(Restored),
+    /// The restorable list as it is now (an entry became live, was
+    /// dismissed, or was shown again), without a restore.
+    RestorableChanged(RestorableList),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -427,6 +430,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "job.finished",
     "engine.shutdown",
     "engine.restored",
+    "restorable.changed",
 ];
 
 impl EngineEvent {
@@ -451,6 +455,7 @@ impl EngineEvent {
             "job.finished" => de(&event).map(EngineEvent::JobFinished),
             "engine.shutdown" => de(&event).map(EngineEvent::EngineShutdown),
             "engine.restored" => de(&event).map(EngineEvent::EngineRestored),
+            "restorable.changed" => de(&event).map(EngineEvent::RestorableChanged),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))
