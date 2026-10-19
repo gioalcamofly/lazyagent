@@ -386,6 +386,24 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 - **Header:** buttons first, then the names left to right in what remains; the branch takes at most 60 % of it and the subject shows only when 60 px are left.
 - **Test:** `the_diff_view_keeps_long_names_and_lines_in_their_columns` (kittest, 1000 px window): the header's branch and subject end before Stop/Remove (failed before the fix), every file entry ends left of the rows, shift+wheel scrolls split and unified sideways and clamps at both ends; the render test gained a long name and line.
 
+### Plan: ask the agent about a range of the diff (2026-10-19)
+
+GitHub-style comments on a **range** of lines, wired to the worktree's agent: batch them into the D5 review, or ask now and see the answer under the code. Extends D5 (comments in the app's state file, `review_prompt`, `send_agent_input`); no engine change (proposal 0008's engine-stored threads stay later).
+
+- **Select:** press on a line and drag (either layout; in split the pane you press in is the side, and only that side's lines count), or click a line and shift-click another. A click on a line's numbers still selects that one line. Selections stay inside one file; hunk headers and notes are skipped. The selected lines are tinted.
+- **Popup** (on release, at the pointer): `path:12-15`, a text box (focused), **Add to review** (Ctrl+Enter; batched, sent with Submit review as before), **Ask now**, Cancel (Esc).
+- **Data:** `Comment` gains `start_line` / `start_side` (absent = one line, so existing state files and the review prompt for one line do not change), `code` holds every selected line (`+`/`-`/` ` prefixed for a range), `asked` (sent as a question), and `replies: [{who: "you" | "agent", text}]`. The thread shows under its last line, as comments do.
+- **Review prompt:** a range reads `- path:12-15` with each code line quoted (`  > …`); one line is unchanged. Submit review counts and sends only the threads not asked; clearing after the send clears those only.
+- **Ask now:** sent at once to the worktree's agent (an idle one first, like the review form) with the path, the range, the base, the quoted code and the question, plus one instruction: start the answer with the line `⟦answer <id>⟧` and end it with `⟦end <id>⟧` (a short random id). The app remembers the agent's `total_lines` (`read_agent_output`) before sending; when that agent has run and is idle again it reads the new output and keeps what is between the two marker lines (the `⏺`/indent of the CLI stripped) as the agent's reply in the thread. No markers → the thread says "answered in the agent's terminal". The answer always also stays in the terminal.
+- **Inline threads:** one fixed-height row per line (the list stays fixed-height and virtualised): the comment (first lines), each reply (a few lines, then "… open"), "asking <agent>…" while waiting. A click opens the thread: all of it, edit/delete, and a follow-up **Ask now** (the thread so far goes with it).
+
+Doubts (defaults picked, not blocking):
+
+- *Scraping the terminal for the answer* is best effort (the CLI wraps and decorates its output); markers make it reliable enough, and the terminal stays the source. Hooks (`Stop` with the last message) would be cleaner if the engine exposed them per agent — later.
+- *Ask now while the agent is busy:* sent anyway (a CLI queues typed input, like Send now); the reply is taken when it is next idle after running.
+- *Pending answers are not persisted:* after a restart a waiting question shows "answered in the agent's terminal" once the thread is opened again (the terminal has it).
+- *Unified ranges mixing removed and added lines* are one range anchored at the last line; its `start_side` may differ from `side`.
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |
