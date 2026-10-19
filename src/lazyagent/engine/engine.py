@@ -48,6 +48,8 @@ from lazyagent.engine.events import (
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
+    NOTES_REMOVED,
+    NOTES_UPDATED,
     RESTORABLE_CHANGED,
     UI_COMMAND,
     UI_VIEW_CHANGED,
@@ -65,6 +67,16 @@ from lazyagent.engine.manifest import (
     Manifest,
     clip_instruction,
     manifest_path,
+)
+from lazyagent.engine.notes import (
+    DELETED,
+    MODES as NOTES_MODES,
+    ORPHAN,
+    Meta,
+    NotesStore,
+    is_empty,
+    notes_dir,
+    prune_engine_dirs,
 )
 from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.session import (
@@ -129,6 +141,8 @@ log = logging.getLogger(__name__)
 # agent's status (and the events that follow from it) would lag.
 POLL_AGENTS_INTERVAL = 1.0
 CHECK_HANGS_INTERVAL = 60.0
+# Orphan notes expire in days; an hourly sweep is plenty.
+NOTES_GC_INTERVAL = 3600.0
 
 NOTICE_SEVERITIES = ("information", "warning", "error")
 
@@ -216,6 +230,11 @@ class Engine:
         self._offered: list[str] = []
         # While restore_agents runs: its engine.restored is the change notice.
         self._restoring = False
+        # Session notes (proposal 0011): the store, opened with the manifest
+        # (or, without one, on the first spawn), and each live agent's notes
+        # id by slot.
+        self.notes: NotesStore | None = None
+        self._notes_ids: dict[tuple[str, str], str] = {}
         # Random per engine process: the v1 engine_id, and the manifest's.
         self.instance_id = uuid.uuid4().hex
         self.worktree_service = WorktreeService(
@@ -286,6 +305,9 @@ class Engine:
         self._scheduler.every(
             self._poll_interval, diag.wrap_timer("timer.poll_agents", self.poll_agents)
         )
+        self._scheduler.every(
+            NOTES_GC_INTERVAL, diag.wrap_timer("timer.notes_gc", self._notes_gc)
+        )
         self._scheduler.start()
         # Git status and PR info are polled by the service, once a minute and
         # only for the clients' interest sets.
@@ -339,6 +361,8 @@ class Engine:
         # The agents just stopped stay in it: the next engine offers them.
         if self.manifest is not None:
             await self.manifest.close()
+        if self.notes is not None:
+            await self.notes.flush()
 
     async def _start_ipc(self) -> None:
         from lazyagent.ipc import start_ipc_server
@@ -686,6 +710,11 @@ class Engine:
         self.close_shell(path)
         if self.manifest is not None:
             self.manifest.prune(self._restorable_exists)
+        # Its ended agents' notes go with it.
+        if self.notes is not None:
+            for meta in self.notes.list(path):
+                if meta.notes_id not in self._notes_ids.values():
+                    self.notes.delete(meta.notes_id, DELETED)
 
     def worktrees_payload(self, *, v1: bool = False) -> list[dict[str, Any]]:
         """The worktree list as ``list_worktrees`` / ``worktrees.changed``
@@ -861,6 +890,8 @@ class Engine:
         provider_name: str | None = None,
         resume_conversation: str | None = None,
         agent_id: str | None = None,
+        notes_id: str | None = None,
+        notes_mode: str | None = None,
     ) -> AgentInfo:
         """Start a new agent in a worktree (or the orchestrator, for
         ``kind="orchestrator"``, which runs in the repo root and ignores
@@ -869,9 +900,14 @@ class Engine:
         ``env`` is the environment the agent starts from; ``None`` means the
         engine's own. Emits ``agent.spawned``. ``spawn_id`` is diagnostics
         only. A restore also passes the provider the agent ran with, the
-        conversation to resume and the agent id to take again (a new one
-        when it is in use).
+        conversation to resume, the agent id to take again (a new one
+        when it is in use) and the session notes to carry over (``notes_id``;
+        new notes from the template when missing). A fresh conversation
+        (``resume_mode=new``, no ``notes_id``) is its worktree's most recent
+        agent: the notes of the agents that ended there are deleted.
         """
+        if notes_mode is not None and notes_mode not in NOTES_MODES:
+            raise ValueError(f"Unknown notes mode: {notes_mode!r}")
         provider_name = provider_name or self.config.agent.provider
         if kind == ORCHESTRATOR_KIND:
             info = self._spawn_orchestrator(
@@ -881,6 +917,8 @@ class Engine:
                 env=env,
                 provider_name=provider_name,
                 resume_conversation=resume_conversation,
+                notes_id=notes_id,
+                notes_mode=notes_mode,
             )
             self._remember(
                 info,
@@ -923,6 +961,14 @@ class Engine:
             observer=observer,
             spawn_id=spawn_id,
         )
+        self._open_notes(
+            key,
+            agent_id,
+            AGENT_KIND,
+            notes_id=notes_id,
+            resume_mode=resume_mode,
+            mode=notes_mode,
+        )
         info = self._start_agent(session, label, session_name, AGENT_KIND)
         self._remember(
             info,
@@ -943,6 +989,8 @@ class Engine:
         env: Mapping[str, str] | None,
         provider_name: str,
         resume_conversation: str | None = None,
+        notes_id: str | None = None,
+        notes_mode: str | None = None,
     ) -> AgentInfo:
         if self.has_agent(ORCHESTRATOR_KEY):
             raise ValueError("Orchestrator agent already running")
@@ -968,6 +1016,14 @@ class Engine:
         )
         session = AgentSession(
             command, worktree_path=ORCHESTRATOR_KEY, observer=observer
+        )
+        self._open_notes(
+            ORCHESTRATOR_KEY,
+            "",
+            ORCHESTRATOR_KIND,
+            notes_id=notes_id,
+            resume_mode=resume_mode,
+            mode=notes_mode,
         )
         return self._start_agent(session, "", session_name, ORCHESTRATOR_KIND)
 
@@ -1028,7 +1084,8 @@ class Engine:
         try:
             session.start()
         except Exception:
-            self._stop_agent(key, agent_id)
+            # Kept: a failed restore leaves its entry, and so its notes.
+            self._stop_agent(key, agent_id, notes="keep")
             raise
         return info
 
@@ -1063,35 +1120,61 @@ class Engine:
                 info.worktree_path, info.agent_id, event.exit_code, stopped=False
             )
 
-    def stop_agent(self, key: str, agent_id: str = "") -> AgentInfo:
+    def stop_agent(
+        self, key: str, agent_id: str = "", *, notes: str = "delete"
+    ) -> AgentInfo:
         """Kill an agent (``key`` is a worktree path or ORCHESTRATOR_KEY).
 
         Emits ``agent.status`` (exited) and ``agent.exited`` with
-        ``stopped: true``.
+        ``stopped: true``. Its session notes are deleted, or with
+        ``notes="keep"`` kept as an orphan (see :meth:`stop_agent_with_notes`).
         """
+        return self.stop_agent_with_notes(key, agent_id, notes=notes)[0]
+
+    def stop_agent_with_notes(
+        self, key: str, agent_id: str = "", *, notes: str = "delete"
+    ) -> tuple[AgentInfo, str | None]:
+        """:meth:`stop_agent`, and the agent's final notes text (None when
+        it had none, or only the template): the handoff of a caller with
+        no UI to offer one."""
+        if notes not in ("delete", "keep"):
+            raise ValueError(f"notes must be 'delete' or 'keep', not {notes!r}")
         agent = self._agents.get(key, {}).get(agent_id)
         if agent is None:
             raise ValueError(f"No agent {agent_id!r} in this worktree")
-        self._stop_agent(key, agent_id)
-        return agent.info
+        text = self._stop_agent(key, agent_id, notes=notes)
+        return agent.info, text
 
-    def _stop_agent(self, key: str, agent_id: str) -> None:
+    def _stop_agent(
+        self, key: str, agent_id: str, *, notes: str = "delete"
+    ) -> str | None:
         agent = self._agents.get(key, {}).get(agent_id)
         if agent is None:
-            return
+            return None
         agent.remove_listener()
         agent.session.stop()
-        self._forget_agent(key, agent_id, agent.session.exit_code, stopped=True)
+        return self._forget_agent(
+            key, agent_id, agent.session.exit_code, stopped=True, notes=notes
+        )
 
     def _forget_agent(
-        self, key: str, agent_id: str, exit_code: int | None, *, stopped: bool
-    ) -> None:
+        self,
+        key: str,
+        agent_id: str,
+        exit_code: int | None,
+        *,
+        stopped: bool,
+        notes: str = "delete",
+    ) -> str | None:
+        """Drop a dead agent; its notes are deleted on a stop (unless
+        ``notes="keep"``) and kept as an orphan when it exited on its own.
+        The final notes text, when not empty."""
         bucket = self._agents.get(key, {})
         agent = bucket.pop(agent_id, None)
         if not bucket:
             self._agents.pop(key, None)
         if agent is None:
-            return
+            return None
         agent.remove_listener()
         self._resumed_last.discard((key, agent_id))
         if self.manifest is not None:
@@ -1110,6 +1193,10 @@ class Engine:
                 "exit_code": exit_code,
                 "stopped": stopped,
             },
+        )
+        return self._end_notes(
+            self._notes_ids.pop((key, agent_id), None),
+            keep=not stopped or notes == "keep",
         )
 
     def get_session(self, key: str, agent_id: str = "") -> AgentSession | None:
@@ -1183,7 +1270,7 @@ class Engine:
         """Pick up every agent's latest hook/telemetry events."""
         for session in self._agent_sessions():
             session.poll()
-        if self.manifest is not None:
+        if self.manifest is not None or self.notes is not None:
             for bucket in self._agents.values():
                 for agent in bucket.values():
                     self._note_conversation(
@@ -1261,12 +1348,118 @@ class Engine:
             count = len(self.manifest.restorable)
             if count:
                 log.info("%d agent(s) of an earlier engine can be restored", count)
+            # The engine that keeps the manifest owns the repo's notes.
+            if self.notes is None and self.config.notes.enabled:
+                root = notes_dir(self.repo_root)
+                prune_engine_dirs(root, self.config.notes.orphan_days)
+                self.notes = self._new_notes_store(root)
+                self.notes.load()
+            self._notes_gc()
         return self.manifest
 
     def _restorable_exists(self, entry: Entry) -> bool:
         if entry.kind == ORCHESTRATOR_KIND:
             return bool(self.repo_root) and os.path.isdir(self.repo_root)
         return self.worktree(entry.worktree_path) is not None
+
+    # ------------------------------------------------------------------
+    # Session notes (proposal 0011)
+    # ------------------------------------------------------------------
+
+    def _new_notes_store(self, root: Path) -> NotesStore:
+        config = self.config.notes
+        return NotesStore(
+            root,
+            max_bytes=config.max_bytes,
+            sections=config.sections,
+            orphan_days=config.orphan_days,
+            listener=self._on_notes_event,
+        )
+
+    def _notes_store(self) -> NotesStore | None:
+        """The store; an engine without a manifest (another one holds the
+        repo, or a throwaway engine) keeps its own, in a dir of its own
+        that the holding engine expires."""
+        if self.notes is None and self.config.notes.enabled and self.repo_root:
+            root = notes_dir(self.repo_root) / f"engine-{self.instance_id[:12]}"
+            self.notes = self._new_notes_store(root)
+        return self.notes
+
+    def _on_notes_event(self, kind: str, data: dict[str, Any]) -> None:
+        self.events.emit(NOTES_UPDATED if kind == "updated" else NOTES_REMOVED, data)
+
+    def notes_id(self, key: str, agent_id: str = "") -> str | None:
+        """The live agent's notes id."""
+        return self._notes_ids.get((key, agent_id))
+
+    def _open_notes(
+        self,
+        key: str,
+        agent_id: str,
+        kind: str,
+        *,
+        notes_id: str | None,
+        resume_mode: ResumeMode,
+        mode: str | None,
+    ) -> None:
+        store = self._notes_store()
+        if store is None:
+            return
+        live = set(self._notes_ids.values())
+        if notes_id is not None and notes_id in store and notes_id not in live:
+            store.revive(notes_id, key, agent_id)
+        else:
+            if notes_id is None and resume_mode == ResumeMode.NEW:
+                store.delete_ended(key, live)
+            notes_id = store.create(
+                key, agent_id, kind, mode=mode or self.config.notes.mode
+            ).notes_id
+        self._notes_ids[(key, agent_id)] = notes_id
+
+    def _end_notes(self, notes_id: str | None, *, keep: bool) -> str | None:
+        """An agent ended: its notes become an orphan (``keep``) or go.
+        Their text when not empty."""
+        store = self.notes
+        if store is None or notes_id is None or notes_id not in store:
+            return None
+        text = store.get(notes_id).text
+        if keep:
+            store.mark(notes_id, ORPHAN)
+        else:
+            store.delete(notes_id, DELETED)
+        self._notes_gc()
+        return None if is_empty(text) else text
+
+    def _orphan_notes(self, entry: Entry) -> None:
+        """A consumed entry's notes: not adopted by the agent that runs its
+        conversation (V5), kept as an orphan."""
+        store = self.notes
+        if (
+            store is not None
+            and entry.notes_id in store
+            and entry.notes_id not in self._notes_ids.values()
+        ):
+            store.mark(entry.notes_id, ORPHAN)
+
+    def _notes_exist(self, meta: Meta) -> bool:
+        if meta.kind == ORCHESTRATOR_KIND:
+            return bool(self.repo_root) and os.path.isdir(self.repo_root)
+        return self.worktree(meta.worktree_path) is not None
+
+    def _notes_gc(self) -> None:
+        """Only the latest notes per worktree, orphans expire (plan §2).
+        Not while a restore runs: the entries it took are not live yet."""
+        store = self.notes
+        if store is None or self._restoring:
+            return
+        restorable = None
+        if self.manifest is not None:
+            restorable = {
+                e.notes_id: e.ended_at
+                for e in self.manifest.restorable.values()
+                if e.notes_id
+            }
+        store.gc(set(self._notes_ids.values()), restorable, self._notes_exist)
 
     def _remember(
         self,
@@ -1279,6 +1472,7 @@ class Engine:
         resume_conversation: str | None = None,
     ) -> None:
         if self.manifest is None:
+            self._notes_gc()
             return
         slot = (info.worktree_path, info.agent_id)
         if resume_mode == ResumeMode.RESUME_LAST and not resume_conversation:
@@ -1295,15 +1489,21 @@ class Engine:
                 skip_permissions=skip_permissions,
                 conversation_id=resume_conversation,
                 instruction=clip_instruction(instruction),
+                notes_id=self._notes_ids.get(slot),
             )
         )
         self._reconcile_restorable()
+        self._notes_gc()
 
     def _note_conversation(self, key: str, agent_id: str) -> None:
-        if self.manifest is None:
-            return
         session = self.get_session(key, agent_id)
         conversation = session.conversation_id if session is not None else None
+        notes_id = self._notes_ids.get((key, agent_id))
+        if conversation and notes_id and self.notes is not None:
+            # A /clear starts a new conversation; the notes follow the agent.
+            self.notes.set_conversation(notes_id, conversation)
+        if self.manifest is None:
+            return
         if conversation and self.manifest.update(
             key, agent_id, conversation_id=conversation
         ):
@@ -1375,6 +1575,7 @@ class Engine:
             if (match := self._live_match(entry)) is not None and match[0]
         ]
         for entry_id, by in live:
+            self._orphan_notes(manifest.restorable[entry_id])
             self._consumed[entry_id] = self._live_where(by)
             log.info(
                 "restorable %s is live here (%s); no longer offered",
@@ -1405,7 +1606,8 @@ class Engine:
     def list_restorable(self) -> list[Entry]:
         """Agents earlier engines ran when they ended and that do not run
         here now, oldest first."""
-        self._require_manifest().prune(self._restorable_exists)
+        if self._require_manifest().prune(self._restorable_exists):
+            self._notes_gc()
         self._reconcile_restorable()
         return self._offerable()
 
@@ -1413,9 +1615,13 @@ class Engine:
         """Stop offering these agents (every one when ``ids`` is None)."""
         manifest = self._require_manifest()
         wanted = list(manifest.restorable) if ids is None else list(ids)
-        dismissed = [entry.id for entry in manifest.take(wanted)]
+        taken = manifest.take(wanted)
+        for entry in taken:
+            if self.notes is not None and entry.notes_id in self.notes:
+                self.notes.delete(entry.notes_id, DELETED)
+        self._notes_gc()
         self._announce_restorable()
-        return dismissed
+        return [entry.id for entry in taken]
 
     async def restore_agents(
         self,
@@ -1438,6 +1644,7 @@ class Engine:
             result = await self._restore_agents(manifest, ids, env)
         finally:
             self._restoring = False
+        self._notes_gc()
         # Clients fetch the list again on engine.restored.
         self._announce_restorable(quiet=True)
         self.events.emit(ENGINE_RESTORED, result)
@@ -1473,6 +1680,7 @@ class Engine:
                 sure, live = match
                 where = self._live_where(live)
                 if sure:
+                    self._orphan_notes(entry)
                     self._consumed[entry.id] = where
                     reason = f"already running in this engine ({where})"
                 else:
@@ -1502,6 +1710,7 @@ class Engine:
                     provider_name=entry.provider,
                     resume_conversation=entry.conversation_id,
                     agent_id=entry.agent_id or None,
+                    notes_id=entry.notes_id,
                 )
             except (ValueError, KeyError, OSError, WorktreeManagerError) as e:
                 manifest.restorable[entry.id] = entry

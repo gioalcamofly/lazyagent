@@ -10,6 +10,8 @@ from lazyagent.agent_providers import (
     DEFAULT_AGENT_PROVIDER,
     normalize_provider_name,
 )
+from lazyagent.engine.notes import DEFAULT_SECTIONS as NOTES_SECTIONS
+from lazyagent.engine.notes import MODES as NOTES_MODES
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -60,6 +62,23 @@ class EngineConfig:
     restore_on_start: bool = False
 
 
+NOTES_MAX_BYTES_RANGE = (1024, 65536)
+
+
+@dataclass
+class NotesConfig:
+    """Per-agent session notes (proposal 0011)."""
+
+    enabled: bool = True
+    # Who may write: manual, propose or free. Until propose mode lands (N6)
+    # "propose" behaves as "manual".
+    mode: str = "propose"
+    max_bytes: int = 8192
+    # How long an orphan (its agent ended without a stop) is kept.
+    orphan_days: int = 7
+    sections: list[str] = field(default_factory=lambda: list(NOTES_SECTIONS))
+
+
 @dataclass
 class Config:
     """Application configuration loaded from .lazyagent.toml."""
@@ -68,6 +87,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
+    notes: NotesConfig = field(default_factory=NotesConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -121,8 +141,35 @@ def load_config(repo_root: str | Path) -> Config:
         ),
         orchestrator=orchestrator_config,
         engine=engine_config,
+        notes=_notes_config(data.get("notes", {})),
         default_branch=default_branch,
     )
+
+
+def _notes_config(data: object) -> NotesConfig:
+    """``[notes]``; a missing or invalid value keeps its default."""
+    config = NotesConfig()
+    if not isinstance(data, dict):
+        return config
+    if isinstance(data.get("enabled"), bool):
+        config.enabled = data["enabled"]
+    if data.get("mode") in NOTES_MODES:
+        config.mode = data["mode"]
+    low, high = NOTES_MAX_BYTES_RANGE
+    max_bytes = data.get("max_bytes")
+    if type(max_bytes) is int and low <= max_bytes <= high:
+        config.max_bytes = max_bytes
+    orphan_days = data.get("orphan_days")
+    if type(orphan_days) is int and orphan_days >= 0:
+        config.orphan_days = orphan_days
+    sections = data.get("sections")
+    if (
+        isinstance(sections, list)
+        and sections
+        and all(isinstance(s, str) and s.strip() and "\n" not in s for s in sections)
+    ):
+        config.sections = [s.strip() for s in sections]
+    return config
 
 
 def format_command(

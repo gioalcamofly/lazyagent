@@ -1,6 +1,6 @@
 # Session notes: implementation plan
 
-- **Status:** plan (N0), 2026-10-19. Each phase gets an "As landed" note in §5 when it merges.
+- **Status:** N1 landed 2026-10-19 (N0 plan merged). Each phase gets an "As landed" note in §5 when it merges.
 - **Proposal:** [0011-session-notes.md](../proposals/0011-session-notes.md) (accepted; P1-P8 answered). This plan does not repeat its rationale, only what to build, where, and how to prove it.
 - **Base:** `develop` @ `c0c3ac0` (PR 9 manifest + Q31 landed; desktop D1-D6 landed).
 - **MVP** = N1-N5: the notes file and its lifecycle, protocol + MCP tools, re-injection after compaction / `/clear` / resume, and the desktop panel. TUI and web panels, propose mode, the attention queue and templates come after.
@@ -270,7 +270,14 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 
 ## 5. As landed
 
-(Empty until N1 merges.)
+### N1: the store and its lifecycle (`notes-n1-store`, 2026-10-19)
+
+- **Store** (`engine/notes.py`, stdlib only): `NotesStore` keeps every meta and text in memory; a change bumps `rev` on the loop and schedules that id's write in a worker thread (`.md` then `.json`, temp + `fsync` + `os.replace`, dir 0700, files 0600), one write in flight per id, a burst coalesced into one write; without a running loop it writes at once (unit tests). `flush()` waits for pending writes; `Engine.stop` calls it. The API is the planned one plus `revive(id, worktree, agent_id)` (carry on restore), `delete_ended(worktree, live)` (rule 5), `path(id)` (for N3's `LAZYAGENT_NOTES_PATH`), `expires_at(meta)`, and `prune_engine_dirs` (Q-N10). Results are `Notes(meta, text, max_bytes)` with `size`, `warning` (≥ 80 %), `empty`. Errors: `NotesConflict(rev, text)`, `NotesTooLarge(size, max)`, both `NotesError(ValueError)`; message "notes would be N bytes (max M): condense them". Loading at engine start is synchronous, like `Manifest.load` (Q-N14); corrupt or half-written metas are skipped and logged.
+- **Engine:** the lock holder opens the store in `open_manifest` (load, then GC); an engine without a manifest gets its own on the first spawn (Q-N10). `self._notes_ids` maps each live slot to its notes id, set before `session.start()`, so every exit path finds it. `spawn_agent(..., notes_id=None, notes_mode=None)`: a restore passes `entry.notes_id` and the notes are revived under the (possibly new) agent id; a fresh conversation (`resume_mode=new`, no `notes_id`) first deletes the worktree's ended notes (rule 5); else new notes from the template. `Entry.notes_id` is recorded in `_remember`. `_note_conversation` (now run with or without a manifest) records the conversation id in the meta. `_forget_agent` orphans the notes when the agent exited on its own, deletes them on a stop; `stop_agent(key, agent_id, *, notes="delete"|"keep")` keeps returning `AgentInfo`, `stop_agent_with_notes` returns `(info, final text or None)` (Q-N11). Consumed entries (Q31, in `_reconcile_restorable` and inside a restore) orphan their notes; `dismiss_restorable` and `remove_worktree` delete them. GC runs after `open_manifest`, every spawn, exit, stop, dismiss, restore (once, at its end: not while it runs, its taken entries are not live yet), `list_restorable` when it pruned, and hourly (`NOTES_GC_INTERVAL`).
+- **GC as built:** live ids kept (state `live`); a gone worktree's notes deleted; notes of restorable entries marked `restorable` with the entry's `ended_at`; other non-orphans deleted (no right); orphans past `orphan_days` deleted; ended notes that are only the template deleted (Q-N12); then the newest per worktree is kept, ties broken by the newest agent (Q-N13). Without a manifest only the TTL, gone worktrees and empties apply.
+- **Events:** `notes.updated {worktree_path, agent_id, notes_id, rev, size, by}` on every text write (not on create: `agent.spawned` is the notice, the template is `rev 0`, `by null`); `notes.removed {notes_id, worktree_path, agent_id, reason}` with `deleted`, `orphaned` (live → orphan) and `pruned` (GC, Q-N16). In `events.json`, `protocol.EVENTS`, and the desktop's `IGNORED_EVENTS` until N4. `restorable_agent` gained an optional `notes_id` (schema, golden fixture, desktop `RestorableAgent`).
+- **Config:** `[notes] enabled, mode, max_bytes (1024-65536), orphan_days (≥ 0), sections`; an invalid value keeps its default. `enabled = false` creates no notes at all. `propose` is the default and behaves as `manual` until N6 (nothing writes as an agent before N2 anyway). Not yet in `get_config`: no client needs it before N4.
+- **Tests:** tests/engine/test_notes.py (27: template and sections, `is_empty`, put/conflict, append into existing/last/missing sections, indented lines, replace_section bounds, cap and warning, 0600/0700 and no temp file, delete with the hook's sidecar, load round trip with corrupt metas logged, writes off the loop thread and coalesced, GC rules 1-5 one test each plus updated_at fallback, unreferenced/empty, no-manifest mode, orphan event once, `prune_engine_dirs`, `notes_dir`); tests/engine/test_notes_lifecycle.py (22, real PTYs: every row of 0011's lifecycle table except the hook rows (N3), plus the orchestrator (Q-N9), a failed restore, no manifest, `enabled = false`, writes off the loop thread); tests/test_config.py (+4). Full `uv run pytest` green; desktop `cargo fmt --check`, `clippy -D warnings`, `cargo test` green.
 
 ---
 
@@ -289,3 +296,15 @@ Decisions taken in this plan that the user may want to revisit (recommended choi
 | Q-N7 | The `--continue` spawn that Q31 consumes an entry for (V5): adopt the entry's notes automatically when the match is "sure" without an exact id? | No: orphan, offered in the panel | Adopt on a "sure" match |
 | Q-N8 | Pinned instruction source: the first `UserPromptSubmit` (P-proposal) vs the spawn `instruction` argument | First `UserPromptSubmit`, falling back to the spawn instruction for providers without hooks | Spawn instruction only |
 | Q-N9 | Orphan / restorable notes of the **orchestrator** (single slot, repo root) | Same rules; its "worktree" is the orchestrator key | Never orphan the orchestrator's notes (always carried to the next orchestrator) |
+
+Raised while building N1 (choice taken, implemented):
+
+| # | Doubt | Choice (N1) | Alternative |
+|---|---|---|---|
+| Q-N10 | Where an engine without a manifest (Q-N4) keeps its notes: in the shared dir the lock holder's GC would delete them (no entry references them) | Its own subdir `notes/<hash>/engine-<instance id>/`, never loaded by others; the lock holder removes such dirs untouched for `orphan_days` | Shared dir, with the engine id in the meta and the holder sparing other engines' live notes |
+| Q-N11 | `stop_agent` "returns the final text" vs callers that use its `AgentInfo` | `stop_agent` unchanged (+ `notes=`), `stop_agent_with_notes` returns `(info, text)`; N2's method handler uses the latter | Change `stop_agent`'s return type |
+| Q-N12 | Ended notes that are only the template | Never kept: an empty orphan or restorable notes is pruned at once (a restore then starts from a new template) | Keep them like any other until TTL / "only the latest" |
+| Q-N13 | Ties in "only the latest": the agents of one engine all end at its take-over time | The newest agent (notes `created_at`) wins | The most recently written notes |
+| Q-N14 | Loading the notes at engine start reads files on the loop | Synchronous, as `Manifest.load` (once, ≤ a few dozen 8 KiB files); every write and delete is off the loop | Load in a worker thread before serving |
+| Q-N15 | A spawn whose process fails to start | Its notes are kept as an orphan (a failed restore keeps its entry's notes; a fresh spawn's template is pruned as empty) | Delete them |
+| Q-N16 | `notes.removed` reasons: 0011 names `deleted`, `orphaned`, `adopted` | Plus `pruned` for GC removals (only the latest, TTL, worktree gone, a fresh agent) | Report GC removals as `deleted` |

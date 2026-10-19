@@ -71,6 +71,14 @@ EVENT_SAMPLES = {
             },
         ],
     },
+    "notes.updated": {
+        "worktree_path": "/r", "agent_id": "a2", "notes_id": "3f2a9c1d0b7e", "rev": 4,
+        "size": 312, "by": "user",
+    },
+    "notes.removed": {
+        "notes_id": "3f2a9c1d0b7e", "worktree_path": "/r", "agent_id": "a2",
+        "reason": "orphaned",
+    },
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

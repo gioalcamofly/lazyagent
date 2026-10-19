@@ -199,3 +199,62 @@ class TestFormatCommand:
     def test_force_not_in_template_is_ignored(self):
         result = format_command("script.sh {name}", name="wt", force="--force")
         assert result == "script.sh wt"
+
+
+class TestNotesConfig:
+    def test_defaults(self, tmp_path: Path):
+        notes = load_config(tmp_path).notes
+        assert notes == Config().notes
+        assert (notes.enabled, notes.mode, notes.max_bytes, notes.orphan_days) == (
+            True,
+            "propose",
+            8192,
+            7,
+        )
+        assert notes.sections == [
+            "Goal",
+            "Constraints (don't touch)",
+            "Decisions",
+            "Doubts",
+            "Pending",
+        ]
+
+    def test_parses_the_section(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            """\
+[notes]
+enabled = false
+mode = "free"
+max_bytes = 4096
+orphan_days = 2
+sections = ["Scope", " Risks "]
+"""
+        )
+        notes = load_config(tmp_path).notes
+        assert (notes.enabled, notes.mode, notes.max_bytes, notes.orphan_days) == (
+            False,
+            "free",
+            4096,
+            2,
+        )
+        assert notes.sections == ["Scope", "Risks"]
+
+    def test_invalid_values_keep_their_defaults(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            """\
+[notes]
+enabled = "yes"
+mode = "loud"
+max_bytes = 100
+orphan_days = -1
+sections = ["Goal", ""]
+"""
+        )
+        assert load_config(tmp_path).notes == Config().notes
+
+    def test_bounds_and_types(self, tmp_path: Path):
+        for value, expected in (("1024", 1024), ("65536", 65536), ("65537", 8192), ("true", 8192), ("2048.0", 8192)):
+            (tmp_path / ".lazyagent.toml").write_text(f"[notes]\nmax_bytes = {value}\n")
+            assert load_config(tmp_path).notes.max_bytes == expected, value
+        (tmp_path / ".lazyagent.toml").write_text('notes = "on"\n')
+        assert load_config(tmp_path).notes == Config().notes
