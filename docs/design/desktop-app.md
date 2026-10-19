@@ -361,7 +361,7 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
   | first screen | **6.1-6.3 ms** | 29-63 ms | 100 |
   | a scroll step (60 px), CPU per frame p50 / p95 | **0.43-0.46 / 0.52-0.55 ms** | rows 3.0-3.4 / 4.6-6.0 ms | 17 ms frame, 2 ms CPU (mine) |
 
-- **Not done:** "open in the editor"; side-by-side long lines are clipped, not wrapped (as on the web); engine-stored review threads (U8).
+- **Not done:** "open in the editor"; long lines scroll sideways, not wrapped (see the diff columns fix below); engine-stored review threads (U8).
 
 ### D6: packaging, polish, final manual pass (2026-10-18)
 
@@ -377,6 +377,14 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 
 - Reported on a 27-worktree repo, fine on a 5-worktree one. egui moves the keyboard focus itself on unmodified arrow keys (and Tab) to the nearest focusable widget in that direction; with a long list a row sits below the middle of the sidebar's focus area, so the first ↓ moved the selection *and* the focus, and `j`/`k`/↑/↓ then went nowhere (they act only while the sidebar has the focus). The sidebar now sets a focus-lock filter for the arrows, as the terminal view already did; Tab still moves the focus. There are no Home/End/PageUp/PageDown keys in the sidebar.
 - **Test:** `sidebar_keys_walk_a_long_list` (kittest, 27 worktrees with long branch names and detached ones): ↓×5, j×3, ↑, k, then ←/→ do not take the keyboard. Failed at the second ↓ before the fix.
+
+### Fix: the diff's columns overlapped (2026-10-19)
+
+- Seen on a 51-file branch in Split: long file names and their +/− counts ran over the line numbers (a truncated label in a horizontal row takes the remaining width, so the counts after it overflowed, and a vertical-only `ScrollArea` grows to its content); split panes clipped long lines with no way to read them; the worktree header's branch and "last: …" subject ran under its buttons (the labels took the row before the right-to-left buttons were laid out).
+- **File list:** a resizable `Panel::left` inside the diff (default 260 px, 120-640); each entry paints its counts right-aligned and its name elided (`TextWrapping::truncate_at_width`) into what is left, full path on hover and as its accessible label.
+- **Long lines scroll sideways**, one shared offset for both layouts (so split's two panes stay aligned): shift+wheel or a sideways swipe over the code, or the bar under it; line numbers and +/− marks stay put, the code clips past them and to its own pane. The limit is the longest line (tabs as four) against the narrowest code column.
+- **Header:** buttons first, then the names left to right in what remains; the branch takes at most 60 % of it and the subject shows only when 60 px are left.
+- **Test:** `the_diff_view_keeps_long_names_and_lines_in_their_columns` (kittest, 1000 px window): the header's branch and subject end before Stop/Remove (failed before the fix), every file entry ends left of the rows, shift+wheel scrolls split and unified sideways and clamps at both ends; the render test gained a long name and line.
 
 ## 11. Final state (2026-10-18)
 
