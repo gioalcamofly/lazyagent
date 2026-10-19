@@ -997,6 +997,11 @@ impl App {
             s.focus = Focus::Sidebar;
             s.focus_request = None;
         }
+        // Otherwise egui moves the focus on ↑/↓ to the nearest focusable
+        // widget that way (a row below the middle of a long list) and j/k/↑/↓
+        // stop after one row.
+        let arrows = egui::EventFilter { vertical_arrows: true, horizontal_arrows: true, ..Default::default() };
+        ui.memory_mut(|m| m.set_focus_lock_filter(sidebar_id, arrows));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Worktrees").strong());

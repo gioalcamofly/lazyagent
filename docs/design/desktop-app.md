@@ -373,6 +373,11 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 - Left on this machine afterwards: nothing (the installed entry, icon, recent list and the scratch engine's log were removed; no process left).
 - **Tests:** cargo 91 = proto 26, term 16, app 49 (+4: icon, `--install` output, recent repos, the login-shell probe with an rc file that prints noise).
 
+### Fix: sidebar arrows stopped after one row (2026-10-19)
+
+- Reported on a 27-worktree repo, fine on a 5-worktree one. egui moves the keyboard focus itself on unmodified arrow keys (and Tab) to the nearest focusable widget in that direction; with a long list a row sits below the middle of the sidebar's focus area, so the first ↓ moved the selection *and* the focus, and `j`/`k`/↑/↓ then went nowhere (they act only while the sidebar has the focus). The sidebar now sets a focus-lock filter for the arrows, as the terminal view already did; Tab still moves the focus. There are no Home/End/PageUp/PageDown keys in the sidebar.
+- **Test:** `sidebar_keys_walk_a_long_list` (kittest, 27 worktrees with long branch names and detached ones): ↓×5, j×3, ↑, k, then ←/→ do not take the keyboard. Failed at the second ↓ before the fix.
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

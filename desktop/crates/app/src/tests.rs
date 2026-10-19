@@ -808,3 +808,51 @@ fn render_the_diff_view() {
     h.run_steps(3);
     h.render().unwrap().save(dir.join("lazyagent-desktop-diff-split.png")).unwrap();
 }
+
+#[test]
+fn sidebar_keys_walk_a_long_list() {
+    // A repo shaped like the one that broke: many worktrees (rows below the
+    // sidebar's middle are candidates for egui's arrow-key focus moves),
+    // long branch names, detached ones.
+    let mut wts = vec![worktree("/r/repo", "master", vec![])];
+    for i in 0..26 {
+        let mut w = worktree(
+            &format!("/r/repo-{i:02}"),
+            &format!("PROJ-{i:05}-a-very-long-branch-name-{}", "x".repeat(40)),
+            vec![],
+        );
+        if i % 9 == 8 {
+            w["branch"] = serde_json::Value::Null;
+        }
+        wts.push(w);
+    }
+    let (app, _tx) = app(wts);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let sel = |h: &Harness<'static, App>| h.state().state.selected.clone().unwrap();
+    let press = |h: &mut Harness<'static, App>, mods: egui::Modifiers, key: egui::Key| {
+        h.key_press_modifiers(mods, key);
+        h.run_steps(2);
+    };
+    press(&mut h, egui::Modifiers::CTRL, egui::Key::K);
+    assert_eq!(sel(&h), "/r/repo");
+    for i in 0..5 {
+        press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowDown);
+        assert_eq!(sel(&h), format!("/r/repo-{i:02}"), "↓ #{}", i + 1);
+    }
+    for i in 0..3 {
+        press(&mut h, egui::Modifiers::NONE, egui::Key::J);
+        assert_eq!(sel(&h), format!("/r/repo-{:02}", i + 5), "j #{}", i + 1);
+    }
+    for _ in 0..3 {
+        press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowUp);
+    }
+    assert_eq!(sel(&h), "/r/repo-04");
+    press(&mut h, egui::Modifiers::NONE, egui::Key::K);
+    assert_eq!(sel(&h), "/r/repo-03");
+    // Nor do the side arrows.
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowLeft);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowDown);
+    assert_eq!(sel(&h), "/r/repo-04");
+}
