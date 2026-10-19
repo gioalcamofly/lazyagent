@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.widgets import Input, TabbedContent
 from textual.worker import WorkerState
 
+from lazyagent.worktree_manager import PrDiff
 from lazyagent.app import LazyAgent
 from tests.tui_backends import settle, tui_app
 from lazyagent.config import Config, WorktreeConfig
@@ -105,6 +106,14 @@ class DummyWorktreeManager:
     @staticmethod
     def get_diff(worktree_path: str) -> str:
         return f"diff for {worktree_path}"
+
+    @staticmethod
+    def resolve_base_ref(worktree_path, branch):
+        return None
+
+    @staticmethod
+    def get_pr_diff(worktree_path, base, *, max_bytes=None) -> PrDiff:
+        return PrDiff("", f"diff for {worktree_path}", "")
 
     @staticmethod
     def is_gh_available() -> bool:
@@ -659,10 +668,12 @@ class TestPrStatusDebounce:
             final = await _select_worktree(app, 1)
 
             # Firing what the timer would call looks up only where we landed.
+            # (The diff asks too, for the PR's base; the real service runs
+            # one gh call for both, which this fake does not model.)
             app._run_selection_refresh()
             await _drain_workers(app)
 
-        assert lookups == [[final.path]]
+        assert {tuple(paths) for paths in lookups} == {(final.path,)}
 
     @pytest.mark.asyncio
     async def test_leaving_for_the_orchestrator_cancels_the_pr_lookup(
@@ -767,8 +778,8 @@ class TestDiffRefreshDebounce:
         app = tui_app(backend_kind)
         diffs: list[str] = []
         monkeypatch.setattr(
-            DummyWorktreeManager, "get_diff",
-            staticmethod(lambda path: diffs.append(path) or ""),
+            DummyWorktreeManager, "get_pr_diff",
+            staticmethod(lambda path, base, **_: diffs.append(path) or PrDiff("", "", "")),
         )
 
         async with app.run_test():
@@ -790,8 +801,8 @@ class TestDiffRefreshDebounce:
         app = tui_app(backend_kind)
         diffs: list[str] = []
         monkeypatch.setattr(
-            DummyWorktreeManager, "get_diff",
-            staticmethod(lambda path: diffs.append(path) or ""),
+            DummyWorktreeManager, "get_pr_diff",
+            staticmethod(lambda path, base, **_: diffs.append(path) or PrDiff("", "", "")),
         )
 
         async with app.run_test():

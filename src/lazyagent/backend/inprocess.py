@@ -115,6 +115,9 @@ class InProcessBackend(Backend):
     async def get_diff(self, path: str) -> str:
         return await self.engine.get_diff(path)
 
+    async def get_pr_diff(self, path: str, *, fetch: bool = False) -> dict[str, Any]:
+        return await self.engine.get_pr_diff(path, fetch=fetch)
+
     async def list_restorable(self) -> list[dict[str, Any]]:
         if self.engine.manifest is None:
             return []

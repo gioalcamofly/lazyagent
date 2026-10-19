@@ -12,7 +12,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, TextFormat,
     Ui, Vec2,
 };
-use lazyagent_proto::types::DiffResult;
+use lazyagent_proto::types::{DiffBase, DiffResult};
 use serde_json::json;
 
 use crate::app::{App, Severity, State};
@@ -32,6 +32,8 @@ pub enum DRow {
     /// A thread's first line; `Reply` its next ones (fixed-height rows).
     Comment(usize, String),
     Reply(usize, String, usize),
+    /// The heading over the uncommitted files.
+    Uncommitted,
 }
 
 /// Selected lines: one file, `from`..=`to` in its rows (either order); in
@@ -63,6 +65,7 @@ pub fn selected_comment(d: &Diff, sel: &Sel) -> Option<Comment> {
             None => true,
         }),
     )
+    .map(|c| Comment { uncommitted: f.uncommitted, ..c })
 }
 
 fn code_row(row: &diff::Row) -> bool {
@@ -71,13 +74,20 @@ fn code_row(row: &diff::Row) -> bool {
 
 pub struct DiffState {
     pub path: String,
+    /// The Base field: the resolved base once loaded, or what was typed.
     pub base: String,
+    /// The base asked for; empty lets the engine pick (the PR's base).
+    pub requested: String,
+    /// What the diff is against, once loaded.
+    pub resolved: Option<DiffBase>,
+    /// Why there is no base, or why the fetch failed.
+    pub note: Option<String>,
     pub loading: bool,
     pub error: Option<String>,
     pub diff: Arc<Diff>,
     pub rows: Vec<DRow>,
-    /// Rebuild `rows` when the layout or the comments change.
-    built_for: Option<(bool, u64)>,
+    /// Rebuild `rows` when the layout, the comments or what is shown change.
+    built_for: Option<(bool, u64, bool)>,
     /// Which load a reply belongs to.
     seq: u64,
     pub scroll_to: Option<usize>,
@@ -95,12 +105,36 @@ pub struct DiffState {
 }
 
 impl DiffState {
+    /// What the engine said the diff is against.
+    pub fn applied(&mut self, base: Option<DiffBase>, base_error: Option<String>, fetch_error: Option<String>) {
+        if self.requested.is_empty() {
+            self.base = base.as_ref().map(|b| b.ref_.clone()).unwrap_or_default();
+        }
+        self.note = match (fetch_error, base_error) {
+            (Some(f), _) => Some(format!("Fetch failed: {f}")),
+            (None, Some(b)) if base.is_none() => Some(format!("Only uncommitted changes: {b}")),
+            _ => None,
+        };
+        self.resolved = base;
+    }
+
+    /// The base the Base field asks for: empty (let the engine pick)
+    /// when it is cleared, or still shows the base the engine picked.
+    pub fn base_request(&self) -> String {
+        let field = self.base.trim();
+        let picked = self.requested.is_empty() && self.resolved.as_ref().is_some_and(|b| b.ref_ == field);
+        if picked { String::new() } else { field.to_string() }
+    }
+
     /// A diff already parsed (tests, benches).
     #[cfg(test)]
     pub fn loaded(path: &str, base: &str, diff: Diff) -> DiffState {
         DiffState {
             path: path.into(),
             base: base.into(),
+            requested: base.into(),
+            resolved: None,
+            note: None,
             loading: false,
             error: None,
             diff: Arc::new(diff),
@@ -191,22 +225,31 @@ impl State {
         }
         self.diff_open = true;
         if self.diff.as_ref().is_none_or(|d| d.path != path) {
-            let main = self.store.worktree(&path).is_some_and(|w| w.is_main);
-            // The main worktree diffs its working tree; a branch, its commits too.
-            let base = if main {
-                String::new()
-            } else {
-                crate::dialogs::default_base(self.store.config.as_ref(), &self.store.worktrees)
-            };
-            self.load_diff(&path, base);
+            // The engine picks the base: the PR's, as GitHub shows it.
+            self.load_diff(&path, String::new());
         }
     }
 
     pub fn load_diff(&mut self, path: &str, base: String) {
+        self.load_diff_with(path, base, false);
+    }
+
+    /// Diffs `path` like its pull request, against `base` (empty: the one
+    /// the engine resolves); `fetch` updates the base from origin first.
+    pub fn load_diff_with(&mut self, path: &str, base: String, fetch: bool) {
         let seq = self.diff.as_ref().map_or(1, |d| d.seq + 1);
+        let base = base.trim().to_string();
+        // A reload keeps showing the base until the new one is known.
+        let shown = match self.diff.as_ref() {
+            Some(d) if base.is_empty() && d.path == path && d.requested.is_empty() => d.base.clone(),
+            _ => base.clone(),
+        };
         self.diff = Some(DiffState {
             path: path.to_string(),
-            base: base.clone(),
+            base: shown,
+            requested: base.clone(),
+            resolved: None,
+            note: None,
             loading: true,
             error: None,
             diff: Arc::new(Diff::default()),
@@ -221,16 +264,19 @@ impl State {
             dragging: false,
             drag_pops: false,
         });
-        let mut params = json!({"worktree_path": path, "max_bytes": MAX_BYTES});
-        if !base.trim().is_empty() {
-            params["base"] = json!(base.trim());
+        let mut params = json!({"worktree_path": path, "max_bytes": MAX_BYTES, "pr": true});
+        if !base.is_empty() {
+            params["base"] = json!(base);
+        }
+        if fetch {
+            params["fetch"] = json!(true);
         }
         let conn = self.conn.clone();
         self.conn.request("get_diff", params, move |s, reply| {
-            let text = match reply.and_then(|v| {
+            let r = match reply.and_then(|v| {
                 serde_json::from_value::<DiffResult>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
             }) {
-                Ok(r) => r.diff,
+                Ok(r) => r,
                 Err(e) => {
                     if let Some(d) = s.diff.as_mut().filter(|d| d.seq == seq) {
                         d.loading = false;
@@ -242,12 +288,13 @@ impl State {
             // Parsed off the UI thread (2-5 ms for 5,000 lines on the web).
             let conn2 = conn.clone();
             std::thread::spawn(move || {
-                let parsed = Arc::new(diff::parse(&text));
+                let parsed = Arc::new(diff::parse_pr(&r.diff, r.uncommitted.as_deref().unwrap_or("")));
                 conn2.send(crate::conn::Msg::Apply(Box::new(move |s: &mut State| {
                     if let Some(d) = s.diff.as_mut().filter(|d| d.seq == seq) {
                         d.loading = false;
                         d.diff = parsed;
                         d.built_for = None;
+                        d.applied(r.base, r.base_error, r.fetch_error);
                     }
                 })));
             });
@@ -473,12 +520,27 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Base").color(t.muted));
             let d = self.state.diff.as_mut().unwrap();
-            let edit = ui.add(TextEdit::singleline(&mut d.base).desired_width(140.0).hint_text("working tree"));
+            let edit = ui.add(TextEdit::singleline(&mut d.base).desired_width(220.0).hint_text("PR base"));
+            let edit = edit.on_hover_text("Any ref; empty: the pull request's base, else the default branch");
             if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                reload = Some(d.base.clone());
+                reload = Some((d.base_request(), false));
             }
-            if ui.button("↻").on_hover_text("Diff again").clicked() {
-                reload = Some(d.base.clone());
+            if let Some(b) = &d.resolved {
+                ui.label(RichText::new(format!("({})", base_label(b))).color(t.muted))
+                    .on_hover_text(format!("from merge-base {}", short(&b.merge_base)));
+            }
+            if !d.requested.is_empty()
+                && ui.small_button("PR base").on_hover_text("Back to the base the engine picks").clicked()
+            {
+                reload = Some((String::new(), false));
+            }
+            if ui.button("↻ Fetch").on_hover_text("Fetch the base from origin and diff again").clicked() {
+                reload = Some((d.base_request(), true));
+            }
+            let mut show = !self.state.saved.diff_hide_uncommitted;
+            if ui.checkbox(&mut show, "Uncommitted").on_hover_text("Staged, unstaged and untracked changes").changed() {
+                self.state.saved.diff_hide_uncommitted = !show;
+                self.state.touch_saved();
             }
             let mut s = split;
             ui.selectable_value(&mut s, false, "Unified");
@@ -488,12 +550,14 @@ impl App {
                 self.state.touch_saved();
             }
             let d = self.state.diff.as_ref().unwrap();
-            let (files, add, del) = (
-                d.diff.files.len(),
-                d.diff.files.iter().map(|f| f.added).sum::<u32>(),
-                d.diff.files.iter().map(|f| f.removed).sum::<u32>(),
-            );
+            let shown: Vec<&diff::File> = d.diff.files.iter().filter(|f| show || !f.uncommitted).collect();
+            let (files, add, del) =
+                (shown.len(), shown.iter().map(|f| f.added).sum::<u32>(), shown.iter().map(|f| f.removed).sum::<u32>());
+            let open = shown.iter().filter(|f| f.uncommitted).count();
             ui.label(RichText::new(format!("{files} files")).color(t.muted));
+            if open > 0 {
+                ui.label(RichText::new(format!("{open} uncommitted")).color(t.yellow));
+            }
             ui.label(RichText::new(format!("+{add}")).color(t.green));
             ui.label(RichText::new(format!("−{del}")).color(t.red));
             if d.diff.truncated {
@@ -516,11 +580,14 @@ impl App {
                 }
             });
         });
-        if let Some(base) = reload {
-            self.state.load_diff(&path, base);
+        if let Some((base, fetch)) = reload {
+            self.state.load_diff_with(&path, base, fetch);
             return;
         }
         let d = self.state.diff.as_ref().unwrap();
+        if let Some(note) = &d.note {
+            ui.label(RichText::new(note).color(t.yellow));
+        }
         if d.loading {
             ui.spinner();
             return;
@@ -529,15 +596,16 @@ impl App {
             ui.label(RichText::new(e).color(t.red));
             return;
         }
-        if d.diff.files.is_empty() {
+        let show = !self.state.saved.diff_hide_uncommitted;
+        if !d.diff.files.iter().any(|f| show || !f.uncommitted) {
             ui.label(RichText::new("No changes").color(t.muted));
             return;
         }
-        // Rows for this layout and these comments.
-        let key = (split, self.state.comments_gen);
+        // Rows for this layout, these comments and what is shown.
+        let key = (split, self.state.comments_gen, show);
         if self.state.diff.as_ref().unwrap().built_for != Some(key) {
             let d = self.state.diff.as_mut().unwrap();
-            d.rows = build_rows(&d.diff, split, &comments, &asking);
+            d.rows = build_rows(&d.diff, split, &comments, &asking, show);
             d.cols = max_cols(&d.diff);
             d.built_for = Some(key);
         }
@@ -551,6 +619,12 @@ impl App {
                 egui::ScrollArea::vertical().id_salt("diff-file-list").auto_shrink([false, false]).show(ui, |ui| {
                     let d = self.state.diff.as_ref().unwrap();
                     for (fi, f) in d.diff.files.iter().enumerate() {
+                        if f.uncommitted && !show {
+                            break;
+                        }
+                        if f.uncommitted && d.diff.files.get(fi.wrapping_sub(1)).is_none_or(|p| !p.uncommitted) {
+                            ui.label(RichText::new("Uncommitted").color(t.yellow).small());
+                        }
                         if file_entry(ui, &t, f).clicked() {
                             jump = d.rows.iter().position(|r| *r == DRow::File(fi));
                         }
@@ -641,17 +715,31 @@ impl App {
                     DRow::File(fi) => {
                         let f = &d.diff.files[*fi];
                         p.rect_filled(rect, 0.0, t.panel);
+                        if f.uncommitted {
+                            p.rect_filled(Rect::from_min_size(rect.min, Vec2::new(3.0, ROW_H)), 0.0, t.yellow);
+                        }
                         let name = if f.status == "renamed" {
                             format!("{} → {}", f.old_path, f.path)
                         } else {
                             f.path.clone()
                         };
+                        let part = if f.uncommitted { "  uncommitted" } else { "" };
                         p.text(
                             Pos2::new(rect.left() + 6.0, text_y),
                             Align2::LEFT_CENTER,
-                            format!("{name}  ({}  +{} −{})", f.status, f.added, f.removed),
+                            format!("{name}  ({}  +{} −{}){part}", f.status, f.added, f.removed),
                             FontId::monospace(12.0),
                             t.text,
+                        );
+                    }
+                    DRow::Uncommitted => {
+                        p.rect_filled(rect, 0.0, t.yellow.gamma_multiply(0.18));
+                        p.text(
+                            Pos2::new(rect.left() + 6.0, text_y),
+                            Align2::LEFT_CENTER,
+                            "Uncommitted: staged, unstaged and untracked (not in the pull request yet)",
+                            FontId::proportional(12.5),
+                            t.yellow,
                         );
                     }
                     DRow::Row(fi, ri) => {
@@ -1118,6 +1206,21 @@ fn file_entry(ui: &mut Ui, t: &crate::theme::Theme, f: &diff::File) -> egui::Res
     resp.on_hover_text(&f.path)
 }
 
+/// Where a resolved base came from, next to the Base field.
+pub fn base_label(b: &DiffBase) -> String {
+    match (b.source.as_str(), b.pr_number) {
+        ("pr", Some(n)) => format!("PR #{n} base"),
+        ("pr", None) => "PR base".into(),
+        ("default", _) => "default branch".into(),
+        ("override", _) => "override".into(),
+        (other, _) => other.to_string(),
+    }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..10).unwrap_or(sha)
+}
+
 /// A sideways scrollbar for the code: drag the thumb, or click the track.
 fn hscrollbar(ui: &mut Ui, t: &crate::theme::Theme, bar: Rect, view_w: f32, max_hoff: f32, hoff: &mut f32) {
     let resp = ui.interact(bar, egui::Id::unique("diff-hscroll"), Sense::click_and_drag());
@@ -1220,12 +1323,21 @@ fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, code: Re
 /// The flat row list: a header per file, its rows (or pairs), and each
 /// thread under its (last) line, a row per line of it (in split, under the
 /// pair holding it). `asking`: the threads waiting for an answer.
-pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String]) -> Vec<DRow> {
-    let mut out = Vec::with_capacity(d.files.iter().map(|f| f.rows.len() + 1).sum());
+/// The rows, with the uncommitted files (under their heading) when `uncommitted`.
+pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String], uncommitted: bool) -> Vec<DRow> {
+    let mut out = Vec::with_capacity(d.files.iter().map(|f| f.rows.len() + 1).sum::<usize>() + 1);
     for (fi, f) in d.files.iter().enumerate() {
+        if f.uncommitted {
+            if !uncommitted {
+                break;
+            }
+            if fi == 0 || !d.files[fi - 1].uncommitted {
+                out.push(DRow::Uncommitted);
+            }
+        }
         out.push(DRow::File(fi));
         let on = |ri: usize| -> Vec<DRow> {
-            let Some(a) = diff::anchor(&f.path, &f.rows[ri]) else { return vec![] };
+            let Some(a) = diff::anchor_in(f, &f.rows[ri]) else { return vec![] };
             let at = a.id();
             let mut rows = vec![];
             for c in comments.iter().filter(|c| c.anchor_id() == at) {
@@ -1274,7 +1386,7 @@ mod tests {
         c1.text = "on ctx".into();
         let mut c2 = diff::anchor("a.py", &rows[2]).unwrap();
         c2.text = "on old".into();
-        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()], &[]);
+        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()], &[], true);
         assert_eq!(
             unified,
             [
@@ -1287,8 +1399,70 @@ mod tests {
                 DRow::Row(0, 3)
             ]
         );
-        let split = build_rows(&d, true, &[c1.clone(), c2.clone()], &[]);
+        let split = build_rows(&d, true, &[c1.clone(), c2.clone()], &[], true);
         assert_eq!(split.iter().filter(|r| matches!(r, DRow::Comment(..))).count(), 2, "the context comment once");
         assert_eq!(split.len(), 1 + 3 + 2);
+    }
+
+    fn pr_base() -> DiffBase {
+        DiffBase {
+            ref_: "origin/PROJ-25996-intake".into(),
+            branch: Some("PROJ-25996-intake".into()),
+            source: "pr".into(),
+            merge_base: "0123456789abcdef".into(),
+            pr_number: Some(20163),
+        }
+    }
+
+    #[test]
+    fn the_base_label_says_where_the_base_came_from() {
+        assert_eq!(base_label(&pr_base()), "PR #20163 base");
+        assert_eq!(base_label(&DiffBase { pr_number: None, ..pr_base() }), "PR base");
+        assert_eq!(base_label(&DiffBase { source: "default".into(), ..pr_base() }), "default branch");
+        assert_eq!(base_label(&DiffBase { source: "override".into(), ..pr_base() }), "override");
+        assert_eq!(base_label(&DiffBase { source: "upstream".into(), ..pr_base() }), "upstream");
+    }
+
+    #[test]
+    fn the_base_field_shows_the_resolved_base_and_takes_an_override() {
+        let mut d = DiffState::loaded("/r/f", "", Diff::default());
+        d.applied(Some(pr_base()), None, None);
+        assert_eq!(d.base, "origin/PROJ-25996-intake", "the field shows what is used");
+        assert_eq!(d.base_request(), "", "unchanged: still the engine's pick");
+        d.base = "  ".into();
+        assert_eq!(d.base_request(), "", "cleared: the engine's pick");
+        d.base = "origin/master".into();
+        assert_eq!(d.base_request(), "origin/master", "any ref overrides it");
+        // An override keeps the field as typed, even when it resolves.
+        let mut o = DiffState::loaded("/r/f", "master", Diff::default());
+        o.applied(Some(DiffBase { ref_: "master".into(), source: "override".into(), ..pr_base() }), None, None);
+        assert_eq!((o.base.as_str(), o.base_request().as_str()), ("master", "master"));
+    }
+
+    #[test]
+    fn the_notes_say_what_went_wrong() {
+        let mut d = DiffState::loaded("/r/f", "", Diff::default());
+        d.applied(None, Some("No base branch found".into()), None);
+        assert_eq!(d.note.as_deref(), Some("Only uncommitted changes: No base branch found"));
+        assert_eq!(d.base, "");
+        d.applied(Some(pr_base()), None, Some("offline".into()));
+        assert_eq!(d.note.as_deref(), Some("Fetch failed: offline"));
+    }
+
+    #[test]
+    fn uncommitted_files_come_last_under_their_heading() {
+        let file = |p: &str| format!("diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n");
+        let d = diff::parse_pr(&file("a.py"), &format!("{}\n{}", file("a.py"), file("b.py")));
+        let mut c = diff::anchor_in(&d.files[1], &d.files[1].rows[2]).unwrap();
+        c.text = "here".into();
+        let rows = build_rows(&d, false, std::slice::from_ref(&c), &[], true);
+        let at = rows.iter().position(|r| *r == DRow::Uncommitted).unwrap();
+        assert_eq!(rows[at - 1], DRow::Row(0, 2));
+        assert_eq!(rows[at + 1], DRow::File(1));
+        // The comment sits under the uncommitted copy of the line only.
+        let under = rows.iter().position(|r| matches!(r, DRow::Comment(..))).unwrap();
+        assert_eq!(rows[under - 1], DRow::Row(1, 2));
+        let hidden = build_rows(&d, false, std::slice::from_ref(&c), &[], false);
+        assert_eq!(hidden, rows[..at].to_vec());
     }
 }

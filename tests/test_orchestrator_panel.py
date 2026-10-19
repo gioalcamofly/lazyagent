@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lazyagent.worktree_manager import PrDiff
 from lazyagent.app import LazyAgent
 from tests.tui_backends import settle, tui_app
 from lazyagent.config import Config
@@ -54,6 +55,14 @@ class DummyWorktreeManager:
     @staticmethod
     def get_diff(worktree_path):
         return ""
+
+    @staticmethod
+    def resolve_base_ref(worktree_path, branch):
+        return None
+
+    @staticmethod
+    def get_pr_diff(worktree_path, base, *, max_bytes=None):
+        return PrDiff("", "", "")
 
     @staticmethod
     def is_gh_available():

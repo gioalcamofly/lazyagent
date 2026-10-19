@@ -18,8 +18,7 @@ import { JobDrawer } from "./components/jobs.js";
 import { AttentionView, PrPanel } from "./components/attention.js";
 import { ciFailurePrompt } from "./lib/attention.js";
 import { DiffView, SubmitDialog, READY } from "./components/diff.js";
-import { parseDiff } from "./lib/diff.js";
-import { defaultBase } from "./components/dialogs.js";
+import { parsePrDiff } from "./lib/diff.js";
 
 const store = createStore();
 
@@ -379,28 +378,38 @@ const actions = {
     store.centerView.value = "diff";
     const current = store.diff.value;
     if (!current || current.path !== path || !current.parsed) {
-      // The branch the worktree came from, as New worktree prefills it;
-      // the main worktree diffs against nothing.
-      const wt = store.worktrees.value.find((w) => w.path === path);
-      const base = wt?.is_main ? "" : defaultBase(store.config.value, store.worktrees.value);
-      actions.loadDiff(path, base === wt?.branch ? "" : base);
+      // Like the branch's pull request: the engine picks the base.
+      actions.loadDiff(path, "");
     }
   },
-  async loadDiff(path, base) {
+  /** The diff like the pull request, against `base` ("" lets the engine
+   * pick: the PR's base, else the default branch, from origin). */
+  async loadDiff(path, base, { fetch = false } = {}) {
     store.diffBase.value = base;
-    store.diff.value = { path, base, loading: true, error: null, parsed: store.diff.value?.path === path ? store.diff.value.parsed : null };
+    const previous = store.diff.value?.path === path ? store.diff.value : null;
+    store.diff.value = { path, base: previous?.base, note: null, loading: true, error: null, parsed: previous?.parsed ?? null };
     try {
-      const params = { worktree_path: path, max_bytes: 4 * 1024 * 1024 };
+      const params = { worktree_path: path, max_bytes: 4 * 1024 * 1024, pr: true };
       if (base) params.base = base;
+      if (fetch) params.fetch = true;
       const result = await conn.request("get_diff", params);
       // Parsed in a task of its own, after the answer is in, never inside
       // an input event.
       await new Promise((r) => setTimeout(r, 0));
-      const parsed = parseDiff(result.diff);
-      if (store.selected.value === path) store.diff.value = { path, base, loading: false, error: null, parsed };
+      const parsed = parsePrDiff(result.diff, result.uncommitted);
+      let note = null;
+      if (result.fetch_error) note = `Fetch failed: ${result.fetch_error}`;
+      else if (!result.base && result.base_error) note = `Only uncommitted changes: ${result.base_error}`;
+      if (store.selected.value === path) {
+        store.diff.value = { path, base: result.base, note, loading: false, error: null, parsed };
+      }
     } catch (e) {
-      store.diff.value = { path, base, loading: false, error: e.message, parsed: null };
+      store.diff.value = { path, base: null, note: null, loading: false, error: e.message, parsed: null };
     }
+  },
+  diffUncommitted(on) {
+    store.diffUncommitted.value = on;
+    store.saveDiffMode();
   },
   diffMode(mode) {
     store.diffMode.value = mode;

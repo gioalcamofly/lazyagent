@@ -385,7 +385,9 @@
       "properties": {
         "worktree_path": {"$ref": "#/$defs/worktree_path"},
         "base": {"type": "string", "minLength": 1, "description": "U5: diff from the merge-base of this branch (or commit) and HEAD to the working tree, so committed work shows too. VALIDATION_ERROR when there is no merge-base. Default: the working tree against the index, as the TUI's tab."},
-        "max_bytes": {"type": "integer", "minimum": 1, "description": "U5: the cap instead of the default 64 KiB, up to 4 MiB (4194304); more is a VALIDATION_ERROR."}
+        "max_bytes": {"type": "integer", "minimum": 1, "description": "U5: the cap instead of the default 64 KiB, up to 4 MiB (4194304); more is a VALIDATION_ERROR."},
+        "pr": {"type": "boolean", "default": false, "description": "The diff the branch's pull request shows (GitHub's Files changed): 'diff' is merge-base(base, HEAD)..HEAD, committed work only, and 'uncommitted' is HEAD against the working tree plus untracked files. Without 'base' the base is resolved (see the result's 'base'); 'base' is used as given, VALIDATION_ERROR when it has no merge-base."},
+        "fetch": {"type": "boolean", "default": false, "description": "With 'pr' only: 'git fetch origin <base branch>' in the worktree first, and refresh its PR info (a resolved base, or an 'origin/…' one). A failed fetch is reported as 'fetch_error', not an error."}
       }
     },
     "get_diff.result": {
@@ -393,7 +395,27 @@
       "required": ["worktree_path", "diff"],
       "properties": {
         "worktree_path": {"type": "string"},
-        "diff": {"type": "string", "description": "Capped like the TUI's diff tab."}
+        "diff": {"type": "string", "description": "Capped like the TUI's diff tab. With 'pr', the committed part only."},
+        "uncommitted": {"type": "string", "description": "With 'pr': staged, unstaged and untracked changes (HEAD against the working tree). It shares the cap with 'diff': each gets at least half."},
+        "base": {
+          "description": "With 'pr': what 'diff' is against; null when no base could be used (then 'diff' is empty and 'base_error' says why).",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["ref", "source", "merge_base"],
+              "properties": {
+                "ref": {"type": "string", "description": "The ref diffed against, e.g. origin/feature-x: origin/<branch> when that exists, else the local branch; an override as given."},
+                "branch": {"type": ["string", "null"], "description": "The branch it was resolved from; null for an override."},
+                "source": {"type": "string", "x-known-values": ["pr", "default", "override"], "description": "pr (the open PR's base branch), default (the configured default branch, else the main worktree's), override (the 'base' param)."},
+                "merge_base": {"type": "string", "description": "The commit 'diff' starts from."},
+                "pr_number": {"type": ["integer", "null"], "description": "The PR, for source pr."}
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "base_error": {"type": "string"},
+        "fetch_error": {"type": "string"}
       }
     },
     "get_pr_info.params": {

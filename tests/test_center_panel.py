@@ -155,3 +155,28 @@ class TestEnvExports:
         assert "ONLY_IN_THIS_PROCESS" not in script
         # The provider's own overrides still apply on top.
         assert "LAZYAGENT_CLAUDE_HOOK_LOG=" in script
+
+
+def test_pr_diff_text_heads_and_separates_the_uncommitted():
+    from lazyagent.widgets.center_panel import pr_diff_text
+
+    text = pr_diff_text({
+        "diff": "diff --git a/b.txt b/b.txt",
+        "uncommitted": "diff --git a/u.txt b/u.txt",
+        "base": {"ref": "origin/feature-a", "branch": "feature-a", "source": "pr",
+                 "merge_base": "0123456789abcdef", "pr_number": 7},
+    })
+    assert text.split("\n\n") == [
+        "Against origin/feature-a (PR #7 base) · merge-base 0123456789",
+        "diff --git a/b.txt b/b.txt",
+        "── Uncommitted (staged, unstaged, untracked) ──",
+        "diff --git a/u.txt b/u.txt",
+    ]
+    bare = pr_diff_text({"diff": "", "uncommitted": "", "base": None, "base_error": "no main",
+                         "fetch_error": "offline"})
+    assert bare.split("\n\n") == [
+        "No base to diff against: no main",
+        "Fetch failed: offline",
+        "── Uncommitted (staged, unstaged, untracked) ──",
+        "Nothing uncommitted",
+    ]

@@ -560,7 +560,7 @@ class TestGetPrInfo:
             WorktreeManager.get_pr_info("/path/to/worktree")
 
         mock_run.assert_called_once_with(
-            ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable"],
+            ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName"],
             capture_output=True,
             text=True,
             cwd="/path/to/worktree",
