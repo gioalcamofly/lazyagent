@@ -20,10 +20,11 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
-from lazyagent.engine.events import ENGINE_RESTORED
+from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
 from lazyagent.engine.notes import MODES as NOTES_MODES
 from lazyagent.engine.notes import Notes, NotesConflict, NotesStore
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
+from lazyagent.engine.reviews import check_comment_id
 from lazyagent.engine.types import AGENT_KIND, ORCHESTRATOR_KIND
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManagerError
@@ -116,6 +117,9 @@ class EngineMethods:
             "notes_list": self.notes_list,
             "notes_adopt": self.notes_adopt,
             "notes_delete": self.notes_delete,
+            "review_register": self.review_register,
+            "review_reply": self.review_reply,
+            "review_replies": self.review_replies,
         }
 
     async def list_worktrees(self, params: dict) -> Any:
@@ -215,7 +219,9 @@ class EngineMethods:
         (optional), skip_permissions (optional), resume_mode (optional),
         label (optional), env (optional: the environment the agent starts
         from instead of the engine's), kind (optional: ``"orchestrator"``
-        starts the repo's orchestrator, ignoring worktree_path and label).
+        starts the repo's orchestrator, ignoring worktree_path and label),
+        review_comment_ids (optional: the review comments in the instruction,
+        registered before the agent starts, as review_register would).
 
         Each call adds another agent; the new agent id is returned. Multiple
         agents per worktree are supported.
@@ -249,6 +255,13 @@ class EngineMethods:
                 f"Must be one of: {', '.join(NOTES_MODES)}"
             )
 
+        review_comment_ids = params.get("review_comment_ids")
+        if review_comment_ids is not None:
+            if kind != AGENT_KIND or not isinstance(review_comment_ids, list):
+                raise ValueError("review_comment_ids must be a list, for an agent")
+            for comment_id in review_comment_ids:
+                check_comment_id(comment_id)
+
         # Before the spawn, so every event of the new agent is after it.
         cursor = self._engine.events.cursor
         info = await asyncio.wait_for(
@@ -261,6 +274,7 @@ class EngineMethods:
                 kind=kind,
                 env=env,
                 notes_mode=notes_mode,
+                review_comment_ids=review_comment_ids,
             ),
             timeout=_OP_TIMEOUT,
         )
@@ -723,6 +737,54 @@ class EngineMethods:
         self._notes_store()
         self._engine.delete_notes(notes_id)
         return {"deleted": notes_id}
+
+    async def review_register(self, params: dict) -> Any:
+        """Lets an agent answer review comments with review_reply. Params:
+        worktree_path, agent_id, comment_ids (the ids its prompt gives).
+        A client calls it when it sends the comments (after the spawn, for
+        an agent started with them)."""
+        worktree_path = self._text(params, "worktree_path")
+        agent_id = params.get("agent_id")
+        if not isinstance(agent_id, str):
+            raise ValueError("agent_id is required and must be a string")
+        if agent_id not in self._engine.agent_ids(worktree_path):
+            raise ValueError(f"No agent {agent_id!r} in {worktree_path}")
+        comment_ids = params.get("comment_ids")
+        if not isinstance(comment_ids, list) or not comment_ids:
+            raise ValueError("comment_ids must be a non-empty list")
+        store = self._engine.review_store()
+        ids = store.register(worktree_path, agent_id, comment_ids)
+        return {
+            "worktree_path": worktree_path,
+            "agent_id": agent_id,
+            "comment_ids": ids,
+        }
+
+    async def review_reply(self, params: dict) -> Any:
+        """An agent's answer to a review comment. Params: comment_id, text,
+        caller (the agent's token: only an agent the comment was registered
+        for may answer it). Emits ``review.replied``."""
+        caller = params.get("caller")
+        if not isinstance(caller, str) or not caller:
+            raise ValueError(
+                "review_reply needs the agent's token: call it from the "
+                "lazyagent_app MCP server of an agent lazyagent spawned"
+            )
+        slot = self._engine.token_slot(caller)
+        if slot is None:
+            raise ValueError("Unknown caller token: its agent is gone")
+        comment_id = params.get("comment_id")
+        text = self._text(params)
+        reply = self._engine.review_store().reply(slot, comment_id, text)
+        self._engine.events.emit(REVIEW_REPLIED, reply.to_dict())
+        return {"reply_id": reply.reply_id, "comment_id": reply.comment_id}
+
+    async def review_replies(self, params: dict) -> Any:
+        """The kept replies (of ``worktree_path`` when given), oldest first:
+        what a client missed while it was away."""
+        worktree_path = params.get("worktree_path") or None
+        replies = self._engine.review_store().replies(worktree_path)
+        return {"replies": [r.to_dict() for r in replies]}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

@@ -126,6 +126,9 @@ pub struct State {
     pub ask: Option<crate::diff_view::AskDraft>,
     /// Questions waiting for their agent's answer.
     pub asks: Vec<crate::diff_view::PendingAsk>,
+    /// Review comments sent to an agent whose answers (`review_reply`) are
+    /// awaited until its turn ends.
+    pub awaiting: Vec<crate::diff_view::Awaiting>,
     /// Worktrees where the diff view is starting an agent to deliver to.
     pub starting: Vec<String>,
     /// Bumped when comments change (the diff rows carry them).
@@ -198,6 +201,7 @@ impl State {
             pending_reviews: vec![],
             ask: None,
             asks: vec![],
+            awaiting: vec![],
             starting: vec![],
             comments_gen: 0,
             saved,
@@ -586,6 +590,7 @@ impl State {
                 self.notes_reconnected(engine_changed);
                 self.capabilities = Some(hello.capabilities);
                 self.engine_version = Some(hello.engine_version);
+                self.fetch_review_replies();
             }
             Msg::Seed(state, config) => {
                 self.store.seed(*state);
@@ -750,6 +755,7 @@ impl State {
             }
             EngineEvent::NotesUpdated(u) => self.on_notes_updated(&u),
             EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
+            EngineEvent::ReviewReplied(r) => self.on_review_replied(&r, true),
             _ => {}
         }
     }

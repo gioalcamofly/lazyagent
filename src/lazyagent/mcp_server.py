@@ -663,5 +663,34 @@ async def notes_replace_section(
     )
 
 
+# ------------------------------------------------------------------
+# Review replies
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+async def review_reply(comment_id: str, text: str) -> dict:
+    """Answer one review comment or question from the user's diff view.
+
+    When a prompt gives review comments or a question with a
+    ``comment_id``, call this once per comment with your answer to it, so
+    the user sees it next to the code; also say it in the conversation as
+    usual. Answer only the ids your prompt gave you.
+
+    Args:
+        comment_id: The id from the prompt, e.g. "c3f9a1".
+        text: Your answer to that comment: what you did or why not, or the
+            answer to the question. Plain text or Markdown, a few lines.
+
+    Returns:
+        Object with reply_id and comment_id.
+    """
+    params: dict[str, Any] = {"comment_id": comment_id, "text": text}
+    caller = os.environ.get("LAZYAGENT_AGENT_TOKEN")
+    if caller:
+        params["caller"] = caller
+    return await _get_client().call("review_reply", params)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

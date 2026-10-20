@@ -79,6 +79,10 @@ EVENT_SAMPLES = {
         "notes_id": "3f2a9c1d0b7e", "worktree_path": "/r", "agent_id": "a2",
         "reason": "orphaned",
     },
+    "review.replied": {
+        "reply_id": "r0a1b2c3d4e5", "comment_id": "c1a2b3", "worktree_path": "/r",
+        "agent_id": "a1", "text": "Renamed it.", "at": 1700000000.0,
+    },
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

@@ -81,6 +81,10 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             }
             "notes_list" => round_trip::<NotesList>(case, result),
             "notes_delete" => round_trip::<NotesDeleted>(case, result),
+            "review_replies" => round_trip::<ReviewReplies>(case, result),
+            // Its result is not read (the app only needs it to succeed);
+            // review_reply is the agents' (MCP).
+            "review_register" | "review_reply" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -125,6 +129,8 @@ const METHODS_USED: &[&str] = &[
     "dismiss_restorable",
     "notes_get",
     "notes_put",
+    "review_register",
+    "review_replies",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.

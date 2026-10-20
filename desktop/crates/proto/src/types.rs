@@ -534,6 +534,24 @@ pub struct NotesRemoved {
     pub reason: String,
 }
 
+/// `review.replied`: an agent answered a review comment (`review_reply`).
+/// Also an item of `review_replies`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewReplied {
+    pub reply_id: String,
+    pub comment_id: String,
+    pub worktree_path: String,
+    pub agent_id: String,
+    pub text: String,
+    pub at: f64,
+}
+
+/// `review_replies`: the kept answers, oldest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewReplies {
+    pub replies: Vec<ReviewReplied>,
+}
+
 /// The events the desktop app acts on; everything else is `Other` and
 /// ignored by design (§4c: unknown events are tolerated).
 #[derive(Debug, Clone, PartialEq)]
@@ -559,6 +577,7 @@ pub enum EngineEvent {
     RestorableChanged(RestorableList),
     NotesUpdated(NotesUpdated),
     NotesRemoved(NotesRemoved),
+    ReviewReplied(ReviewReplied),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -585,6 +604,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "restorable.changed",
     "notes.updated",
     "notes.removed",
+    "review.replied",
 ];
 
 impl EngineEvent {
@@ -612,6 +632,7 @@ impl EngineEvent {
             "restorable.changed" => de(&event).map(EngineEvent::RestorableChanged),
             "notes.updated" => de(&event).map(EngineEvent::NotesUpdated),
             "notes.removed" => de(&event).map(EngineEvent::NotesRemoved),
+            "review.replied" => de(&event).map(EngineEvent::ReviewReplied),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

@@ -2,7 +2,10 @@
 //! unified or split rows in one virtualised list of fixed-height rows, a
 //! file list that jumps, comments on lines or ranges (kept in the app's
 //! state file), "Submit review" to an agent, now or when it is idle, and
-//! questions asked now, their answers read back under the code.
+//! questions asked now. The agent answers each comment with the
+//! `review_reply` MCP tool (an engine with `review_register`), and the
+//! answer shows under the code; an older engine's Ask now answer is read
+//! back from the agent's output between markers.
 
 use std::sync::Arc;
 
@@ -12,7 +15,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, TextFormat,
     Ui, Vec2,
 };
-use lazyagent_proto::types::{DiffBase, DiffResult, SpawnResult};
+use lazyagent_proto::types::{DiffBase, DiffResult, ReviewReplied, ReviewReplies, SpawnResult};
 use serde_json::json;
 
 use crate::app::{App, Severity, State};
@@ -168,17 +171,29 @@ pub struct AskDraft {
     focus: bool,
 }
 
-/// A question sent to an agent; its answer is read back from the agent's
-/// output, between `marker` lines, once the agent has run and is idle.
+/// A question sent to an agent. Its answer comes as `review.replied`
+/// (`by_reply`), or is read back from the agent's output between `marker`
+/// lines once the agent has run and is idle.
 pub struct PendingAsk {
     pub worktree: String,
     pub agent_id: String,
     /// The comment's id.
     pub id: String,
     pub marker: String,
+    pub by_reply: bool,
     pub sent: bool,
     pub ran: bool,
     pub reading: bool,
+}
+
+/// Review comments sent to an agent: their answers (`review.replied`) are
+/// awaited until its turn ends.
+pub struct Awaiting {
+    pub worktree: String,
+    pub agent_id: String,
+    /// The comments' ids.
+    pub ids: Vec<String>,
+    pub ran: bool,
 }
 
 pub struct ReviewForm {
@@ -328,28 +343,151 @@ impl State {
     }
 
     pub fn send_review(&mut self, r: PendingReview) {
-        let params = json!({"worktree_path": r.worktree, "agent_id": r.agent_id, "text": r.text});
         let to = self.store.agent(&r.worktree, &r.agent_id).map_or(r.agent_id.clone(), store::agent_label);
-        let (worktree, ids) = (r.worktree, r.ids);
-        self.conn.request("send_agent_input", params, move |s, reply| match reply {
-            Ok(v) => {
-                s.toast(Severity::Info, format!("Review: {}", crate::attention_view::delivery_text(v)));
-                s.mark_sent(&worktree, &ids, &to);
-            }
-            Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
+        let cids = self.cids(&r.worktree, &r.ids);
+        let (worktree, agent_id) = (r.worktree.clone(), r.agent_id.clone());
+        self.registered(&worktree, &agent_id, cids, move |s| {
+            let params = json!({"worktree_path": r.worktree, "agent_id": r.agent_id, "text": r.text});
+            s.conn.request("send_agent_input", params, move |s, reply| match reply {
+                Ok(v) => {
+                    // Confirmed or busy: it has run (or runs) since.
+                    let ran = matches!(v.get("delivery").and_then(|d| d.as_str()), Some("confirmed" | "busy"));
+                    s.toast(Severity::Info, format!("Review: {}", crate::attention_view::delivery_text(v)));
+                    s.mark_sent(&r.worktree, &r.ids, &to);
+                    s.await_replies(&r.worktree, &r.agent_id, &r.ids, ran);
+                }
+                Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
+            });
         });
     }
 
     /// Starts a new agent in `worktree` with the review as its first prompt.
     pub fn review_new_agent(&mut self, worktree: &str, text: String, ids: Vec<String>) {
         let worktree = worktree.to_string();
-        self.start_agent(&worktree.clone(), text, move |s, started| match started {
+        let cids = self.cids(&worktree, &ids);
+        self.start_agent(&worktree.clone(), text, cids, move |s, started| match started {
             Ok(agent_id) => {
                 s.toast(Severity::Info, format!("Started agent {agent_id} with the review."));
                 s.mark_sent(&worktree, &ids, &agent_id);
+                s.await_replies(&worktree, &agent_id, &ids, false);
             }
             Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
         });
+    }
+
+    /// Whether the engine takes answers through `review_reply`.
+    pub fn replies_supported(&self) -> bool {
+        self.capabilities.as_ref().is_some_and(|c| c.iter().any(|m| m == "review_register"))
+    }
+
+    /// Gives the comments of `worktree` that have none an id for the agent
+    /// (`Comment::cid`), when the engine takes replies.
+    pub fn give_cids(&mut self, worktree: &str) {
+        if !self.replies_supported() {
+            return;
+        }
+        let mut all = self.comments(worktree);
+        let mut changed = false;
+        for c in all.iter_mut().filter(|c| c.cid.is_empty()) {
+            c.cid = format!("c{}", marker_id());
+            changed = true;
+        }
+        if changed {
+            self.set_comments(worktree, &all);
+        }
+    }
+
+    /// The agent ids (`cid`) of the comments `ids`, those that have one.
+    fn cids(&self, worktree: &str, ids: &[String]) -> Vec<String> {
+        self.comments(worktree)
+            .into_iter()
+            .filter(|c| ids.contains(&c.id()) && !c.cid.is_empty())
+            .map(|c| c.cid)
+            .collect()
+    }
+
+    /// Registers `cids` for the agent (`review_register`), then runs `then`
+    /// whatever the outcome: without it the answers stay in the terminal.
+    fn registered(
+        &mut self,
+        worktree: &str,
+        agent_id: &str,
+        cids: Vec<String>,
+        then: impl FnOnce(&mut State) + Send + 'static,
+    ) {
+        if cids.is_empty() {
+            then(self);
+            return;
+        }
+        let params = json!({"worktree_path": worktree, "agent_id": agent_id, "comment_ids": cids});
+        self.conn.request("review_register", params, move |s, reply| {
+            if let Err(e) = reply {
+                s.toast(Severity::Warning, format!("Its answers will show in the agent's terminal only: {e}"));
+            }
+            then(s);
+        });
+    }
+
+    /// Awaits the answers to the sent comments `ids` until the agent's turn
+    /// ends; `ran`: it is known to have started on them.
+    fn await_replies(&mut self, worktree: &str, agent_id: &str, ids: &[String], ran: bool) {
+        let ids: Vec<String> = self
+            .comments(worktree)
+            .into_iter()
+            .filter(|c| ids.contains(&c.id()) && !c.cid.is_empty())
+            // Not those answered already (an agent started with them).
+            .filter(|c| !c.replies.iter().any(|r| r.id.is_some()))
+            .map(|c| c.id())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.awaiting.push(Awaiting { worktree: worktree.to_string(), agent_id: agent_id.to_string(), ids, ran });
+        self.comments_gen += 1;
+    }
+
+    /// Puts an agent's `review_reply` answer under its comment (once, by
+    /// its reply id); `tell`: with a toast (not for answers caught up on).
+    pub fn on_review_replied(&mut self, r: &ReviewReplied, tell: bool) {
+        let mut all = self.comments(&r.worktree_path);
+        let Some(c) = all.iter_mut().find(|c| c.cid == r.comment_id) else { return };
+        if c.replies.iter().any(|x| x.id.as_deref() == Some(r.reply_id.as_str())) {
+            return;
+        }
+        c.replies.push(diff::Reply { who: "agent".into(), text: r.text.clone(), id: Some(r.reply_id.clone()) });
+        let (id, place) = (c.id(), format!("{}:{}", c.path, c.place()));
+        self.set_comments(&r.worktree_path, &all);
+        self.asks.retain(|a| !(a.worktree == r.worktree_path && a.id == id));
+        for w in self.awaiting.iter_mut().filter(|w| w.worktree == r.worktree_path) {
+            w.ids.retain(|x| *x != id);
+        }
+        self.awaiting.retain(|w| !w.ids.is_empty());
+        if tell {
+            self.toast(Severity::Info, format!("The agent answered on {place}"));
+        }
+    }
+
+    /// The answers given while the app was away (the engine keeps them a
+    /// few days).
+    pub fn fetch_review_replies(&mut self) {
+        if !self.replies_supported() {
+            return;
+        }
+        self.conn.request("review_replies", json!({}), |s, reply| {
+            let Some(kept) = reply.ok().and_then(|v| serde_json::from_value::<ReviewReplies>(v).ok()) else { return };
+            for r in &kept.replies {
+                s.on_review_replied(r, false);
+            }
+        });
+    }
+
+    /// Adds a note to the threads `ids`.
+    fn note(&mut self, worktree: &str, ids: &[String], text: &str) {
+        let mut all = self.comments(worktree);
+        for c in all.iter_mut().filter(|c| ids.contains(&c.id())) {
+            c.replies.push(diff::Reply::new("note", text));
+        }
+        self.set_comments(worktree, &all);
     }
 
     /// What a new agent started from the diff view is: the configured
@@ -365,6 +503,7 @@ impl State {
         &mut self,
         worktree: &str,
         text: String,
+        cids: Vec<String>,
         then: impl FnOnce(&mut State, Result<String, String>) + Send + 'static,
     ) {
         if self.starting.iter().any(|w| w == worktree) {
@@ -372,8 +511,12 @@ impl State {
             return;
         }
         self.starting.push(worktree.to_string());
-        let params = json!({"worktree_path": worktree, "instruction": text, "skip_permissions": true,
-                            "env": self.env_json()});
+        let mut params = json!({"worktree_path": worktree, "instruction": text, "skip_permissions": true,
+                                "env": self.env_json()});
+        if !cids.is_empty() {
+            // Registered before it starts: it may answer at once.
+            params["review_comment_ids"] = json!(cids);
+        }
         let worktree = worktree.to_string();
         self.conn.request("spawn_agent", params, move |s, reply| {
             s.starting.retain(|w| *w != worktree);
@@ -396,10 +539,14 @@ impl State {
         let mut all = self.comments(worktree);
         for c in all.iter_mut().filter(|c| ids.contains(&c.id()) && !c.sent) {
             c.sent = true;
-            c.replies.push(diff::Reply {
-                who: "note".into(),
-                text: format!("Sent with the review to {to}; its answer is in the agent's terminal."),
-            });
+            let text = if c.cid.is_empty() {
+                format!("Sent with the review to {to}; its answer is in the agent's terminal.")
+            } else {
+                format!("Sent with the review to {to}.")
+            };
+            // Before an answer that came first (an agent started with it).
+            let at = c.replies.iter().position(|r| r.id.is_some()).unwrap_or(c.replies.len());
+            c.replies.insert(at, diff::Reply::new("note", text));
         }
         self.set_comments(worktree, &all);
     }
@@ -424,13 +571,17 @@ impl State {
 
     /// The ids of the threads waiting for an answer.
     pub fn asking(&self, worktree: &str) -> Vec<String> {
-        self.asks.iter().filter(|a| a.worktree == worktree).map(|a| a.id.clone()).collect()
+        let asks = self.asks.iter().filter(|a| a.worktree == worktree).map(|a| a.id.clone());
+        let sent = self.awaiting.iter().filter(|w| w.worktree == worktree).flat_map(|w| w.ids.iter().cloned());
+        asks.chain(sent).collect()
     }
 
     /// Sends the thread `id` (its comment, or its last follow-up) to the
     /// worktree's agent (an idle one first) as a question, now.
     pub fn ask_agent(&mut self, worktree: &str, id: &str) {
+        self.give_cids(worktree);
         let Some(c) = self.comments(worktree).into_iter().find(|c| c.id() == id) else { return };
+        let cids: Vec<String> = (!c.cid.is_empty()).then(|| c.cid.clone()).into_iter().collect();
         let agents = self.store.agents(worktree);
         let pick = agents.iter().find(|a| idle(&a.status)).or(agents.first()).map(|a| a.agent_id.clone());
         let marker = marker_id();
@@ -442,6 +593,7 @@ impl State {
             agent_id: pick.clone().unwrap_or_default(),
             id: id.to_string(),
             marker,
+            by_reply: !cids.is_empty(),
             sent: false,
             ran: false,
             reading: false,
@@ -450,7 +602,7 @@ impl State {
         let (worktree, id) = (worktree.to_string(), id.to_string());
         let Some(agent_id) = pick else {
             // No agent here: a new one, with the question as its first prompt.
-            self.start_agent(&worktree.clone(), text, move |s, started| {
+            self.start_agent(&worktree.clone(), text, cids, move |s, started| {
                 let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
                 match started {
                     Ok(agent_id) => {
@@ -467,28 +619,50 @@ impl State {
             });
             return;
         };
-        let params = json!({"worktree_path": worktree, "agent_id": agent_id, "text": text});
-        self.conn.request("send_agent_input", params, move |s, reply| {
-            let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
-            match reply {
-                Ok(v) => {
-                    // Confirmed or busy: it has run (or runs) since.
-                    let delivery = v.get("delivery").and_then(|d| d.as_str()).unwrap_or("");
-                    s.asks[i].sent = true;
-                    s.asks[i].ran = matches!(delivery, "confirmed" | "busy");
-                    s.toast(Severity::Info, format!("Question: {}", crate::attention_view::delivery_text(v)));
+        self.registered(&worktree.clone(), &agent_id.clone(), cids, move |s| {
+            let params = json!({"worktree_path": worktree, "agent_id": agent_id, "text": text});
+            s.conn.request("send_agent_input", params, move |s, reply| {
+                let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
+                match reply {
+                    Ok(v) => {
+                        // Confirmed or busy: it has run (or runs) since.
+                        let delivery = v.get("delivery").and_then(|d| d.as_str()).unwrap_or("");
+                        s.asks[i].sent = true;
+                        s.asks[i].ran = matches!(delivery, "confirmed" | "busy");
+                        s.toast(Severity::Info, format!("Question: {}", crate::attention_view::delivery_text(v)));
+                    }
+                    Err(e) => {
+                        s.asks.remove(i);
+                        s.comments_gen += 1;
+                        s.toast(Severity::Error, format!("The question was not sent: {e}"));
+                    }
                 }
-                Err(e) => {
-                    s.asks.remove(i);
-                    s.comments_gen += 1;
-                    s.toast(Severity::Error, format!("The question was not sent: {e}"));
-                }
-            }
+            });
         });
     }
 
-    /// Reads the answers of the agents that ran and are idle again.
+    /// Reads the answers of the agents that ran and are idle again; says
+    /// so under the comments whose `review_reply` answer did not come.
     pub fn pending_asks(&mut self) {
+        let mut i = 0;
+        while i < self.awaiting.len() {
+            let w = &self.awaiting[i];
+            match self.store.agent(&w.worktree, &w.agent_id).map(|x| x.status.clone()) {
+                None => {
+                    let w = self.awaiting.remove(i);
+                    self.note(&w.worktree, &w.ids, "The agent is gone; it did not answer here.");
+                    continue;
+                }
+                Some(status) if !idle(&status) => self.awaiting[i].ran = true,
+                Some(_) if w.ran => {
+                    let w = self.awaiting.remove(i);
+                    self.note(&w.worktree, &w.ids, NO_REPLY);
+                    continue;
+                }
+                Some(_) => {}
+            }
+            i += 1;
+        }
         let mut i = 0;
         while i < self.asks.len() {
             let a = &self.asks[i];
@@ -503,6 +677,11 @@ impl State {
                     continue;
                 }
                 Some(status) if !idle(&status) => self.asks[i].ran = true,
+                Some(_) if a.ran && a.by_reply => {
+                    let a = self.asks.remove(i);
+                    self.note(&a.worktree, std::slice::from_ref(&a.id), NO_REPLY);
+                    continue;
+                }
                 Some(_) if a.ran => {
                     let params = json!({"worktree_path": a.worktree, "agent_id": a.agent_id, "lines": ANSWER_LINES});
                     let (worktree, id) = (a.worktree.clone(), a.id.clone());
@@ -527,9 +706,9 @@ impl State {
     /// (or says where the answer is).
     pub fn answer(&mut self, a: &PendingAsk, output: Result<&[String], &str>) {
         let reply = match output.map(|lines| diff::parse_answer(lines, &a.marker)) {
-            Ok(Some(text)) => diff::Reply { who: "agent".into(), text },
-            Ok(None) => diff::Reply { who: "note".into(), text: "Answered in the agent's terminal.".into() },
-            Err(why) => diff::Reply { who: "note".into(), text: why.into() },
+            Ok(Some(text)) => diff::Reply::new("agent", text),
+            Ok(None) => diff::Reply::new("note", "Answered in the agent's terminal."),
+            Err(why) => diff::Reply::new("note", why),
         };
         let mut all = self.comments(&a.worktree);
         if let Some(c) = all.iter_mut().find(|c| c.id() == a.id) {
@@ -541,6 +720,9 @@ impl State {
         self.set_comments(&a.worktree, &all);
     }
 }
+
+/// Under a comment whose `review_reply` answer did not come in its turn.
+const NO_REPLY: &str = "The agent's turn ended without an answer here; see its terminal.";
 
 /// How much of an agent's output is searched for an answer.
 const ANSWER_LINES: usize = 2000;
@@ -1171,7 +1353,7 @@ impl App {
                     }
                 }
                 Some(Act::FollowUp) if !e.follow.trim().is_empty() => {
-                    e.comment.replies.push(diff::Reply { who: "you".into(), text: e.follow.trim().to_string() });
+                    e.comment.replies.push(diff::Reply::new("you", e.follow.trim()));
                     self.state.upsert_comment(&e.worktree, e.comment);
                     self.state.ask_agent(&e.worktree, &id);
                 }
@@ -1180,6 +1362,7 @@ impl App {
             }
         }
         if let Some(mut r) = self.state.review.take() {
+            self.state.give_cids(&r.worktree);
             let comments = self.state.review_comments(&r.worktree);
             let agents = self.state.store.agents(&r.worktree).to_vec();
             // The picked agent may be gone; with none left, a new one.
