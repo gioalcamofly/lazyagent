@@ -285,6 +285,8 @@ cd /tmp && claude mcp list | grep lazyagent      # verify
 
 `python3 -m lazyagent.mcp_server` works too, with the interpreter that installed lazyagent (if `claude mcp add` swallows `-m`, separate args with `--`). The tools talk to a running lazyagent over a Unix socket under `/tmp/lazyagent-<pid>/` and return `No running lazyagent instance found` if none is running.
 
+In an agent lazyagent spawned, both servers are there, and both know which agent is calling: the engine puts the agent's token and socket (`LAZYAGENT_AGENT_TOKEN`, `LAZYAGENT_SOCKET`) in the agent's own environment, and Claude starts every MCP server with it. So `notes_read()` with no arguments reads the caller's own notes on either one (as long as your `lazyagent` server runs a lazyagent recent enough to read the token).
+
 ## Development
 
 ```bash

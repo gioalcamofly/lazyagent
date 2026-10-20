@@ -67,3 +67,14 @@ def record(request, capsys):
             print(f"\nPERF {name}: {json.dumps(numbers)}")
 
     return write
+
+
+@pytest.fixture(autouse=True)
+def _no_agent_identity(monkeypatch):
+    """Run inside a lazyagent agent, the suite inherits its identity (token,
+    socket, notes path); the agents a test spawns must not, and no MCP
+    server under test may reach the live engine."""
+    from lazyagent.agent_providers import IDENTITY_ENV
+
+    for name in IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)

@@ -17,6 +17,7 @@ from lazyagent.agent_providers import (
     NOTES_PATH_ENV,
     ObservationMode,
     ResumeMode,
+    SOCKET_ENV,
     agent_session_name,
     get_agent_provider,
     normalize_provider_name,
@@ -467,12 +468,40 @@ class TestAgentToken:
     def test_no_token_without_one(self, name):
         assert AGENT_TOKEN_ENV not in self._env(name)
 
-    def test_the_token_stays_out_of_the_agents_own_env(self):
-        provider = get_agent_provider("claude")
+    @pytest.mark.parametrize("name", ["claude", "codex", "gemini"])
+    def test_the_agents_own_env_carries_its_identity(self, name):
+        """So a lazyagent MCP server from the user's own config (Claude
+        starts it with the agent's environment) knows the caller too."""
+        provider = get_agent_provider(name)
         context = provider.build_runtime_context(
             "/tmp/wt", socket_path="/tmp/test.sock", agent_token="tok-123"
         )
-        assert "tok-123" not in provider.build_command("/tmp/wt", runtime_context=context)
+        assert context.env_overrides[AGENT_TOKEN_ENV] == "tok-123"
+        assert context.env_overrides[SOCKET_ENV] == "/tmp/test.sock"
+        command = provider.build_command(
+            "/tmp/wt",
+            runtime_context=context,
+            env={AGENT_TOKEN_ENV: "parent", SOCKET_ENV: "/tmp/parent.sock"},
+        )
+        assert f"{AGENT_TOKEN_ENV}=tok-123" in command
+        assert "parent" not in command
+
+    def test_an_agent_never_inherits_another_agents_identity(self):
+        """Spawned from an agent's shell (env = that agent's): without a
+        token of its own it gets none, nor that agent's notes path."""
+        provider = get_agent_provider("codex")
+        context = provider.build_runtime_context("/tmp/wt")
+        command = provider.build_command(
+            "/tmp/wt",
+            runtime_context=context,
+            env={
+                AGENT_TOKEN_ENV: "parent",
+                SOCKET_ENV: "/tmp/parent.sock",
+                NOTES_PATH_ENV: "/tmp/parent.md",
+                "KEEP": "1",
+            },
+        )
+        assert "parent" not in command and "KEEP=1" in command
 
 
 class TestClaudeNotesHook:
