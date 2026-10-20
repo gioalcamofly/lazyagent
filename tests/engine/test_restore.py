@@ -273,6 +273,111 @@ async def test_a_restore_of_a_live_orchestrator_is_refused(world):
     assert second.list_restorable() == []
 
 
+# --- The orchestrator's conversation and the repo root: both run there, so
+# --- a --continue in the repo root resumes the orchestrator's conversation --
+
+
+async def _orchestrator_ended(world) -> Engine:
+    """An engine whose orchestrator (conversation 186b11b6, with notes) was
+    running when it ended; the next one."""
+    first = world.engine()
+    await first.spawn_agent("", kind="orchestrator", skip_permissions=True)
+    _conversation(first, ORCHESTRATOR_KEY, "", "186b11b6")
+    notes_id = first.notes_id(ORCHESTRATOR_KEY, "")
+    first.notes.append(notes_id, "Decisions", "merge N5", by="agent")
+    await first.stop()
+    return world.engine()
+
+
+async def test_an_agent_cannot_continue_the_orchestrators_conversation(world):
+    """The bug: after a restart the desktop spawned a plain agent in the
+    main worktree with "resume last"; `claude --continue` there took the
+    orchestrator's conversation, as lazyagent-a1 with an agent's notes."""
+    second = await _orchestrator_ended(world)
+    [entry] = second.list_restorable()
+    with pytest.raises(ValueError, match="orchestrator's") as refused:
+        await second.spawn_agent(str(world.repo), resume_mode=ResumeMode.RESUME_LAST)
+    assert entry.id in str(refused.value)
+    assert second.get_session(str(world.repo), "a1") is None
+    assert [e.id for e in second.list_restorable()] == [entry.id]
+    # Elsewhere, or a new conversation, or a picked one: allowed.
+    await second.spawn_agent(str(world.feat), resume_mode=ResumeMode.RESUME_LAST)
+    await second.spawn_agent(str(world.repo))
+
+    await second.restore_agents([entry.id])
+    with pytest.raises(ValueError, match="running orchestrator's"):
+        await second.spawn_agent(str(world.repo), resume_mode=ResumeMode.RESUME_LAST)
+
+
+async def test_resume_last_of_the_orchestrator_brings_back_its_entry(world):
+    """What the UIs send ("resume last", kind orchestrator): the recorded
+    conversation, its session name and its notes, as a restore would."""
+    second = await _orchestrator_ended(world)
+    [entry] = second.list_restorable()
+    assert entry.notes_id is not None
+    info = await second.spawn_agent(
+        "", kind="orchestrator", resume_mode=ResumeMode.RESUME_LAST
+    )
+    assert info.kind == "orchestrator"
+    session = second.get_session(ORCHESTRATOR_KEY, "")
+    assert "--resume 186b11b6" in session.command
+    assert f"--name {entry.session_name}" in session.command
+    assert second.notes_id(ORCHESTRATOR_KEY, "") == entry.notes_id
+    assert "- merge N5" in second.notes.get(entry.notes_id).text
+    assert second.list_restorable() == []
+
+
+async def test_a_restore_brings_the_orchestrator_back_before_a_root_agent(world):
+    """`restore --all` with the orchestrator and a repo-root agent that has
+    no known conversation: the agent's --continue would be the
+    orchestrator's, so it is refused and kept."""
+    first = world.engine()
+    await first.spawn_agent("", kind="orchestrator")
+    _conversation(first, ORCHESTRATOR_KEY, "", "186b11b6")
+    root = await first.spawn_agent(str(world.repo))
+    await first.stop()
+
+    second = world.engine()
+    result = await second.restore_agents()
+    [restored] = result["restored"]
+    assert restored["kind"] == "orchestrator"
+    [failure] = result["failed"]
+    assert "running orchestrator's" in failure["reason"]
+    [kept] = second.list_restorable()
+    assert (kept.worktree_path, kept.agent_id) == (str(world.repo), root.agent_id)
+
+
+async def test_the_orchestrators_conversation_run_as_an_agent_hides_it(world):
+    """Its conversation already runs as an agent (picked by id): restoring
+    the orchestrator would be a second process on it. Hidden, not consumed:
+    once that agent stops it is offered again, and comes back as the
+    orchestrator."""
+    second = await _orchestrator_ended(world)
+    events = _events(second)
+    [entry] = second.list_restorable()
+    repo = str(world.repo)
+    agent = await second.spawn_agent(
+        repo, resume_mode=ResumeMode.RESUME_LAST, resume_conversation="186b11b6"
+    )
+    assert second.list_restorable() == []
+    result = await second.restore_agents([entry.id])
+    assert result["restored"] == []
+    [failure] = result["failed"]
+    assert f"runs in this engine as agent {agent.agent_id}" in failure["reason"]
+    with pytest.raises(ValueError, match="stop that agent"):
+        await second.spawn_agent(
+            "", kind="orchestrator", resume_mode=ResumeMode.RESUME_LAST
+        )
+
+    second.stop_agent(repo, agent.agent_id)
+    assert [e.id for e in second.list_restorable()] == [entry.id]
+    assert _changes(events) == [[], [entry.id]]
+    result = await second.restore_agents([entry.id])
+    [restored] = result["restored"]
+    assert restored["kind"] == "orchestrator"
+    assert "--resume 186b11b6" in second.get_session(ORCHESTRATOR_KEY, "").command
+
+
 async def test_an_agent_resuming_the_conversation_consumes_its_entry(world):
     """--resume <id> of the entry's conversation (another agent id, even)."""
     first = world.engine()

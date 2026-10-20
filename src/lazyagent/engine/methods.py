@@ -553,7 +553,15 @@ class EngineMethods:
         elif caller_slot is not None:
             slot = caller_slot
         else:
-            raise ValueError("no target: pass worktree_path and agent_id")
+            raise ValueError(
+                "no target: this call carries no agent token, so it has no "
+                "'my notes'. Pass worktree_path (and agent_id when that "
+                "worktree runs several agents; list_agents shows them). In an "
+                "agent lazyagent spawned, call the notes tools of its "
+                "lazyagent_app MCP server: they always carry the agent's "
+                "token (a lazyagent server from your own Claude config only "
+                "does when it inherits LAZYAGENT_AGENT_TOKEN from the agent)"
+            )
 
         if caller_slot is None:
             by = ORCHESTRATOR_BY

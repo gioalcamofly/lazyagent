@@ -5,6 +5,7 @@ socket, to an engine running real PTYs with the fake agent."""
 from __future__ import annotations
 
 import json
+import shlex
 
 import pytest
 import pytest_asyncio
@@ -67,6 +68,37 @@ async def test_an_agent_appends_to_its_own_notes(engine, monkeypatch):
     assert replaced["rev"] == 2
     with pytest.raises(RuntimeError, match=r"\[CONFLICT\] notes changed \(rev 2\)"):
         await mcp_server.notes_replace_section("Pending", "- [x] tests", if_rev=1)
+
+
+def _agent_env(engine, agent) -> dict[str, str]:
+    """The environment the agent itself runs with (its command's exports)."""
+    session = engine.get_session(agent.worktree_path, agent.agent_id)
+    _, _, script = shlex.split(session.command)
+    words = shlex.split(script)
+    exports = words[1 : words.index("&&")]
+    return dict(word.split("=", 1) for word in exports)
+
+
+async def test_a_server_from_the_users_own_config_knows_the_agent(engine, monkeypatch):
+    """A `lazyagent` MCP server registered by the user (no env of its own)
+    next to lazyagent_app: Claude starts it with the agent's environment,
+    where the engine put the agent's token and socket."""
+    feat = engine.feat
+    agent = await engine.spawn_agent(feat)
+    env = _agent_env(engine, agent)
+    assert env["LAZYAGENT_SOCKET"] == engine.socket_path
+    monkeypatch.setenv(AGENT_TOKEN_ENV, env[AGENT_TOKEN_ENV])
+
+    result = await mcp_server.notes_append("Decisions", "use sqlite")
+    assert (result["agent_id"], result["by"]) == (agent.agent_id, "agent")
+
+
+async def test_no_target_and_no_token_says_what_to_do(engine, monkeypatch):
+    await engine.spawn_agent(engine.feat)
+    with pytest.raises(RuntimeError, match="no target") as refused:
+        await mcp_server.notes_read()
+    message = str(refused.value)
+    assert "worktree_path" in message and "lazyagent_app" in message
 
 
 async def test_a_peer_may_read_but_not_write(engine, monkeypatch):

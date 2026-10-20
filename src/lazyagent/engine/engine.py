@@ -937,7 +937,13 @@ class Engine:
         if notes_mode is not None and notes_mode not in NOTES_MODES:
             raise ValueError(f"Unknown notes mode: {notes_mode!r}")
         provider_name = provider_name or self.config.agent.provider
+        resume_last = resume_mode == ResumeMode.RESUME_LAST and not resume_conversation
         if kind == ORCHESTRATOR_KIND:
+            if resume_last and notes_id is None:
+                entry = self._last_orchestrator(provider_name)
+                if entry is not None:
+                    resume_conversation = entry.conversation_id
+                    notes_id = entry.notes_id
             info = self._spawn_orchestrator(
                 instruction,
                 skip_permissions=skip_permissions,
@@ -961,6 +967,8 @@ class Engine:
             raise ValueError(f"Unknown agent kind: {kind!r}")
         if self.worktree(worktree_path) is None:
             raise ValueError(f"Unknown worktree: {worktree_path}")
+        if resume_last:
+            self._check_continue_in_root(worktree_path, provider_name)
 
         key = worktree_path
         if not agent_id or agent_id in self._agents.get(key, {}):
@@ -1018,6 +1026,57 @@ class Engine:
             resume_conversation=resume_conversation,
         )
         return info
+
+    def _last_orchestrator(self, provider_name: str) -> Entry | None:
+        """The restorable orchestrator a "resume last" of the orchestrator
+        brings back: its conversation and its notes, as a restore would.
+        Refused while that conversation runs here as an agent."""
+        if self.manifest is None:
+            return None
+        for entry in self.manifest.restorable.values():
+            if entry.kind != ORCHESTRATOR_KIND or entry.provider != provider_name:
+                continue
+            match = self._live_match(entry)
+            if match is None:
+                return entry
+            if match[1].kind != ORCHESTRATOR_KIND:
+                raise ValueError(
+                    "The orchestrator's conversation runs in this engine as "
+                    f"{self._live_where(match[1])}: stop that agent, then "
+                    "restore the orchestrator"
+                )
+        return None
+
+    def _check_continue_in_root(self, worktree_path: str, provider_name: str) -> None:
+        """Refuse an agent's "resume last" in the repo root while there is
+        an orchestrator of the same provider (running, or restorable): it
+        runs in the repo root too, so the provider's last conversation
+        there is the orchestrator's, and the agent would take it over under
+        an agent's name, prompt and notes."""
+        root = self.repo_root
+        if not root or os.path.realpath(worktree_path) != os.path.realpath(root):
+            return
+        live = self.manifest.get(ORCHESTRATOR_KEY, "") if self.manifest else None
+        if (live is not None and live.provider == provider_name) or (
+            self.manifest is None and self.has_agent(ORCHESTRATOR_KEY)
+        ):
+            raise ValueError(
+                "Resuming the last conversation in the repo root would resume "
+                "the running orchestrator's (it runs there too). Start this "
+                "agent with resume_mode=new, or pick its conversation"
+            )
+        if self.manifest is None:
+            return
+        for entry in self.manifest.restorable.values():
+            if entry.kind == ORCHESTRATOR_KIND and entry.provider == provider_name:
+                raise ValueError(
+                    "Resuming the last conversation in the repo root would "
+                    "take the orchestrator's (it runs there too) as a plain "
+                    "agent. Restore the orchestrator instead (restore_agents "
+                    f"ids=[{entry.id!r}], or spawn kind=orchestrator with "
+                    "resume_mode=last), or start this agent with "
+                    "resume_mode=new, or pick its conversation"
+                )
 
     def _spawn_orchestrator(
         self,
@@ -1638,12 +1697,17 @@ class Engine:
         """The live agent that is (or may be) running ``entry``'s
         conversation: ``(True, live)`` when it is, so restoring it would
         start a second process on one conversation; ``(False, live)`` when
-        it may be, until ``live``'s provider reports its conversation id;
-        None when ``entry`` is not live here.
+        it may be, until ``live``'s provider reports its conversation id,
+        or while it runs that conversation as the other kind; None when
+        ``entry`` is not live here.
 
         - The orchestrator has one slot: any live orchestrator is it (the
           UIs start it with ``--continue`` in the repo root).
-        - Known conversation ids are compared.
+        - Known conversation ids are compared. One kind's conversation run
+          as the other (an agent ``--continue`` in the repo root took the
+          orchestrator's) only hides the entry: restoring it would put a
+          second process on the conversation, and once that agent stops the
+          entry comes back as what it was.
         - An agent spawned with ``--continue`` (``resume_mode=last``) in
           the entry's worktree resumes that directory's last conversation:
           the one a restore of an entry with no known id would resume too.
@@ -1652,12 +1716,15 @@ class Engine:
         assert self.manifest is not None
         maybe: Entry | None = None
         for slot, live in self.manifest.agents.items():
+            if entry.kind != live.kind:
+                if (
+                    entry.conversation_id
+                    and entry.conversation_id == live.conversation_id
+                ):
+                    maybe = maybe or live
+                continue
             if entry.kind == ORCHESTRATOR_KIND:
-                if live.kind == ORCHESTRATOR_KIND:
-                    return True, live
-                continue
-            if live.kind == ORCHESTRATOR_KIND:
-                continue
+                return True, live
             if entry.conversation_id and live.conversation_id:
                 if entry.conversation_id == live.conversation_id:
                     return True, live
@@ -1807,6 +1874,12 @@ class Engine:
                     self._orphan_notes(entry)
                     self._consumed[entry.id] = where
                     reason = f"already running in this engine ({where})"
+                elif live.kind != entry.kind:
+                    manifest.restorable[entry.id] = entry
+                    reason = (
+                        f"its conversation runs in this engine as {where}; "
+                        "stop that one, then restore this"
+                    )
                 else:
                     manifest.restorable[entry.id] = entry
                     reason = (

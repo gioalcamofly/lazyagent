@@ -30,12 +30,22 @@ DEFAULT_AGENT_PROVIDER = "claude"
 # Name of the MCP server lazyagent wires into the agents it spawns. Not plain
 # "lazyagent": a user-scope server registered under that name (the README's
 # setup for standalone sessions) takes precedence over the per-agent one and
-# may run another lazyagent install entirely.
+# may run another lazyagent install entirely. That server still gets the
+# agent's token, from the agent's environment (IDENTITY_ENV).
 MCP_SERVER_NAME = "lazyagent_app"
 # The per-spawn token the engine maps to the agent (who calls it over MCP).
 AGENT_TOKEN_ENV = "LAZYAGENT_AGENT_TOKEN"
 # The agent's notes file, for Claude's notes hook (notes_hook.py reads it).
 NOTES_PATH_ENV = "LAZYAGENT_NOTES_PATH"
+# The engine's MCP socket (mcp_server.py reads it).
+SOCKET_ENV = "LAZYAGENT_SOCKET"
+# Who an agent is, to its engine. Set in the agent's own environment, not
+# only in the MCP config's: Claude starts every stdio MCP server with the
+# agent's environment, so a lazyagent server registered by the user (user or
+# project scope, tokenless otherwise) knows the caller too. Never inherited:
+# an agent spawned from another agent's shell (or a client started there)
+# gets its own, never its parent's.
+IDENTITY_ENV = frozenset({AGENT_TOKEN_ENV, NOTES_PATH_ENV, SOCKET_ENV})
 
 # Values Claude Code accepts for its crossSessionInbound setting.
 CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
@@ -57,7 +67,7 @@ def agent_session_name(worktree_path: str, agent_id: str = "") -> str:
 # LAZYAGENT_HOST tells a lazyagent TUI it runs inside a host: the agents
 # and shells it (or its engine) starts are not hosted, and with a detached
 # engine they outlive the host.
-ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_", "LAZYAGENT_HOST"})
+ENV_SKIP = frozenset({"TERM", "LC_ALL", "HOME", "_", "LAZYAGENT_HOST"}) | IDENTITY_ENV
 
 
 @dataclass(frozen=True)
@@ -174,8 +184,9 @@ class AgentProvider:
 
         ``cross_session_inbound`` only applies to Claude, the one provider
         with cross-session messaging. ``agent_token`` goes into the MCP
-        server's env (``LAZYAGENT_AGENT_TOKEN``): how the engine tells which
-        agent calls it (the notes tools' "my notes"). ``notes_path`` (the
+        server's env and the agent's own (``LAZYAGENT_AGENT_TOKEN``, see
+        ``IDENTITY_ENV``): how the engine tells which agent calls it (the
+        notes tools' "my notes"). ``notes_path`` (the
         agent's notes file) is for Claude's notes hook, the one provider
         whose hooks can re-inject them.
         """
@@ -323,12 +334,19 @@ def get_agent_provider(provider: str | None) -> AgentProvider:
     return PROVIDERS[normalize_provider_name(provider)]
 
 
-def _mcp_env(socket_path: str, agent_token: str | None) -> dict[str, str]:
-    """The lazyagent MCP server's environment."""
-    env = {"PYTHONUNBUFFERED": "1", "LAZYAGENT_SOCKET": socket_path}
+def _agent_env(socket_path: str | None, agent_token: str | None) -> dict[str, str]:
+    """The engine's socket and the agent's token (see ``IDENTITY_ENV``)."""
+    if not socket_path:
+        return {}
+    env = {SOCKET_ENV: socket_path}
     if agent_token:
         env[AGENT_TOKEN_ENV] = agent_token
     return env
+
+
+def _mcp_env(socket_path: str, agent_token: str | None) -> dict[str, str]:
+    """The lazyagent MCP server's environment."""
+    return {"PYTHONUNBUFFERED": "1", **_agent_env(socket_path, agent_token)}
 
 
 def _build_gemini_runtime_context(
@@ -342,6 +360,7 @@ def _build_gemini_runtime_context(
 
     env_overrides = {
         "GEMINI_TELEMETRY_LOG": str(telemetry_log_path),
+        **_agent_env(socket_path, agent_token),
     }
 
     if socket_path:
@@ -395,6 +414,7 @@ def _build_codex_runtime_context(
 
     env_overrides = {
         "CODEX_APP_SERVER_LOG": str(app_server_log_path),
+        **_agent_env(socket_path, agent_token),
     }
 
     if socket_path:
@@ -451,7 +471,10 @@ def _build_claude_runtime_context(
     # brings the conversation id before the first prompt (and the new one
     # right after a /clear).
     notes_hooks = [hook_command]
-    env_overrides = {"LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path)}
+    env_overrides = {
+        "LAZYAGENT_CLAUDE_HOOK_LOG": str(hook_log_path),
+        **_agent_env(socket_path, agent_token),
+    }
     metadata = {
         "temp_dir": str(temp_dir),
         "hook_log_path": str(hook_log_path),
