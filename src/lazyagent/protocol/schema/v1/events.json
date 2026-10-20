@@ -190,6 +190,19 @@
         "reason": {"type": "string", "x-known-values": ["deleted", "orphaned", "adopted", "pruned"], "description": "deleted: on purpose (stop, dismiss, a client); pruned: by the GC (only the latest per worktree, orphan expiry, worktree gone, a fresh agent)."}
       }
     },
+    "review.replied": {
+      "type": "object",
+      "description": "An agent answered a review comment with review_reply (only one it was sent to: review_register).",
+      "required": ["reply_id", "comment_id", "worktree_path", "agent_id", "text", "at"],
+      "properties": {
+        "reply_id": {"type": "string"},
+        "comment_id": {"type": "string"},
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "text": {"type": "string"},
+        "at": {"type": "number"}
+      }
+    },
     "engine.restored": {
       "type": "object",
       "description": "What a restore_agents brought back and what failed (a failed agent stays restorable).",

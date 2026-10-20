@@ -124,7 +124,8 @@
           "additionalProperties": {"type": "string"},
           "description": "v1: environment of the calling client; the agent inherits it."
         },
-        "notes_mode": {"$ref": "#/$defs/notes_mode", "description": "How the agent may write its session notes; default: [notes] mode. Orchestrator workers get free."}
+        "notes_mode": {"$ref": "#/$defs/notes_mode", "description": "How the agent may write its session notes; default: [notes] mode. Orchestrator workers get free."},
+        "review_comment_ids": {"type": "array", "items": {"type": "string"}, "description": "The review comments in the instruction (review_register's comment_ids), registered for the new agent before it starts."}
       }
     },
     "spawn_agent.result": {
@@ -726,6 +727,60 @@
       "type": "object",
       "required": ["deleted"],
       "properties": {"deleted": {"type": "string"}}
+    },
+    "review_reply_item": {
+      "type": "object",
+      "description": "An agent's answer to one review comment (review_reply).",
+      "required": ["reply_id", "comment_id", "worktree_path", "agent_id", "text", "at"],
+      "properties": {
+        "reply_id": {"type": "string"},
+        "comment_id": {"type": "string"},
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "text": {"type": "string"},
+        "at": {"type": "number", "description": "Unix time."}
+      }
+    },
+    "review_register.params": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "comment_ids"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string", "description": "A live agent there: the one the comments were sent to."},
+        "comment_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "The ids its prompt gives (at most 64 letters, digits, - or _); a comment sent again (a follow-up, another agent) keeps every agent it went to."}
+      }
+    },
+    "review_register.result": {
+      "type": "object",
+      "required": ["worktree_path", "agent_id", "comment_ids"],
+      "properties": {
+        "worktree_path": {"type": "string"},
+        "agent_id": {"type": "string"},
+        "comment_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "review_reply.params": {
+      "type": "object",
+      "required": ["comment_id", "text"],
+      "properties": {
+        "comment_id": {"type": "string"},
+        "text": {"type": "string", "description": "At most 16 KiB."},
+        "caller": {"type": "string", "description": "The answering agent's token (LAZYAGENT_AGENT_TOKEN): required; the comment must have been registered for that agent."}
+      }
+    },
+    "review_reply.result": {
+      "type": "object",
+      "required": ["reply_id", "comment_id"],
+      "properties": {"reply_id": {"type": "string"}, "comment_id": {"type": "string"}}
+    },
+    "review_replies.params": {
+      "type": "object",
+      "properties": {"worktree_path": {"type": ["string", "null"], "description": "Only this worktree's."}}
+    },
+    "review_replies.result": {
+      "type": "object",
+      "required": ["replies"],
+      "properties": {"replies": {"type": "array", "items": {"$ref": "#/$defs/review_reply_item"}, "description": "Oldest first; kept 7 days."}}
     },
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {

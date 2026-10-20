@@ -1,0 +1,16 @@
+{
+  "case": "review_reply/not_sent_to_you",
+  "method": "review_reply",
+  "params": {
+    "caller": "tok-a2",
+    "comment_id": "c1a2b3",
+    "text": "Done."
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "No review comment 'c1a2b3' was sent to you: answer only the comment ids given in your prompt"
+    },
+    "id": "req-1"
+  }
+}

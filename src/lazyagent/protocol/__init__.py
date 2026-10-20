@@ -48,6 +48,10 @@ LEGACY_METHODS: tuple[str, ...] = (
     "notes_list",
     "notes_adopt",
     "notes_delete",
+    # Review replies, on the legacy socket for the review_reply MCP tool.
+    "review_register",
+    "review_reply",
+    "review_replies",
 )
 
 # The methods protocol v1 adds.
@@ -106,6 +110,7 @@ EVENTS: tuple[str, ...] = (
     "restorable.changed",
     "notes.updated",
     "notes.removed",
+    "review.replied",
     "ui.command",
     "ui.view_changed",
 )

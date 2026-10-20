@@ -81,6 +81,7 @@ from lazyagent.engine.notes import (
     notes_dir,
     prune_engine_dirs,
 )
+from lazyagent.engine.reviews import ReviewStore, reviews_path
 from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.session import (
     AgentSession,
@@ -245,6 +246,9 @@ class Engine:
         # Each live agent's token (in its MCP server's env) → its slot: who
         # calls the notes methods. In memory only: agents die with us.
         self._tokens: dict[str, tuple[str, str]] = {}
+        # Review comments sent to agents and their replies (review_reply);
+        # opened on first use.
+        self.reviews: ReviewStore | None = None
         # Random per engine process: the v1 engine_id, and the manifest's.
         self.instance_id = uuid.uuid4().hex
         self.worktree_service = WorktreeService(
@@ -920,6 +924,7 @@ class Engine:
         agent_id: str | None = None,
         notes_id: str | None = None,
         notes_mode: str | None = None,
+        review_comment_ids: list[str] | None = None,
     ) -> AgentInfo:
         """Start a new agent in a worktree (or the orchestrator, for
         ``kind="orchestrator"``, which runs in the repo root and ignores
@@ -933,6 +938,8 @@ class Engine:
         new notes from the template when missing). A fresh conversation
         (``resume_mode=new``, no ``notes_id``) is its worktree's most recent
         agent: the notes of the agents that ended there are deleted.
+        ``review_comment_ids``: review comments in ``instruction`` the agent
+        may answer with review_reply, registered before it starts.
         """
         if notes_mode is not None and notes_mode not in NOTES_MODES:
             raise ValueError(f"Unknown notes mode: {notes_mode!r}")
@@ -1016,6 +1023,8 @@ class Engine:
             spawn_id=spawn_id,
         )
         self._tokens[token] = (key, agent_id)
+        if review_comment_ids:
+            self.review_store().register(key, agent_id, review_comment_ids)
         info = self._start_agent(session, label, session_name, AGENT_KIND)
         self._remember(
             info,
@@ -1553,6 +1562,17 @@ class Engine:
         """The live agent (``(key, agent_id)``) an agent token was minted
         for; None once it is gone, or for a token this engine never gave."""
         return self._tokens.get(token)
+
+    def review_store(self) -> ReviewStore:
+        """The review replies; kept on disk by the engine that keeps the
+        manifest (it owns the repo), in memory by any other."""
+        if self.reviews is None:
+            path = None
+            if self.manifest is not None and self.repo_root:
+                path = reviews_path(self.repo_root)
+            self.reviews = ReviewStore(path)
+            self.reviews.load()
+        return self.reviews
 
     def _open_notes(
         self,

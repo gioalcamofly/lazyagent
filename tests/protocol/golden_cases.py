@@ -577,6 +577,54 @@ async def _():
     return await _call(engine, "stop_agent", {"worktree_path": FEAT})
 
 
+# --- review replies ---------------------------------------------------------
+
+
+def _review_engine(*agents: str):
+    """:func:`_notes_engine`'s agents, and a review store in memory on a
+    fixed clock where a1 was sent comment c1a2b3."""
+    from lazyagent.engine.reviews import ReviewStore
+
+    engine = _notes_engine(*agents)
+    engine.reviews = ReviewStore(clock=lambda: FIXED_TIME, new_id=lambda: "r0a1b2c3d4e5")
+    engine.reviews.register(FEAT, "a1", ["c1a2b3"])
+    return engine
+
+
+@case("review_register/registered")
+async def _():
+    return await _call(
+        _review_engine("a1"),
+        "review_register",
+        {"worktree_path": FEAT, "agent_id": "a1", "comment_ids": ["c4d5e6", "c7f8a9"]},
+    )
+
+
+@case("review_reply/answered")
+async def _():
+    return await _call(
+        _review_engine("a1"),
+        "review_reply",
+        {"comment_id": "c1a2b3", "text": "Renamed it.", "caller": "tok-a1"},
+    )
+
+
+@case("review_reply/not_sent_to_you")
+async def _():
+    return await _call(
+        _review_engine("a1", "a2"),
+        "review_reply",
+        {"comment_id": "c1a2b3", "text": "Done.", "caller": "tok-a2"},
+    )
+
+
+@case("review_replies/kept")
+async def _():
+    engine = _review_engine("a1")
+    engine.reviews.reply((FEAT, "a1"), "c1a2b3", "Renamed it.")
+    return await _call(engine, "review_replies", {"worktree_path": FEAT})
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):
