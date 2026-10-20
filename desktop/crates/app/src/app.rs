@@ -126,6 +126,8 @@ pub struct State {
     pub ask: Option<crate::diff_view::AskDraft>,
     /// Questions waiting for their agent's answer.
     pub asks: Vec<crate::diff_view::PendingAsk>,
+    /// Worktrees where the diff view is starting an agent to deliver to.
+    pub starting: Vec<String>,
     /// Bumped when comments change (the diff rows carry them).
     pub comments_gen: u64,
     pub saved: crate::persist::Saved,
@@ -196,6 +198,7 @@ impl State {
             pending_reviews: vec![],
             ask: None,
             asks: vec![],
+            starting: vec![],
             comments_gen: 0,
             saved,
             saver: crate::persist::Saver::new(saved_path),

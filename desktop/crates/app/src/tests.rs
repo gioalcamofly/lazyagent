@@ -753,6 +753,159 @@ fn the_diff_view_comments_and_submits_a_review() {
     assert_eq!(h.state().state.comments("/r/repo-f").len(), 1, "not cleared when it was not sent");
 }
 
+/// A diff view on `/r/repo-f` (agents as given) with a one-line comment
+/// on a removed line and one on a range of three lines.
+fn review_app(agents: Vec<serde_json::Value>) -> (Harness<'static, App>, mpsc::Sender<Msg>, Vec<crate::diff::Comment>) {
+    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![]), worktree("/r/repo-f", "f", agents)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    let parsed = crate::diff::parse(&sample_diff(2, 8));
+    let rows = parsed.files[0].rows.clone();
+    let mut one = crate::diff::anchor("src/f0.rs", &rows[1]).unwrap();
+    one.text = "keep the old name".into();
+    let mut range = crate::diff::anchor_range("src/f0.rs", &rows[2..5]).unwrap();
+    range.text = "What is this?".into();
+    let comments = vec![one, range];
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-f".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", parsed));
+        s.diff_open = true;
+        s.set_comments("/r/repo-f", &comments);
+    }
+    h.run_steps(2);
+    (h, tx, comments)
+}
+
+#[test]
+fn the_review_form_lists_comments_and_shows_the_prompt_on_demand() {
+    let (mut h, _tx, comments) = review_app(vec![agent("a1", "Implementer", "waiting", "s1")]);
+    h.get_by_label("Submit review (2)").click();
+    h.run_steps(3);
+    // The target, then each comment: where, the comment, the code folded.
+    assert!(h.query_by_label("To").is_some());
+    assert!(h.query_by(|n| n.value().as_deref() == Some("Implementer · waiting")).is_some(), "the target");
+    assert!(h.query_by_label("src/f0.rs:1 (removed line)").is_some());
+    assert!(h.query_by_label("keep the old name").is_some());
+    assert!(h.query_by_label("What is this?").is_some());
+    assert!(h.query_by_label(&format!("src/f0.rs:{}", comments[1].place())).is_some());
+    let code: Vec<&str> = comments[1].code.lines().collect();
+    assert_eq!(code.len(), 3);
+    assert!(h.query_by_label(code[0]).is_some(), "the first line of the code");
+    assert!(h.query_by_label(code[2]).is_none(), "the rest folded");
+    h.get_by_label("▸ 2 more lines").click();
+    h.run_steps(3);
+    assert!(h.query_by_label(code[2]).is_some(), "unfolded");
+    assert!(h.query_by_label("▾ less").is_some());
+    // The raw prompt only on demand.
+    let prompt = crate::diff::review_prompt(&comments, "");
+    assert!(h.query_by_label(&prompt).is_none());
+    assert!(h.query_by_label_contains("Clear the comments").is_none(), "no clear-once-sent option");
+    h.get_by_label("▸ Show prompt").click();
+    h.run_steps(3);
+    assert!(h.query_by_label(&prompt).is_some());
+    // Idle agent: Send; no engine here, so it is not sent and nothing changes.
+    h.get_by_label("Send").click();
+    h.run_steps(3);
+    assert!(h.state().state.review.is_none());
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("The review was not sent")));
+    assert!(h.state().state.comments("/r/repo-f").iter().all(|c| !c.sent));
+}
+
+#[test]
+fn sent_review_comments_stay_as_threads() {
+    let (mut h, _tx, comments) = review_app(vec![agent("a1", "Implementer", "running", "s1")]);
+    // Send when idle: queued, so not offered again meanwhile.
+    h.get_by_label("Submit review (2)").click();
+    h.run_steps(3);
+    h.get_by_label("Send when idle").click();
+    h.run_steps(3);
+    assert_eq!(h.state().state.pending_reviews[0].ids, comments.iter().map(|c| c.id()).collect::<Vec<_>>());
+    assert!(h.query_by_label("Submit review (0)").is_some(), "queued comments are not in the next review");
+    h.state_mut().state.pending_reviews.clear();
+    // Delivered: every comment stays, marked sent, with where its answer is.
+    let ids: Vec<String> = comments.iter().map(|c| c.id()).collect();
+    h.state_mut().state.mark_sent("/r/repo-f", &ids, "Implementer");
+    h.run_steps(3);
+    let all = h.state().state.comments("/r/repo-f");
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().all(|c| c.sent && !c.asked));
+    let thread = crate::diff_view::thread_lines(&all[0], false);
+    assert_eq!(thread[0], ("you", "sent ▸ keep the old name".to_string()));
+    assert_eq!(
+        thread[1],
+        ("note", "· Sent with the review to Implementer; its answer is in the agent's terminal.".to_string())
+    );
+    let rows = h.state().state.diff.as_ref().unwrap().rows.clone();
+    for c in &all {
+        assert!(rows.contains(&crate::diff_view::DRow::Comment(0, c.id())), "the thread under its line");
+    }
+    assert!(h.query_by_label("Submit review (0)").is_some());
+    // Marking twice adds no second note.
+    h.state_mut().state.mark_sent("/r/repo-f", &ids, "Implementer");
+    assert_eq!(h.state().state.comments("/r/repo-f")[0].replies.len(), 1);
+    // A sent thread opens as a conversation with a follow-up, not an editor.
+    let idx = rows.iter().position(|r| *r == crate::diff_view::DRow::Comment(0, all[0].id())).unwrap();
+    press(&mut h, idx, 200.0, true, egui::Modifiers::NONE);
+    press(&mut h, idx, 200.0, false, egui::Modifiers::NONE);
+    assert!(h.state().state.comment_edit.is_some());
+    assert!(h.query_by_label("You (sent with a review): keep the old name").is_some());
+    h.get_by_label("Close").click();
+    h.run_steps(2);
+    // A new comment is the next review; Clear sent removes the sent ones.
+    let mut more = comments[0].clone();
+    more.line = 3;
+    more.text = "and this".into();
+    more.sent = false;
+    more.replies.clear();
+    h.state_mut().state.upsert_comment("/r/repo-f", more);
+    h.run_steps(2);
+    assert!(h.query_by_label("Submit review (1)").is_some());
+    h.get_by_label("Clear sent (2)").click();
+    h.run_steps(2);
+    let left = h.state().state.comments("/r/repo-f");
+    assert_eq!((left.len(), left[0].text.as_str()), (1, "and this"));
+}
+
+#[test]
+fn with_no_agent_the_review_and_ask_now_say_one_will_start() {
+    let (mut h, _tx, _) = review_app(vec![]);
+    h.get_by_label("Submit review (2)").click();
+    h.run_steps(3);
+    assert!(
+        h.query_by(|n| n.value().as_deref() == Some("New agent (a new default agent (skip permissions))")).is_some()
+    );
+    assert!(
+        h.query_by_label(
+            "No agent in this worktree: Send starts a new default agent (skip permissions) and gives it this."
+        )
+        .is_some()
+    );
+    h.get_by_label("Start agent and send").click();
+    h.run_steps(3);
+    // No engine: not sent, said so, and the worktree is free to try again.
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("The review was not sent")));
+    assert!(h.state().state.starting.is_empty());
+    assert!(h.state().state.comments("/r/repo-f").iter().all(|c| !c.sent));
+    // The popup on selected lines says the same for Ask now.
+    // Rows: 0 file, 1 hunk, 2 a line, 3 its comment, 4 and 5 lines.
+    press(&mut h, 5, 30.0, true, egui::Modifiers::NONE);
+    press(&mut h, 5, 30.0, false, egui::Modifiers::NONE);
+    assert!(h.state().state.ask.is_some());
+    assert!(
+        h.query_by_label(
+            "No agent in this worktree: Ask now starts a new default agent (skip permissions) and gives it this."
+        )
+        .is_some()
+    );
+    h.event(egui::Event::Text("Why?".into()));
+    h.run_steps(2);
+    h.get_by_label("Ask now").click();
+    h.run_steps(3);
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("The question was not sent")));
+    assert!(h.state().state.asks.is_empty() && h.state().state.starting.is_empty());
+}
+
 #[test]
 fn the_diff_view_keeps_long_names_and_lines_in_their_columns() {
     // The shape that broke: long file names, a long branch and subject,
@@ -1044,7 +1197,75 @@ fn a_review_reaches_a_real_agent_from_a_real_diff() {
     step_until(&mut h, "the review in the agent", |a| {
         a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("Review comments"))
     });
-    step_until(&mut h, "comments cleared", |a| a.state.comments(&world.repo).is_empty());
+    step_until(&mut h, "the comment sent, kept as a thread", |a| {
+        a.state.comments(&world.repo).iter().all(|c| c.sent && c.replies.len() == 1)
+    });
+    conn.shutdown();
+}
+
+/// The fake agent's command line once it runs in `cwd`.
+fn wait_cmdline(cwd: &str) -> String {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(c) = agent_cmdline(cwd) {
+            return c;
+        }
+        assert!(Instant::now() < deadline, "no agent process in {cwd}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A real engine's main worktree with a new file in it, its diff open.
+fn world_with_diff() -> Option<(lazyagent_testkit::World, Harness<'static, App>, std::sync::Arc<Conn>)> {
+    let (world, mut h, conn) = world_app()?;
+    std::fs::write(std::path::Path::new(&world.repo).join("app.py"), "a = 1\nb = 2\n").unwrap();
+    h.state_mut().state.selected = Some(world.repo.clone());
+    h.state_mut().state.toggle_diff();
+    step_until(&mut h, "the diff", |a| a.state.diff.as_ref().is_some_and(|d| !d.loading && !d.diff.files.is_empty()));
+    assert_eq!(h.state().state.store.agent_count(), 0);
+    Some((world, h, conn))
+}
+
+#[test]
+fn a_review_with_no_agent_starts_one_that_gets_it() {
+    let Some((world, mut h, conn)) = world_with_diff() else { return };
+    let file = h.state().state.diff.as_ref().unwrap().diff.files[0].clone();
+    let mut c = crate::diff::anchor("app.py", &file.rows[0]).unwrap();
+    c.text = "use logging".into();
+    h.state_mut().state.set_comments(&world.repo, &[c]);
+    h.run_steps(2);
+    h.get_by_label("Submit review (1)").click();
+    h.run_steps(3);
+    h.get_by_label("Start agent and send").click();
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    // The review is its first prompt, and it runs with permissions skipped.
+    let cmd = wait_cmdline(&world.repo);
+    assert!(cmd.contains("Review comments on your changes"), "{cmd}");
+    assert!(cmd.contains("use logging"), "{cmd}");
+    assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
+    step_until(&mut h, "the comment sent", |a| a.state.comments(&world.repo).iter().all(|c| c.sent));
+    assert!(h.state().state.diff_open, "still in the diff");
+    conn.shutdown();
+}
+
+#[test]
+fn ask_now_with_no_agent_starts_one_and_waits_for_its_answer() {
+    let Some((world, mut h, conn)) = world_with_diff() else { return };
+    let file = h.state().state.diff.as_ref().unwrap().diff.files[0].clone();
+    let mut c = crate::diff::anchor_range("app.py", &file.rows).unwrap();
+    c.text = "Why two names?".into();
+    c.asked = true;
+    let id = c.id();
+    h.state_mut().state.upsert_comment(&world.repo, c);
+    h.state_mut().state.ask_agent(&world.repo, &id);
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    let cmd = wait_cmdline(&world.repo);
+    assert!(cmd.contains("A question about app.py:1-2"), "{cmd}");
+    assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
+    let agent_id = h.state().state.store.agents(&world.repo)[0].agent_id.clone();
+    step_until(&mut h, "the question bound to the new agent", |a| {
+        a.state.asks.iter().any(|q| q.sent && q.agent_id == agent_id)
+    });
     conn.shutdown();
 }
 
@@ -1135,6 +1356,42 @@ fn render_the_diff_view() {
     h.state_mut().state.saved.diff_split = true;
     h.run_steps(3);
     h.render().unwrap().save(dir.join("lazyagent-desktop-diff-split.png")).unwrap();
+}
+
+#[test]
+fn render_the_review_form() {
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "main", vec![]),
+        worktree("/r/repo-f", "f", vec![agent("a1", "Agent 1", "waiting", "s1")]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1300.0, 800.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(2);
+    let parsed = crate::diff::parse(&sample_diff(2, 12));
+    let rows = parsed.files[0].rows.clone();
+    let mut a = crate::diff::anchor_range("src/f0.rs", &rows[2..9]).unwrap();
+    a.text = "What is this?".into();
+    let mut b = crate::diff::anchor_range("src/f0.rs", &rows[10..13]).unwrap();
+    b.text = "And this? Should it not reuse compute() instead of a second helper with the same body?".into();
+    {
+        let s = &mut h.state_mut().state;
+        s.selected = Some("/r/repo-f".into());
+        s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", parsed));
+        s.diff_open = true;
+        s.set_comments("/r/repo-f", &[a, b]);
+    }
+    h.run_steps(2);
+    h.get_by_label("Submit review (2)").click();
+    h.run_steps(3);
+    let dir = std::env::temp_dir();
+    match h.render() {
+        Ok(i) => i.save(dir.join("lazyagent-desktop-review.png")).unwrap(),
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => return,
+    }
+    h.get_by_label("▸ Show prompt").click();
+    h.run_steps(3);
+    h.render().unwrap().save(dir.join("lazyagent-desktop-review-open.png")).unwrap();
 }
 
 #[test]

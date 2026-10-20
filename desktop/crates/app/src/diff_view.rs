@@ -12,7 +12,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, TextEdit, TextFormat,
     Ui, Vec2,
 };
-use lazyagent_proto::types::{DiffBase, DiffResult};
+use lazyagent_proto::types::{DiffBase, DiffResult, SpawnResult};
 use serde_json::json;
 
 use crate::app::{App, Severity, State};
@@ -183,9 +183,12 @@ pub struct PendingAsk {
 
 pub struct ReviewForm {
     pub worktree: String,
+    /// `None`: start a new agent for it (the worktree has none).
     pub agent_id: Option<String>,
     pub summary: String,
-    pub clear: bool,
+    pub show_prompt: bool,
+    /// The comments whose code is shown in full.
+    pub expanded: Vec<String>,
 }
 
 /// A review waiting for its agent to finish its turn.
@@ -193,7 +196,8 @@ pub struct PendingReview {
     pub worktree: String,
     pub agent_id: String,
     pub text: String,
-    pub clear: bool,
+    /// The comments it carries, marked sent once it is delivered.
+    pub ids: Vec<String>,
 }
 
 fn idle(status: &str) -> bool {
@@ -325,23 +329,87 @@ impl State {
 
     pub fn send_review(&mut self, r: PendingReview) {
         let params = json!({"worktree_path": r.worktree, "agent_id": r.agent_id, "text": r.text});
-        let (worktree, clear) = (r.worktree.clone(), r.clear);
+        let to = self.store.agent(&r.worktree, &r.agent_id).map_or(r.agent_id.clone(), store::agent_label);
+        let (worktree, ids) = (r.worktree, r.ids);
         self.conn.request("send_agent_input", params, move |s, reply| match reply {
             Ok(v) => {
                 s.toast(Severity::Info, format!("Review: {}", crate::attention_view::delivery_text(v)));
-                if clear {
-                    // The asked threads were not part of it.
-                    let kept: Vec<Comment> = s.comments(&worktree).into_iter().filter(|c| c.asked).collect();
-                    s.set_comments(&worktree, &kept);
-                }
+                s.mark_sent(&worktree, &ids, &to);
             }
             Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
         });
     }
 
-    /// The comments that go with Submit review (not the asked ones).
+    /// Starts a new agent in `worktree` with the review as its first prompt.
+    pub fn review_new_agent(&mut self, worktree: &str, text: String, ids: Vec<String>) {
+        let worktree = worktree.to_string();
+        self.start_agent(&worktree.clone(), text, move |s, started| match started {
+            Ok(agent_id) => {
+                s.toast(Severity::Info, format!("Started agent {agent_id} with the review."));
+                s.mark_sent(&worktree, &ids, &agent_id);
+            }
+            Err(e) => s.toast(Severity::Error, format!("The review was not sent: {e}")),
+        });
+    }
+
+    /// What a new agent started from the diff view is: the configured
+    /// provider, permissions skipped (no one is there to approve them).
+    pub fn new_agent_text(&self) -> String {
+        let provider = self.store.config.as_ref().map_or("default", |c| c.agent_provider.as_str());
+        format!("a new {provider} agent (skip permissions)")
+    }
+
+    /// Spawns an agent in `worktree` whose first prompt is `text`; `then`
+    /// gets its id, or why it did not start. One at a time per worktree.
+    fn start_agent(
+        &mut self,
+        worktree: &str,
+        text: String,
+        then: impl FnOnce(&mut State, Result<String, String>) + Send + 'static,
+    ) {
+        if self.starting.iter().any(|w| w == worktree) {
+            then(self, Err("an agent is already starting in this worktree; try again once it is up".into()));
+            return;
+        }
+        self.starting.push(worktree.to_string());
+        let params = json!({"worktree_path": worktree, "instruction": text, "skip_permissions": true,
+                            "env": self.env_json()});
+        let worktree = worktree.to_string();
+        self.conn.request("spawn_agent", params, move |s, reply| {
+            s.starting.retain(|w| *w != worktree);
+            let started = reply
+                .map_err(|e| e.to_string())
+                .and_then(|v| serde_json::from_value::<SpawnResult>(v).map_err(|e| e.to_string()));
+            match started {
+                Ok(r) => {
+                    // Its tab, without leaving the diff.
+                    s.tabs.insert(worktree, r.agent_id.clone());
+                    then(s, Ok(r.agent_id));
+                }
+                Err(e) => then(s, Err(e)),
+            }
+        });
+    }
+
+    /// Marks the comments `ids` as sent to `to`: they stay, as threads.
+    pub fn mark_sent(&mut self, worktree: &str, ids: &[String], to: &str) {
+        let mut all = self.comments(worktree);
+        for c in all.iter_mut().filter(|c| ids.contains(&c.id()) && !c.sent) {
+            c.sent = true;
+            c.replies.push(diff::Reply {
+                who: "note".into(),
+                text: format!("Sent with the review to {to}; its answer is in the agent's terminal."),
+            });
+        }
+        self.set_comments(worktree, &all);
+    }
+
+    /// The comments that go with Submit review: not asked, not sent, not
+    /// in a review waiting for its agent.
     pub fn review_comments(&self, worktree: &str) -> Vec<Comment> {
-        self.comments(worktree).into_iter().filter(|c| !c.asked).collect()
+        let queued: Vec<&String> =
+            self.pending_reviews.iter().filter(|r| r.worktree == worktree).flat_map(|r| &r.ids).collect();
+        self.comments(worktree).into_iter().filter(|c| !c.out() && !queued.contains(&&c.id())).collect()
     }
 
     /// Adds `c`, or replaces the comment with its id.
@@ -364,19 +432,14 @@ impl State {
     pub fn ask_agent(&mut self, worktree: &str, id: &str) {
         let Some(c) = self.comments(worktree).into_iter().find(|c| c.id() == id) else { return };
         let agents = self.store.agents(worktree);
-        let Some(agent_id) = agents.iter().find(|a| idle(&a.status)).or(agents.first()).map(|a| a.agent_id.clone())
-        else {
-            self.toast(Severity::Error, "No agent in this worktree to ask.");
-            return;
-        };
+        let pick = agents.iter().find(|a| idle(&a.status)).or(agents.first()).map(|a| a.agent_id.clone());
         let marker = marker_id();
         let base = self.diff.as_ref().filter(|d| d.path == worktree).map(|d| d.base.clone()).unwrap_or_default();
-        let params =
-            json!({"worktree_path": worktree, "agent_id": agent_id, "text": diff::ask_prompt(&c, &base, &marker)});
+        let text = diff::ask_prompt(&c, &base, &marker);
         self.asks.retain(|a| !(a.worktree == worktree && a.id == id));
         self.asks.push(PendingAsk {
             worktree: worktree.to_string(),
-            agent_id,
+            agent_id: pick.clone().unwrap_or_default(),
             id: id.to_string(),
             marker,
             sent: false,
@@ -385,6 +448,26 @@ impl State {
         });
         self.comments_gen += 1;
         let (worktree, id) = (worktree.to_string(), id.to_string());
+        let Some(agent_id) = pick else {
+            // No agent here: a new one, with the question as its first prompt.
+            self.start_agent(&worktree.clone(), text, move |s, started| {
+                let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
+                match started {
+                    Ok(agent_id) => {
+                        s.toast(Severity::Info, format!("Started agent {agent_id} with the question."));
+                        s.asks[i].agent_id = agent_id;
+                        s.asks[i].sent = true;
+                    }
+                    Err(e) => {
+                        s.asks.remove(i);
+                        s.comments_gen += 1;
+                        s.toast(Severity::Error, format!("The question was not sent: {e}"));
+                    }
+                }
+            });
+            return;
+        };
+        let params = json!({"worktree_path": worktree, "agent_id": agent_id, "text": text});
         self.conn.request("send_agent_input", params, move |s, reply| {
             let Some(i) = s.asks.iter().position(|a| a.worktree == worktree && a.id == id) else { return };
             match reply {
@@ -485,7 +568,17 @@ pub fn thread_lines(c: &Comment, asking: bool) -> Vec<(&'static str, String)> {
             out.push((who, format!("{pad}… (click to read it all)")));
         }
     };
-    push("you", if c.asked { "?" } else { "▸" }, &c.text);
+    push(
+        "you",
+        if c.asked {
+            "?"
+        } else if c.sent {
+            "sent ▸"
+        } else {
+            "▸"
+        },
+        &c.text,
+    );
     for r in &c.replies {
         match r.who.as_str() {
             "agent" => push("agent", "agent:", &r.text),
@@ -514,7 +607,8 @@ impl App {
         let Some(path) = self.state.diff.as_ref().map(|d| d.path.clone()) else { return };
         let comments = self.state.comments(&path);
         let asking = self.state.asking(&path);
-        let to_review = comments.iter().filter(|c| !c.asked).count();
+        let to_review = self.state.review_comments(&path).len();
+        let sent = comments.iter().filter(|c| c.sent).count();
         // Toolbar.
         let mut reload = None;
         ui.horizontal(|ui| {
@@ -575,8 +669,18 @@ impl App {
                         worktree: path.clone(),
                         agent_id: pick,
                         summary: String::new(),
-                        clear: true,
+                        show_prompt: false,
+                        expanded: vec![],
                     });
+                }
+                if sent > 0
+                    && ui
+                        .small_button(format!("Clear sent ({sent})"))
+                        .on_hover_text("Remove the threads already sent with a review")
+                        .clicked()
+                {
+                    let kept: Vec<Comment> = self.state.comments(&path).into_iter().filter(|c| !c.sent).collect();
+                    self.state.set_comments(&path, &kept);
                 }
             });
         });
@@ -883,6 +987,7 @@ impl App {
             // Some(false): add to the review; Some(true): ask now.
             let mut act = None::<bool>;
             let mut close = false;
+            let starts = self.state.store.agents(&a.worktree).is_empty().then(|| self.state.new_agent_text());
             egui::Area::new(egui::Id::unique("diff-ask"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(a.pos)
@@ -926,6 +1031,9 @@ impl App {
                                 close = true;
                             }
                         });
+                        if let Some(new) = &starts {
+                            no_agent_note(ui, &t, new, "Ask now");
+                        }
                     });
                 });
             match act {
@@ -960,13 +1068,14 @@ impl App {
             let mut cancel = false;
             let id = e.comment.id();
             let asking = self.state.asks.iter().any(|a| a.worktree == e.worktree && a.id == id);
+            let starts = self.state.store.agents(&e.worktree).is_empty().then(|| self.state.new_agent_text());
             let m = egui::Modal::new(egui::Id::unique("diff-comment")).show(ctx, |ui| {
                 ui.set_width(520.0);
                 ui.label(RichText::new(format!("{}:{}", e.comment.path, e.comment.place())).strong());
                 egui::ScrollArea::vertical().id_salt("thread-code").max_height(120.0).show(ui, |ui| {
                     ui.label(RichText::new(e.comment.code.trim_end()).size(11.5).monospace().color(t.muted));
                 });
-                if !e.comment.asked {
+                if !e.comment.out() {
                     let edit = ui.add(
                         TextEdit::multiline(&mut e.comment.text)
                             .desired_rows(4)
@@ -981,7 +1090,8 @@ impl App {
                     }
                 } else {
                     egui::ScrollArea::vertical().id_salt("thread").max_height(300.0).show(ui, |ui| {
-                        ui.label(RichText::new(format!("You: {}", e.comment.text.trim())).color(t.accent));
+                        let you = if e.comment.sent { "You (sent with a review)" } else { "You" };
+                        ui.label(RichText::new(format!("{you}: {}", e.comment.text.trim())).color(t.accent));
                         for r in &e.comment.replies {
                             let (who, color) = match r.who.as_str() {
                                 "agent" => ("Agent: ", t.text),
@@ -1011,8 +1121,11 @@ impl App {
                         act = Some(Act::FollowUp);
                     }
                 }
+                if let Some(new) = &starts {
+                    no_agent_note(ui, &t, new, "Ask now");
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if e.comment.asked {
+                    if e.comment.out() {
                         let ok = !asking && !e.follow.trim().is_empty();
                         if ui.add_enabled(ok, egui::Button::new(RichText::new("Ask now").strong())).clicked() {
                             act = Some(Act::FollowUp);
@@ -1032,7 +1145,7 @@ impl App {
                     if e.existing && ui.button("Delete").clicked() {
                         act = Some(Act::Delete);
                     }
-                    if ui.button(if e.comment.asked { "Close" } else { "Cancel" }).clicked() {
+                    if ui.button(if e.comment.out() { "Close" } else { "Cancel" }).clicked() {
                         cancel = true;
                     }
                 });
@@ -1069,42 +1182,79 @@ impl App {
         if let Some(mut r) = self.state.review.take() {
             let comments = self.state.review_comments(&r.worktree);
             let agents = self.state.store.agents(&r.worktree).to_vec();
+            // The picked agent may be gone; with none left, a new one.
+            if r.agent_id.as_ref().is_some_and(|id| !agents.iter().any(|a| &a.agent_id == id)) {
+                r.agent_id = agents.first().map(|a| a.agent_id.clone());
+            }
+            let new_agent = self.state.new_agent_text();
+            let prompt = diff::review_prompt(&comments, &r.summary);
+            let screen = ctx.content_rect();
+            let (width, list_h) =
+                ((screen.width() - 80.0).clamp(360.0, 640.0), (screen.height() * 0.45).clamp(140.0, 380.0));
             let mut action = None::<bool>;
             let mut close = false;
             let m = egui::Modal::new(egui::Id::unique("diff-review")).show(ctx, |ui| {
-                ui.set_width(620.0);
-                let n = comments.len();
-                let noun = if n == 1 { "comment" } else { "comments" };
-                ui.label(RichText::new(format!("Submit review ({n} {noun})")).strong().size(15.0));
-                if agents.is_empty() {
-                    ui.label(RichText::new("No agent in this worktree to send it to.").color(t.red));
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Submit review").strong().size(15.0));
+                    let n = comments.len();
+                    let noun = if n == 1 { "comment" } else { "comments" };
+                    ui.label(RichText::new(format!("{n} {noun}")).color(t.muted));
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("To").color(t.muted));
+                    let name = |a: &lazyagent_proto::types::Agent| {
+                        format!("{} · {}", store::agent_label(a), store::status_text(&a.status))
+                    };
+                    let shown = match r.agent_id.as_ref().and_then(|id| agents.iter().find(|a| &a.agent_id == id)) {
+                        Some(a) => name(a),
+                        None => format!("New agent ({new_agent})"),
+                    };
+                    egui::ComboBox::from_id_salt("review-to").width(width - 40.0).selected_text(shown).show_ui(
+                        ui,
+                        |ui| {
+                            for a in &agents {
+                                ui.selectable_value(&mut r.agent_id, Some(a.agent_id.clone()), name(a));
+                            }
+                            ui.selectable_value(&mut r.agent_id, None, format!("New agent ({new_agent})"));
+                        },
+                    );
+                });
+                if r.agent_id.is_none() {
+                    no_agent_note(ui, &t, &new_agent, "Send");
                 }
-                egui::ComboBox::from_label("to")
-                    .selected_text(
-                        r.agent_id
-                            .as_ref()
-                            .and_then(|id| agents.iter().find(|a| &a.agent_id == id))
-                            .map(|a| format!("{} ({})", store::agent_label(a), store::status_text(&a.status)))
-                            .unwrap_or_else(|| "choose an agent".into()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for a in &agents {
-                            let label = format!("{} ({})", store::agent_label(a), store::status_text(&a.status));
-                            ui.selectable_value(&mut r.agent_id, Some(a.agent_id.clone()), label);
-                        }
-                    });
+                ui.add_space(4.0);
                 ui.add(
                     TextEdit::multiline(&mut r.summary)
                         .desired_rows(2)
                         .desired_width(f32::INFINITY)
                         .hint_text("Summary (optional)"),
                 );
-                ui.label(RichText::new("What the agent receives:").small().color(t.muted));
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    // size() then monospace(): small() would reset the font to proportional.
-                    ui.label(RichText::new(diff::review_prompt(&comments, &r.summary)).size(11.5).monospace());
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().id_salt("review-comments").max_height(list_h).show(ui, |ui| {
+                    for c in &comments {
+                        review_item(ui, &t, c, &mut r.expanded);
+                    }
                 });
-                ui.checkbox(&mut r.clear, "Clear the comments once sent");
+                ui.add_space(2.0);
+                let toggle = if r.show_prompt { "▾ Hide prompt" } else { "▸ Show prompt" };
+                if ui
+                    .add(egui::Button::new(RichText::new(toggle).color(t.muted)).frame(false))
+                    .on_hover_text("Exactly what the agent receives")
+                    .clicked()
+                {
+                    r.show_prompt = !r.show_prompt;
+                }
+                if r.show_prompt {
+                    egui::Frame::new().fill(t.panel).inner_margin(6).corner_radius(4).show(ui, |ui| {
+                        egui::ScrollArea::both().id_salt("review-prompt").max_height(220.0).show(ui, |ui| {
+                            // size() then monospace(): small() would reset the font to proportional.
+                            ui.add(egui::Label::new(RichText::new(&prompt).size(11.5).monospace()).extend());
+                        });
+                    });
+                }
+                ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let status = r
                         .agent_id
@@ -1129,7 +1279,15 @@ impl App {
                                 action = Some(true);
                             }
                         }
-                        None => {}
+                        None => {
+                            if ui
+                                .button(RichText::new("Start agent and send").strong())
+                                .on_hover_text(format!("Starts {new_agent} with the review as its first prompt"))
+                                .clicked()
+                            {
+                                action = Some(true);
+                            }
+                        }
                     }
                     if ui.button("Cancel").clicked() {
                         close = true;
@@ -1139,14 +1297,11 @@ impl App {
             if m.should_close() {
                 close = true;
             }
+            let ids: Vec<String> = comments.iter().map(Comment::id).collect();
             match (action, r.agent_id.clone()) {
+                (Some(_), None) => self.state.review_new_agent(&r.worktree, prompt, ids),
                 (Some(now), Some(agent_id)) => {
-                    let pending = PendingReview {
-                        worktree: r.worktree.clone(),
-                        agent_id,
-                        text: diff::review_prompt(&comments, &r.summary),
-                        clear: r.clear,
-                    };
+                    let pending = PendingReview { worktree: r.worktree.clone(), agent_id, text: prompt, ids };
                     if now {
                         self.state.send_review(pending);
                     } else {
@@ -1159,6 +1314,50 @@ impl App {
             }
         }
     }
+}
+
+/// Says that no agent is here and what `button` starts instead.
+fn no_agent_note(ui: &mut Ui, t: &crate::theme::Theme, new_agent: &str, button: &str) {
+    ui.label(
+        RichText::new(format!("No agent in this worktree: {button} starts {new_agent} and gives it this."))
+            .small()
+            .color(t.yellow),
+    );
+}
+
+/// One comment in the review form: where, the comment, and its code (the
+/// first line; all of it once expanded).
+fn review_item(ui: &mut Ui, t: &crate::theme::Theme, c: &Comment, expanded: &mut Vec<String>) {
+    let id = c.id();
+    let open = expanded.contains(&id);
+    egui::Frame::new().fill(t.panel).inner_margin(6).corner_radius(4).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let part = if c.uncommitted { " · uncommitted" } else { "" };
+        ui.label(RichText::new(format!("{}:{}{part}", c.path, c.place())).size(11.5).monospace().color(t.muted));
+        ui.label(RichText::new(c.text.trim()).size(13.5).color(t.text));
+        let lines: Vec<&str> = c.code.trim_end().lines().collect();
+        let code = |ui: &mut Ui, text: &str| {
+            ui.add(egui::Label::new(RichText::new(text).size(11.0).monospace().color(t.muted)).truncate());
+        };
+        if open {
+            for l in &lines {
+                code(ui, l);
+            }
+        } else if let Some(first) = lines.first() {
+            code(ui, first);
+        }
+        if lines.len() > 1 {
+            let label = if open { "▾ less".to_string() } else { format!("▸ {} more lines", lines.len() - 1) };
+            if ui.add(egui::Button::new(RichText::new(label).small().color(t.accent)).frame(false)).clicked() {
+                if open {
+                    expanded.retain(|x| *x != id);
+                } else {
+                    expanded.push(id.clone());
+                }
+            }
+        }
+    });
+    ui.add_space(4.0);
 }
 
 /// A split row's two panes.

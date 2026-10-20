@@ -225,6 +225,9 @@ pub struct Comment {
     /// Sent to the agent as a question, not kept for the review.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asked: bool,
+    /// Sent with a review: a thread now, no longer part of the next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<Reply>,
     /// On the uncommitted part: its lines are the working tree's, and the
@@ -251,6 +254,11 @@ impl Comment {
     /// The line it shows under.
     pub fn anchor_id(&self) -> String {
         format!("{}:{}:{}{}", self.path, self.side, self.line, self.part())
+    }
+
+    /// Asked, or sent with a review: a conversation, not a draft.
+    pub fn out(&self) -> bool {
+        self.asked || self.sent
     }
 
     fn part(&self) -> &'static str {
