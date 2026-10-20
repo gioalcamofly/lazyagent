@@ -1731,21 +1731,31 @@ fn the_size_meter_turns_amber_then_red() {
     assert_eq!(meter_color(&t, Meter::Full), t.red);
 }
 
-/// The notes file the engine of `world` keeps for `notes_id`.
+/// The notes file the engine of `world` keeps for `notes_id`, once it is
+/// there (the engine writes it from a worker thread, after the reply).
 fn notes_file(world: &lazyagent_testkit::World, notes_id: &str) -> std::path::PathBuf {
-    let root = world.tmp.path().join("state/lazyagent/notes");
-    let mut dirs = vec![root];
-    while let Some(d) = dirs.pop() {
-        for e in std::fs::read_dir(&d).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == format!("{notes_id}.md")) {
-                return p;
+    let find = || {
+        let mut dirs = vec![world.tmp.path().join("state/lazyagent/notes")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.file_name().is_some_and(|n| n.to_string_lossy() == format!("{notes_id}.md")) {
+                    return Some(p);
+                }
             }
         }
+        None
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(p) = find() {
+            return p;
+        }
+        assert!(Instant::now() < deadline, "no {notes_id}.md under the world's state dir");
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    panic!("no {notes_id}.md under the world's state dir");
 }
 
 #[test]
