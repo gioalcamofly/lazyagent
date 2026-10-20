@@ -813,6 +813,85 @@ fn the_review_form_lists_comments_and_shows_the_prompt_on_demand() {
 }
 
 #[test]
+fn review_reply_answers_land_in_their_threads() {
+    let (mut h, tx, comments) = review_app(vec![agent("a1", "Implementer", "waiting", "s1")]);
+    // An engine without review_register: no ids, the old prompt.
+    h.state_mut().state.give_cids("/r/repo-f");
+    assert!(h.state().state.comments("/r/repo-f").iter().all(|c| c.cid.is_empty()));
+    h.state_mut().state.capabilities = Some(vec!["review_register".into()]);
+    h.get_by_label("Submit review (2)").click();
+    h.run_steps(3);
+    let all = h.state().state.comments("/r/repo-f");
+    assert!(all.iter().all(|c| c.cid.starts_with('c') && c.cid.len() > 1), "ids given: {all:?}");
+    assert_ne!(all[0].cid, all[1].cid);
+    h.get_by_label("▸ Show prompt").click();
+    h.run_steps(3);
+    let prompt = crate::diff::review_prompt(&all, "");
+    assert!(prompt.contains(&format!("[comment_id: {}]", all[0].cid)), "{prompt}");
+    assert!(h.query_by_label(&prompt).is_some(), "the prompt shown is the one with ids");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+
+    // Sent (no engine here: as the reply to send_agent_input would).
+    let ids: Vec<String> = comments.iter().map(|c| c.id()).collect();
+    {
+        let s = &mut h.state_mut().state;
+        s.mark_sent("/r/repo-f", &ids, "Implementer");
+        s.awaiting.push(crate::diff_view::Awaiting {
+            worktree: "/r/repo-f".into(),
+            agent_id: "a1".into(),
+            ids: ids.clone(),
+            ran: false,
+        });
+        s.comments_gen += 1;
+    }
+    h.run_steps(2);
+    let thread = crate::diff_view::thread_lines(&h.state().state.comments("/r/repo-f")[0], true);
+    assert_eq!(thread[1], ("note", "· Sent with the review to Implementer.".to_string()));
+    assert_eq!(thread.last().unwrap().1, "  ⋯ waiting for the agent's answer");
+    let rows = h.state().state.diff.as_ref().unwrap().rows.clone();
+    assert!(rows.contains(&crate::diff_view::DRow::Reply(0, ids[0].clone(), 2)), "the waiting line: {rows:?}");
+
+    // The agent answers the first: under it, once, with a toast.
+    let replied = |reply_id: &str, cid: &str| {
+        event(
+            "review.replied",
+            json!({"reply_id": reply_id, "comment_id": cid, "worktree_path": "/r/repo-f", "agent_id": "a1",
+                   "text": "Kept it: callers use it.", "at": 1.0}),
+        )
+    };
+    tx.send(replied("r1", &all[0].cid)).unwrap();
+    tx.send(replied("r1", &all[0].cid)).unwrap();
+    tx.send(replied("r2", "c-unknown")).unwrap();
+    h.run_steps(3);
+    let now = h.state().state.comments("/r/repo-f");
+    let texts: Vec<&str> = now[0].replies.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts, ["Sent with the review to Implementer.", "Kept it: callers use it."]);
+    assert_eq!(now[0].replies[1].who, "agent");
+    assert_eq!(now[1].replies.len(), 1, "the other is not answered yet");
+    assert_eq!(h.state().state.awaiting[0].ids, [ids[1].clone()]);
+    assert!(h.state().state.toasts.iter().any(|t| t.text == "The agent answered on src/f0.rs:1 (removed line)"));
+    let thread = crate::diff_view::thread_lines(&now[0], false);
+    assert_eq!(thread[2], ("agent", "agent: Kept it: callers use it.".to_string()));
+
+    // Its turn ends without answering the second: the thread says so.
+    for status in ["running", "waiting"] {
+        tx.send(event(
+            "agent.updated",
+            json!({"worktree_path": "/r/repo-f", "agent_id": "a1", "status": status, "confidence": "high", "detail": ""}),
+        ))
+        .unwrap();
+        h.run_steps(2);
+    }
+    assert!(h.state().state.awaiting.is_empty());
+    let last = h.state().state.comments("/r/repo-f")[1].replies.last().cloned().unwrap();
+    assert_eq!(
+        (last.who.as_str(), last.text.as_str()),
+        ("note", "The agent's turn ended without an answer here; see its terminal.")
+    );
+}
+
+#[test]
 fn sent_review_comments_stay_as_threads() {
     let (mut h, _tx, comments) = review_app(vec![agent("a1", "Implementer", "running", "s1")]);
     // Send when idle: queued, so not offered again meanwhile.
@@ -1080,6 +1159,7 @@ fn select_lines_then_add_to_review_or_ask_now() {
         agent_id: "a1".into(),
         id: asked.id(),
         marker: "m1".into(),
+        by_reply: false,
         sent: true,
         ran: false,
         reading: false,
@@ -1108,6 +1188,7 @@ fn select_lines_then_add_to_review_or_ask_now() {
         agent_id: "a1".into(),
         id: asked.id(),
         marker: "m2".into(),
+        by_reply: false,
         sent: true,
         ran: true,
         reading: true,
@@ -1197,9 +1278,20 @@ fn a_review_reaches_a_real_agent_from_a_real_diff() {
     step_until(&mut h, "the review in the agent", |a| {
         a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("Review comments"))
     });
-    step_until(&mut h, "the comment sent, kept as a thread", |a| {
-        a.state.comments(&world.repo).iter().all(|c| c.sent && c.replies.len() == 1)
+    step_until(&mut h, "the comment sent, kept as a thread", |a| a.state.comments(&world.repo).iter().all(|c| c.sent));
+    // The agent answers it with review_reply: under the comment, and in its terminal.
+    step_until(&mut h, "the answer in the thread", |a| {
+        a.state.comments(&world.repo).iter().all(|c| c.replies.iter().any(|r| r.who == "agent"))
     });
+    let c = h.state().state.comments(&world.repo).remove(0);
+    let texts: Vec<(&str, &str)> = c.replies.iter().map(|r| (r.who.as_str(), r.text.as_str())).collect();
+    let agent = h.state().state.store.agents(&world.repo)[0].label.clone();
+    let answer = format!("A fake answer to {}.", c.cid);
+    assert_eq!(texts, [("note", format!("Sent with the review to {agent}.").as_str()), ("agent", answer.as_str())]);
+    assert!(h.state().state.awaiting.is_empty(), "nothing left to wait for");
+    let term =
+        |a: &App| a.state.panes.values().map(|p| p.inner.lock().unwrap().term.frame().text()).collect::<String>();
+    step_until(&mut h, "the answer in the terminal", |a| term(a).contains(&format!("replied {}", c.cid)));
     conn.shutdown();
 }
 
@@ -1245,6 +1337,15 @@ fn a_review_with_no_agent_starts_one_that_gets_it() {
     assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
     step_until(&mut h, "the comment sent", |a| a.state.comments(&world.repo).iter().all(|c| c.sent));
     assert!(h.state().state.diff_open, "still in the diff");
+    // Its id was registered with the spawn: the answer it gives as it starts lands.
+    let cid = h.state().state.comments(&world.repo)[0].cid.clone();
+    assert!(cmd.contains(&format!("[comment_id: {cid}]")), "{cmd}");
+    step_until(&mut h, "the answer in the thread", |a| {
+        a.state.comments(&world.repo)[0].replies.iter().any(|r| r.who == "agent" && r.text.contains(&cid))
+    });
+    let c = h.state().state.comments(&world.repo).remove(0);
+    assert_eq!(c.replies[0].who, "note", "the sent note first: {:?}", c.replies);
+    assert!(h.state().state.awaiting.is_empty());
     conn.shutdown();
 }
 
@@ -1262,10 +1363,13 @@ fn ask_now_with_no_agent_starts_one_and_waits_for_its_answer() {
     let cmd = wait_cmdline(&world.repo);
     assert!(cmd.contains("A question about app.py:1-2"), "{cmd}");
     assert!(cmd.contains("--dangerously-skip-permissions"), "{cmd}");
-    let agent_id = h.state().state.store.agents(&world.repo)[0].agent_id.clone();
-    step_until(&mut h, "the question bound to the new agent", |a| {
-        a.state.asks.iter().any(|q| q.sent && q.agent_id == agent_id)
+    step_until(&mut h, "the answer in the thread", |a| {
+        a.state.comments(&world.repo)[0].replies.iter().any(|r| r.who == "agent")
     });
+    let c = h.state().state.comments(&world.repo).remove(0);
+    assert!(cmd.contains(&format!("[comment_id: {}]", c.cid)), "{cmd}");
+    assert_eq!(c.replies.last().unwrap().text, format!("A fake answer to {}.", c.cid));
+    assert!(h.state().state.asks.is_empty(), "no longer waiting");
     conn.shutdown();
 }
 
@@ -1288,24 +1392,23 @@ fn a_question_reaches_a_real_agent_and_its_answer_comes_back() {
     let id = c.id();
     h.state_mut().state.upsert_comment(&world.repo, c);
     h.state_mut().state.ask_agent(&world.repo, &id);
-    step_until(&mut h, "the question in the agent", |a| term(a).contains("A question about app.py:1-2"));
-    step_until(&mut h, "the question sent", |a| a.state.asks.iter().all(|q| q.sent));
-    step_until(&mut h, "its answer printed", |a| term(a).contains("⟦end "));
-    // The fake agent reports no statuses (no hooks): play the turn it took.
-    let agent_id = h.state().state.store.agents(&world.repo)[0].agent_id.clone();
-    for status in ["running", "waiting"] {
-        h.state_mut().state.store.apply(&lazyagent_proto::EngineEvent::parse(lazyagent_proto::Event {
-            seq: 0,
-            event: "agent.updated".into(),
-            data: json!({"worktree_path": world.repo, "agent_id": agent_id, "status": status, "confidence": "high", "detail": ""}),
-        }));
-        h.run_steps(1);
-    }
+    step_until(&mut h, "the question in the agent", |a| term(a).contains("A question about app.py:1-2 [comment_id: c"));
+    // It answers with review_reply, mid-turn: no output to read, no turn end needed.
     step_until(&mut h, "the answer in the thread", |a| {
         a.state.comments(&world.repo).iter().any(|c| c.replies.iter().any(|r| r.who == "agent"))
     });
     let c = h.state().state.comments(&world.repo).remove(0);
-    assert_eq!(c.replies[0].text, "A fake answer\non two lines.");
+    assert_eq!(c.replies[0].text, format!("A fake answer to {}.", c.cid));
+    assert!(c.replies[0].id.is_some());
+    assert!(h.state().state.asks.is_empty(), "no longer waiting");
+    assert!(term(h.state()).contains(&format!("replied {}", c.cid)), "and in the terminal");
+
+    // Shown again after a restart: the engine kept it, the app does not repeat it.
+    h.state_mut().state.fetch_review_replies();
+    h.run_steps(5);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.run_steps(5);
+    assert_eq!(h.state().state.comments(&world.repo)[0].replies.len(), 1);
     conn.shutdown();
 }
 
@@ -1333,10 +1436,10 @@ fn render_the_diff_view() {
     let mut q = crate::diff::anchor_range("src/login.py", &parsed.files[0].rows[9..11]).unwrap();
     q.text = "Does logout need the audit log too?".into();
     q.asked = true;
-    q.replies.push(crate::diff::Reply {
-        who: "agent".into(),
-        text: "Yes: audit.log(\"logout\", user.id) before the clear,\nso both ends of a session are recorded.".into(),
-    });
+    q.replies.push(crate::diff::Reply::new(
+        "agent",
+        "Yes: audit.log(\"logout\", user.id) before the clear,\nso both ends of a session are recorded.",
+    ));
     {
         let s = &mut h.state_mut().state;
         s.selected = Some("/r/repo-login".into());

@@ -234,13 +234,26 @@ pub struct Comment {
     /// same file can be in both parts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub uncommitted: bool,
+    /// Its id for the agent, which answers it with `review_reply` (given
+    /// when it is first sent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cid: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Reply {
-    /// "you" or "agent"
+    /// "you", "agent" or "note"
     pub who: String,
     pub text: String,
+    /// An answer through `review_reply`: the engine's reply id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+impl Reply {
+    pub fn new(who: &str, text: impl Into<String>) -> Reply {
+        Reply { who: who.into(), text: text.into(), id: None }
+    }
 }
 
 impl Comment {
@@ -335,7 +348,16 @@ pub fn anchor_range<'a>(path: &str, rows: impl IntoIterator<Item = &'a Row>) -> 
     Some(c)
 }
 
-/// The prompt that sends a review to an agent (ui-plan §4c step 3).
+/// How an agent is asked to answer a comment with `review_reply`.
+const REPLY_HOW: &str = "the review_reply tool of the lazyagent_app MCP server";
+
+/// `path:12 [comment_id: c1a2b3]`: where, and the id it is answered by.
+fn tagged(c: &Comment) -> String {
+    if c.cid.is_empty() { c.located() } else { format!("{} [comment_id: {}]", c.located(), c.cid) }
+}
+
+/// The prompt that sends a review to an agent (ui-plan §4c step 3). With
+/// ids (`Comment::cid`) it asks for an answer to each with `review_reply`.
 pub fn review_prompt(comments: &[Comment], summary: &str) -> String {
     let mut by_file: BTreeMap<&str, Vec<&Comment>> = BTreeMap::new();
     let mut order = vec![];
@@ -355,10 +377,16 @@ pub fn review_prompt(comments: &[Comment], summary: &str) -> String {
         let mut list = by_file[path].clone();
         list.sort_by_key(|c| c.start_line.unwrap_or(c.line));
         for c in list {
-            parts.push(format!("- {}", c.located()));
+            parts.push(format!("- {}", tagged(c)));
             parts.push(c.quoted());
             parts.push(format!("  {}", c.text.trim().replace('\n', "\n  ")));
         }
+    }
+    if comments.iter().any(|c| !c.cid.is_empty()) {
+        parts.push(String::new());
+        parts.push(format!(
+            "For each comment, once you have addressed it, call {REPLY_HOW} with its comment_id and a short answer (what you changed, or why not), so the diff view shows it next to the code; say it here in the conversation too."
+        ));
     }
     parts.join("\n")
 }
@@ -369,14 +397,16 @@ pub fn answer_markers(id: &str) -> (String, String) {
 }
 
 /// The prompt that asks the agent about a comment now: where, the code,
-/// the thread so far, and how to mark the answer for the diff view.
+/// the thread so far, and how the answer reaches the diff view: with
+/// `review_reply` when the comment has an id, else between markers
+/// (`marker_id`) that are read back from the agent's output.
 pub fn ask_prompt(c: &Comment, base: &str, marker_id: &str) -> String {
     let against = if c.uncommitted || base.trim().is_empty() {
         String::new()
     } else {
         format!(" (diff against {})", base.trim())
     };
-    let mut parts = vec![format!("A question about {}{against}:", c.located()), c.quoted()];
+    let mut parts = vec![format!("A question about {}{against}:", tagged(c)), c.quoted()];
     // The question is the comment, or the last of the follow-ups.
     let asking = match c.replies.iter().rposition(|r| r.who == "you") {
         Some(i) => {
@@ -393,11 +423,18 @@ pub fn ask_prompt(c: &Comment, base: &str, marker_id: &str) -> String {
     };
     parts.push(String::new());
     parts.push(asking.to_string());
-    let (start, end) = answer_markers(marker_id);
     parts.push(String::new());
-    parts.push(format!(
-        "Answer it (change files only if it asks you to). Start your answer with the line {start} and end it with the line {end}, so the diff view can show it next to the code."
-    ));
+    if c.cid.is_empty() {
+        let (start, end) = answer_markers(marker_id);
+        parts.push(format!(
+            "Answer it (change files only if it asks you to). Start your answer with the line {start} and end it with the line {end}, so the diff view can show it next to the code."
+        ));
+    } else {
+        parts.push(format!(
+            "Answer it here (change files only if it asks you to), and also call {REPLY_HOW} with comment_id \"{}\" and your answer, so the diff view shows it next to the code.",
+            c.cid
+        ));
+    }
     parts.join("\n")
 }
 
@@ -520,10 +557,7 @@ mod tests {
         );
         assert!(p.contains("Start your answer with the line ⟦answer k3⟧ and end it with the line ⟦end k3⟧"));
         // A follow-up carries the thread.
-        c.replies = vec![
-            Reply { who: "agent".into(), text: "The spec says so.".into() },
-            Reply { who: "you".into(), text: "Which spec?".into() },
-        ];
+        c.replies = vec![Reply::new("agent", "The spec says so."), Reply::new("you", "Which spec?")];
         let p = ask_prompt(&c, "", "k4");
         assert!(p.contains("about src/app.py:-2…+2:\n"));
         assert!(p.contains("So far:\n- me: Why 2?\n- you: The spec says so.\n\nWhich spec?\n"), "{p}");
@@ -546,6 +580,28 @@ mod tests {
         assert_eq!(parse_answer(&out, "k4").as_deref(), Some("The ticket's spec, section 2:\n  x must be even."));
         assert_eq!(parse_answer(&out, "k3"), None, "another question's markers");
         assert_eq!(parse_answer(&out[..5], "k4"), None, "no end yet");
+    }
+
+    #[test]
+    fn with_ids_the_prompts_ask_for_review_reply() {
+        let d = parse(MODIFIED);
+        let rows = &d.files[0].rows;
+        let mut a = anchor("src/app.py", &rows[4]).unwrap();
+        a.text = "name it better".into();
+        a.cid = "c1a2b3".into();
+        let mut b = anchor("src/app.py", &rows[2]).unwrap();
+        b.text = "why?".into();
+        b.cid = "c4d5e6".into();
+        let p = review_prompt(&[a.clone(), b], "");
+        assert!(p.contains("- src/app.py:2 (removed line) [comment_id: c4d5e6]\n  > x = 1\n  why?\n"), "{p}");
+        assert!(p.contains("- src/app.py:3 [comment_id: c1a2b3]\n"), "{p}");
+        assert!(p.ends_with(
+            "call the review_reply tool of the lazyagent_app MCP server with its comment_id and a short answer (what you changed, or why not), so the diff view shows it next to the code; say it here in the conversation too."
+        ), "{p}");
+        let q = ask_prompt(&a, "main", "k9");
+        assert!(q.starts_with("A question about src/app.py:3 [comment_id: c1a2b3] (diff against main):\n"), "{q}");
+        assert!(q.contains("with comment_id \"c1a2b3\" and your answer"), "{q}");
+        assert!(!q.contains('⟦'), "no markers: {q}");
     }
 
     #[test]

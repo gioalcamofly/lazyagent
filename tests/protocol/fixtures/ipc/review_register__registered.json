@@ -1,0 +1,23 @@
+{
+  "case": "review_register/registered",
+  "method": "review_register",
+  "params": {
+    "agent_id": "a1",
+    "comment_ids": [
+      "c4d5e6",
+      "c7f8a9"
+    ],
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "comment_ids": [
+        "c4d5e6",
+        "c7f8a9"
+      ],
+      "worktree_path": "/tmp/repo-feat"
+    }
+  }
+}

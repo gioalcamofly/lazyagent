@@ -514,6 +514,44 @@ Constraints that shape every option: the terminal must keep showing the answer (
 
 Doubts for this analysis: whether the agent should answer twice (tool + prose) or only through the tool (the terminal then shows the call, not prose); whether replies live only in the app's state (as threads do now) or also in the engine (proposal 0008's engine-stored threads); how long the engine keeps unclaimed replies.
 
+### Done: `review_reply`, the agent's answers in the Diff view (2026-10-20)
+
+Option C of the analysis above, chosen by the orchestrator. Every answer to a review comment or an Ask now question now shows under its comment in the Diff view, and still in the agent's terminal.
+
+- **Comment ids.** A comment gets a short id for the agent (`Comment.cid`, `c` + hex, kept in the app's state file) when it is first sent, and only when the engine has `review_register`. The prompt tags each comment `path:12 [comment_id: c1a2b3]` and asks the agent to call `review_reply` for each one, *and* to say the answer in the conversation. Ask now uses the same mechanism; the `⟦answer⟧` markers remain only for an engine without `review_register`.
+- **Engine** (`engine/reviews.py`, `ReviewStore`):
+  - `review_register {worktree_path, agent_id, comment_ids}` records who may answer which comment. A comment sent again (a follow-up, another agent) keeps every agent it went to.
+  - `spawn_agent {review_comment_ids}` registers the ids before the agent process starts, so an agent started with a review cannot answer before its ids are known.
+  - `review_reply {comment_id, text, caller}` needs the caller's token. The reply is taken only if that comment was registered for the token's agent. Otherwise it fails with "No review comment … was sent to you". Text is at most 16 KiB. On success it emits `review.replied {reply_id, comment_id, worktree_path, agent_id, text, at}`.
+  - `review_replies {worktree_path?}` returns the kept replies.
+  - Persistence: replies and registrations are kept for 7 days in `$XDG_STATE_HOME/lazyagent/reviews/<repo hash>.json` (0600) by the engine that owns the manifest. Any other engine keeps them in memory.
+  - All three methods are on both sockets and announced in `hello.capabilities`.
+- **MCP:** a `review_reply(comment_id, text)` tool on the lazyagent server. It passes `LAZYAGENT_AGENT_TOKEN`, as the notes tools do. `lazyagent_app` is wired with the token for Claude, Codex and Gemini, so all three providers can use it.
+- **App:**
+  - **Before sending.** Submit review and Ask now register the ids before `send_agent_input`. If registering fails, the comment is sent anyway and a toast says its answers will show only in the terminal. A spawn passes `review_comment_ids`.
+  - **While waiting.** Sent comments wait (`State.awaiting`, plus the asks) and show "⋯ waiting for the agent's answer".
+  - **When a reply arrives.** `review.replied` adds an `agent:` reply under the comment, de-duplicated by `reply_id`, with a toast. It also ends the wait for that comment.
+  - **When the turn ends without one.** Once the agent's turn ends, a comment with no reply gets the note "The agent's turn ended without an answer here; see its terminal." A late reply still lands.
+  - **After a restart.** On connect, the app fetches the replies it missed with `review_replies`.
+  - The note on a sent comment is now "Sent with the review to X." It no longer says the answer is in the terminal.
+- **Tests:**
+  - Python:
+    - `tests/engine/test_reviews.py`: the store.
+    - `tests/test_mcp_review_reply.py`: the MCP tool against a real engine; a peer's token or a missing token is refused; a fake agent answers its first prompt's ids at once.
+    - Golden fixtures and schemas for the three methods and the event.
+  - `fake_agent.py` answers every `[comment_id: …]` it is given over the socket, as the MCP tool would, and prints `replied <id>`.
+  - Rust:
+    - kittest `review_reply_answers_land_in_their_threads`: ids, the prompt, de-duplication, the waiting line, the no-answer note.
+    - Prompt unit tests.
+    - The four real-engine diff tests now assert the answer reaches the thread: Send now, Start agent and send, Ask now with no agent, and Ask now to a running agent (plus catch-up without duplicates).
+
+Doubts (defaults taken):
+- **Answering twice.** The agent is asked to answer through the tool *and* in prose. That costs a few tokens, but keeps the terminal conversation readable for every provider.
+- **Where replies live.** The engine keeps them 7 days for catch-up; the thread itself lives in the app's state file. Engine-stored threads (U8, proposal 0008) are still not done.
+- **The Claude `Stop`-hook fallback (B) is not done.** It is not cheap: the hooks observer would have to carry the last assistant message to the engine (a new event or field), and the app would have to split it per comment. Until then, a comment the agent did not answer through the tool gets the "see its terminal" note.
+- **Ids only with an engine that has `review_register`.** With an older engine, a review says "its answer is in the agent's terminal" and Ask now uses the markers, as before.
+- **Late replies.** A reply that arrives after the "turn ended" note still lands under the note. The note is not removed.
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

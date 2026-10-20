@@ -1,0 +1,22 @@
+{
+  "case": "review_replies/kept",
+  "method": "review_replies",
+  "params": {
+    "worktree_path": "/tmp/repo-feat"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "replies": [
+        {
+          "agent_id": "a1",
+          "at": 1700000000.0,
+          "comment_id": "c1a2b3",
+          "reply_id": "r0a1b2c3d4e5",
+          "text": "Renamed it.",
+          "worktree_path": "/tmp/repo-feat"
+        }
+      ]
+    }
+  }
+}

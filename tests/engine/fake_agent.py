@@ -15,7 +15,12 @@ output for the protocol tests:
 Each ends with ``done`` and the prompt. A submitted text that asks for an
 answer between ``⟦answer ID⟧`` and ``⟦end ID⟧`` lines (the desktop diff
 view's questions) gets one after the ``got:`` line, the way Claude Code
-prints it (a bullet, then an indent).
+prints it (a bullet, then an indent). Every ``[comment_id: ID]`` in a
+submitted text, or in the arguments it was started with (a first prompt),
+is answered through the engine's ``review_reply`` method, as the
+``review_reply`` MCP tool would (``LAZYAGENT_SOCKET`` and
+``LAZYAGENT_AGENT_TOKEN`` from the environment), and a ``replied ID`` (or
+``reply failed ID: why``) line is printed.
 
 ``--paste`` turns bracketed paste (DECSET 2004) on at startup.
 ``--env=NAME`` prints ``env NAME=<value>`` (``<unset>`` when it is not set)
@@ -24,8 +29,10 @@ before the banner, to show which environment the agent was started with.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import socket
 import sys
 import time
 import tty
@@ -46,7 +53,9 @@ def main() -> int:
         if arg.startswith("--env="):
             name = arg.removeprefix("--env=")
             out(f"env {name}={os.environ.get(name, '<unset>')}\r\n")
-    out("fake agent ready\r\nyour turn> ")
+    out("fake agent ready\r\n")
+    review_replies(" ".join(sys.argv[1:]))
+    out("your turn> ")
 
     pending = b""
     typed = bytearray()
@@ -94,8 +103,40 @@ def main() -> int:
         out(f"got: {submitted!r} paste={pasted}\r\n")
         if m := re.search(r"⟦answer (\w+)⟧", submitted):
             out(f"⏺ ⟦answer {m[1]}⟧\r\n  A fake answer\r\n  on two lines.\r\n  ⟦end {m[1]}⟧\r\n")
+        review_replies(submitted)
         out("your turn> ")
         pasted = False
+
+
+def review_replies(text: str) -> None:
+    for comment_id in re.findall(r"\[comment_id: ([\w-]+)\]", text):
+        try:
+            call("review_reply", {
+                "comment_id": comment_id,
+                "text": f"A fake answer to {comment_id}.",
+                "caller": os.environ.get("LAZYAGENT_AGENT_TOKEN", ""),
+            })
+            out(f"replied {comment_id}\r\n")
+        except (KeyError, OSError, RuntimeError) as e:
+            out(f"reply failed {comment_id}: {e}\r\n")
+
+
+def call(method: str, params: dict) -> object:
+    """One request to the engine's legacy socket, as the MCP server makes it."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(5)
+        s.connect(os.environ["LAZYAGENT_SOCKET"])
+        s.sendall(json.dumps({"id": "1", "method": method, "params": params}).encode() + b"\n")
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    response = json.loads(data)
+    if "error" in response:
+        raise RuntimeError(response["error"].get("message", ""))
+    return response.get("result")
 
 
 def script(command: str) -> None:

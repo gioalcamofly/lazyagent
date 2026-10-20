@@ -1,0 +1,16 @@
+{
+  "case": "review_reply/answered",
+  "method": "review_reply",
+  "params": {
+    "caller": "tok-a1",
+    "comment_id": "c1a2b3",
+    "text": "Renamed it."
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "comment_id": "c1a2b3",
+      "reply_id": "r0a1b2c3d4e5"
+    }
+  }
+}

@@ -275,6 +275,7 @@ lazyagent ships an MCP server (`lazyagent mcp`) that exposes its worktree and ag
 | `stop_agent` | Stop an agent |
 | `list_events` | Status changes since a cursor (to wait on agents) |
 | `list_restorable` / `restore_agents` / `dismiss_restorable` | The agents an earlier engine left: list, bring back, stop offering |
+| `review_reply` | An agent's answer to a review comment or question from the desktop Diff view (the `comment_id` its prompt gave); shown under the code. Only the agent the comment was sent to may answer it |
 
 Agents that lazyagent itself spawns (worktree agents and the orchestrator) get the server wired up automatically, under the name `lazyagent_app` and running the same lazyagent as the app, so a `lazyagent` server you register yourself can't shadow it. To drive lazyagent from a `claude` session you start by hand, register it once at user scope:
 
