@@ -452,6 +452,48 @@ Closes the session-notes MVP. Details in [session-notes-plan.md](session-notes-p
 - **Stop** (`x`): with non-empty notes, **Copy notes and stop** (`c`, the final text to the clipboard), **Stop, keep notes** (`k`, `y`, Enter: an orphan) and **Stop and delete notes** (`d`) replace the plain Stop.
 - **Spawn** (`s`): a New session in a worktree with ended notes warns that it deletes them, offers **Carry them into the new agent** and links to the panel's list.
 
+### Analysis: the agent's answers in the Diff view, for reviews too (2026-10-20)
+
+Not implemented; a decision for the orchestrator. Today an answer reaches the Diff view only for **Ask now**, by scraping `read_agent_output` between `⟦answer id⟧ … ⟦end id⟧` lines. A **review** (several comments in one prompt) is answered only in the agent's terminal. Wanted: each comment's answer in **both** places, the conversation and inline under its thread.
+
+Constraints that shape every option: the terminal must keep showing the answer (the user reads the conversation there); one review is one turn that answers N comments, often while editing files, so answers are interleaved with tool calls; agents ignore formatting instructions now and then; the engine already gives every agent of every provider the `lazyagent_app` MCP server with the agent's own `LAZYAGENT_AGENT_TOKEN` (since the orchestrator-restore fix); the Claude `Stop` hook is already logged per agent (`ClaudeHooksObserver`, with `session_id` = the conversation id); Codex and Gemini have no equivalent hook in the engine (Codex: app-server JSONL, statuses only; Gemini: telemetry and the screen).
+
+**A. Per-comment markers, extended to reviews.** The review prompt gives each comment an id and asks for `⟦answer <id>⟧ … ⟦end <id>⟧` around each answer; the app scrapes the output after the turn, as Ask now does.
+- *Reliability:* medium-low for reviews. One marker pair per turn already depends on the CLI's rendering (wrapping, `⏺`, indentation, a screen clear, the 2000-line window); N pairs in a long turn with diffs and tool output between them is worse: an answer pushed out of the window, a pair split by a tool block, a marker re-wrapped by a narrow terminal. Claude's TUI can also collapse long output.
+- *Providers:* all three in principle (it is screen text), but each CLI decorates differently; only Claude's is tuned and tested.
+- *Spoofing / injection:* low stakes but real: any text the agent prints (a file it `cat`s, a web page, a test log) that contains `⟦answer <id>⟧` lines lands in the thread. Ids are random, which limits it to text the agent saw in its own prompt.
+- *Engine/protocol:* none.
+- *Agent ignores it:* the thread says "answered in the agent's terminal"; partial answers are silently missing.
+- *Effort:* small (S): a prompt change, a per-comment id, a parse loop.
+
+**B. Claude `Stop` hook / the conversation transcript.** At `Stop` the hook payload carries `transcript_path` (and, in recent versions, the last assistant message); the engine already tails these per agent. The engine would publish an `agent.turn_ended {agent_id, conversation_id, text}` event (or a `get_last_answer` method reading the JSONL), and the app would cut it by markers or by comment.
+- *Reliability:* high for *getting the text* (no screen scraping: whole messages, unwrapped); still needs markers (A) to split one turn's message into N comments, so the per-comment split is as reliable as the agent's compliance. The JSONL format is Claude's private format and has changed before.
+- *Providers:* **Claude only.** Codex/Gemini keep A's scraping (or nothing).
+- *Spoofing:* lower than A: only the assistant's own message counts, not tool output; the markers could still be quoted by the agent from a file.
+- *Engine/protocol:* a new event or method, the transcript reader, the hook payload passed through; a capability flag.
+- *Agent ignores markers:* the whole last message can still be shown under the review's first comment (or a "review" pseudo-thread) instead of nothing: a real fallback.
+- *Effort:* medium (M).
+
+**C. An MCP tool: `review_reply(comment_id, text)`.** The prompt says "for each comment, call `review_reply` with its id and your answer, then say it in the conversation too". The engine validates the caller (agent token → agent, worktree), stores the reply, and emits `review.replied {worktree_path, agent_id, comment_id, text}`; the app puts it in the thread. Text in the terminal stays (the agent also writes it there, and the tool call itself is shown).
+- *Reliability:* high when called: structured, one call per comment, no parsing, survives screen clears, compaction and an app restart (the engine can keep replies until read). Works for answers given mid-turn (as soon as they are given, not at `Stop`).
+- *Providers:* all three: the `lazyagent_app` server is wired for Claude, Codex and Gemini with the agent's token. Behaviour varies with each model's tool-use discipline.
+- *Spoofing / injection:* the strongest of the four: the token identifies the agent, and the engine accepts replies only for comment ids it handed to **that** agent (it learns them when the app sends the review through a new `send_review` method, or by the app registering `{comment_id → agent_id}` before `send_agent_input`); a different agent, or text in a file, cannot post one. A prompt-injected agent can still post nonsense under its own comments, as it can in the terminal.
+- *Engine/protocol:* most: a tool, a method or registration for expected ids, an event, a small store (in memory, or in the notes dir), a `hello.capabilities` flag; the web page and TUI could show the same replies. Also the duplicated text: the agent writes the answer twice (tool + prose), costing tokens; or it writes only the tool call and the terminal shows just the call (readable in Claude's UI, terser in others).
+- *Agent ignores it:* comments with no call get "answered in the agent's terminal" after the turn ends (the app knows which ids got no reply); combine with B's last message as a fallback for Claude.
+- *Effort:* medium-large (M-L): engine tool + validation + event + app wiring + tests across providers.
+
+**D. Session notes as the channel.** The agent writes answers into a `## Review replies` section of its notes (`notes_append`), the app reads `notes.updated` and parses the section.
+- *Reliability:* medium: notes are a free-form Markdown document with a size cap, meant for the agent's own memory; replies would crowd it out, need parsing by heading and id, and compete with the notes' own rewrite rules (`notes_replace_section`, compaction, the stop handoff).
+- *Providers:* all three (the same MCP server).
+- *Spoofing:* token-checked writes (good), but anything the agent puts in notes is parsed (same as A inside the section).
+- *Engine/protocol:* none new.
+- *Agent ignores it:* as A.
+- *Effort:* small-medium, but it bends a feature built for something else, and the user sees review chatter in the notes panel.
+
+**Recommendation: C (the `review_reply` MCP tool), with B as Claude's fallback later.** It is the only option that is structured, works the same for all three providers, cannot be spoofed by text the agent reads, and survives restarts. Ask now would move to it too (one code path; markers kept only as a fallback while engines without the capability exist). Phasing: (1) engine `review_reply` + registered ids + `review.replied` + capability; (2) the app registers ids on Submit review / Ask now, shows replies, and marks "no reply" comments after the turn; (3) optional: Claude's `Stop` last message as the fallback for comments the agent did not reply to. If the engine change is not wanted now, A is the cheap stopgap, with the caveat that it degrades with long review turns.
+
+Doubts for this analysis: whether the agent should answer twice (tool + prose) or only through the tool (the terminal then shows the call, not prose); whether replies live only in the app's state (as threads do now) or also in the engine (proposal 0008's engine-stored threads); how long the engine keeps unclaimed replies.
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |
