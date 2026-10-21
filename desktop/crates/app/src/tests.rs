@@ -2434,7 +2434,7 @@ fn update_and_restart_screenshots() {
         Harness::builder().with_size([1400.0, 880.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
     h.run_steps(3);
     let out = std::env::temp_dir();
-    let mut shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
         Ok(image) => {
             image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
             true
