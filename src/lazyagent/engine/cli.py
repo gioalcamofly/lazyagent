@@ -1,4 +1,4 @@
-"""``lazyagent engine {start,stop,status,logs,restore} [repo]``: run or manage the
+"""``lazyagent engine {start,stop,restart,status,logs,restore} [repo]``: run or manage the
 repo's engine (docs/design/engine-split.md §5d).
 
 - ``start``: start a detached engine unless one already serves the repo;
@@ -6,6 +6,10 @@ repo's engine (docs/design/engine-split.md §5d).
 - ``stop``: ask the engine to shut down (v1 ``shutdown``), which stops its
   agents and shells, and wait for the process to exit. ``--if-idle`` only
   stops an engine that runs no agent.
+- ``restart``: stop the engine and start a new one (new code after an
+  update); ``--restore`` brings back exactly the agents it stopped, each
+  into its conversation, the orchestrator as the orchestrator. Older
+  restorable entries stay offered.
 - ``status``: whether an engine serves the repo, and what it runs. Exit
   status 3 when none does.
 - ``logs``: the end of a detached engine's log; ``-f`` follows it.
@@ -115,6 +119,117 @@ def cmd_stop(args: argparse.Namespace, root: str) -> int:
         + ")"
     )
     return 0
+
+
+def _wait_gone(pid: Any, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while isinstance(pid, int) and _alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+async def _restorable_ids(socket: Path) -> set[str]:
+    from lazyagent.engine.client import RequestError
+
+    try:
+        agents = (await _request(socket, "list_restorable"))["agents"]
+    except RequestError:  # an engine without a manifest
+        return set()
+    return {a["id"] for a in agents}
+
+
+def cmd_restart(args: argparse.Namespace, root: str) -> int:
+    from lazyagent.engine.client import RequestError
+
+    def step(name: str, detail: str = "") -> None:
+        if args.json:
+            print(json.dumps({"step": name, "detail": detail}), flush=True)
+        else:
+            _print(f"{name}{': ' + detail if detail else ''}")
+
+    result: dict[str, Any] = {
+        "stopped": 0,
+        "old_pid": None,
+        "pid": None,
+        "restored": [],
+        "failed": [],
+        "left": 0,
+    }
+
+    def finish(code: int, error: str | None = None) -> int:
+        result["error"] = error
+        if args.json:
+            print(json.dumps({"result": result}), flush=True)
+        elif error:
+            _error(error)
+        return code
+
+    socket = launcher.find(root)
+    info = launcher.info(root) if socket is not None else None
+    before: set[str] = set()
+    if socket is not None and info is not None:
+        if not info.get("detached"):
+            return finish(
+                1,
+                f"the engine runs inside a lazyagent TUI (pid {info.get('pid')}); "
+                "quit that TUI to restart it",
+            )
+        result["old_pid"] = info.get("pid")
+        try:
+            before = asyncio.run(_restorable_ids(socket))
+            step("stopping", f"pid {info.get('pid')}")
+            reply = asyncio.run(_request(socket, "shutdown", stop_agents=True))
+        except RequestError as e:
+            return finish(1, e.message)
+        except (OSError, ConnectionError) as e:
+            return finish(1, f"could not reach the engine: {e}")
+        result["stopped"] = reply["agents"]
+        if not _wait_gone(info.get("pid"), args.timeout):
+            return finish(1, f"pid {info.get('pid')} is still running after {args.timeout:g}s")
+    step("starting")
+    try:
+        socket, _ = launcher.ensure(root, timeout=launcher.START_TIMEOUT)
+    except launcher.EngineStartError as e:
+        return finish(1, str(e))
+    result["pid"] = (launcher.info(root) or {}).get("pid")
+    step("started", f"pid {result['pid']}")
+    try:
+        after = asyncio.run(_request(socket, "list_restorable"))["agents"]
+    except RequestError:
+        after = []
+    # Only what this restart stopped: with no engine running, nothing.
+    ids = [a["id"] for a in after if a["id"] not in before] if result["old_pid"] else []
+    if args.restore and ids:
+        step("restoring", f"{len(ids)} agent(s)")
+        try:
+            restored = asyncio.run(
+                _request(socket, "restore_agents", ids=ids, env=dict(os.environ))
+            )
+        except RequestError as e:
+            return finish(1, e.message)
+        result["restored"] = restored["restored"]
+        result["failed"] = restored["failed"]
+        if not args.json:
+            for agent in restored["restored"]:
+                if agent["kind"] == "orchestrator":
+                    what = "the orchestrator"
+                else:
+                    what = f"{agent['agent_id']} in {agent['worktree_path']}"
+                _print(f"restored {what} ({agent['resumed']})")
+            for failure in restored["failed"]:
+                _error(f"could not restore {failure['id']}: {failure['reason']}")
+    result["left"] = len(after) - len(result["restored"])
+    if not args.json:
+        _print(
+            f"restarted (pid {result['pid']}"
+            + (f", {result['stopped']} agent(s) stopped" if result["stopped"] else "")
+            + ")"
+        )
+        if result["left"]:
+            _print(f"{result['left']} agent(s) to restore: lazyagent engine restore")
+    return finish(1 if result["failed"] else 0)
 
 
 def _alive(pid: int) -> bool:
@@ -362,6 +477,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=_STOP_TIMEOUT,
         help="Seconds to wait for it to exit (default: %(default)g)",
     )
+    restart = command(
+        "restart", "Stop the repo's engine and its agents, and start a new one"
+    )
+    restart.add_argument(
+        "--restore",
+        action="store_true",
+        help="Then bring back the agents it stopped (older restorable ones stay offered)",
+    )
+    restart.add_argument("--json", action="store_true", help="Print JSON lines")
+    restart.add_argument(
+        "--timeout",
+        type=float,
+        default=_STOP_TIMEOUT,
+        help="Seconds to wait for the old one to exit (default: %(default)g)",
+    )
     status = command("status", "Whether an engine serves the repo (exit 3: none)")
     status.add_argument("--json", action="store_true", help="Print JSON")
     restore = command(
@@ -390,6 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
 _COMMANDS = {
     "start": cmd_start,
     "stop": cmd_stop,
+    "restart": cmd_restart,
     "status": cmd_status,
     "logs": cmd_logs,
     "restore": cmd_restore,

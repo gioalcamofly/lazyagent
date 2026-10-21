@@ -643,3 +643,101 @@ def test_agents_of_a_crashed_engine_are_restored_into_their_conversation(world):
     assert "dismissed 1" in dismissed.stdout
     assert world.status()["restorable"] == 0
     assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+
+
+# ----------------------------------------------------------------------
+# lazyagent engine restart
+# ----------------------------------------------------------------------
+
+
+def _note_conversation(world: World, fake: int, conversation: str) -> None:
+    """What Claude's hooks would log for the fake agent ``fake``."""
+    args = _cmdline(fake)
+    hook_log = Path(args[args.index("--settings") + 1]).with_name("hook-events.jsonl")
+    event = {"hook_event_name": "UserPromptSubmit", "session_id": conversation}
+    with hook_log.open("a") as f:
+        f.write(json.dumps(event) + "\n")
+    path = manifest_path(world.repo, world.env)
+    _wait(
+        lambda: path.exists() and conversation in path.read_text(),
+        what="the manifest noting it",
+    )
+
+
+def _spawn(world: World, **params) -> dict:
+    async def main() -> dict:
+        client = await world.client()
+        try:
+            agent = await client.request("spawn_agent", env=world.env, **params)
+            key = params.get("worktree_path", "__orchestrator__")
+            await _wait_screen(client, key, agent["agent_id"], "your turn>")
+            return agent
+        finally:
+            await client.close()
+
+    return asyncio.run(main())
+
+
+def test_restart_restores_exactly_the_agents_it_stopped(world):
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+    # An entry left by an earlier engine: still offered after the restart.
+    _spawn(world, worktree_path=world.repo)
+    [old] = _fake_agents(world)
+    _note_conversation(world, old, "0ld00000-0000-4000-8000-000000000000")
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+    assert world.status()["restorable"] == 1
+
+    conversations = {"agent": "a9e00000-0000-4000-8000-000000000001",
+                     "orchestrator": "0c000000-0000-4000-8000-000000000002"}
+    agent = _spawn(world, worktree_path=world.repo, resume_mode="new")
+    [fake] = _fake_agents(world)
+    _note_conversation(world, fake, conversations["agent"])
+    orchestrator = _spawn(world, kind="orchestrator")
+    assert orchestrator["agent_id"] == ""
+    [fake] = set(_fake_agents(world)) - {fake}
+    _note_conversation(world, fake, conversations["orchestrator"])
+    old_pid = world.info()["pid"]
+
+    result = world.lazyagent("engine", "restart", world.repo, "--restore", "--json")
+    assert result.returncode == 0, result.stderr
+    lines = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [e["step"] for e in lines[:-1]] == ["stopping", "starting", "started", "restoring"]
+    done = lines[-1]["result"]
+    assert done["error"] is None and done["failed"] == []
+    assert done["stopped"] == 2 and done["old_pid"] == old_pid != done["pid"]
+    assert sorted(a["kind"] for a in done["restored"]) == ["agent", "orchestrator"]
+    assert done["left"] == 1, "the older entry stays offered, not restored"
+
+    _wait(lambda: len(_fake_agents(world)) == 2, what="both back")
+    commands = [" ".join(_cmdline(pid)) for pid in _fake_agents(world)]
+    assert all("--continue" not in c for c in commands), commands
+    assert any(f"--resume {conversations['agent']}" in c for c in commands)
+    assert any(f"--resume {conversations['orchestrator']}" in c for c in commands)
+    status = world.status()
+    # The orchestrator comes back as the orchestrator, the agent as itself.
+    ids = {(a["worktree_path"], a["agent_id"]) for a in status["agents"]}
+    assert ids == {(None, ""), (world.repo, agent["agent_id"])}
+    assert status["restorable"] == 1
+
+    # Without --restore they all stay restorable; with no engine, nothing is.
+    plain = world.lazyagent("engine", "restart", world.repo)
+    assert plain.returncode == 0, plain.stderr
+    assert "3 agent(s) to restore" in plain.stdout
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+    cold = world.lazyagent("engine", "restart", world.repo, "--restore", "--json")
+    assert json.loads(cold.stdout.splitlines()[-1])["result"]["restored"] == []
+    assert world.status()["restorable"] == 3
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+
+
+def test_restart_refuses_an_engine_inside_a_tui(world):
+    with tui(world, world.repo, "--embedded") as t:
+        t.wait_text("main")
+        _wait(lambda: (world.rundir / "engine.json").exists(), what="v1 socket")
+        result = world.lazyagent("engine", "restart", world.repo, "--json")
+        assert result.returncode == 1
+        done = json.loads(result.stdout.splitlines()[-1])["result"]
+        assert "inside a lazyagent TUI" in done["error"]
+        assert world.engine_pids() == []
+        assert t.quit() == 0

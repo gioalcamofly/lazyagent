@@ -56,15 +56,23 @@ class HelloReply:
     repo_root: str
     engine_id: str
     capabilities: tuple[str, ...] = field(default_factory=tuple)
+    # Additive: whether ``shutdown`` can stop it (not inside a TUI), and the
+    # commit of the lazyagent source it runs (None for a wheel install).
+    detached: bool | None = None
+    source_commit: str | None = None
 
     def to_result(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "protocol": self.protocol,
             "engine_version": self.engine_version,
             "capabilities": list(self.capabilities),
             "repo_root": self.repo_root,
             "engine_id": self.engine_id,
         }
+        if self.detached is not None:
+            out["detached"] = self.detached
+            out["source_commit"] = self.source_commit
+        return out
 
 
 def _check_version(value: Any, who: str) -> int:
