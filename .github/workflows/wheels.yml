@@ -1,0 +1,82 @@
+name: Wheels
+
+# Builds every distribution of the one `lazyagent` package and smoke-tests
+# each: a platform wheel per Linux arch with the desktop app inside
+# (hatch_build.py), and the pure wheel + sdist as the fallback. Called by
+# ci.yml (artifacts only) and publish.yml (which uploads them on a tag).
+
+on:
+  workflow_call:
+
+jobs:
+  platform:
+    name: platform (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners, no cross or QEMU: the build is the same command on both.
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo's target dir and crate downloads, kept between runs (the cold
+      # release build of the app is the slow part).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/lazyagent-wheel/target
+            ~/.cache/lazyagent-wheel/registry
+          key: wheel-${{ matrix.arch }}-${{ hashFiles('desktop/Cargo.lock') }}-${{ hashFiles('desktop/**/*.rs', 'desktop/**/Cargo.toml') }}
+          restore-keys: |
+            wheel-${{ matrix.arch }}-${{ hashFiles('desktop/Cargo.lock') }}-
+            wheel-${{ matrix.arch }}-
+
+      - name: Build in manylinux_2_28 (auditwheel checks the tag)
+        run: |
+          mkdir -p dist ~/.cache/lazyagent-wheel/target ~/.cache/lazyagent-wheel/registry
+          docker run --rm \
+            -v "$PWD":/io:ro -v "$PWD/dist":/out \
+            -v ~/.cache/lazyagent-wheel/target:/target \
+            -v ~/.cache/lazyagent-wheel/registry:/root/.cargo/registry \
+            -e OUT=/out -e CARGO_TARGET_DIR=/target \
+            quay.io/pypa/manylinux_2_28_${{ matrix.arch }} \
+            sh /io/.github/scripts/build-desktop-wheel.sh
+          # The container ran as root; let the cache step read and save it.
+          sudo chown -R "$(id -u):$(id -g)" dist ~/.cache/lazyagent-wheel
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Smoke test (clean uv tool install, no Rust on PATH)
+        run: sh .github/scripts/smoke-wheel.sh dist/*-manylinux_2_28_${{ matrix.arch }}.whl binary
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  pure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build the pure wheel and the sdist
+        run: uv build
+
+      - name: Smoke test (the pure wheel explains how to get the app)
+        run: sh .github/scripts/smoke-wheel.sh dist/*-py3-none-any.whl none
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-pure
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error

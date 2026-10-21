@@ -5,19 +5,25 @@ on:
     tags: ["v*"]
 
 jobs:
+  build:
+    uses: ./.github/workflows/wheels.yml
+
   publish:
+    needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
 
-      - uses: astral-sh/setup-uv@v5
-
-      - name: Build package
-        run: uv build
+      - name: List what is uploaded
+        run: ls -l dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

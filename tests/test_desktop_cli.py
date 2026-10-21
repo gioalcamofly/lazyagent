@@ -21,21 +21,36 @@ def test_binary_lookup_order(tmp_path):
     src = tmp_path / "src"
     built = src / "desktop" / "target" / "release" / "lazyagent-desktop"
     built.parent.mkdir(parents=True)
+    package_bin = tmp_path / "site-packages" / "lazyagent" / "bin"
+    package_bin.mkdir(parents=True)
     on_path_dir = tmp_path / "bin"
     on_path_dir.mkdir()
     explicit = _exe(tmp_path / "explicit")
 
+    def find(env):
+        return desktop.find_binary(env, src, package_bin)
+
     env = {"PATH": str(on_path_dir)}
-    assert desktop.find_binary(env, src) is None
+    assert find(env) is None
     _exe(built)
-    assert desktop.find_binary(env, src) == built
+    assert find(env) == built
     on_path = _exe(on_path_dir / "lazyagent-desktop")
-    assert desktop.find_binary(env, src) == on_path
+    assert find(env) == on_path
+    # The binary a platform wheel ships wins over PATH and the checkout.
+    shipped = _exe(package_bin / "lazyagent-desktop")
+    assert find(env) == shipped
     with_explicit = {**env, desktop.BIN_ENV: str(explicit)}
-    assert desktop.find_binary(with_explicit, src) == explicit
+    assert find(with_explicit) == explicit
     # An explicit path that is not runnable is an error, not a fallback.
     missing = {**env, desktop.BIN_ENV: str(tmp_path / "nope")}
-    assert desktop.find_binary(missing, src) is None
+    assert find(missing) is None
+
+
+def test_shipped_binary_must_be_executable(tmp_path):
+    package_bin = tmp_path / "bin"
+    package_bin.mkdir()
+    (package_bin / "lazyagent-desktop").write_text("not runnable")
+    assert desktop.find_binary({"PATH": ""}, tmp_path, package_bin) is None
 
 
 def test_hands_over_with_this_python(tmp_path, monkeypatch):
@@ -52,14 +67,32 @@ def test_hands_over_with_this_python(tmp_path, monkeypatch):
     assert env["LAZYAGENT_PYTHON"] == sys.executable
 
 
-def test_missing_binary_explains_how_to_build(tmp_path, monkeypatch, capsys):
+def test_missing_binary_explains_how_to_build(monkeypatch, capsys):
+    """From a checkout: build the checkout's desktop/."""
     monkeypatch.delenv(desktop.BIN_ENV, raising=False)
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(desktop, "SOURCE_ROOT", tmp_path)
     monkeypatch.setattr(desktop, "find_binary", lambda: None)
     assert desktop.main([]) == 2
     err = capsys.readouterr().err
-    assert "cargo install" in err and "desktop/crates/app" in err
+    assert "cargo install" in err and str(desktop.SOURCE_ROOT / "desktop/crates/app") in err
+
+
+def test_pure_wheel_explains_how_to_install(tmp_path):
+    """An install from the pure wheel has no desktop/: install it from git."""
+    from lazyagent import __version__
+
+    help_text = desktop.build_help(tmp_path)
+    assert f"--git {desktop.REPO_URL} --tag v{__version__} lazyagent-desktop" in help_text
+    assert "--path" not in help_text
+
+
+def test_help_says_which_binary_runs(tmp_path, monkeypatch, capsys):
+    binary = _exe(tmp_path / "lazyagent-desktop")
+    monkeypatch.setattr(desktop, "find_binary", lambda: binary)
+    assert desktop.main(["--help"]) == 0
+    assert f"app: {binary}" in capsys.readouterr().out
+    monkeypatch.setattr(desktop, "find_binary", lambda: None)
+    assert desktop.main(["--help"]) == 0
+    assert "app: not built" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("argv", [["desktop", "--help"]])
