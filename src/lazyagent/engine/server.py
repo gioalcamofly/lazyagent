@@ -73,6 +73,7 @@ from lazyagent.protocol.envelope import (
     parse_message,
 )
 from lazyagent.protocol.hosted import HOST_ENV
+from lazyagent.update import source_commit
 from lazyagent.worktree_manager import MAX_DIFF_BYTES_LIMIT
 
 if TYPE_CHECKING:
@@ -649,6 +650,7 @@ class V1Server:
                 # false: the engine lives inside a TUI and stops with it.
                 "detached": self.engine.shutdown_handler is not None,
                 "started_at": time.time(),
+                "source_commit": source_commit(),
             },
         )
         log.info("v1 server listening on %s", self.socket_path)
@@ -714,6 +716,8 @@ class V1Server:
             repo_root=self.engine.repo_root,
             engine_id=self.engine_id,
             capabilities=(*methods, *FEATURES),
+            detached=self.engine.shutdown_handler is not None,
+            source_commit=source_commit(),
         ).to_result()
 
     async def dispatch(self, conn: _Connection, method: str, params: dict) -> Any:

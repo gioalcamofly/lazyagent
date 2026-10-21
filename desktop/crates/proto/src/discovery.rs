@@ -158,7 +158,8 @@ impl Starter {
         which("lazyagent", env).map(Starter::Command)
     }
 
-    fn command(&self) -> Command {
+    /// `<python> -m lazyagent` or `<lazyagent>`, to add a subcommand to.
+    pub fn command(&self) -> Command {
         match self {
             Starter::Python(py) => {
                 let mut c = Command::new(py);

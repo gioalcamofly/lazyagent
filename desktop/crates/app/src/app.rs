@@ -183,6 +183,14 @@ pub struct State {
     pub clipboard: Option<String>,
     /// What the app last put there (tests read it).
     pub last_copied: Option<String>,
+    /// Updates and restarts (lifecycle.rs).
+    pub life: crate::lifecycle::Lifecycle,
+    /// `hello.detached`: whether the engine can be stopped from here.
+    pub engine_detached: Option<bool>,
+    /// `hello.source_commit`: the code the engine runs.
+    pub engine_commit: Option<String>,
+    /// The `engine restart` result, until the relaunch takes it.
+    pub restart_result: Option<serde_json::Value>,
 }
 
 impl State {
@@ -261,6 +269,28 @@ impl State {
             earlier: HashMap::new(),
             clipboard: None,
             last_copied: None,
+            life: Default::default(),
+            engine_detached: None,
+            engine_commit: None,
+            restart_result: None,
+        }
+    }
+
+    /// Writes the saved state now (before a restart).
+    pub fn flush_saved(&mut self) {
+        self.saver.flush(&self.saved);
+    }
+
+    /// Light / dark, kept in the saved state.
+    pub fn toggle_theme(&mut self, ctx: &egui::Context) {
+        let kind = if self.theme.kind == ThemeKind::Dark { ThemeKind::Light } else { ThemeKind::Dark };
+        self.saved.theme = Some(if kind == ThemeKind::Light { "light" } else { "dark" }.into());
+        self.saver.touch();
+        self.theme = Theme::of(kind);
+        self.theme.apply(ctx);
+        let palette = self.theme.palette();
+        for p in self.panes.values() {
+            p.inner.lock().unwrap().term.set_palette(palette.clone());
         }
     }
 
@@ -570,6 +600,9 @@ impl State {
                     }
                     self.shells.clear();
                     self.shell_requested.clear();
+                    // Their "spawn again (resume the last session)" would not
+                    // bring those agents back: the restore banner does (Q-U11).
+                    self.exits.clear();
                 } else {
                     // Same engine: every stream resumes from its last byte.
                     for p in self.panes.values() {
@@ -590,6 +623,9 @@ impl State {
                 self.notes_reconnected(engine_changed);
                 self.capabilities = Some(hello.capabilities);
                 self.engine_version = Some(hello.engine_version);
+                self.engine_detached = hello.detached;
+                self.engine_commit = hello.source_commit;
+                self.lifecycle_connected();
                 self.fetch_review_replies();
             }
             Msg::Seed(state, config) => {
@@ -982,6 +1018,90 @@ impl App {
         }
     }
 
+    /// File / View / Agents / Help; the "update available" chip at the right.
+    fn menu_bar(&mut self, ui: &mut Ui) {
+        use crate::dialogs::Kind;
+        let s = &mut self.state;
+        let t = s.theme;
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New agent…  (s)").clicked() {
+                    s.open_dialog(Kind::Spawn);
+                }
+                if ui.button("New worktree…  (c)").clicked() {
+                    s.open_dialog(Kind::Create);
+                }
+                ui.separator();
+                if ui.button("Restart…").clicked() {
+                    s.open_restart();
+                }
+                if ui.button("Quit").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("View", |ui| {
+                if ui.selectable_label(s.view == View::Worktrees, "Worktrees  (g w)").clicked() {
+                    s.view = View::Worktrees;
+                }
+                if ui.selectable_label(s.view == View::Attention, "Attention  (g a)").clicked() {
+                    s.view = View::Attention;
+                }
+                ui.separator();
+                let worktree = s.selected.as_deref().is_some_and(|p| p != ORCHESTRATOR_KEY);
+                if s.notes_supported() && ui.selectable_label(s.notes_open, "Notes panel  (n)").clicked() {
+                    s.toggle_notes();
+                }
+                if ui.add_enabled(worktree, egui::Button::selectable(s.pr_panel, "PR panel  (Ctrl+.)")).clicked() {
+                    s.pr_panel = !s.pr_panel;
+                }
+                if ui.add_enabled(worktree, egui::Button::selectable(s.diff_open, "Diff  (Ctrl+D)")).clicked() {
+                    s.view = View::Worktrees;
+                    s.toggle_diff();
+                }
+                ui.separator();
+                if ui.button("Light / dark theme").clicked() {
+                    s.toggle_theme(ui.ctx());
+                }
+            });
+            ui.menu_button("Agents", |ui| {
+                let n = s.restorable.len();
+                if ui.add_enabled(n > 0, egui::Button::new(format!("Restore agents ({n})  (R)"))).clicked() {
+                    s.restore(true);
+                }
+                if ui.button("Stop the selected agent…  (x)").clicked() {
+                    s.open_dialog(Kind::Stop);
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("Check for updates…").clicked() {
+                    s.check_updates(false);
+                }
+                let mut auto = !s.saved.update_check_off;
+                if ui.checkbox(&mut auto, "Check automatically").changed() {
+                    s.saved.update_check_off = !auto;
+                    s.saver.touch();
+                }
+                ui.separator();
+                if ui.button("Keyboard shortcuts  (?)").clicked() {
+                    s.open_dialog(Kind::Help);
+                }
+                if ui.button("About lazyagent").clicked() {
+                    s.life.sheet = Some(crate::lifecycle::Sheet::About);
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if s.life.info.as_ref().is_some_and(|i| i.actionable())
+                    && ui
+                        .button(RichText::new("Update available").small().color(t.accent))
+                        .on_hover_text("Help → Check for updates")
+                        .clicked()
+                {
+                    s.life.sheet = Some(crate::lifecycle::Sheet::Update);
+                }
+            });
+        });
+    }
+
     fn top_bar(&mut self, ui: &mut Ui) {
         let s = &mut self.state;
         let t = s.theme;
@@ -1009,15 +1129,7 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = "◐";
                 if ui.button(icon).on_hover_text("Light / dark theme").clicked() {
-                    let kind = if t.kind == ThemeKind::Dark { ThemeKind::Light } else { ThemeKind::Dark };
-                    s.saved.theme = Some(if kind == ThemeKind::Light { "light" } else { "dark" }.into());
-                    s.saver.touch();
-                    s.theme = Theme::of(kind);
-                    s.theme.apply(ui.ctx());
-                    let palette = s.theme.palette();
-                    for p in s.panes.values() {
-                        p.inner.lock().unwrap().term.set_palette(palette.clone());
-                    }
+                    s.toggle_theme(ui.ctx());
                 }
                 ui.menu_button("Notifications ▾", |ui| {
                     ui.label(RichText::new("Notify me (while the window is in the background) when an agent…").small());
@@ -1704,6 +1816,11 @@ impl App {
             self.title = title;
         }
         let t = self.state.theme;
+        self.state.lifecycle_tick(&ctx);
+        egui::Panel::top("menu")
+            .exact_size(24.0)
+            .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(6, 0)))
+            .show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("top")
             .exact_size(34.0)
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(10, 0)))
@@ -1754,6 +1871,7 @@ impl App {
                 }
             });
         crate::dialogs::show(&ctx, &mut self.state);
+        crate::lifecycle::show(&ctx, &mut self.state);
         self.diff_dialogs(&ctx);
         self.state.pending_reviews();
         self.state.pending_asks();

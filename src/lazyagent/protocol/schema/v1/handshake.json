@@ -22,7 +22,9 @@
         "engine_version": {"type": "string"},
         "capabilities": {"type": "array", "items": {"type": "string"}},
         "repo_root": {"type": "string"},
-        "engine_id": {"type": "string"}
+        "engine_id": {"type": "string"},
+        "detached": {"type": "boolean"},
+        "source_commit": {"type": ["string", "null"]}
       }
     },
     "unsupported_version.data": {

@@ -12,6 +12,7 @@ mod diff_view;
 mod fonts;
 mod gpu;
 mod install;
+mod lifecycle;
 mod notes_view;
 mod notify;
 mod pacer;
@@ -131,6 +132,8 @@ fn pick() {
 
 fn main() {
     let t0 = std::time::Instant::now();
+    // What a restart relaunches with: before anything changes the environment.
+    lifecycle::remember_start();
     // First, while single-threaded: it sets an environment variable.
     let hidden_gpu = gpu::hide_offload_nvidia();
     let args = match parse_args() {
@@ -173,7 +176,7 @@ fn main() {
     if hidden_gpu.is_some() {
         env = env.with(gpu::ICD_ENV, None);
     }
-    env = env.with(install::LOGIN_ENV, None);
+    env = env.with(install::LOGIN_ENV, None).with(lifecycle::REPORT_ENV, None);
     // Fonts load while the window and the GPU come up.
     let fonts = std::thread::spawn(fonts::FontSet::discover);
 

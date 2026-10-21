@@ -1949,7 +1949,8 @@ fn the_panel_lists_earlier_notes_to_view_adopt_or_delete() {
     assert!(h.query_all_by_label("orphan, 2.0 KiB, ended 3h ago, deleted in 7d").count() >= 1);
     assert!(h.query_all_by_label("restorable, 2.0 KiB, ended 3h ago").count() >= 1);
     // View fetches the text (no engine: says it could not).
-    h.get_all_by_label("View").next().unwrap().click();
+    // The first "View" is the menu bar's.
+    h.get_all_by_label("View").nth(1).unwrap().click();
     h.run_steps(3);
     let e = &h.state().state.earlier["/r/repo"];
     assert_eq!(e.viewing.as_ref().map(|(id, _)| id.as_str()), Some("o2"));
@@ -2233,4 +2234,242 @@ fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
     h.run_steps(2);
     let d = h.state().state.diff.as_ref().unwrap();
     assert_eq!(d.requested, "");
+}
+
+// ----------------------------------------------------------------------
+// Updates and restarts (lifecycle.rs)
+// ----------------------------------------------------------------------
+
+fn start(env: &[(&str, &str)], args: &[&str]) -> crate::lifecycle::Start {
+    crate::lifecycle::Start {
+        env: env.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_relaunch_runs_a_fresh_launch_with_the_start_environment() {
+    use crate::lifecycle::{REPORT_ENV, relaunch_command};
+    let report = std::path::Path::new("/run/x/report.json");
+    // `lazyagent desktop` (uv run): through the same Python.
+    let s = start(
+        &[("LAZYAGENT_PYTHON", "/v/bin/python"), (REPORT_ENV, "/old.json"), ("PATH", "/usr/bin")],
+        &["/r/repo", "--theme", "light", "--screenshot", "/tmp/x.png"],
+    );
+    let (program, args, env) = relaunch_command(&s, "/r/repo", None, Some(report));
+    assert_eq!(program, std::path::PathBuf::from("/v/bin/python"));
+    assert_eq!(args, ["-m", "lazyagent", "desktop", "/r/repo", "--theme", "light"]);
+    let reports: Vec<_> = env.iter().filter(|(k, _)| k == REPORT_ENV).collect();
+    assert_eq!(reports.len(), 1, "the previous report is not passed on");
+    assert_eq!(reports[0].1, report.as_os_str());
+
+    // No Python: `lazyagent` on the start PATH.
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("lazyagent");
+    std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let s = start(&[("PATH", dir.path().to_str().unwrap())], &[]);
+    let (program, args, _) = relaunch_command(&s, "/r/repo", None, None);
+    assert_eq!((program, args), (bin, vec!["desktop".to_string(), "/r/repo".to_string()]));
+
+    // Neither: the binary itself, even once replaced on disk.
+    let s = start(&[("PATH", "/nonexistent")], &[]);
+    let exe = std::path::PathBuf::from("/home/u/.cargo/bin/lazyagent-desktop (deleted)");
+    let (program, args, _) = relaunch_command(&s, "/r/repo", Some(exe), None);
+    assert_eq!(program, std::path::PathBuf::from("/home/u/.cargo/bin/lazyagent-desktop"));
+    assert_eq!(args, ["/r/repo"]);
+}
+
+#[test]
+fn the_restart_report_becomes_a_toast() {
+    use crate::app::Severity;
+    use crate::lifecycle::report_text;
+    assert_eq!(report_text(&json!({"engine": false})), Some((Severity::Info, "Restarted.".into())));
+    let ok = json!({"engine": true, "result": {"restored": [{}, {}], "failed": [], "error": null}});
+    assert_eq!(report_text(&ok), Some((Severity::Info, "Engine restarted · 2 agent(s) restored".into())));
+    let partly = json!({"engine": true, "result": {"restored": [{}], "failed": [{"id": "e1", "reason": "gone"}], "error": null}});
+    assert_eq!(
+        report_text(&partly),
+        Some((Severity::Warning, "Engine restarted · 1 agent(s) restored · 1 failed (e1: gone)".into()))
+    );
+    let failed = json!({"engine": true, "result": null, "error": "no python"});
+    assert_eq!(report_text(&failed), Some((Severity::Error, "The engine restart failed: no python".into())));
+}
+
+#[test]
+fn the_menu_bar_opens_restart_and_flags_busy_agents() {
+    let (app, tx) = app(vec![
+        worktree("/r/repo", "main", vec![agent("a1", "Idle one", "waiting_for_user", "s1")]),
+        worktree("/r/repo-feat", "feat", vec![agent("a2", "Busy one", "running", "s2")]),
+    ]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    for menu in ["File", "View", "Agents", "Help"] {
+        assert_eq!(h.query_all_by_label(menu).count(), 1, "{menu}");
+    }
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    h.get_by_label("Restart…").click();
+    h.run_steps(3);
+    assert!(h.query_all_by_label("Restart lazyagent").count() >= 1);
+    assert!(h.query_all_by_label("Only the app restarts; the agents keep running.").count() >= 1);
+    h.get_by_label("Restart the engine too").click();
+    h.run_steps(3);
+    let busy = h.query_all_by_label_contains("⚠ Busy one").count();
+    assert_eq!(busy, 1, "the running agent is flagged");
+    assert_eq!(h.query_all_by_label("Restart anyway").count(), 1);
+    // Rows: busy first.
+    let rows = crate::lifecycle::stopping(&h.state().state.store);
+    assert_eq!(
+        rows.iter().map(|r| (r.name.as_str(), r.busy)).collect::<Vec<_>>(),
+        [("Busy one", true), ("Idle one", false)]
+    );
+    // An engine inside a TUI cannot be restarted from here.
+    h.state_mut().state.engine_detached = Some(false);
+    h.run_steps(3);
+    assert!(h.query_all_by_label("Only the app restarts; the agents keep running.").count() >= 1);
+    // The app alone: relaunched at once (the exec is recorded in tests).
+    h.get_by_label("Restart").click();
+    h.run_steps(2);
+    let (_, args) = h.state().state.life.relaunched.clone().expect("relaunched");
+    assert_eq!(args.last().map(String::as_str), Some("/r/repo"));
+    drop(tx);
+}
+
+#[test]
+fn exits_of_a_previous_engine_are_dropped() {
+    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().state.exits.push(crate::attention::Exit {
+        key: "/r/repo".into(),
+        agent_id: "a1".into(),
+        label: "A".into(),
+        exit_code: None,
+        at: 1.0,
+    });
+    let hello = |id: &str| lazyagent_proto::types::HelloResult {
+        protocol: 1,
+        engine_version: "0".into(),
+        capabilities: vec![],
+        repo_root: "/r/repo".into(),
+        engine_id: id.into(),
+        detached: Some(true),
+        source_commit: Some("abc".into()),
+    };
+    tx.send(Msg::Connected { hello: hello("e1"), engine_changed: false, started: false }).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().state.exits.len(), 1, "same engine: kept");
+    assert_eq!(h.state().state.engine_commit.as_deref(), Some("abc"));
+    tx.send(Msg::Connected { hello: hello("e2"), engine_changed: true, started: false }).unwrap();
+    h.run_steps(2);
+    assert!(h.state().state.exits.is_empty(), "the restore banner offers them instead");
+}
+
+/// Stops the world's detached engine (not one of its own children) at the end.
+struct StopEngine<'a>(&'a lazyagent_testkit::World);
+
+impl Drop for StopEngine<'_> {
+    fn drop(&mut self) {
+        let mut cmd = std::process::Command::new(&self.0.python);
+        cmd.args(["-m", "lazyagent", "engine", "stop", &self.0.repo]).env_clear().envs(self.0.env.vars());
+        let _ = cmd.output();
+    }
+}
+
+#[test]
+fn restarting_the_engine_restores_its_agents_before_the_app_comes_back() {
+    let Some(world) = lazyagent_testkit::World::new() else { return };
+    let _stop = StopEngine(&world);
+    // A detached engine (what `lazyagent desktop` starts): the app starts it.
+    let (tx, rx) = mpsc::channel();
+    let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, egui::Context::default());
+    conn.spawn_supervisor();
+    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    let mut h = harness(App::new(state, rx, None));
+    step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
+    assert_eq!(h.state().state.engine_detached, Some(true));
+    h.state_mut().state.spawn_agent(Some(world.repo.clone()));
+    step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
+    let old = lazyagent_proto::discovery::engine_info(&world.repo, &world.env).unwrap()["pid"].clone();
+
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    h.get_by_label("Restart…").click();
+    h.run_steps(3);
+    h.get_by_label("Restart the engine too").click();
+    h.run_steps(3);
+    // "Restart anyway" while the fake agent's turn runs.
+    h.query_by_label("Restart").or_else(|| h.query_by_label("Restart anyway")).expect("the button").click();
+    h.run_steps(1);
+    assert!(conn.client().is_none(), "the app let go of the engine first");
+    step_until(&mut h, "the relaunch", |a| a.state.life.relaunched.is_some());
+    // By then the new engine runs the agent again.
+    let info = lazyagent_proto::discovery::engine_info(&world.repo, &world.env).unwrap();
+    assert_ne!(info["pid"], old);
+    let (probe, hello, _rx) = world.connect();
+    assert_eq!(hello.detached, Some(true));
+    let sidebar = probe.request("get_sidebar_state", json!({}), lazyagent_testkit::TIMEOUT).unwrap();
+    let agents: usize =
+        sidebar["worktrees"].as_array().unwrap().iter().map(|w| w["agents"].as_array().unwrap().len()).sum();
+    assert_eq!(agents, 1);
+    // What the relaunched app will say.
+    let report = lazyagent_proto::discovery::runtime_dir(&world.repo, &world.env)
+        .join(format!("desktop-restart-{}.json", std::process::id()));
+    let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
+    assert_eq!(
+        crate::lifecycle::report_text(&report).map(|(_, t)| t).as_deref(),
+        Some("Engine restarted · 1 agent(s) restored")
+    );
+}
+
+#[test]
+fn update_and_restart_screenshots() {
+    use crate::lifecycle::{Commit, Sheet, UpdateInfo};
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "develop", vec![agent("a1", "Docs", "waiting_for_user", "s1")]),
+        worktree("/r/repo-feat", "feat-x", vec![agent("a2", "Implementer", "running", "s2")]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1400.0, 880.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(3);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    h.state_mut().state.life.info = Some(UpdateInfo {
+        mode: "development".into(),
+        version: "0.8.0".into(),
+        root: Some("/home/u/src/lazyagent".into()),
+        branch: Some("develop".into()),
+        upstream: Some("origin/develop".into()),
+        behind: 3,
+        commits: vec![
+            Commit { sha: "a1b2c3d".into(), subject: "feat(desktop): update and restart from the app".into() },
+            Commit { sha: "9f8e7d6".into(), subject: "fix(engine): keep the agent id on restore".into() },
+            Commit { sha: "5c4b3a2".into(), subject: "docs: plan for the actionables".into() },
+        ],
+        update_available: true,
+        can_apply: true,
+        ..Default::default()
+    });
+    // No engine here: the shell's error toast is noise in a picture.
+    h.state_mut().state.toasts.clear();
+    h.get_by_label("Help").click();
+    h.run_steps(3);
+    if !shot(&mut h, "menu-help") {
+        return;
+    }
+    h.key_press(egui::Key::Escape);
+    h.state_mut().state.life.sheet = Some(Sheet::Update);
+    h.run_steps(4);
+    shot(&mut h, "update");
+    h.state_mut().state.life.sheet = Some(Sheet::Restart { engine: true, restore: true, after_update: true });
+    h.run_steps(4);
+    shot(&mut h, "restart");
 }

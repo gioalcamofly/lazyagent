@@ -23,6 +23,13 @@ pub struct HelloResult {
     pub capabilities: Vec<String>,
     pub repo_root: String,
     pub engine_id: String,
+    /// Whether `shutdown` can stop it (false: it lives inside a TUI). Older
+    /// engines do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached: Option<bool>,
+    /// The commit of the lazyagent source it runs (a checkout), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

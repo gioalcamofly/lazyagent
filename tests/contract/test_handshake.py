@@ -24,6 +24,9 @@ async def test_hello_answers_what_the_schema_says(harness):
     assert result["protocol"] == 1
     assert result["repo_root"] == harness.repo
     assert result["engine_id"]
+    # Additive: whether `shutdown` can stop it, and the code it runs.
+    assert isinstance(result["detached"], bool)
+    assert result["source_commit"] is None or len(result["source_commit"]) == 40
     # No hosted UI is attached, so the ui commands are not offered.
     offered = set(LEGACY_METHODS) | set(V1_METHODS) - set(UI_COMMAND_METHODS)
     assert offered <= set(result["capabilities"])

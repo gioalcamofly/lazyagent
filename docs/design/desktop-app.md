@@ -552,6 +552,16 @@ Doubts (defaults taken):
 - **Ids only with an engine that has `review_register`.** With an older engine, a review says "its answer is in the agent's terminal" and Ask now uses the markers, as before.
 - **Late replies.** A reply that arrives after the "turn ended" note still lands under the note. The note is not removed.
 
+### Update and restart from the app (2026-10-21)
+
+Plan, decisions and doubts: [desktop-update-restart-plan.md](desktop-update-restart-plan.md).
+
+- **Menu bar** (a 24 px row above the top bar): File (New agent, New worktree, Restart…, Quit), View (Worktrees, Attention, Notes, PR, Diff, theme), Agents (Restore agents, Stop the selected agent), Help (Check for updates…, Check automatically, Keyboard shortcuts, About). An "Update available" chip at its right.
+- **`lifecycle.rs`:** runs `lazyagent update check|apply --json` and `lazyagent engine restart --json` through the same Python as the engine start, off the UI thread, reading their JSON lines for progress. A restart flushes the saved state, ends the connection (`Conn::shutdown`: no reconnect, no autostart), runs the engine restart, writes its result to `desktop-restart-<pid>.json` in the repo's runtime dir, then `exec`s a fresh launch (`$LAZYAGENT_PYTHON -m lazyagent desktop <repo>`, else `lazyagent desktop`, else the binary) with the environment the app was started with; the new app toasts the result. If the engine restart fails, the app still relaunches (it shows whatever engine state there is).
+- **Build commit:** `build.rs` stamps `LAZYAGENT_BUILD_COMMIT` (`+dirty` with changes under `desktop/`), so "the app is behind the checkout" is known.
+- **Exits** of a previous engine are dropped when the engine changes: their "Spawn again (resume the last session)" could take another conversation; the restore banner offers those agents instead.
+- Screenshots: [u3-menu-help.png](desktop-screenshots/u3-menu-help.png), [u3-update.png](desktop-screenshots/u3-update.png), [u3-restart.png](desktop-screenshots/u3-restart.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |
