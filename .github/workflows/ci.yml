@@ -70,3 +70,9 @@ jobs:
           LAZYAGENT_REQUIRE_ENGINE: "1"
           LAZYAGENT_REQUIRE_GPU: "1"
         run: cargo test --locked
+
+  # The PyPI distributions (desktop app inside the platform wheels), built and
+  # smoke-tested as artifacts. Nothing is published here: publish.yml does
+  # that, on a v* tag only.
+  wheels:
+    uses: ./.github/workflows/wheels.yml

@@ -113,10 +113,10 @@ Same rules as the remote TUI (engine-split §4f, §6d):
 | Way | What it does |
 |---|---|
 | `lazyagent desktop [repo]` | New Python subcommand (no Textual import): resolves the repo root, finds the binary (`LAZYAGENT_DESKTOP_BIN`, then `lazyagent-desktop` on PATH, then `desktop/target/release/lazyagent-desktop` next to a source checkout) and `exec`s it with `LAZYAGENT_PYTHON=sys.executable`. Without a binary it prints how to build one |
-| `lazyagent-desktop [repo]` | The binary itself (`cargo install --path desktop/crates/app`, or the release build) |
+| `lazyagent-desktop [repo]` | The binary itself (inside the Linux x86_64/aarch64 wheel as `lazyagent/bin/lazyagent-desktop`; elsewhere `cargo install --path desktop/crates/app`, or the release build) |
 | `.desktop` file | `lazyagent desktop --install-desktop-entry` writes `~/.local/share/applications/lazyagent-desktop.desktop` (D6) |
 
-- The binary is **not** shipped in the PyPI wheel for now (§8, Q1): building it needs a Rust toolchain, and a manylinux wheel with a GUI binary is its own project.
+- The binary ships inside the `lazyagent` platform wheels (Linux x86_64 and aarch64, `manylinux_2_28`; built by `hatch_build.py` with `LAZYAGENT_BUILD_DESKTOP=1`, see desktop-update-restart-plan.md §3c). Other platforms get the pure wheel, and `lazyagent desktop` prints the `cargo install` command.
 
 ---
 
@@ -222,7 +222,7 @@ All of it exists in v1 today; the desktop app needs **no engine change for the M
 | R8 | Two clients with different sizes on one session (D3 "latest") | Same rule as the web: a terminal claims on focus/typing/resize while owning; renders at the PTY size and crops/pads otherwise |
 | R9 | `alacritty_terminal` vs the engine's pyte snapshot (§3b of engine-split): fidelity limited to what pyte models | Accept; the snapshot is ANSI, alacritty parses it like any output. A golden snapshot test pins it |
 | R10 | Engine version skew (the app newer than a detached engine) | `hello.capabilities` gates features (e.g. `get_diff` `base`); a missing method is a toast, not a crash |
-| Q1 | Ship the binary on PyPI? | **No** for now: `cargo install` / release build + `lazyagent desktop` finding it. Revisit with a manylinux wheel or GitHub release artifacts |
+| Q1 | Ship the binary on PyPI? | **No** at first: `cargo install` / release build + `lazyagent desktop` finding it. **Revisited 21-10:** yes, inside the one `lazyagent` package as platform wheels (desktop-update-restart-plan.md §3c) |
 | Q2 | A Rust job in CI? | **Yes** (D1): `cargo fmt --check`, `clippy -D warnings`, `cargo test` incl. the integration tests against the Python engine (uv) and lavapipe render tests (`mesa-vulkan-drivers`), with `Swatinem/rust-cache` |
 | Q3 | Where do review comments and snoozes live (the web keeps them in localStorage)? | A per-repo state file `$XDG_STATE_HOME/lazyagent/desktop/<hash>.json` (app-only, like localStorage); engine-stored threads wait for U8/0008 |
 | Q4 | Engine env for `.desktop` launches | R7 |
