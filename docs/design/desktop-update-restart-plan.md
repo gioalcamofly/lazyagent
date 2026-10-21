@@ -9,7 +9,7 @@
 
 | # | Scope | Acceptance |
 |---|---|---|
-| U0 (prior phase, own branch) | Publish the desktop binary with each release: a `lazyagent-desktop` wheel per platform with the binary inside (maturin `bindings = "bin"`), extra `lazyagent[desktop]`, same version as `lazyagent` (Q-U16) | `uv tool install 'lazyagent[desktop]'` on a clean Linux box runs `lazyagent desktop` with no Rust toolchain |
+| U0 (prior phase, own branch) | Package the desktop binary **inside the one `lazyagent` package** (user decision): platform wheels built by a hatchling build hook, plus the pure wheel and sdist as fallback; `publish.yml` builds them; `desktop.py` finds the wheel's binary; CI builds the wheels as artifacts only (Q-U16, §3c) | `uv tool install lazyagent` of the CI-built wheel on a clean Linux box runs `lazyagent desktop` with no Rust toolchain; nothing published, no tag |
 | U1 | Python: `lazyagent update check/apply` with two modes: **published** (default: newer release on PyPI, applied with `uv tool upgrade` / `pipx upgrade`) and **development** (launched from a git checkout: fetch, ff-only pull, `uv sync`, app build; refuses when there are uncommitted changes); `lazyagent engine restart [--restore]` | pytest: a dirty checkout is refused and left byte-identical; a restart brings back exactly the agents it stopped, the orchestrator as the orchestrator |
 | U2 | Engine: `source_commit` in the info file and `hello` (additive) | The app can tell "the engine runs older code than the checkout" |
 | U3 | Desktop: menu bar (File / View / Agents / Help), Restart dialog (app; engine; restore), Check-for-updates dialog, progress, app re-exec, post-restart report toast | cargo test: the restart sequence against the testkit engine; the old app never talks to the new engine; the new app starts after the restore |
@@ -80,23 +80,29 @@ Steps:
 
 ### 3b. Published mode
 
-The installer is told from `sys.prefix` / the distribution's `INSTALLER` file: `uv tool` (prefix under `uv tool dir`) → `uv tool upgrade lazyagent`; `pipx` → `pipx upgrade lazyagent`; anything else (a project venv, system pip) → not applied, the dialog shows the command to copy (Q-U2). The desktop binary comes with it once U0 lands (the `lazyagent-desktop` wheel is a dependency of the `desktop` extra, pinned to the same version, so one upgrade moves both). Before U0 lands there is no published binary: the dialog updates Python only and says the app must be rebuilt by hand. Then the same restart dialog as step 4.
+The installer is told from `sys.prefix` / the distribution's `INSTALLER` file: `uv tool` (prefix under `uv tool dir`) → `uv tool upgrade lazyagent`; `pipx` → `pipx upgrade lazyagent`; anything else (a project venv, system pip) → not applied, the dialog shows the command to copy (Q-U2). The updater in published mode looks at PyPI only. The desktop binary comes with it once U0 lands (it is inside the platform wheel, so one upgrade moves Python and app together). Before U0 lands there is no published binary: the dialog updates Python only and says the app must be rebuilt by hand. Then the same restart dialog as step 4.
 
-### 3c. U0: where the published app binary comes from (prior phase)
+### 3c. U0: the app binary inside the published wheel (prior phase)
 
-Today PyPI only gets the Python wheel (`publish.yml`: `uv build`, hatchling, `packages = ["src/lazyagent"]`); `lazyagent-desktop` is published nowhere, so a published install has no app.
+Today PyPI only gets the pure Python wheel (`publish.yml`: `uv build`, hatchling, `packages = ["src/lazyagent"]`); `lazyagent-desktop` is published nowhere. **User decision (21-10):** platform wheels with the binary inside, one package on PyPI, one version for Python and app.
 
-| Option | How | For | Against |
-|---|---|---|---|
-| **A. Platform wheels with the binary** (recommended) | New package `lazyagent-desktop` built with maturin `bindings = "bin"` from `desktop/crates/app`; `publish.yml` gains a matrix (manylinux_2_28 x86_64 + aarch64; macOS arm64/x86_64 later) that uploads them with the sdist-less `lazyagent` wheel; `lazyagent[desktop]` depends on `lazyagent-desktop==<same version>`; `desktop.py` looks in the interpreter's `bin/` first | One channel, one version, one upgrade command (`uv tool upgrade`), no Rust toolchain for users, PyPI hosts it, the version always matches the engine | CI matrix and manylinux build of wgpu/winit (system libs are `dlopen`ed: Vulkan/GL, X11/Wayland, so it works on manylinux_2_28); ~15-25 MB per wheel |
-| B. GitHub Release assets | `desktop-release.yml` on tag: tarballs per platform + `sha256`; the updater downloads, verifies and replaces the binary in `~/.local/share/lazyagent/bin` | No Python packaging tricks | A second update channel and version to keep in sync; our own download/verify/replace code; no signing story yet |
-| C. `cargo install` from git or crates.io | `cargo install --locked lazyagent-desktop` (crates.io) or `--git … --tag vX.Y.Z` | Nothing to build in CI | Users need Rust and minutes of build per update; crates.io needs the 4 crates published |
+Chosen approach (Q-U16): **keep hatchling, add a custom build hook** (`hatch_build.py`, `[tool.hatch.build.targets.wheel.hooks.custom]`):
 
-Recommendation: **A**, as its own branch (`feat-publish-desktop-wheel`) before or in parallel with U1; U1's published mode works without it (Python only) and picks it up when it lands.
+- With `LAZYAGENT_BUILD_DESKTOP=1` the hook runs `cargo build --release --locked --manifest-path desktop/Cargo.toml`, adds the binary as `lazyagent/bin/lazyagent-desktop` (`force_include`, mode 755), sets `pure_python = False` and `tag = "py3-none-manylinux_2_28_<arch>"` (the binary does not depend on the Python version, so one wheel per platform, not per interpreter). Without the variable it does nothing: `uv build`, editable installs and `uv sync` stay pure Python and need no Rust.
+- **Fallback:** the `py3-none-any` pure wheel and the sdist are still built and uploaded. On a platform with no binary wheel pip picks the pure one; `lazyagent desktop` then prints today's `BUILD_HELP` (how to `cargo install` it). The sdist builds pure unless the variable is set.
+- **`desktop.py`:** lookup becomes `LAZYAGENT_DESKTOP_BIN` → the package's own `lazyagent/bin/lazyagent-desktop` → `lazyagent-desktop` on PATH → `desktop/target/release/` of a source checkout. (A dev checkout has no `lazyagent/bin/`, so its order is unchanged.)
+- **Platforms (Q-U18):** Linux x86_64 and aarch64, built in `quay.io/pypa/manylinux_2_28_<arch>` containers with rustup, then `auditwheel show` to check the tag (winit/wgpu `dlopen` X11, Wayland, Vulkan and GL at run time, so the binary links only glibc-era libs). macOS later.
+- **`publish.yml`:** on `v*` tags: a matrix job per platform builds the binary wheel, a job builds the pure wheel + sdist, the publish job downloads all artifacts and uploads them together (unchanged trusted publishing). **Not run in this work:** no tag, no release, nothing sent to PyPI.
+- **Tested without publishing (Q-U19):** a `wheels` job in `ci.yml` (on PRs touching `desktop/`, `pyproject.toml`, `hatch_build.py` or the workflows) runs the same build as artifacts, installs the x86_64 wheel in a clean venv, checks `lazyagent-desktop --help` and that `desktop.find_binary()` returns the wheel's binary; it uploads the wheels with `actions/upload-artifact`.
 
-A failure in 2 or 3 leaves the pull done (it is a plain fast-forward, `git reset --keep ORIG_HEAD` would undo it, but we do not do it automatically); the dialog says which step failed and its output tail.
+Alternatives considered:
 
-Between the pull and the engine restart the running engine has old modules loaded and new ones on disk (editable install): a later lazy import could mix versions (R2). Hence the restart is offered right away, and the engine box is preset.
+| Option | For | Against |
+|---|---|---|
+| **Hatch build hook** (chosen) | Keeps the build backend and every current workflow; pure fallback for free; one switch | We set the platform tag ourselves (and check it with `auditwheel`) |
+| maturin `bindings = "bin"` with `python-source` | Tags, manylinux checks and cross builds done by maturin | Changes the build backend of the whole package: editable installs and `uv sync` would compile Rust, or need special casing |
+| cibuildwheel around the hook | Standard runner, macOS/Windows later | Built per interpreter by default (3× the same binary); for a `py3-none` wheel a plain manylinux container job is simpler |
+| GitHub Release assets / `cargo install` | No packaging work | A second channel and version, or a Rust toolchain per user: against the decision |
 
 ## 4. Restart: the safe order
 
@@ -167,7 +173,7 @@ Items reuse existing actions; nothing new besides Restart, Check for updates and
 | Where | What |
 |---|---|
 | `tests/test_update.py` (new) | Mode detection (editable dist, binary under `desktop/target/`, wheel → published). Development, temp bare remote + clone: up to date; behind 2 → commits listed; ahead → refused; diverged → refused; any modified/staged tracked file → refused and byte-identical; untracked file elsewhere → applied and untouched; untracked file that the update adds → refused; merge in progress → refused; `changes` flags; `uv`/`cargo` shims on PATH that record their args (never a real build), `cargo build` vs `cargo install` by binary location. Published: stubbed PyPI fetch (newer, same, pre-release ignored, offline); installer detection → the right command, unknown → not applied. Lock held → refused |
-| U0 (its branch) | CI builds the manylinux wheel; a job installs it in a clean venv and runs `lazyagent-desktop --help`; `desktop.py` finds the venv's binary first |
+| U0 (its branch) | pytest: the hook is a no-op without the variable (pure wheel, `py3-none-any`); with a fake `cargo` shim it force-includes the binary and sets the tag; `desktop.find_binary()` order. CI `wheels` job: builds the wheels as artifacts, installs one in a clean venv, `lazyagent-desktop --help`. No publish |
 | `tests/engine/test_engine_restart.py` (new, isolated engine via the existing fixtures: own `HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`) | 2 agents + orchestrator → `engine restart --restore`: same agent ids, conversations resumed by id, orchestrator `kind: orchestrator` under `lazyagent-orchestrator`; an older restorable entry is **not** restored and is still offered; without `--restore` everything stays restorable; TUI-hosted engine refused; **no `--continue` spawn in the root** (the fake agent records its argv) |
 | Engine info / hello | `source_commit` present; golden fixture updated |
 | `cargo test` (app) | Menu items enabled/disabled by state; busy detection and the "Restart anyway" switch; the re-exec command line and environment (pure function); report read/delete; exits of a previous engine dropped; with the testkit engine: the restart sequence calls `Conn::shutdown` before the CLI and the CLI before the exec (exec replaced by a recorder in tests) |
@@ -213,5 +219,7 @@ Hard rule for every test and manual try: an engine of its own in a temp `HOME`/`
 | Q-U13 | Window geometry across the re-exec | Not kept in v1 | Pass it as `--geometry` to the new app |
 | Q-U14 | Where the restart logic lives | Python CLI `lazyagent engine restart`, run by the app; the app only re-execs | All in Rust over the protocol; or a detached helper that also relaunches the app |
 | Q-U15 | `source_commit` / build commit | Add both (additive) to say "engine/app behind" | Only compare with upstream |
-| Q-U16 | Where the published app binary comes from (open doubt "publish the desktop binary") | **A:** `lazyagent-desktop` platform wheels (maturin `bin`), extra `lazyagent[desktop]`, lockstep version; prior phase U0 on its own branch | B: GitHub Release assets + our own downloader; C: `cargo install` from git/crates.io |
+| Q-U16 | How the app binary gets into the one `lazyagent` wheel (user decision: platform wheels, one package) | hatchling custom build hook behind `LAZYAGENT_BUILD_DESKTOP=1`, binary at `lazyagent/bin/`, tag `py3-none-manylinux_2_28_<arch>`; pure wheel + sdist as fallback; prior phase U0 on its own branch | maturin `bindings = "bin"` (changes the backend); cibuildwheel around the hook |
+| Q-U18 | Platforms of the first binary wheels | Linux x86_64 + aarch64 (manylinux_2_28); macOS later | Also macOS now |
+| Q-U19 | Proving the workflow without publishing | CI `wheels` job builds them as artifacts and smoke-tests one; `publish.yml` changed but only runs on tags, none created | A dry-run to TestPyPI |
 | Q-U17 | Published mode before U0 lands | Update Python only and say the app must be rebuilt by hand | Block published updates until U0 |
