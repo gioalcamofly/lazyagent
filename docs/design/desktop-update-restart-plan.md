@@ -69,11 +69,11 @@ Refused, with the reason and nothing changed (all checked **before** any write):
 
 1. detached HEAD, no upstream, or a merge/rebase/cherry-pick in progress (`MERGE_HEAD`, `rebase-merge/`, …);
 2. not a fast-forward: `ahead > 0` (local commits or diverged) → "your `develop` has N commits not on `origin/develop`; update it by hand" (Q-U4);
-3. **uncommitted changes** (user decision: warn, do not update): any modified, staged, deleted or conflicted tracked file (`git status --porcelain=v1 -z --untracked-files=no` not empty) → "the checkout has uncommitted changes: <list>. Commit or put them aside yourself, then check again". Untracked files do not block, unless the update adds a file at that path (then refused with the list too) (Q-U5). The dialog still lists the new commits, so the user knows what they are missing. Today the user's main checkout (`M .claude/skills/release/SKILL.md`) would get this warning; that is intended.
+3. **uncommitted changes that collide** (user decision, revised 21-10): uncommitted changes do not block by themselves (the user always has `SKILL.md` modified); git decides. `check` predicts the collision so the dialog shows it before the click: paths of `git status --porcelain=v1 -z --untracked-files=all` ∩ `git diff --name-only -z HEAD..@{u}` (renames' both sides). At apply, `git merge --ff-only` itself refuses when local changes or untracked files would be overwritten. Either way: warn with the list of files and change nothing (Q-U5).
 
 Steps:
 
-1. `git merge --ff-only @{u}` (after the fetch of `check`; git itself refuses again if a file would be overwritten: a second safety net). Never `stash`, `reset`, `checkout`, `clean`, `rebase`, `pull --rebase`.
+1. `git merge --ff-only @{u}` (after the fetch of `check`). If git refuses (local changes or untracked files in the way), its list of files is reported and nothing else runs. Never `stash`, `reset`, `checkout`, `clean`, `rebase`, `pull --rebase`.
 2. `uv sync` in the checkout only when `changes.lock` (else the env is already right; `uv run` would sync it anyway). Missing `uv` → the step is skipped with a note when `lock` is false, an error when true.
 3. The app build, only when `changes.desktop` or "app behind" (Q-U8), matching how the running binary was installed: binary under `<checkout>/desktop/target/release/` → `cargo build --release --manifest-path desktop/Cargo.toml`; otherwise (`~/.cargo/bin`, the user's case) → `cargo install --locked --path desktop/crates/app`. Missing `cargo` → skipped with the command to run. Output tail kept in the jobs drawer; the app keeps working while it builds.
 4. Done → the restart dialog opens preset: **app** always; **engine** checked when `changes.python` or "engine behind"; **restore** checked (Q-U7).
@@ -172,7 +172,7 @@ Items reuse existing actions; nothing new besides Restart, Check for updates and
 
 | Where | What |
 |---|---|
-| `tests/test_update.py` (new) | Mode detection (editable dist, binary under `desktop/target/`, wheel → published). Development, temp bare remote + clone: up to date; behind 2 → commits listed; ahead → refused; diverged → refused; any modified/staged tracked file → refused and byte-identical; untracked file elsewhere → applied and untouched; untracked file that the update adds → refused; merge in progress → refused; `changes` flags; `uv`/`cargo` shims on PATH that record their args (never a real build), `cargo build` vs `cargo install` by binary location. Published: stubbed PyPI fetch (newer, same, pre-release ignored, offline); installer detection → the right command, unknown → not applied. Lock held → refused |
+| `tests/test_update.py` (new) | Mode detection (editable dist, binary under `desktop/target/`, wheel → published). Development, temp bare remote + clone: up to date; behind 2 → commits listed; ahead → refused; diverged → refused; dirty tracked file the update does not touch + untracked file elsewhere → applied, both byte-identical; dirty file the update touches → refused with the list, byte-identical, HEAD unchanged; untracked file that the update adds → refused; merge in progress → refused; `changes` flags; `uv`/`cargo` shims on PATH that record their args (never a real build), `cargo build` vs `cargo install` by binary location. Published: stubbed PyPI fetch (newer, same, pre-release ignored, offline); installer detection → the right command, unknown → not applied. Lock held → refused |
 | U0 (its branch) | pytest: the hook is a no-op without the variable (pure wheel, `py3-none-any`); with a fake `cargo` shim it force-includes the binary and sets the tag; `desktop.find_binary()` order. CI `wheels` job: builds the wheels as artifacts, installs one in a clean venv, `lazyagent-desktop --help`. No publish |
 | `tests/engine/test_engine_restart.py` (new, isolated engine via the existing fixtures: own `HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`) | 2 agents + orchestrator → `engine restart --restore`: same agent ids, conversations resumed by id, orchestrator `kind: orchestrator` under `lazyagent-orchestrator`; an older restorable entry is **not** restored and is still offered; without `--restore` everything stays restorable; TUI-hosted engine refused; **no `--continue` spawn in the root** (the fake agent records its argv) |
 | Engine info / hello | `source_commit` present; golden fixture updated |
@@ -185,7 +185,7 @@ Hard rule for every test and manual try: an engine of its own in a temp `HOME`/`
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | The update pulls into the user's main checkout with uncommitted work | Any uncommitted tracked change blocks the update (warn only), ff-only, no destructive git command anywhere; git's own refusal as a second net; tests assert byte-identical files |
+| R1 | The update pulls into the user's main checkout with uncommitted work | Colliding local changes block the update (warn with the list), ff-only, no destructive git command anywhere; git's own refusal as a second net; tests assert byte-identical files |
 | R2 | Editable install: the running engine sees new code on disk after the pull | Restart offered at once with the engine box preset; short window |
 | R3 | A busy agent loses its turn | Confirmation list with ⚠; the conversation itself resumes |
 | R4 | Agents without a conversation id come back with "resume last", which may pick another conversation in that worktree | Flagged in the list; the root case is refused by the engine guard (`dd242aa`) |
@@ -208,7 +208,7 @@ Hard rule for every test and manual try: an engine of its own in a temp `HOME`/`
 | Q-U2 | Published installs: who runs the upgrade | `uv tool upgrade` / `pipx upgrade` when that is the installer; otherwise show the command | Always only show the command; or run pip in whatever env |
 | Q-U3 | Automatic checks | At start (+10 s) and every 6 h, quiet chip; switch in Help | Only on demand |
 | Q-U4 | Local commits / diverged | Refuse, explain, update by hand | Rebase or merge for the user |
-| Q-U5 | Uncommitted changes (dev mode) | **User decision:** warn and do not update. Any modified/staged tracked file blocks; untracked files block only when the update adds that path. Never stash/reset | Untracked files block too; or allow dirty files the update does not touch |
+| Q-U5 | Uncommitted changes (dev mode) | **User decision (revised):** let git decide. Changes that do not collide stay as they are and the update goes on; when `merge --ff-only` would overwrite local changes or untracked files: warn with the list, change nothing. Never stash/reset | Block on any modified tracked file (first version: the user would never update) |
 | Q-U6 | What "restore all" restores | Only the agents this restart stopped (`after − before`) | Every restorable entry (today's `restore --all`) |
 | Q-U7 | Defaults of the restart dialog | After an update: engine checked iff Python changed or engine behind; restore checked. From the menu: engine unchecked, restore checked; both remembered | Always unchecked |
 | Q-U8 | When to rebuild the app | Only when `desktop/` changed or the binary is behind | Always |
