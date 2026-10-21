@@ -62,7 +62,7 @@ This gives you the TUI, the web UI and the engine. Optional extras:
 | For | Install |
 |---|---|
 | PR and CI status | the [GitHub CLI](https://cli.github.com/) (`gh`), logged in |
-| The desktop app (Linux) | a Rust toolchain ([rustup.rs](https://rustup.rs), 1.88+), then from a clone of this repo: `cargo install --locked --path desktop/crates/app` (puts `lazyagent-desktop` in `~/.cargo/bin`) |
+| The desktop app (Linux) | nothing on x86_64 and aarch64: the `lazyagent` wheel there carries it. Elsewhere, or from a clone of this repo: a Rust toolchain ([rustup.rs](https://rustup.rs), 1.88+), then `cargo install --locked --path desktop/crates/app` (puts `lazyagent-desktop` in `~/.cargo/bin`); `lazyagent desktop` prints the command for your install |
 | Desktop notifications from the app | `notify-send` |
 
 ## Choosing a front-end
@@ -108,8 +108,7 @@ It serves 127.0.0.1 only (`--port` to pick one) and prints a URL with an access 
 ### Desktop app (experimental)
 
 ```bash
-cargo install --locked --path desktop/crates/app   # once, see Installation
-lazyagent desktop your-repo                        # or: lazyagent-desktop your-repo
+lazyagent desktop your-repo                        # the app (see Installation if it is not built)
 lazyagent desktop --install                        # add it to the application menu
 ```
 
@@ -252,7 +251,7 @@ remove = "git worktree remove ../{name}"
 | `LAZYAGENT_ENGINE=remote` | Same as `--remote` |
 | `LAZYAGENT_ENGINE_SOCKET` | Use this engine socket (no discovery, no auto-start) |
 | `LAZYAGENT_ENGINE_AUTOSTART=0` | Never start an engine |
-| `LAZYAGENT_DESKTOP_BIN` | The desktop binary `lazyagent desktop` runs (else `lazyagent-desktop` on PATH, then `desktop/target/release/` in a source checkout) |
+| `LAZYAGENT_DESKTOP_BIN` | The desktop binary `lazyagent desktop` runs (else the one inside the installed wheel, then `lazyagent-desktop` on PATH, then `desktop/target/release/` in a source checkout); `lazyagent desktop --help` shows which one runs |
 | `LAZYAGENT_DESKTOP_PRESENT` | Desktop present mode: `fifo` (vsync), `immediate`, `mailbox`, `novsync` (default), `auto` |
 | `LAZYAGENT_DESKTOP_ALL_GPUS=1` | Desktop: keep an idle offload NVIDIA GPU's Vulkan driver loaded (by default it is left out, saving ~1% of a core) |
 | `LAZYAGENT_DESKTOP_NO_NOTIFY` | Desktop: no desktop notifications |

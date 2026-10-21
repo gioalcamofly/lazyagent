@@ -20,8 +20,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lazyagent"]
 
+# LAZYAGENT_BUILD_DESKTOP=1: a platform wheel with the desktop binary inside
+# (hatch_build.py). Without it, a pure wheel.
+[tool.hatch.build.targets.wheel.hooks.custom]
+
 [dependency-groups]
 dev = [
+    "hatchling",  # tests/test_hatch_build.py builds wheels in process
     "textual-dev",
     "pytest",
     "pytest-asyncio",
