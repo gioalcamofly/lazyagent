@@ -342,6 +342,8 @@ fn a_failing_custom_create_shows_its_output_and_launches_nothing() {
     step_until(&mut h, "the failure in the dialog", |a| {
         a.state.dialog.as_ref().and_then(|d| d.error.as_deref()).is_some_and(|e| e.contains("boom-broken"))
     });
+    // The reply can come before the job's events: wait for its end too.
+    step_until(&mut h, "the finished job", |a| a.state.jobs.first().is_some_and(|j| j.finished.is_some()));
     let app = h.state();
     let job = &app.state.jobs[0];
     assert_eq!(job.finished, Some(Some(3)));
