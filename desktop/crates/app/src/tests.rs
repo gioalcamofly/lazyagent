@@ -2422,3 +2422,54 @@ fn restarting_the_engine_restores_its_agents_before_the_app_comes_back() {
         Some("Engine restarted · 1 agent(s) restored")
     );
 }
+
+#[test]
+fn update_and_restart_screenshots() {
+    use crate::lifecycle::{Commit, Sheet, UpdateInfo};
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "develop", vec![agent("a1", "Docs", "waiting_for_user", "s1")]),
+        worktree("/r/repo-feat", "feat-x", vec![agent("a2", "Implementer", "running", "s2")]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1400.0, 880.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(3);
+    let out = std::env::temp_dir();
+    let mut shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    h.state_mut().state.life.info = Some(UpdateInfo {
+        mode: "development".into(),
+        version: "0.8.0".into(),
+        root: Some("/home/u/src/lazyagent".into()),
+        branch: Some("develop".into()),
+        upstream: Some("origin/develop".into()),
+        behind: 3,
+        commits: vec![
+            Commit { sha: "a1b2c3d".into(), subject: "feat(desktop): update and restart from the app".into() },
+            Commit { sha: "9f8e7d6".into(), subject: "fix(engine): keep the agent id on restore".into() },
+            Commit { sha: "5c4b3a2".into(), subject: "docs: plan for the actionables".into() },
+        ],
+        update_available: true,
+        can_apply: true,
+        ..Default::default()
+    });
+    // No engine here: the shell's error toast is noise in a picture.
+    h.state_mut().state.toasts.clear();
+    h.get_by_label("Help").click();
+    h.run_steps(3);
+    if !shot(&mut h, "menu-help") {
+        return;
+    }
+    h.key_press(egui::Key::Escape);
+    h.state_mut().state.life.sheet = Some(Sheet::Update);
+    h.run_steps(4);
+    shot(&mut h, "update");
+    h.state_mut().state.life.sheet = Some(Sheet::Restart { engine: true, restore: true, after_update: true });
+    h.run_steps(4);
+    shot(&mut h, "restart");
+}

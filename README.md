@@ -115,6 +115,8 @@ lazyagent desktop --install                        # add it to the application m
 
 Feature parity with the web UI (sidebar, terminals and shell, actions and job drawer, restore, attention queue with replies, PR/CI panel, notifications, diff viewer with review), and it always runs on a detached engine, starting one if none runs, so agents keep running when it closes. Launched from the menu (or outside a repo) it opens a repo picker with your recent repos; agents started from there get your login shell's environment. `?` in the app lists every key; `lazyagent-desktop --help` lists its options.
 
+**Updates and restarts.** The menu bar's *Help → Check for updates…* compares this install with the latest release on PyPI (and runs `uv tool upgrade` / `pipx upgrade` when one of them made it), or, when lazyagent runs from a git checkout (an editable install, or the app built in `desktop/target/`), fetches the checkout's branch and updates it by fast-forward, then runs `uv sync` when the lock changed and rebuilds the app when `desktop/` changed. Uncommitted changes stay as they are; when git would overwrite some, nothing is updated and the files are listed. It checks on its own 10 s after start and every 6 h (*Help → Check automatically*). *File → Restart…* restarts the app, and optionally the engine too (its running agents are listed first, busy ones flagged), restoring the agents it stopped; the app comes back after the restore. The same from a terminal: `lazyagent update check|apply`, `lazyagent engine restart --restore`.
+
 Measured on a laptop, against the web UI: key → frame p50 ~4 ms (web 8.4), 5 MB of output drawn at 57-102 MB/s (web 15-17), idle 0.2% of a core, 35 MB private memory, launch to sidebar 0.12 s with the engine running. Linux only (X11 tested, Wayland built in); building needs no system development packages. Design and measurements: [docs/design/desktop-app.md](docs/design/desktop-app.md).
 
 ## The engine
@@ -128,6 +130,8 @@ The engine is the process that owns the worktrees' agents, shells and jobs; ever
 lazyagent engine start [repo]      # start it detached (--foreground: in this terminal)
 lazyagent engine status [repo]     # pid, agents, socket, log (--json; exit 3: not running)
 lazyagent engine stop [repo]       # stop it and its agents (--if-idle: only with none)
+lazyagent engine restart [repo]    # stop and start it (new code); --restore brings back
+                                   # exactly the agents it stopped
 lazyagent engine logs [repo] -f    # its log (-n LINES, --path)
 lazyagent engine restore [repo]    # agents an earlier engine left: list them,
                                    # --all / --id ID to bring them back, --dismiss

@@ -641,7 +641,7 @@ fn update_sheet(ui: &mut egui::Ui, state: &mut State, close: &mut bool) {
                 ui.label(format!("{} new commit(s) on {}:", i.behind, i.upstream.as_deref().unwrap_or("upstream")));
                 egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                     for c in &i.commits {
-                        ui.label(RichText::new(format!("{} {}", c.sha, c.subject)).monospace().small());
+                        ui.label(RichText::new(format!("{} {}", c.sha, c.subject)).monospace());
                     }
                 });
             } else if i.upstream.is_some() && i.fetch_error.is_none() {

@@ -1,6 +1,6 @@
 # Desktop: update and restart from the UI — plan
 
-- **Status:** Proposed (U0, 2026-10-21). Implementation waits for the go. Each step gets an "As landed" note in §10 when it merges.
+- **Status:** U1-U4 landed on `feat-desktop-update-restart` (2026-10-21, §10); U0 on `feat-desktop-wheels`.
 - **Base:** `develop` @ `99409b9` (review replies, orchestrator-restore fix `dd242aa`).
 - **Branch:** `feat-desktop-update-restart` (one branch, U1-U4 as commits).
 - **Ask:** a typical menu bar in the desktop app; "Check for updates" and "Restart" (the app; optionally the engine too); after an update, offer the restart; an option to restore every agent once the engine restarted. Today the user does it by hand: `uv run lazyagent engine stop` / `start`, `engine restore --id …`, `cargo install --locked --path desktop/crates/app`, `uv run lazyagent desktop`.
@@ -198,7 +198,16 @@ Hard rule for every test and manual try: an engine of its own in a temp `HOME`/`
 
 ## 10. As landed
 
-(empty)
+### U1-U4 (2026-10-21, `feat-desktop-update-restart`)
+
+As planned, with these differences:
+
+- **Menu (§6):** no "Open another repo…" (the picker only runs before a repo is chosen) and no "Engine: start / stop" item; both can come later.
+- **Restart failure (§4):** if the engine restart fails, the app relaunches anyway instead of reconnecting the old process (`Conn::shutdown` ends the supervisor for good); the new app shows the engine as it is and the restore banner.
+- **Unsaved notes (Q-U10):** the restart sheet names the places with unsaved notes edits and the button becomes "Restart anyway"; there is no save-from-here.
+- **"Resumes last" flag (§4):** not shown: the sidebar state has no conversation ids for live agents.
+- **Published mode before U0:** `changes.desktop` is reported as true for any newer release; until the wheel carries the binary, the app is rebuilt by hand.
+- **Tests:** `tests/test_update.py` (15), `tests/test_engine_cli.py` (+2, isolated engines), the hello contract test; desktop: relaunch command, report toast, menu + busy agents, exits dropped, and a real detached engine restarted from the menu (the agent is back before the relaunch, the old app let go of the engine first). Screenshots in `desktop-screenshots/u3-*.png`.
 
 ## 11. Open questions (decided as recommended unless the user says otherwise)
 
