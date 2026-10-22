@@ -1,0 +1,171 @@
+# 0013. Inbox and status: one home screen for the team lead
+
+- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B22 at the end of the plan
+- **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
+
+The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
+
+## Problem
+
+- **"What needs me?" and "where is everything?" are two questions, and nothing answers either in one place.** The Attention tab answers the first per agent and per client (attention.rs, attention.js), only while a window is open. The sidebar half-answers the second (per worktree: PR, CI, one line per agent), but it mixes system noise with state and has no notion of "who has the ball".
+- **Evidence from the author's own use.** Over 3.5 weeks (~19 long sessions) the author asked an orchestrator LLM session for a "status table" about **150-180 times**: 11-17 a day at the peak, sometimes every 6-15 minutes, and 5-10 a day once a 30-minute planner tick and event wake-ups started pushing updates. Every answer was a hand-built table (columns varied: `Lane | Card | State | Agent | Next`, `Card | PR/CI | Next step | Agent`, `… | Needs you?`), 40+ lines with bullets, and almost every session compacted.
+- **The friction was about data, not looks:** incomplete tables ("you only showed 4, there are more"; items with no agent missing), stale "needs you" ("isn't it already approved by me?", "I already answered both agents"), wrong lane ("it must stay Delegated; fixing conflicts doesn't move it back"), and the "I'm back, what happened?" summary.
+- **0012 is too big and too personal for the strategy.** The strategy plan (2026-10-22) makes the inbox the product and asks for a small MVP. 0012's MVP (A1-A4) includes auto-fixing CI with a triage agent, a visible 0-120 score with a criteria file, and a tie-break LLM, and its layer 3 carries one user's lanes, verbs and budget.
+
+## Today's workaround
+
+- Ask the orchestrator session "show me status table" and read a long, hand-assembled answer. Correct it in chat ("X already merged, update and show me").
+- The planner's markdown board (lanes Todo · Doing · Delegated · Waiting · Blocked · Done, one verb per card), reconciled by an LLM every 30 minutes. Status tables are effectively that board plus the live agents, rebuilt in prose each time.
+- The Attention tab for agent prompts; GitHub e-mails for CI and reviews.
+
+## Proposal
+
+### Concept
+
+| Aspect | Design |
+|---|---|
+| Unit | **Work item** = `repo:branch`. It outlives its worktree and gains a PR on the way. A PR URL and an issue-tracker URL hang from it as aliases. An external item with no branch yet (a tracker card fed by the planner, a peer's review request) has the key `ext:<url>` until a branch claims it |
+| One list, two zones | **Inbox** (top): items with something for the user, grouped by work item, in two levels. **In flight** (below): every other work item, one row each. An item is in exactly one zone. Moving between zones happens only between rounds, never under the cursor |
+| Levels | **Now:** an agent is blocked on the user and it takes < 1 min (approval, short question). **Round:** needs the user's judgement but nobody stops if it waits (review a finished branch, merge, changes requested by a human, conflict with no agent, CI escalated). **Ambient:** the in-flight list itself. No visible score: a fixed level per kind, FIFO inside a level |
+| Ball | Each in-flight row says **who has the ball**: `agent` (working, queued, own CI running), `others` (human review, QA, a teammate, an external state), `stalled` (nobody can move it: conflict with no agent, dead agent, a dependency, idle > N days), `done` (transient, leaves after the round). `you` is never a row state: those items are in the inbox |
+| Row state | A short **fact** from the engine (≤ 5 words): "tests 2/5", "CI green · bot approved", "with QA", "conflict with base". Never free prose. The agent's own note shows only in the expanded row, with its age |
+| Derived, not edited | The engine derives ball, state and level from agents, PR, CI, open actionables and feeders. The user has three **gestures**, not lanes: **Label** (put a ball/label on a row, e.g. "others: QA"; it expires when the row's fingerprint changes), **Park until** an event (CI ends, agent stops, a human reviews, tomorrow) and **Close** (done / dropped, for what the engine cannot see). Each gesture is shown on the row and counted: gestures per day is the metric of bad rules |
+| Completeness | The in-flight list shows **every** work item with a worktree, a live agent, an open PR by the user, or an external record, plus a counter "N not started". Never only the rows with an agent |
+| Since last look | Rows that changed since the user last looked carry a dot. That is the "I'm back" summary; there is no separate digest in the MVP |
+| Owner | The engine. `engine/status.py` (projection) and `engine/actionables.py` (inbox queue, 0012 A1). Clients without the `status` / `actionables` features keep their own derivation |
+| No LLM in the loop | Nothing is spawned and no model is called to keep Home up to date. It changes only through (1) deterministic reads of engine state and APIs (agent status, PR, CI, git, notes, jobs) and (2) the agents that are already working, which report over MCP (`status_report`: ball, short note, needs the user). A summariser or classifier model is at most a future opt-in idea |
+| What is stored | Only what cannot be derived: user gestures, the agents' last `status_report`, external items, and a 24 h tombstone for closed items. Rows themselves are a projection, recomputed on events |
+
+### Wireframe: Home (desktop)
+
+```
+┌─ lazyagent ─────────────────────────────────────────── Lead ▾ · ● 1 now ─┐
+│ NOW                                                                       │
+│ ▸ Approve   login-ttl · wants to run `npm test`                  [Enter]  │
+│ ROUND · 11:30                                       2 resolved on their own│
+│   Review    fix-typo #9 · finished, CI green                     [r]      │
+│   Merge     docs-index #14 · approved, green                     [m]      │
+│   Decide    billing-hook #15 · CI red after agent's 2 tries  +1  [d]      │
+│───────────────────────────────────────────────────────────────────────────│
+│ IN FLIGHT (5) · 3 not started                                [s] fold    │
+│   export-csv        agent    implementing · tests 2/5              4m    │
+│ • payments-retry #12 others  with QA · label by you                1h    │
+│   cache-bust        agent    queued #2                            20m    │
+│   search-index #16  stalled  conflict with base, no agent          2h    │
+│   docs-api #11      others   review requested from a teammate      1d    │
+└───────────────────────────────────────────────────────────────────────────┘
+ • changed since your last look · no red outside NOW · rows never reorder while shown
+```
+
+Expanded row (Enter on an in-flight row):
+
+```
+│ payments-retry #12 · others (label by you, 1h) · CI green · approved by bot │
+│   agent a2  stopped 40m ago       notes: "fix holds 30/30 vs 14/30" (40m)   │
+│   [o] open terminal  [n] notes  [p] PR  [k] park until…  [x] close  [u] unlabel │
+```
+
+### Wireframe: the 1-week test (CLI / MCP, before any UI)
+
+```
+$ lazyagent status
+NOW    1   ROUND  3   IN FLIGHT  5   not started 3          (11:32, 2 repos)
+LEVEL  ITEM                 BALL     STATE                          AGE
+now    login-ttl            you      approve: npm test              2m
+round  fix-typo #9          you      review: finished, CI green     15m
+round  docs-index #14       you      merge: approved, green         1h
+round  billing-hook #15     you      decide: CI red, 2 tries        30m
+-      export-csv           agent    tests 2/5                      4m
+-      payments-retry #12   others   with QA (label)                1h
+...
+```
+
+The orchestrator calls the MCP tool `status_list` and prints this table instead of building one by hand.
+
+### Kinds → level (fixed table, no score)
+
+| Source | Level | Primary action |
+|---|---|---|
+| Agent `waiting_for_approval` | Now | Approve / deny |
+| Agent `waiting_for_user` (question) | Now if short (≤ 2 lines, or A/B options), else Round | Answer |
+| Agent `possibly_hanged`, `failed`, exited with error | Round | Relaunch / open |
+| Agent `completed`, no PR yet ("your turn") | Round | Review |
+| PR approved by a human + CI green + mergeable | Round | Merge |
+| Human `CHANGES_REQUESTED` | Round | Review the changes / send to the agent |
+| Conflict with no live agent | Round | Send to an agent / open |
+| CI red with a live agent on the branch | Ambient (row "agent · fixing CI") once the user delegates it; Round until then | **Delegate to the owner agent** (one key: sends the failed-log summary to that agent) |
+| CI red with no agent | Round | Delegate (spawns an agent with the brief) / open |
+| Job failed | Ambient (row state), Round only if it blocks something | — |
+| External item with `needs_user` | Round | Open the URL |
+| Engine errors | Ambient log; an item only when there is a useful button | — |
+
+### Feeding the list, and what it costs
+
+| Feed | What | Cost |
+|---|---|---|
+| Facts already in the engine | `AgentStatus`, `PrInfo` (state, checks, review decision, mergeable), worktree scan, jobs | Pure projection, no new polling |
+| Engine-owned interest | PR info polled for every active work item, not only those a client watches (0012 F1) | One `set_interest` client, `engine:status` |
+| Agents via MCP | `status_report {ball?, note, needs_user?}` with the agent's token. Stored per work item; `needs_user` clears itself when the agent runs again or receives input | Optional for agents. Rows never depend on it |
+| Notes (0011) | When there is no report, the expanded row shows the first bullet of Doubts, else Pending | Read-only use of the notes store |
+| The planner and other feeders | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, expires_at}` / `work_items_close {url}` over MCP; dedupe by URL; cap per source | Brings items with no branch (the "N not started" counter, peer reviews). The engine never writes back to the tracker |
+| GitHub Actions on branches with no PR | 0012 A2 detection (REST + ETag) | After the MVP |
+| Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, and fixed-rule inbox items. See below | After the MVP (I7) |
+
+### Optional issue-tracker sources
+
+The user may switch on adapters for an issue tracker. With none configured, nothing changes.
+
+| Aspect | Design |
+|---|---|
+| Shape | A `TrackerAdapter` protocol in the core: `fetch(keys) -> [TrackerTask]` and optional `assigned_to_me() -> [TrackerTask]`. `TrackerTask = {key, url, title, status_raw, assignee?, updated_at, etag?}`. Deterministic API calls only, never a model |
+| Link to a row | The ticket key comes from the branch name (the generic `ABC-123` pattern in `models.py` `ticket_id`, overridable per adapter) or from a `work_items_upsert` URL. A task with no branch shows only in the "N not started" counter |
+| Status mapping | Configurable per adapter: tracker status → `{ball, state_text, level?}`, e.g. `"QA" = {ball = "others", state = "in QA"}`, `"Returned" = {ball = "you", level = "round", state = "returned by QA"}`. An unmapped status shows raw text with ball unchanged |
+| Inbox rules | Fixed and compiled in: a mapping with `level` creates an inbox item when a task **enters** that status (edge, not level), dedupe key `tracker:<adapter>:<key>:<status>`, auto-clears when the task leaves it. No rules from free text |
+| Polling | Only keys linked to live rows (plus `assigned_to_me` if on), batched per adapter, every `poll_s` (300) at rest, ETag/`If-Modified-Since` where the API has it, a per-adapter rate cap, back-off on 429, last good value kept on errors (the row shows its age) |
+| Credentials | From the environment or the OS keyring (`keyring` service `lazyagent/<adapter>`), named in config by reference (`token_env = "JIRA_TOKEN"`). Never in the repo, never in the state dir, never sent anywhere but the tracker's own API |
+| Config | Global `~/.config/lazyagent/trackers.toml`, overridable per repo by `<repo>/.lazyagent/trackers.toml` (mapping only; credentials only global) |
+| Read-only | Adapters never write to the tracker in this proposal |
+| In the public core | **GitHub Issues** as the reference adapter (uses `gh`, no new credential). Jira and other trackers as example adapters (generic, with placeholder mappings) or third-party packages via an entry point `lazyagent.trackers`. No employer-specific mapping ships in the repo |
+
+### Where the board went
+
+- **The board is not built.** The in-flight list *is* the derived board, reduced to one list with a "ball" instead of six lanes. Lanes and verbs are one user's configuration: a label gesture can carry a lane name, and the planner can feed `ball/state` from its own lanes, but the core knows only `agent · others · stalled · done`.
+- **No drag and drop, no Todo lane, no budget, no frozen due dates, no Done lane in the core.** The planner keeps its markdown board and its done-sweep. Once Home is trusted, it can feed the engine and stop rebuilding status tables.
+
+### What survives from 0012
+
+| 0012 piece | In 0013 |
+|---|---|
+| A1 engine queue (store, today's 10 kinds, marks in the engine, events, capability) | **Kept** as phase I2, with a fixed level instead of a score |
+| A2 GitHub Actions detection, `head_sha`, engine interest | Interest set in I1; Actions detection in I6 (after the MVP) |
+| A3 auto-triage (triage agent, fixer, verify, ledger) | **Out of the MVP.** Later, **opt-in**, and redesigned: delegate to the **owner agent** of the branch (or spawn one only on the user's key). No separate triage agent in the first version |
+| A4 score, criteria file, tie-break, notification threshold | **Cut.** Fixed level per kind, FIFO. Notifications only for Now (and later per round) |
+| A5 `actionables_create/resolve` | Replaced by `work_items_upsert/close` (I5). `boost` cut |
+| A6 planner changes | I5, on the owner's go; the planner's skill keeps working until then |
+| A7 TUI list, analysis agent | Cut. The TUI gets a badge and "open in desktop" only |
+| Q-A1-Q-A22 (accepted 2026-10-20) | Kept where the piece survives (Q-A3, Q-A4, Q-A8, Q-A11-Q-A13, Q-A15, Q-A20). Q-A1, Q-A2, Q-A5-Q-A7, Q-A9, Q-A16, Q-A18, Q-A21 move with auto-triage to the opt-in phase. Q-A10, Q-A19 lapse with the score. Q-A14, Q-A17, Q-A22: see the plan |
+
+## Fits after
+
+- PR 3 (pollers, batched PR info), PR 6 (v1 server, capabilities), 0011 N2 (agent tokens). All landed. I1 needs nothing new.
+
+## Value / Effort
+
+| Value | Effort |
+|---|---|
+| ★★★ (the most measured need of the only user) | MVP I1-I3: M (~20 h of agents, ~5 h of the owner). Full plan I1-I6: L |
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| A stale row ("already approved") makes the user stop trusting Home and go back to terminals | Facts only in the state column; auto-clear on condition; `needs_user` reports expire on the next agent turn; a visible age on every row |
+| The status view becomes a board through the back door | No lanes, no drag, no due dates in the core; three gestures only, each visible and counted |
+| Two places to check (inbox and status) | One list; an item is in exactly one zone; the inbox groups by work item |
+| A calm screen turns into a wall of green dots | Ambient rows have no red, no animation, minute-level ages; the list folds |
+| The measured need is n = 1 and personal | The 1-week CLI/MCP test (I1) decides whether a screen is worth it; tracker lanes stay in the planner |
+| The planner and the engine disagree on state | The engine's facts win over a feeder's `state`; a feeder's `ball` is shown as a label |
+
+## Open questions
+
+In the plan, §9 (Q-B1-Q-B22).
