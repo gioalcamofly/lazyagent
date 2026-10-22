@@ -140,7 +140,7 @@ table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
 <body>
 <header id="topbar">
   <span class="brand">lazyagent</span>
-  <span class="repo">~/smith/agentsmith</span>
+  <span class="repo">~/code/shop</span>
   <span class="pill ok">engine ● connected</span>
   <span class="spacer"></span>
   <nav class="views" aria-label="Views">
@@ -164,35 +164,35 @@ table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
       <ul class="agents"><li class="agent s-run"><span class="dot"></span><span class="label">lazyagent-orchestrator</span><span class="status">running</span></li></ul>
     </li>
     <li class="wt">
-      <div class="wt-head"><span class="wt-name">agentsmith</span><span class="wt-branch">main</span></div>
+      <div class="wt-head"><span class="wt-name">shop</span><span class="wt-branch">main</span></div>
       <div class="wt-meta"><span class="muted">clean</span></div>
     </li>
     <li class="wt">
-      <div class="wt-head"><span class="wt-name">csr-routing-rules</span><span class="wt-branch">PROJ-17311-routing-rules</span></div>
-      <div class="wt-meta"><span class="y">●3</span><span class="g">↑2</span><span class="prb open">#17311</span><span class="y">CI 9/12</span><span class="muted">142k tok</span></div>
+      <div class="wt-head"><span class="wt-name">discount-rules</span><span class="wt-branch">TASK-311-discount-rules</span></div>
+      <div class="wt-meta"><span class="y">●3</span><span class="g">↑2</span><span class="prb open">#311</span><span class="y">CI 9/12</span><span class="muted">142k tok</span></div>
       <ul class="agents"><li class="agent s-run"><span class="dot"></span><span class="label">Agent 1</span><span class="status">running</span></li></ul>
     </li>
     <li class="wt">
-      <div class="wt-head"><span class="wt-name">transfer-dir-availability</span><span class="wt-branch">PROJ-17298-dir-hours</span></div>
-      <div class="wt-meta"><span class="g">↑5</span><span class="prb open">#17298</span><span class="r">CI ✗ 2</span><span class="muted">388k tok</span></div>
+      <div class="wt-head"><span class="wt-name">delivery-slots</span><span class="wt-branch">TASK-298-delivery-slots</span></div>
+      <div class="wt-meta"><span class="g">↑5</span><span class="prb open">#298</span><span class="r">CI ✗ 2</span><span class="muted">388k tok</span></div>
       <ul class="agents">
         <li class="agent s-wait"><span class="dot"></span><span class="label">Agent 2</span><span class="status">approval</span></li>
         <li class="agent s-run"><span class="dot"></span><span class="label">Agent 3 · evals</span><span class="status">running</span></li>
       </ul>
     </li>
     <li class="wt current">
-      <div class="wt-head"><span class="wt-name">amplitude-cleanup</span><span class="wt-branch">PROJ-17280-drop-events</span></div>
-      <div class="wt-meta"><span class="g">↑1</span><span class="prb open">#17280</span><span class="g">CI ✓</span><span class="g">approved</span></div>
+      <div class="wt-head"><span class="wt-name">analytics-cleanup</span><span class="wt-branch">TASK-280-drop-events</span></div>
+      <div class="wt-meta"><span class="g">↑1</span><span class="prb open">#280</span><span class="g">CI ✓</span><span class="g">approved</span></div>
       <ul class="agents"><li class="agent s-done current"><span class="dot"></span><span class="label">Agent 4</span><span class="status">done</span></li></ul>
     </li>
     <li class="wt">
-      <div class="wt-head"><span class="wt-name">nested-validator</span><span class="wt-branch">PROJ-13026-nested-validator</span></div>
+      <div class="wt-head"><span class="wt-name">nested-forms</span><span class="wt-branch">TASK-126-nested-forms</span></div>
       <div class="wt-meta"><span class="y">●1</span><span class="muted">no PR</span></div>
       <ul class="agents"><li class="agent s-wait"><span class="dot"></span><span class="label">Agent 1</span><span class="status">input</span></li></ul>
     </li>
     <li class="wt">
-      <div class="wt-head"><span class="wt-name">event-tracking-debt</span><span class="wt-branch">PROJ-17102-dedupe</span></div>
-      <div class="wt-meta"><span class="prb merged">#17102 merged</span></div>
+      <div class="wt-head"><span class="wt-name">metrics-debt</span><span class="wt-branch">TASK-102-dedupe</span></div>
+      <div class="wt-meta"><span class="prb merged">#102 merged</span></div>
     </li>
   </ul>
   <div class="foot"><span>6 worktrees · 6 agents</span><span><kbd>?</kbd> keys</span></div>
@@ -200,7 +200,7 @@ table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
 
 <section class="centre">
   <div class="wthead">
-    <span class="n">amplitude-cleanup</span><span class="wt-branch">PROJ-17280-drop-events</span>
+    <span class="n">analytics-cleanup</span><span class="wt-branch">TASK-280-drop-events</span>
     <span class="muted mono" style="font-size:11.5px">vs <span class="c">develop</span> · 7 files · <span class="g">+42</span> <span class="r">−310</span></span>
     <span class="spacer"></span>
     <button class="btn">Unified</button><button class="btn ghost">Split</button>
@@ -213,32 +213,32 @@ table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
   <div class="dv">
     <nav class="files" aria-label="Changed files">
       <div class="fh"><b>Files</b><span class="spacer"></span><span class="muted">2 comments</span></div>
-      <div class="dir">src/django/agentsmith/analytics/</div>
-      <div class="file sel"><span class="y">M</span><span class="fn">amplitude.py</span><span class="cm">●2</span><span class="g">+18</span><span class="r">−96</span></div>
+      <div class="dir">src/shop/analytics/</div>
+      <div class="file sel"><span class="y">M</span><span class="fn">tracker.py</span><span class="cm">●2</span><span class="g">+18</span><span class="r">−96</span></div>
       <div class="file"><span class="r">D</span><span class="fn">legacy_events.py</span><span class="r">−171</span></div>
       <div class="file"><span class="y">M</span><span class="fn">tasks.py</span><span class="g">+4</span><span class="r">−11</span></div>
-      <div class="dir">src/django/agentsmith/analytics/tests/</div>
-      <div class="file"><span class="y">M</span><span class="fn">test_amplitude.py</span><span class="g">+14</span><span class="r">−28</span></div>
+      <div class="dir">src/shop/analytics/tests/</div>
+      <div class="file"><span class="y">M</span><span class="fn">test_tracker.py</span><span class="g">+14</span><span class="r">−28</span></div>
       <div class="file"><span class="r">D</span><span class="fn">test_legacy_events.py</span><span class="r">−4</span></div>
-      <div class="dir">src/django/agentsmith/va/</div>
-      <div class="file"><span class="y">M</span><span class="fn">call_hooks.py</span><span class="g">+5</span><span class="r">−0</span></div>
+      <div class="dir">src/shop/orders/</div>
+      <div class="file"><span class="y">M</span><span class="fn">order_hooks.py</span><span class="g">+5</span><span class="r">−0</span></div>
       <div class="dir">docs/</div>
       <div class="file"><span class="y">M</span><span class="fn">analytics.md</span><span class="g">+1</span><span class="r">−0</span></div>
     </nav>
     <div class="code">
-      <div class="fbar"><span class="y">M</span> src/django/agentsmith/analytics/amplitude.py <span class="g">+18</span> <span class="r">−96</span><span class="spacer"></span><span class="muted">click a line number to comment · <kbd>]c</kbd> next comment</span></div>
+      <div class="fbar"><span class="y">M</span> src/shop/analytics/tracker.py <span class="g">+18</span> <span class="r">−96</span><span class="spacer"></span><span class="muted">click a line number to comment · <kbd>]c</kbd> next comment</span></div>
       <div style="overflow:hidden;flex:1">
       <table class="diff">
-        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -41,22 +41,12 @@ class AmplitudeClient:</td></tr>
+        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -41,22 +41,12 @@ class TrackerClient:</td></tr>
         <tr><td class="ln">41</td><td class="ln">41</td><td>    def track(self, event: str, user_id: str, props: dict | None = None) -&gt; None:</td></tr>
         <tr class="del"><td class="ln">42</td><td class="ln"></td><td>-        if event in LEGACY_EVENT_ALIASES:</td></tr>
         <tr class="del"><td class="ln">43</td><td class="ln"></td><td>-            event = LEGACY_EVENT_ALIASES[event]</td></tr>
         <tr class="del"><td class="ln">44</td><td class="ln"></td><td>-            <span class="w">self._warn_legacy(event)</span></td></tr>
         <tr class="add sel"><td class="ln"></td><td class="ln">42</td><td>+        if event not in <span class="w">ALLOWED_EVENTS</span>:</td></tr>
-        <tr class="add"><td class="ln"></td><td class="ln">43</td><td>+            <span class="w">log.warning("dropping unknown amplitude event %s", event)</span></td></tr>
+        <tr class="add"><td class="ln"></td><td class="ln">43</td><td>+            <span class="w">log.warning("dropping unknown tracker event %s", event)</span></td></tr>
         <tr class="add"><td class="ln"></td><td class="ln">44</td><td>+            return</td></tr>
         <tr><td colspan="3" style="padding:0"><div class="thread">
-          <div class="msg"><div class="who">You · draft</div>Dropping silently changes behaviour for the 3 VA call hooks that still send <code>call_transferred_v1</code>. Either migrate those callers in this PR or keep a one-release alias with a warning.</div>
+          <div class="msg"><div class="who">You · draft</div>Dropping silently changes behaviour for the 3 order hooks that still send <code>order_shipped_v1</code>. Either migrate those callers in this PR or keep a one-release alias with a warning.</div>
           <div class="tbar"><button class="btn ghost">Edit</button><button class="btn ghost">Delete</button><span class="spacer"></span><span class="muted" style="font-size:11px">L42 · will be sent with the review</span></div>
         </div></td></tr>
         <tr><td class="ln">45</td><td class="ln">45</td><td>        payload = {</td></tr>
@@ -247,12 +247,12 @@ table.diff tr.sel td.ln { border-left: 3px solid var(--accent); }
         <tr class="del"><td class="ln">48</td><td class="ln"></td><td>-            "event_properties": <span class="w">self._normalize(props or {})</span>,</td></tr>
         <tr class="add"><td class="ln"></td><td class="ln">48</td><td>+            "event_properties": <span class="w">props or {}</span>,</td></tr>
         <tr><td colspan="3" style="padding:0"><div class="thread open">
-          <div class="msg input">Is <code>_normalize</code> still needed for the datetime props? test_amplitude only covers strings.</div>
+          <div class="msg input">Is <code>_normalize</code> still needed for the datetime props? test_tracker only covers strings.</div>
           <div class="tbar"><button class="btn primary">Add comment</button><button class="btn ghost">Cancel</button><span class="spacer"></span><span class="muted" style="font-size:11px">L48 · <kbd>Ctrl+Enter</kbd></span></div>
         </div></td></tr>
         <tr><td class="ln">49</td><td class="ln">49</td><td>            "time": int(time.time() * 1000),</td></tr>
         <tr><td class="ln">50</td><td class="ln">50</td><td>        }</td></tr>
-        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -112,61 +102,4 @@ class AmplitudeClient:</td></tr>
+        <tr class="hunk"><td class="ln"></td><td class="ln"></td><td>@@ -112,61 +102,4 @@ class TrackerClient:</td></tr>
         <tr class="del"><td class="ln">112</td><td class="ln"></td><td>-    def _normalize(self, props: dict) -&gt; dict:</td></tr>
         <tr class="del"><td class="ln">113</td><td class="ln"></td><td>-        out = {}</td></tr>
         <tr class="del"><td class="ln">114</td><td class="ln"></td><td>-        for key, value in props.items():</td></tr>

@@ -991,14 +991,14 @@ fn with_no_agent_the_review_and_ask_now_say_one_will_start() {
 fn the_diff_view_keeps_long_names_and_lines_in_their_columns() {
     // The shape that broke: long file names, a long branch and subject,
     // lines wider than a split pane, in a narrow window.
-    let branch = "PROJ-26001-dashboard-court-and-government-agency-in-caller-intake";
+    let branch = "TASK-123-dashboard-for-billing-and-shipping-in-the-checkout-flow";
     let (app, _tx) = app(vec![
         worktree("/r/repo", "main", vec![]),
         worktree("/r/repo-f", branch, vec![agent("a1", "Implementer", "running", "s1")]),
     ]);
     let mut h = Harness::builder().with_size([1000.0, 700.0]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
     h.run_steps(2);
-    let long = "caller-intake-renders-the-legal-sections-and-keeps-them-in-order.spec.ts";
+    let long = "checkout-renders-the-payment-sections-and-keeps-them-in-order.spec.ts";
     let mut text = sample_diff(3, 8);
     text.push_str(&format!(
         "diff --git a/src/{long} b/src/{long}\n--- a/src/{long}\n+++ b/src/{long}\n@@ -1,1 +1,1 @@\n-{}\n+{}\n",
@@ -1425,11 +1425,11 @@ fn render_the_diff_view() {
     h.run_steps(2);
     let text = "diff --git a/src/login.py b/src/login.py\n--- a/src/login.py\n+++ b/src/login.py\n@@ -10,7 +10,9 @@ def login(user):\n     if not user:\n         return None\n-    token = make_token(user)\n-    return token\n+    token = make_token(user, ttl=3600)\n+    audit.log(\"login\", user.id)\n+    return token\n \n def logout(user):\n     session.clear()\ndiff --git a/tests/test_login.py b/tests/test_login.py\nnew file\ndef test_login():\n    assert login(User(1))\n";
     // A long name and a line wider than a pane, which stay in their columns.
-    let long = "caller-intake-renders-the-legal-sections-and-keeps-them.spec.ts";
+    let long = "checkout-renders-the-payment-sections-and-keeps-them.spec.ts";
     let text = format!(
         "{text}diff --git a/{long} b/{long}\n--- a/{long}\n+++ b/{long}\n@@ -1,1 +1,1 @@\n-{}\n+{}\n",
-        "expect(screen.getByRole('option', { name: 'Attorney or Court Staff' })).toBeVisible(); ".repeat(2),
-        "expect(screen.getByRole('option', { name: 'Government Agency' })).toBeVisible(); ".repeat(2),
+        "expect(screen.getByRole('option', { name: 'Credit or Debit Card' })).toBeVisible(); ".repeat(2),
+        "expect(screen.getByRole('option', { name: 'Bank Transfer' })).toBeVisible(); ".repeat(2),
     );
     let parsed = crate::diff::parse(&text);
     let mut c = crate::diff::anchor("src/login.py", &parsed.files[0].rows[5]).unwrap();
@@ -1508,7 +1508,7 @@ fn sidebar_keys_walk_a_long_list() {
     for i in 0..26 {
         let mut w = worktree(
             &format!("/r/repo-{i:02}"),
-            &format!("PROJ-{i:05}-a-very-long-branch-name-{}", "x".repeat(40)),
+            &format!("TASK-{i:05}-a-very-long-branch-name-{}", "x".repeat(40)),
             vec![],
         );
         if i % 9 == 8 {
@@ -2183,7 +2183,7 @@ fn the_mvp_demo_notes_survive_compaction_and_restore_then_hand_off() {
 fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
     let (app, _tx) = app(vec![
         worktree("/r/repo", "main", vec![]),
-        worktree("/r/repo-f", "PROJ-26001-f", vec![agent("a1", "Implementer", "running", "s1")]),
+        worktree("/r/repo-f", "TASK-123-f", vec![agent("a1", "Implementer", "running", "s1")]),
     ]);
     let mut h = harness(app);
     h.run_steps(2);
@@ -2196,11 +2196,11 @@ fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
             crate::diff_view::DiffState::loaded("/r/repo-f", "", crate::diff::parse_pr(&committed, &uncommitted));
         d.applied(
             Some(lazyagent_proto::types::DiffBase {
-                ref_: "origin/PROJ-25996-intake".into(),
-                branch: Some("PROJ-25996-intake".into()),
+                ref_: "origin/TASK-456-checkout".into(),
+                branch: Some("TASK-456-checkout".into()),
                 source: "pr".into(),
                 merge_base: "0123456789abcdef".into(),
-                pr_number: Some(20163),
+                pr_number: Some(4242),
             }),
             None,
             None,
@@ -2210,8 +2210,8 @@ fn the_diff_base_shows_the_pr_base_and_takes_an_override() {
     }
     h.run_steps(2);
     // What is used, and where it came from; the uncommitted files apart.
-    assert_eq!(h.state().state.diff.as_ref().unwrap().base, "origin/PROJ-25996-intake");
-    h.get_by_label("(PR #20163 base)");
+    assert_eq!(h.state().state.diff.as_ref().unwrap().base, "origin/TASK-456-checkout");
+    h.get_by_label("(PR #4242 base)");
     h.get_by_label("3 files");
     h.get_by_label("2 uncommitted");
     assert!(h.state().state.diff.as_ref().unwrap().rows.contains(&crate::diff_view::DRow::Uncommitted));
@@ -2474,4 +2474,65 @@ fn update_and_restart_screenshots() {
     h.state_mut().state.life.sheet = Some(Sheet::Restart { engine: true, restore: true, after_update: true });
     h.run_steps(4);
     shot(&mut h, "restart");
+}
+
+#[test]
+fn sidebar_terminals_and_spawn_screenshots() {
+    let (app, _tx) = app(vec![
+        worktree("/r/repo", "main", vec![agent("a2", "Agent 2", "running", "s2")]),
+        worktree(
+            "/r/repo-feat-login",
+            "feat-login",
+            vec![agent("a1", "Implementer", "running", "s1"), agent("a3", "Reviewer", "running", "s3")],
+        ),
+        worktree("/r/repo-fix-typo", "fix-typo", vec![]),
+    ]);
+    let mut h =
+        Harness::builder().with_size([1400.0, 880.0]).wgpu().build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    h.run_steps(3);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    let ctx = h.ctx.clone();
+    let feed = |h: &mut Harness<'static, App>, session: &str, kind: PaneKind, text: &str| {
+        let pane = h.state_mut().state.pane(session, kind, &ctx);
+        pane.inner.lock().unwrap().term.feed(text.replace('\n', "\r\n").as_bytes());
+    };
+    feed(&mut h, "s2", PaneKind::Agent, "fake agent ready\nyour turn> \nline 1\nline 2\nline 3\ndone\nyour turn> ");
+    feed(&mut h, "s3", PaneKind::Agent, "working\ngot: 'second agent' paste=False\nyour turn> ");
+    for (path, shell) in [("/r/repo", "sh1"), ("/r/repo-feat-login", "sh2"), ("/r/repo-fix-typo", "sh3")] {
+        h.state_mut().state.shells.insert(path.into(), shell.into());
+    }
+    feed(
+        &mut h,
+        "sh1",
+        PaneKind::Shell,
+        "\x1b[32m●\x1b[0m Read(app.py)  \x1b[31m●\x1b[0m Error  ⎿ done\ndev@laptop:~/code/repo$ ",
+    );
+    feed(&mut h, "sh2", PaneKind::Shell, &(1..=40).map(|i| format!("{i}\n")).collect::<String>());
+    feed(&mut h, "sh3", PaneKind::Shell, "dev@laptop:~/code/repo-fix-typo$ ");
+    h.state_mut().state.selected = Some("/r/repo-feat-login".into());
+    h.state_mut().state.tabs.insert("/r/repo-feat-login".into(), "a3".into());
+    h.run_steps(4);
+    if !shot(&mut h, "d2-dark") {
+        return;
+    }
+    h.state_mut().state.toggle_theme(&ctx);
+    h.state_mut().state.selected = Some("/r/repo".into());
+    h.run_steps(4);
+    shot(&mut h, "d2-light");
+    h.state_mut().state.toggle_theme(&ctx);
+    h.state_mut().state.selected = Some("/r/repo-fix-typo".into());
+    h.run_steps(3);
+    h.get_by_label("Spawn an agent").click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("implement the login form".into()));
+    h.run_steps(3);
+    shot(&mut h, "d3-spawn");
 }

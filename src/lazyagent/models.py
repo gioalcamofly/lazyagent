@@ -24,10 +24,10 @@ class WorktreeInfo:
 
     @property
     def ticket_id(self) -> str | None:
-        """Extract PROJ-XXXX ticket ID from branch name, if present."""
+        """Extract a ticket ID like TASK-123 from the branch name, if present."""
         if self.branch is None:
             return None
-        match = re.search(r"PROJ-\d+", self.branch)
+        match = re.search(r"\b[A-Z][A-Z0-9]*-\d+", self.branch)
         return match.group(0) if match else None
 
     @property

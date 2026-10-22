@@ -5,11 +5,11 @@
 
 ## Problem
 
-- A reboot (or engine crash, K3) kills every agent. The weekday unattended boot (tmux → `lazyagent` → `/gio-planner unattended`) then has to work out from scratch what was running and restart it.
+- A reboot (or engine crash, K3) kills every agent. The weekday unattended boot (tmux → `lazyagent` → `/planner unattended`) then has to work out from scratch what was running and restart it.
 
 ## Today's workaround
 
-- The unattended boot redoes the work: the planner re-reads ClickUp and the board and re-spawns agents.
+- The unattended boot redoes the work: the planner re-reads the issue tracker and the board and re-spawns agents.
 
 ## Proposal
 

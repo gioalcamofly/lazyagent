@@ -12,7 +12,7 @@
 - **The single biggest step is U2: native agent terminals.** The host forwards `attach_stream` and binary stream frames, so the page opens one xterm.js per engine session instead of drawing the agent inside the TUI. Everything the engine needs for it already exists (§3b/§3c of engine-split, PR 6).
 - **The new screens that justify a GUI** (§0a of engine-split): an **attention queue** (who needs me, with the live terminal next to it), a **multi-agent grid**, a **diff review** with comments that go back to the agent (0008), and a **PR/CI panel** per worktree (0002).
 - **The TUI stays** for SSH, tmux and the unattended weekday boot. It is never deprecated; it just stops being the only screen.
-- **Stack (proposal, D7 stays Giovanni's call):** keep H2's no-build-step approach and vendor **Preact + htm + signals** as ES modules (~15 KB), JSDoc types, Chrome `--app` window as the shell. Tauri, a build step and TypeScript are deferred until something forces them (§6).
+- **Stack (proposal, D7 stays the user's call):** keep H2's no-build-step approach and vendor **Preact + htm + signals** as ES modules (~15 KB), JSDoc types, Chrome `--app` window as the shell. Tauri, a build step and TypeScript are deferred until something forces them (§6).
 - **Protocol:** most screens run on existing v1 methods; the host's method whitelist widens step by step. New engine methods are listed in §5 and are all additive.
 - **Performance (§7d, measured 2026-10-16):** budgets come first (keystroke → glyph ≤ 8/16 ms p50/p95, ≤ 25/50 ms p95/p99 with 8 busy hidden agents, idle ≤ 2% of a core, attach ≤ 50 ms p95). The baseline shows the GUI side already fits. **The engine's headless pyte is the bottleneck**: 77% of the engine's busy CPU, 1.7-3.0 MB/s, and up to 3.9 s loop stalls after a burst. It sets the tail latency of every client (U2 prototype: p95 1.9 ms idle → 30-46 ms with 8 chatty hidden agents). Three changes follow from the data:
   - an **engine track** E1 (cheap Python fixes, with U2) and E2 (native emulator: C emulators measured 26-38× faster than pyte; brought forward from Phase 5 to right after U2);
@@ -43,9 +43,9 @@ From engine-split §0a: the axis is terminal app vs GUI app. The GUI is for the 
 
 | User | Where | Uses |
 |---|---|---|
-| Giovanni at the desk | Linux, Chrome, big screen | GUI (main), TUI in a terminal when it is quicker |
-| Giovanni away | Phone | Attention queue + approve/answer (0003), read-only status |
-| Unattended boot | tmux → `lazyagent` → `/gio-planner unattended` | TUI only (K8) |
+| The user at the desk | Linux, Chrome, big screen | GUI (main), TUI in a terminal when it is quicker |
+| The user away | Phone | Attention queue + approve/answer (0003), read-only status |
+| Unattended boot | tmux → `lazyagent` → `/planner unattended` | TUI only (K8) |
 | Over SSH | Remote box | TUI only |
 | Orchestrator / skills | MCP + protocol | No UI; they share the engine with whatever screen is open |
 
@@ -237,7 +237,7 @@ Each step names the protocol call; **(new)** marks what the engine or host lacks
 2. Submit → `create_worktree {branch, base_branch, extra}`.
    - Plain create: the result has `path`; the sidebar updates from `worktrees.changed`.
    - Custom create: the result has `job_id`; the job drawer opens and streams `job.output` until `job.finished`.
-3. On success → `spawn_agent {worktree_path, instruction, skip_permissions, label, env}`. The host sends **its own** env (D5): it was started from Giovanni's shell, like the TUI.
+3. On success → `spawn_agent {worktree_path, instruction, skip_permissions, label, env}`. The host sends **its own** env (D5): it was started from the user's shell, like the TUI.
 4. `agent.spawned` → a tab opens and attaches (`attach_stream`), focus goes to it.
 5. Failure at 2 → form stays with the error; at 3 → worktree exists, a toast offers "Spawn again".
 
@@ -246,7 +246,7 @@ Each step names the protocol call; **(new)** marks what the engine or host lacks
 ### 4b. Approve a permission / answer a blocked agent
 
 1. Agent hook → `agent.status` `waiting_for_approval` (detail `needs approval`, agent_observers.py:159) → attention item, toast, desktop notification if the page is not focused.
-2. Click the item → right pane attaches the agent's stream: Giovanni sees the real prompt (the command, the file).
+2. Click the item → right pane attaches the agent's stream: The user sees the real prompt (the command, the file).
 3. **Today:** focus the terminal and press the key the provider shows (`1`, `2`, Enter). Typing claims the size (D3).
 4. **Later (0003):** Approve / Deny buttons → `answer_prompt {session_id, choice}` (**new**), which maps to provider keys and refuses if the agent is no longer waiting. A question gets a reply box → `send_agent_input {worktree_path, agent_id, text}` (exists; waits for the child's ack).
 5. `agent.status` back to `running` → the item clears.
@@ -728,8 +728,8 @@ Answered by the orchestrator on 2026-10-17 (source: the day's decisions log). Ou
 | Q10 | Grid tiles: scale the PTY-size render down, or let tiles claim their own size? | **Scale down, never claim** unless focused (D3); a tile claiming would SIGWINCH every agent on each layout change. Up to 9 live WebGL tiles (§7d-4) | Scale, never claim (D3). The grid (U6) is out of scope today |
 | Q11 | Should `q` exist in the GUI? | **No key.** Before PR 8 it kills every agent; a menu item with a confirm. After PR 8 "close" only detaches, so the window close button is enough | **No key**; a menu item with a confirm |
 | Q12 | Diff stage 1 comments are page-local. Acceptable until U8? | **Yes**; the value is the send-back flow, not storage. Warn in the UI that comments live in this browser | **Yes**, acceptable until U8, with a notice in the UI |
-| Q13 | Bring the native emulator (engine-split Phase 5) forward to E2, right after U2? | **Yes** (§7d-6 P1). pyte is 77% of the engine's busy CPU and the reason B2/B5/B7/B8 fail; C emulators are 26-38× faster on the same input. It needs a Rust toolchain in CI and manylinux wheels; gate it with a spike (≥ 20×, snapshot contract tests pass) | **Yes as a direction, not today**: it needs Rust in CI and manylinux wheels, and wants Giovanni's review. PR 7 already fixed the latency (echo p95 6.8 ms) |
+| Q13 | Bring the native emulator (engine-split Phase 5) forward to E2, right after U2? | **Yes** (§7d-6 P1). pyte is 77% of the engine's busy CPU and the reason B2/B5/B7/B8 fail; C emulators are 26-38× faster on the same input. It needs a Rust toolchain in CI and manylinux wheels; gate it with a spike (≥ 20×, snapshot contract tests pass) | **Yes as a direction, not today**: it needs Rust in CI and manylinux wheels, and wants the user's review. PR 7 already fixed the latency (echo p95 6.8 ms) |
 | Q14 | Rust `vt100` vs `alacritty_terminal` for E2 | **Spike both on `agent.bin` and the snapshot tests**; prefer `vt100` (smaller, has formatted-contents and scrollback APIs) unless the numbers say otherwise. Neither crate was measured here | **Deferred** with E2; spike both then |
 | Q15 | WebGL as the default renderer | **Yes, on a real GPU** for every visible terminal; DOM on software GL (10× slower measured) or context loss (§7d-6 P3) | **Yes on a real GPU**, DOM as the fallback |
-| Q16 | Budgets as CI gates | **Yes for B1/B3/B4/B8** on every PR with 2× (engine) or 1.5× (browser) headroom over the budget, median of 3; B2/B6/B7/B11 nightly only, non-blocking (§7d-7) | **Changed: no Playwright in CI** (Giovanni's call). E2E and browser perf tests carry a pytest marker and skip cleanly when Playwright or a browser is missing; perf tests run locally and never block |
+| Q16 | Budgets as CI gates | **Yes for B1/B3/B4/B8** on every PR with 2× (engine) or 1.5× (browser) headroom over the budget, median of 3; B2/B6/B7/B11 nightly only, non-blocking (§7d-7) | **Changed: no Playwright in CI** (the user's call). E2E and browser perf tests carry a pytest marker and skip cleanly when Playwright or a browser is missing; perf tests run locally and never block |
 | Q17 | Budget values (§7d-1) | **Adopt as proposed**: B1 ≤ 8/16 ms, B2 ≤ 25/50 ms, B5 ≥ 10 MB/s, B6 ≤ 2% idle, B8 ≤ 50 ms. The tightest one, B1 p95 = one frame, is already met by the U2 prototype (8.7 ms to DOM) | **Adopted as proposed** |

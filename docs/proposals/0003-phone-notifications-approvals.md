@@ -5,7 +5,7 @@
 
 ## Problem
 
-- Agents stall on permission prompts and questions while Giovanni is away from the desk. The work stops until he looks at the TUI.
+- Agents stall on permission prompts and questions while the user is away from the desk. The work stops until they look at the TUI.
 
 ## Today's workaround
 

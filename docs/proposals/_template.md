@@ -9,7 +9,7 @@
 
 ## Today's workaround
 
-- What Giovanni or a skill does instead, and why it is fragile (polling, manual rules, …).
+- What the user or a skill does instead, and why it is fragile (polling, manual rules, …).
 
 ## Proposal
 
