@@ -1,6 +1,6 @@
 # Actionables: implementation plan
 
-- **Status:** Proposed (A0, 2026-10-20). Each phase gets an "As landed" note in §8 when it merges.
+- **Status:** **Superseded by [inbox-plan.md](inbox-plan.md)** (2026-10-22). Not implemented. A1 survives trimmed as I2, A2 as I6, A3 as an opt-in later phase; A4's score, A5's tie-break and boost, and A7 are cut. Kept as the reference for the data model and the layer-1 rules.
 - **Proposal:** [0012-actionables.md](../proposals/0012-actionables.md). This plan does not repeat its rationale. It covers only what to build, where, and how to prove it.
 - **Base:** `develop` @ `12f336f` (0011 MVP, agent tokens, review replies, desktop D1-D6 landed).
 - **MVP** = A1-A4: engine queue (today's attention kinds), GitHub Actions detection, auto-triage with the 4 limits, deterministic layer 2 score with criteria file and notification threshold, desktop + web as views. A5-A7 come after. Layer 3 (A8+) is a sketch only.
