@@ -1,6 +1,6 @@
 # 0013. Inbox and status: one home screen for the team lead
 
-- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B22 at the end of the plan
+- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B32 at the end of the plan
 - **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
 
 The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
@@ -31,7 +31,8 @@ The desktop opens on **Home**: one list of the user's **work items** (a branch, 
 | Row state | A short **fact** from the engine (≤ 5 words): "tests 2/5", "CI green · bot approved", "with QA", "conflict with base". Never free prose. The agent's own note shows only in the expanded row, with its age |
 | Derived, not edited | The engine derives ball, state and level from agents, PR, CI, open actionables and feeders. The user has three **gestures**, not lanes: **Label** (put a ball/label on a row, e.g. "others: QA"; it expires when the row's fingerprint changes), **Park until** an event (CI ends, agent stops, a human reviews, tomorrow) and **Close** (done / dropped, for what the engine cannot see). Each gesture is shown on the row and counted: gestures per day is the metric of bad rules |
 | Completeness | The in-flight list shows **every** work item with a worktree, a live agent, an open PR by the user, or an external record, plus a counter "N not started". Never only the rows with an agent |
-| Since last look | Rows that changed since the user last looked carry a dot. That is the "I'm back" summary; there is no separate digest in the MVP |
+| Since last look | Rows that changed since the user last looked carry a dot (I3). From I4, each work item has a deterministic timeline "since you looked" with a per-item seen mark. There is no prose digest |
+| Quick and Deep | Items decided from the row in under a minute are **Quick** (Now, Round). Items that need reading are **Deep** and wait in **To sit down with**, with a visible limit. See "Decisions that need context" |
 | Owner | The engine. `engine/status.py` (projection) and `engine/actionables.py` (inbox queue, 0012 A1). Clients without the `status` / `actionables` features keep their own derivation |
 | No LLM in the loop | Nothing is spawned and no model is called to keep Home up to date. It changes only through (1) deterministic reads of engine state and APIs (agent status, PR, CI, git, notes, jobs) and (2) the agents that are already working, which report over MCP (`status_report`: ball, short note, needs the user). A summariser or classifier model is at most a future opt-in idea |
 | What is stored | Only what cannot be derived: user gestures, the agents' last `status_report`, external items, and a 24 h tombstone for closed items. Rows themselves are a projection, recomputed on events |
@@ -82,6 +83,56 @@ round  billing-hook #15     you      decide: CI red, 2 tries        30m
 
 The orchestrator calls the MCP tool `status_list` and prints this table instead of building one by hand.
 
+### Decisions that need context
+
+Some items take a minute from the row (approve a command, merge a green PR). Others need reading and thinking (pick between two designs, judge a reviewer's change request, decide what to do with a branch red after two tries). Mixing them in one Round makes the user either rush the deep ones or postpone the quick ones. Five pieces, all deterministic, none of them spawns anything:
+
+| Piece | Design |
+|---|---|
+| **Two classes** | **Quick:** decided from the row in under a minute (today's items). **Deep:** needs reading. Deep items leave the rounds and go to their own zone, **To sit down with** ("Para sentarse"), meant for focus blocks. The zone shows a visible limit (`deep_max`, default 5): past it a banner says so, and the later backpressure phase stops starting new work. The class comes from a fixed rule per kind, or from the agent's own brief; never from a model |
+| **Decision brief** | The agent that is already working writes it over MCP (`request_decision`): one concrete question, 2-4 options with a recommendation, what it has tried, linked evidence (diff hunks, log lines, files and line ranges, notes sections, URLs), reversibility, and the impact if the choice is wrong. Fixed template, validated by the engine: a brief with no options or no evidence is downgraded to a Quick item "the agent asks something" with a link to its terminal |
+| **Since you looked** | A deterministic timeline per work item since the user's last look at **that item**: commits, CI runs, ball and state changes, notes edits (section names), answers given, reviews. A per-item "seen" mark; "mark all seen" on Home |
+| **Decision view** | Opening a Deep item shows the brief on one side and the evidence on the other (diff hunk, notes, log excerpt, file at lines). The answer (option + comment) goes to the agent through the same queue as review replies and `send_agent_input`: delivered when the agent is idle, never in the middle of a turn |
+| **Explain this** | A button, on demand only: it asks the **owner agent** for a short explanation, or to answer one question the user types. The agent replies over MCP and the reply shows in the view. Disabled when the work item has no live agent. Nothing is asked automatically |
+| **Decision log** | Every answer is appended by the engine to the agent's notes, section **Decisions** (`- 2026-10-22 · <question> → B (user): <comment>`), and kept on the work item for 30 days. The agent sees it after a compaction (0011 re-injection) and a successor inherits it in a handoff, so the same thing is not decided twice |
+
+Class per kind (fixed):
+
+| Kind | Class |
+|---|---|
+| Approval, short question (≤ 2 lines or A/B), merge ready, conflict with no agent (delegate), CI red (delegate) | Quick |
+| Agent's question longer than 2 lines with no brief | Quick, with "open terminal" (and a hint to ask for a brief) |
+| `request_decision` that passes validation | Deep (the agent may declare `class: "quick"` for a small one) |
+| Human change request, CI red after the agent's tries, finished branch with no PR to review | Deep |
+| External item with `needs_user` | Quick (open the URL) |
+
+### Wireframe: "To sit down with" and the decision view
+
+```
+│ ROUND · 11:30                                                     │
+│   Merge     docs-index #14 · approved, green                 [m]  │
+│ TO SIT DOWN WITH (2 of 5)                       for a focus block │
+│   Decide    billing-hook #15 · retries: fixed or exponential?     │
+│             brief by agent a3 · 3 options · reversible · 12m      │
+│   Review    api-pagination #21 · changes requested by a reviewer  │
+│───────────────────────────────────────────────────────────────────│
+│ IN FLIGHT (5) …                                                   │
+```
+
+```
+┌ billing-hook #15 · Decide ─────────────────────┬ Evidence ───────────────────────────┐
+│ Retries: fixed or exponential backoff?         │ [diff] [log] [notes] [file]          │
+│ ● A  Exponential, cap 30 s   (recommended)     │ src/billing/retry.py  @@ -40,7 +40,12 │
+│ ○ B  Fixed 2 s, 5 tries                        │ -    time.sleep(2)                   │
+│ ○ C  Leave as is, add a TODO                   │ +    delay = min(2 ** n, 30)         │
+│ Tried: fixed 2 s → 3/30 runs time out          │ log: 3 of 30 runs hit the 10 s limit │
+│ Reversible: yes · If wrong: slower failures    │                                      │
+│ Comment [________________________]             │ Since you looked (40m)               │
+│ [Send B…]  [Explain this]  [Open terminal]     │ 11:02 commit "try fixed backoff"     │
+│                                                │ 11:10 CI red · 11:14 brief written   │
+└────────────────────────────────────────────────┴──────────────────────────────────────┘
+```
+
 ### Kinds → level (fixed table, no score)
 
 | Source | Level | Primary action |
@@ -109,7 +160,7 @@ The orchestrator calls the MCP tool `status_list` and prints this table instead 
 | Notes (0011) | When there is no report, the expanded row shows the first bullet of Doubts, else Pending | Read-only use of the notes store |
 | The planner and other feeders | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, expires_at}` / `work_items_close {url}` over MCP; dedupe by URL; cap per source | Brings items with no branch (the "N not started" counter, peer reviews). The engine never writes back to the tracker |
 | GitHub Actions on branches with no PR | 0012 A2 detection (REST + ETag) | After the MVP |
-| Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, and fixed-rule inbox items. See below | After the MVP (I7) |
+| Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, and fixed-rule inbox items. See below | After the MVP (I8) |
 
 ### Optional issue-tracker sources
 
@@ -137,11 +188,11 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | 0012 piece | In 0013 |
 |---|---|
 | A1 engine queue (store, today's 10 kinds, marks in the engine, events, capability) | **Kept** as phase I2, with a fixed level instead of a score |
-| A2 GitHub Actions detection, `head_sha`, engine interest | Interest set in I1; Actions detection in I6 (after the MVP) |
+| A2 GitHub Actions detection, `head_sha`, engine interest | Interest set in I1; Actions detection in I7 (after the MVP) |
 | A3 auto-triage (triage agent, fixer, verify, ledger) | **Out of the MVP.** Later, **opt-in**, and redesigned: delegate to the **owner agent** of the branch (or spawn one only on the user's key). No separate triage agent in the first version |
 | A4 score, criteria file, tie-break, notification threshold | **Cut.** Fixed level per kind, FIFO. Notifications only for Now (and later per round) |
-| A5 `actionables_create/resolve` | Replaced by `work_items_upsert/close` (I5). `boost` cut |
-| A6 planner changes | I5, on the owner's go; the planner's skill keeps working until then |
+| A5 `actionables_create/resolve` | Replaced by `work_items_upsert/close` (I6). `boost` cut |
+| A6 planner changes | I6, on the owner's go; the planner's skill keeps working until then |
 | A7 TUI list, analysis agent | Cut. The TUI gets a badge and "open in desktop" only |
 | Q-A1-Q-A22 (accepted 2026-10-20) | Kept where the piece survives (Q-A3, Q-A4, Q-A8, Q-A11-Q-A13, Q-A15, Q-A20). Q-A1, Q-A2, Q-A5-Q-A7, Q-A9, Q-A16, Q-A18, Q-A21 move with auto-triage to the opt-in phase. Q-A10, Q-A19 lapse with the score. Q-A14, Q-A17, Q-A22: see the plan |
 
@@ -153,7 +204,7 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 
 | Value | Effort |
 |---|---|
-| ★★★ (the most measured need of the only user) | MVP I1-I3: M (~20 h of agents, ~5 h of the owner). Full plan I1-I6: L |
+| ★★★ (the most measured need of the only user) | MVP I1-I3: M (~20 h of agents, ~5 h of the owner). Full plan I1-I8: L |
 
 ## Risks
 
@@ -165,7 +216,11 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | A calm screen turns into a wall of green dots | Ambient rows have no red, no animation, minute-level ages; the list folds |
 | The measured need is n = 1 and personal | The 1-week CLI/MCP test (I1) decides whether a screen is worth it; tracker lanes stay in the planner |
 | The planner and the engine disagree on state | The engine's facts win over a feeder's `state`; a feeder's `ball` is shown as a label |
+| Agents flood "To sit down with" with briefs | At most 2 open briefs per agent; `deep_max` visible; a brief without options or evidence becomes a Quick item |
+| A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" |
+| An answer is lost if the agent dies before reading it | It is in the agent's notes (Decisions) and on the work item; a restored or successor agent gets it |
+| "Explain this" costs tokens | Only on the user's click, only the owner agent, capped at a short answer |
 
 ## Open questions
 
-In the plan, §9 (Q-B1-Q-B22).
+In the plan, §9 (Q-B1-Q-B32).
