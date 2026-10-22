@@ -1,6 +1,6 @@
 # 0013. Inbox and status: one home screen for the team lead
 
-- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B42 at the end of the plan
+- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B43 at the end of the plan
 - **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
 
 The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
@@ -26,7 +26,7 @@ The desktop opens on **Home**: one list of the user's **work items** (a branch, 
 |---|---|
 | Unit | **Work item** = `repo:branch`. It outlives its worktree and gains a PR on the way. A PR URL and an issue-tracker URL hang from it as aliases. An external item with no branch yet (a tracker card fed by the planner, a peer's review request) has the key `ext:<url>` until a branch claims it |
 | One list, two zones | **Inbox** (top): items with something for the user, grouped by work item, in two levels. **In flight** (below): every other work item, one row each. An item is in exactly one zone. Moving between zones happens only between rounds, never under the cursor |
-| Levels | **Now:** an agent is blocked on the user and it takes < 1 min (approval, short question). **Round:** needs the user's judgement but nobody stops if it waits (review a finished branch, merge, changes requested by a human, conflict with no agent, CI escalated). **Ambient:** the in-flight list itself. No visible score: a fixed level per kind, FIFO inside a level |
+| Levels | **Now:** an agent is blocked on the user and it takes < 1 min (approval, short question). **Round:** needs the user's judgement but nobody stops if it waits (review a finished branch, merge, changes requested by a human, conflict with no agent, CI escalated). **Ambient:** the in-flight list itself. No visible score: a fixed level per kind, and fixed sort keys inside a level (see "Order inside a level") |
 | Ball | Each in-flight row says **who has the ball**: `agent` (working, queued, own CI running), `others` (human review, QA, a teammate, an external state), `stalled` (nobody can move it: conflict with no agent, dead agent, a dependency, idle > N days), `done` (transient, leaves after the round). `you` is never a row state: those items are in the inbox |
 | Row state | A short **fact** from the engine (≤ 5 words): "tests 2/5", "CI green · bot approved", "with QA", "conflict with base". Never free prose. The agent's own note shows only in the expanded row, with its age |
 | Derived, not edited | The engine derives ball, state and level from agents, PR, CI, open actionables and feeders. The user has three **gestures**, not lanes: **Label** (put a ball/label on a row, e.g. "others: QA"; it expires when the row's fingerprint changes), **Park until** an event (CI ends, agent stops, a human reviews, tomorrow) and **Close** (done / dropped, for what the engine cannot see). Each gesture is shown on the row and counted: gestures per day is the metric of bad rules |
@@ -195,6 +195,16 @@ Phasing: I1 the prerequisites; I3 the **Pass to orchestrator** gesture; I4 first
 | External item with `needs_user` | Round | Open the URL |
 | Engine errors | Ambient log; an item only when there is a useful button | — |
 
+### Order inside a level (no score)
+
+Inside Now and Round, items sort by three fixed keys, in order:
+
+1. **Blocks a live agent** first (an agent waiting on the answer, `blocking: true` briefs).
+2. **Priority** inherited from the item's work item: `high` · `medium` · `low`, default `medium`.
+3. **Age**, oldest first.
+
+Every inbox item belongs to a work item (a branch) and inherits its priority. The link is the ticket ID found in the branch name (the label pattern in `models.py` `ticket_id`) or the `branch` field of a `work_items_upsert`, which also carries `priority` (I6). Until a feeder sets one, every item is `medium`, so the MVP order is "blocks an agent, then oldest". The in-flight list sorts by ball, then priority, then last change. There is no visible score; a full score comes back only if Round regularly holds more than 7 items (Q-B8). This **supersedes 0012's decision** of a deterministic score with an agent tie-break.
+
 ### Feeding the list, and what it costs
 
 | Feed | What | Cost |
@@ -203,7 +213,7 @@ Phasing: I1 the prerequisites; I3 the **Pass to orchestrator** gesture; I4 first
 | Engine-owned interest | PR info polled for every active work item, not only those a client watches (0012 F1) | One `set_interest` client, `engine:status` |
 | Agents via MCP | `status_report {ball?, note, needs_user?}` with the agent's token. Stored per work item; `needs_user` clears itself when the agent runs again or receives input | Optional for agents. Rows never depend on it |
 | Notes (0011) | When there is no report, the expanded row shows the first bullet of Doubts, else Pending | Read-only use of the notes store |
-| The planner and other feeders | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, expires_at}` / `work_items_close {url}` over MCP; dedupe by URL; cap per source | Brings items with no branch (the "N not started" counter, peer reviews). The engine never writes back to the tracker |
+| The planner and other feeders | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, priority?, expires_at}` / `work_items_close {url}` over MCP; dedupe by URL; cap per source | Brings items with no branch (the "N not started" counter, peer reviews). The engine never writes back to the tracker |
 | GitHub Actions on branches with no PR | 0012 A2 detection (REST + ETag) | After the MVP |
 | Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, and fixed-rule inbox items. See below | After the MVP (I8) |
 
@@ -223,6 +233,21 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | Read-only | Adapters never write to the tracker in this proposal |
 | In the public core | **GitHub Issues** as the reference adapter (uses `gh`, no new credential). Jira and other trackers as example adapters (generic, with placeholder mappings) or third-party packages via an entry point `lazyagent.trackers`. No employer-specific mapping ships in the repo |
 
+### Where new tasks come from
+
+The engine never invents tasks. It discovers them only from deterministic sources:
+
+| Source | What it finds | Phase |
+|---|---|---|
+| Local state | Worktrees, branches, agents | I1 |
+| GitHub, deterministic | Review requests to the user, PRs and CI of the user's branches | I1 (PRs), I7 (Actions on branches with no PR) |
+| An external planner as a feeder | Tracker cards assigned to the user, project tasks, via `work_items_upsert` | I6 |
+| Optional tracker adapters | Tasks assigned to the user, read-only (`assigned_to_me`) | I8 |
+
+Discovered tasks with no branch show as the **"N not started"** counter; they become rows only when they need the user (a peer review, `needs_user`). Starting one is the user's call, or the orchestrator's under a project's continue policy and its mandate; never the engine's.
+
+Gap: once the external planner moves from a fixed-interval tick to engine events (Q-B42), a new card in the tracker arrives only on the planner's next run. Two ways to close it: **(a)** the planner keeps a light deterministic discovery poll (API calls, no LLM); **(b)** a tracker adapter (I8) polls the tracker itself: generic, one adapter per tracker, its config private to the user. Recommended: (b), with (a) in the meantime (Q-B43).
+
 ### Where the board went
 
 - **The board is not built.** The in-flight list *is* the derived board, reduced to one list with a "ball" instead of six lanes. Lanes and verbs are one user's configuration: a label gesture can carry a lane name, and the planner can feed `ball/state` from its own lanes, but the core knows only `agent · others · stalled · done`.
@@ -235,7 +260,7 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | A1 engine queue (store, today's 10 kinds, marks in the engine, events, capability) | **Kept** as phase I2, with a fixed level instead of a score |
 | A2 GitHub Actions detection, `head_sha`, engine interest | Interest set in I1; Actions detection in I7 (after the MVP) |
 | A3 auto-triage (triage agent, fixer, verify, ledger) | **Out of the MVP.** Later, **opt-in**, and redesigned: delegate to the **owner agent** of the branch (or spawn one only on the user's key). No separate triage agent in the first version |
-| A4 score, criteria file, tie-break, notification threshold | **Cut.** Fixed level per kind, FIFO. Notifications only for Now (and later per round) |
+| A4 score, criteria file, tie-break, notification threshold | **Cut.** Fixed level per kind; inside a level: blocks an agent, inherited priority, age (no score, no tie-break). Notifications only for Now (and later per round) |
 | A5 `actionables_create/resolve` | Replaced by `work_items_upsert/close` (I6). `boost` cut |
 | A6 planner changes | I6, on the owner's go; the planner's skill keeps working until then |
 | A7 TUI list, analysis agent | Cut. The TUI gets a badge and "open in desktop" only |
@@ -274,4 +299,4 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 
 ## Open questions
 
-In the plan, §9 (Q-B1-Q-B42).
+In the plan, §9 (Q-B1-Q-B43).
