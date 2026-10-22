@@ -1,6 +1,6 @@
 # 0013. Inbox and status: one home screen for the team lead
 
-- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B32 at the end of the plan
+- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B34 at the end of the plan
 - **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
 
 The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
@@ -133,6 +133,23 @@ Class per kind (fixed):
 └────────────────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
+### How agents learn the tools
+
+0013 adds MCP tools (`status_report`, `request_decision`) and leans on notes, but worker agents get no system prompt today: only the orchestrator gets one (`compose_orchestrator_prompt`, passed with `--append-system-prompt`). Four layers, no plugin:
+
+| Layer | What | Reach |
+|---|---|---|
+| **a. Tool descriptions** | Each MCP tool's description says when to use it and carries the brief template | Every MCP-capable provider |
+| **b. Worker preamble** | ~10 lines injected at spawn: report when you need the user, use `request_decision` for a choice that needs reading, keep notes current. Claude: `--append-system-prompt`; Codex: prepended to the instruction. Editable or disabled in `.lazyagent.toml` `[agents] worker_preamble` | Agents lazyagent spawns |
+| **c. Hook nudge** | If a Claude turn ends with a question longer than 2 lines and no brief, the next `UserPromptSubmit` reminds the agent to use `request_decision` (same mechanism as the "notes updated" notice) | Claude agents lazyagent spawns |
+| **d. Engine backstop** | A brief with no options or no evidence becomes a Quick item (see above) | Every caller |
+
+A plugin or skill for Claude sessions that lazyagent did not spawn is a later option. Phasing: a, b and d in I4; c after (Q-B34).
+
+### Opt-in auto-delegation of stalled items
+
+Today a stalled row (conflict with no live agent, dead agent, CI red with no agent) only offers a one-key **Delegate** in Round. An opt-in rule per kind can do that key press for the user: `[inbox] auto_delegate = ["conflict_with_base", "ci_red"]` in `.lazyagent.toml`, empty by default. It is a fixed rule; no model decides. It always delegates to the branch's **owner agent** (restore it with its notes; spawn one with the brief only if there is none), respects the concurrency limits, and makes at most 2 attempts per item per fingerprint. After 2 failures the item goes to **To sit down with** with a brief. I4 or later; `ci_red` needs I7's detection (Q-B33, which widens Q-B16).
+
 ### Kinds → level (fixed table, no score)
 
 | Source | Level | Primary action |
@@ -216,6 +233,8 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | A calm screen turns into a wall of green dots | Ambient rows have no red, no animation, minute-level ages; the list folds |
 | The measured need is n = 1 and personal | The 1-week CLI/MCP test (I1) decides whether a screen is worth it; tracker lanes stay in the planner |
 | The planner and the engine disagree on state | The engine's facts win over a feeder's `state`; a feeder's `ball` is shown as a label |
+| Auto-delegation loops or spends agents behind the user's back | Opt-in per kind, off by default; owner agent only; concurrency limits; 2 attempts per fingerprint, then a Deep item |
+| Agents never call the new tools | Tool descriptions + worker preamble + engine backstop (Q-B34); rows never depend on reports |
 | Agents flood "To sit down with" with briefs | At most 2 open briefs per agent; `deep_max` visible; a brief without options or evidence becomes a Quick item |
 | A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" |
 | An answer is lost if the agent dies before reading it | It is in the agent's notes (Decisions) and on the work item; a restored or successor agent gets it |
@@ -223,4 +242,4 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 
 ## Open questions
 
-In the plan, §9 (Q-B1-Q-B32).
+In the plan, §9 (Q-B1-Q-B34).
