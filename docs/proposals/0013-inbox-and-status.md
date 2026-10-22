@@ -1,6 +1,6 @@
 # 0013. Inbox and status: one home screen for the team lead
 
-- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B34 at the end of the plan
+- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B42 at the end of the plan
 - **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
 
 The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
@@ -34,7 +34,7 @@ The desktop opens on **Home**: one list of the user's **work items** (a branch, 
 | Since last look | Rows that changed since the user last looked carry a dot (I3). From I4, each work item has a deterministic timeline "since you looked" with a per-item seen mark. There is no prose digest |
 | Quick and Deep | Items decided from the row in under a minute are **Quick** (Now, Round). Items that need reading are **Deep** and wait in **To sit down with**, with a visible limit. See "Decisions that need context" |
 | Owner | The engine. `engine/status.py` (projection) and `engine/actionables.py` (inbox queue, 0012 A1). Clients without the `status` / `actionables` features keep their own derivation |
-| No LLM in the loop | Nothing is spawned and no model is called to keep Home up to date. It changes only through (1) deterministic reads of engine state and APIs (agent status, PR, CI, git, notes, jobs) and (2) the agents that are already working, which report over MCP (`status_report`: ball, short note, needs the user). A summariser or classifier model is at most a future opt-in idea |
+| No LLM in the state path | **State** (rows, ball, level, class, zone) is the engine's. Nothing is spawned and no model is called to keep Home up to date. It changes only through (1) deterministic reads of engine state and APIs (agent status, PR, CI, git, notes, jobs) and (2) the agents that are already working, which report over MCP (`status_report`: ball, short note, needs the user). A summariser or classifier model is at most a future opt-in idea. **Action** (judgement on one item) may be taken by an LLM only as a delegate: an owner agent or the orchestrator, under limits the engine enforces, with every action shown on the item's row (see "The orchestrator") |
 | What is stored | Only what cannot be derived: user gestures, the agents' last `status_report`, external items, and a 24 h tombstone for closed items. Rows themselves are a projection, recomputed on events |
 
 ### Wireframe: Home (desktop)
@@ -148,7 +148,35 @@ A plugin or skill for Claude sessions that lazyagent did not spawn is a later op
 
 ### Opt-in auto-delegation of stalled items
 
-Today a stalled row (conflict with no live agent, dead agent, CI red with no agent) only offers a one-key **Delegate** in Round. An opt-in rule per kind can do that key press for the user: `[inbox] auto_delegate = ["conflict_with_base", "ci_red"]` in `.lazyagent.toml`, empty by default. It is a fixed rule; no model decides. It always delegates to the branch's **owner agent** (restore it with its notes; spawn one with the brief only if there is none), respects the concurrency limits, and makes at most 2 attempts per item per fingerprint. After 2 failures the item goes to **To sit down with** with a brief. I4 or later; `ci_red` needs I7's detection (Q-B33, which widens Q-B16).
+Today a stalled row (conflict with no live agent, dead agent, CI red with no agent) only offers a one-key **Delegate** in Round. An opt-in rule per kind can do that key press for the user: `[inbox] auto_delegate = ["conflict_with_base", "ci_red"]` in `.lazyagent.toml`, empty by default. It is a fixed rule; no model decides. It always delegates to the branch's **owner agent** (restore it with its notes; spawn one with the brief only if there is none), respects the concurrency limits, and makes at most 2 attempts per item per fingerprint. After 2 failures the item goes to **To sit down with** with a brief. I4 or later; `ci_red` needs I7's detection (Q-B33, which widens Q-B16). The target can also be the orchestrator (`auto_delegate_target = "owner" | "orchestrator"`), which then chooses: restore the owner agent, spawn one, or escalate.
+
+### The orchestrator: first responder, not owner of state
+
+Today the orchestrator is an ordinary agent session in a special slot. Its limits are prompt text. A fixed-interval planner tick wakes it, which accounts for most of its turns, and many of those find nothing new. It compacts about once a day, and its copy of "who has the ball" goes stale. Its work on the action path is still real value: progress while the user is away, a red CI nobody was watching, a stuck agent caught, plans distilled into one-line decisions. 0013 keeps that value and takes state away from it. **The engine owns state. The orchestrator acts as a delegate, inside limits the engine enforces, and every action shows on the item's row.** The core works the same with no orchestrator running: everything then goes to the user, as in the rest of this proposal.
+
+| Piece | Design |
+|---|---|
+| **Present, event-woken** | It may run all day, but it stays idle (zero tokens) until something wakes it: a worker question or `request_decision` routed to it, an item handed to it, an opt-in engine rule (after I7), or the user. There is no fixed-interval polling. On each wake it reads `status_list` and the item, and it keeps no state of its own |
+| **First responder** | A worker question or `request_decision` goes to the orchestrator first, when one is running and the item's mandate allows it. The row shows "orchestrator · looking". The orchestrator answers within its mandate, or escalates (`decision_escalate`, with its suggestion attached) to the user's inbox: Now, or To sit down with. If it has done neither within **N minutes** (10), the engine escalates anyway. Tool-permission approvals are never routed to it: they stay in Now for the user |
+| **Mandate by presence** | **Present** (desktop activity, or the explicit toggle on Home): it proposes, and decides only small things: a Quick, fully reversible answer, a relay, a CI retry, restoring the owner agent. **Away:** it decides anything reversible: technical approach, CI retry, rebase, continuing with the next task. A "keep for me" gesture on an item sets that item's mandate to none |
+| **Never alone** | It never takes an irreversible or outward action on its own: merging to a default or protected branch, closing or reopening a PR, any GitHub comment, review or label, writing to an issue tracker, publishing (tags, releases, packages), force-pushing a shared branch, deleting a branch or worktree with unpushed work. The engine enforces this. Every orchestrator action goes through an engine method that checks an allowlist for the current mandate and the brief's `reversible` field. A refusal tells the orchestrator to escalate |
+| **Visible and revertible** | Every orchestrator decision becomes an entry "decided by orchestrator (away)", with its reason, in the item's **since you looked** timeline and in the Decisions section of the worker's notes. The row and the decision view offer **Revert**: the user picks another option and the engine sends it to the worker as an override. If the engine recorded an inverse for an action (stopping the agent it spawned, resetting the branch to the pre-action commit while it is unpushed), Revert runs that inverse |
+| **Caps** | At most 3 autonomous decisions per item per day, and 20 per day in total. Past either cap, the item goes to **To sit down with**. Home counts autonomous actions, and how many were reverted, separately from the user's own gestures |
+| **Stalled items and handoff** | `auto_delegate` can target the orchestrator (see above). **Pass to orchestrator** is a gesture on any row: a claim with a timeout (2 h) that allows the current mandate's actions. If the orchestrator dies or the claim expires, the row returns to Round marked "delegation lapsed" |
+| **Projects** | Project tasks enter the engine as work items with dependencies (`work_items_upsert` with `project` and `depends_on`). The project-orchestration skill keeps the DAG, next-task and stacked-PR logic. "Continue with the next task while another awaits review" becomes a per-project policy that the orchestrator runs, within its mandate and the spawn caps. Projects show in In flight, and a task waiting on another shows "waits on <task>" |
+| **Engine prerequisites (I1)** | The orchestrator reads `status_list` instead of building tables. Spawn and concurrency caps are enforced in the engine, not in the prompt. The orchestrator becomes an authenticated role (today any caller without an agent token counts as the orchestrator for notes). An external planner that ticks on a fixed interval can subscribe to engine events instead |
+| **Not in the core** | An always-on autonomous manager loop, with its own ticks, its own board and its own priorities |
+
+```
+ NOW 1 · ROUND 3 · IN FLIGHT 6         auto 4 today · 1 reverted        [Present ▾]
+ ...
+ ● api  fix-retries         agent · tests running                          12m
+   └ decided by orchestrator (away) 10:42 · retries? → A exponential
+     "matches notes Constraints; reversible"                    [Revert] [Seen]
+ ● web  login-form          orchestrator · looking (3m) · escalates at 10m
+```
+
+Phasing: I1 the prerequisites; I3 the **Pass to orchestrator** gesture; I4 first-responder routing, the mandate and the decision log (together with `request_decision`); I5 Revert from the decision view; I6 projects with `depends_on`; after I7, opt-in event wake rules (Q-B35-Q-B42).
 
 ### Kinds → level (fixed table, no score)
 
@@ -234,6 +262,10 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | The measured need is n = 1 and personal | The 1-week CLI/MCP test (I1) decides whether a screen is worth it; tracker lanes stay in the planner |
 | The planner and the engine disagree on state | The engine's facts win over a feeder's `state`; a feeder's `ball` is shown as a label |
 | Auto-delegation loops or spends agents behind the user's back | Opt-in per kind, off by default; owner agent only; concurrency limits; 2 attempts per fingerprint, then a Deep item |
+| The orchestrator decides wrongly while the user is away | Only reversible actions; caps (3 per item, 20 per day), then To sit down with; every decision on the row with its reason and a Revert |
+| The orchestrator becomes a second source of truth again | It keeps no state: it reads `status_list` on each wake; ball, level and zone are the engine's |
+| A silent orchestrator holds the user's items | Escalation after N minutes (10); claims expire (2 h) and on its death; no orchestrator running → everything goes to the user |
+| Uncapped spawns from an orchestrator or an external planner | Spawn and concurrency caps and an authenticated orchestrator role in the engine, at I1 |
 | Agents never call the new tools | Tool descriptions + worker preamble + engine backstop (Q-B34); rows never depend on reports |
 | Agents flood "To sit down with" with briefs | At most 2 open briefs per agent; `deep_max` visible; a brief without options or evidence becomes a Quick item |
 | A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" |
@@ -242,4 +274,4 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 
 ## Open questions
 
-In the plan, §9 (Q-B1-Q-B34).
+In the plan, §9 (Q-B1-Q-B42).

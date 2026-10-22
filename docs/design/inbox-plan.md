@@ -4,27 +4,28 @@
 - **Proposal:** [0013-inbox-and-status.md](../proposals/0013-inbox-and-status.md). This plan does not repeat its rationale. It covers only what to build, where, and how to prove it.
 - **Base:** `develop` @ `5776c62`.
 - **MVP** = I1-I3: the status projection with a CLI/MCP table (and a 1-week test that gates the rest), the engine inbox queue with fixed levels, and the desktop Home. I4-I8 come after (I4-I5: decisions that need context; I8: optional issue-tracker adapters). Auto-triage is an opt-in phase after that.
-- **Hard rule:** no agent is spawned and no LLM is called at runtime to keep the list current. Rows come from deterministic reads (engine state, `gh`, git, notes) and from MCP reports by agents that are already running. Any summariser/classifier model is a future opt-in idea, not part of any phase here.
+- **Hard rule (state path):** no agent is spawned and no LLM is called at runtime to keep the list current. Rows come from deterministic reads (engine state, `gh`, git, notes) and from MCP reports by agents that are already running. Any summariser/classifier model is a future opt-in idea, not part of any phase here.
+- **Action path:** an LLM (an owner agent or the orchestrator) acts only as a delegate, on one item, inside limits the engine enforces (allowlist per mandate, caps, claims), and every action is a row/timeline entry (§5c).
 
 ## TL;DR
 
 | # | Branch | Scope | One-line acceptance |
 |---|---|---|---|
 | I0 | `docs-inbox-status-board` | Proposal 0013 + this plan; 0012 and its plan marked superseded | Merged |
-| I1 | `inbox-i1-status-projection` | `engine/status.py`: work items as a projection of worktrees + agents + PR + jobs; ball/state/level derivation (§3); engine-owned PR interest; `status_list` method + `status.updated`/`status.removed` events + `status` feature; MCP `status_list`; `lazyagent status` CLI | With no UI open, `lazyagent status` lists every worktree's branch (agent or not) with ball, fact state and age; the orchestrator answers a status question with one `status_list` call |
+| I1 | `inbox-i1-status-projection` | `engine/status.py`: work items as a projection of worktrees + agents + PR + jobs; ball/state/level derivation (§3); engine-owned PR interest; `status_list` method + `status.updated`/`status.removed` events + `status` feature; MCP `status_list`; `lazyagent status` CLI. **Orchestrator prerequisites** (§5c): authenticated orchestrator role (no token ≠ orchestrator), spawn/concurrency caps in the engine, orchestrator prompt reads `status_list` | With no UI open, `lazyagent status` lists every worktree's branch (agent or not) with ball, fact state and age; the orchestrator answers a status question with one `status_list` call; a spawn over `max_concurrent_agents` is refused by the engine; a token-less notes write is no longer attributed to the orchestrator |
 | — | (gate) | One week of real use (Q-B1) | Status questions to the orchestrator drop ≥ 50 % and the table needs fewer hand corrections than before. If not, stop at I1 and keep the CLI |
 | I2 | `inbox-i2-engine-queue` | 0012 A1, trimmed: `engine/actionables.py` store, today's 10 attention kinds derived in the engine, the fixed kind → level table, marks (dismiss, park) in the engine, `actionables_*` methods + events + feature. No score, no criteria file | An agent waiting on approval yields a Now item with no UI open; dismissing it in one client hides it in the other; `status_list` reports `needs_you` from the queue |
-| I3 | `inbox-i3-desktop-home` | Desktop Home: inbox (Now, Round) grouped by work item + in-flight list; rounds; "changed since last look"; one-key actions; noise cut (path, "engine connected", age "0s", Stop next to Open); fallback to the client derivation for old engines | Opening the desktop shows Home, not a terminal; an item is shown once; a new item never reorders the list under the cursor |
-| I4 | `inbox-i4-gestures-briefs` | Store for what cannot be derived: label (ball + text, expires on fingerprint change), park until event, close, 24 h tombstones; MCP `status_report` with its expiry rules. **Quick/Deep classes** (fixed rule per kind) and the **To sit down with** zone with `deep_max`; MCP `request_decision` (brief template + validation, §5b); **since you looked** timeline per work item and per-item seen marks. **Tool discovery** (Q-B34 a+b+d): tool descriptions with when-to-use and the brief template, worker preamble at spawn (`[agents] worker_preamble`) | A row labelled "others: QA" keeps its label through a conflict and loses it on merge; a freshly spawned worker calls `request_decision` with no hand-written instruction; a brief with options and evidence lands in To sit down with, one without evidence becomes a Quick item; the timeline lists a commit and a CI run made while the user was away |
-| I5 | `inbox-i5-decision-view` | Desktop decision view (brief \| evidence \| timeline), `decision_answer` delivered through the review-reply queue, **Explain this** (`decision_explain_request` / `decision_explain`), decision log in the agent's notes (Decisions) and on the work item | Answering B sends the agent one line when it is idle and appends it to its notes; a restored agent sees it after compaction; Explain is disabled with no live agent |
-| I6 | `inbox-i6-feeders` | MCP `work_items_upsert` / `work_items_close` (dedupe by URL, cap per source, `expires_at`); "N not started" counter; link a URL to a branch by its ticket id; the planner change (owner's file, owner's go) | A tracker card with no branch shows in the counter and, once a branch with its ticket id exists, joins that row |
+| I3 | `inbox-i3-desktop-home` | Desktop Home: inbox (Now, Round) grouped by work item + in-flight list; rounds; "changed since last look"; one-key actions; noise cut (path, "engine connected", age "0s", Stop next to Open); **Pass to orchestrator** gesture (claim with TTL, §5c); fallback to the client derivation for old engines | Opening the desktop shows Home, not a terminal; an item is shown once; a new item never reorders the list under the cursor |
+| I4 | `inbox-i4-gestures-briefs` | Store for what cannot be derived: label (ball + text, expires on fingerprint change), park until event, close, 24 h tombstones; MCP `status_report` with its expiry rules. **Quick/Deep classes** (fixed rule per kind) and the **To sit down with** zone with `deep_max`; MCP `request_decision` (brief template + validation, §5b); **since you looked** timeline per work item and per-item seen marks. **Tool discovery** (Q-B34 a+b+d): tool descriptions with when-to-use and the brief template, worker preamble at spawn (`[agents] worker_preamble`). **Orchestrator as first responder** (§5c): routing, escalation after N min, presence and mandate allowlist, caps, "decided by orchestrator" in timeline and notes, Revert from the row | A row labelled "others: QA" keeps its label through a conflict and loses it on merge; a freshly spawned worker calls `request_decision` with no hand-written instruction; with the user away the orchestrator answers a reversible brief and the row shows it with Revert, while a `reversible: no` brief reaches the user; an unanswered routed brief reaches the user after 10 min; a brief with options and evidence lands in To sit down with, one without evidence becomes a Quick item; the timeline lists a commit and a CI run made while the user was away |
+| I5 | `inbox-i5-decision-view` | Desktop decision view (brief \| evidence \| timeline), `decision_answer` delivered through the review-reply queue, **Explain this** (`decision_explain_request` / `decision_explain`), decision log in the agent's notes (Decisions) and on the work item; **Revert** of an orchestrator decision from the view | Answering B sends the agent one line when it is idle and appends it to its notes; a restored agent sees it after compaction; Explain is disabled with no live agent |
+| I6 | `inbox-i6-feeders` | MCP `work_items_upsert` / `work_items_close` (dedupe by URL, cap per source, `expires_at`); "N not started" counter; link a URL to a branch by its ticket id; **projects**: `project` + `depends_on` on work items, grouped in In flight, per-project `continue_while_review` run by the orchestrator (§5c); the planner change (owner's file, owner's go) | A tracker card with no branch shows in the counter and, once a branch with its ticket id exists, joins that row |
 | I7 | `inbox-i7-gha` | 0012 A2: Actions runs per repo (REST + ETag), `PrInfo.head_sha`, "fresh red on head", CI items for branches with no PR; "Delegate to the owner agent" action | A red run on a branch with no PR becomes a Round item; one key sends its failed-log summary to the branch's live agent |
 | I8 | `inbox-i8-trackers` | Optional `TrackerAdapter` protocol, GitHub Issues reference adapter, status mapping, edge-triggered inbox rules, polling with cache/ETag/caps, credentials by env/keyring, `trackers.toml` (global + per repo); a generic Jira example adapter (§7b) | With GitHub Issues on, a branch `fix-123-…` whose issue gets the label mapped to "returned" yields a Round item; with no adapter configured, `status_list` output is byte-identical |
-| later | — | Rounds as notifications at cut points, Focus mode, backpressure (Round > 7 stops new work), ntfy notifier; **opt-in auto-delegation of stalled items to the owner agent** (0012 A3 trimmed, §7; may come as early as I4, Q-B33); hook nudge for briefs (Q-B34 c) | — |
+| later | — | Rounds as notifications at cut points, Focus mode, backpressure (Round > 7 stops new work), ntfy notifier; **opt-in auto-delegation of stalled items to the owner agent** (0012 A3 trimmed, §7; may come as early as I4, Q-B33); hook nudge for briefs (Q-B34 c); opt-in compiled-in wake rules for the orchestrator (§5c). Never in the core: an always-on autonomous manager loop | — |
 
 Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` once `uv run pytest` and (for desktop phases) `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` are green. Every phase updates the docs it changes (engine-split §4d/§4e/§4g, ui-plan §3b, desktop-app D4, this plan §8, proposal status).
 
-**Owner time:** I1 ~1.5 h of review, I2 ~1 h, I3 ~2 h, I4 ~1.5 h, I5 ~1.5 h, I6 ~1.5 h (plus the planner change), I7 ~1 h, I8 ~1 h. Agents implement.
+**Owner time:** I1 ~2 h of review (with the orchestrator prerequisites), I2 ~1 h, I3 ~2 h, I4 ~2.5 h (with first-responder routing), I5 ~1.5 h, I6 ~1.5 h (plus the planner change), I7 ~1 h, I8 ~1 h. Agents implement.
 
 ---
 
@@ -128,10 +129,16 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 | event | `actionable.created` / `.updated` / `.resolved` | I2 | As 0012 |
 | method | `status_gesture {key, kind: label \| park \| close \| clear, ball?, text?, until?}` | I4 | User only |
 | method (agent) | `status_report {ball?, note, needs_user?}` | I4 | Agent token; scoped to the agent's own work item |
+| method | `status_gesture {key, kind: "delegate", to: "orchestrator", ttl_s?}` / `"keep_for_me"` | I3, I4 | User; claim (§5c) / mandate none for the item |
+| method (orchestrator) | `orchestrator_release {key, outcome, note}`, `decision_escalate {id, note, suggestion?}`; `decision_answer` with `reason` | I3, I4 | Orchestrator token; each action checked against the mandate allowlist and caps |
+| method | `presence_set {state: present \| away \| auto}` | I4 | User (Home toggle); desktop reports activity |
+| method | `decision_revert {id \| entry, choice?, comment?}` | I4, I5 | User; override to the worker + recorded inverse |
+| event | `status.timeline` entries carry `actor`; `orchestrator.claim` / `.released` / `.lapsed` | I3, I4 | — |
 | method (feeder) | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, expires_at?}` / `work_items_close {url}` | I6 | Source from the token; `max_open_per_source` 50; the engine's facts win over a feeder's `state` |
 | MCP | `status_list` (I1), `status_report`, `request_decision`, `decision_withdraw` (I4), `decision_explain` (I5), `work_items_upsert/close` (I6) | — | No arguments → the caller's own scope where it applies |
 | CLI | `lazyagent status [--json] [--all]` | I1 | Same rows as `status_list` |
 | config | `[status] stale_days, stalled_hours, ticket_pattern`, `[inbox] round_every_minutes, deep_max, max_briefs_per_agent` | I1, I3, I4, I6 | `14, 24, null, 30, 5, 2` |
+| config | `[orchestrator] max_spawns_per_day, max_concurrent_agents` (I1), `escalate_after_min, away_after_min, max_decisions_per_item_day, max_decisions_day, claim_ttl_s, away_allow` (I3-I4) | I1, I3, I4 | `10, 4, 10, 15, 3, 20, 7200`, all away rows |
 
 v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden fixtures.
 
@@ -193,16 +200,58 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 
 ---
 
+## 5c. The orchestrator role (I1, I3-I6, later)
+
+The engine owns state. The orchestrator is a delegate for actions, and the engine enforces its limits (0013 "The orchestrator"). With no orchestrator running, every rule below falls back to "the item goes to the user".
+
+**Identity (I1).** The orchestrator is the slot `__orchestrator__` with its own agent token. A caller with no token stops counting as the orchestrator for notes (`methods.py`, the `caller_slot is None` branch) and gets the plain user/client role instead. Every `actor` on the timeline is one of `user`, `agent:<id>`, `orchestrator` or `engine`.
+
+**Caps in the engine (I1).** `[orchestrator] max_spawns_per_day` (10), `max_concurrent_agents` (per repo, 4), checked in `spawn_agent` for every caller with an agent token, the orchestrator included. Over a cap the call is refused with a message, and nothing is queued silently. Its prompt reads `status_list` instead of building tables. An external planner subscribes to `status.*` / `actionable.*` events (`list_events` cursor, or `notify_when_idle`) instead of ticking on a fixed interval.
+
+**Wake.** The engine wakes the orchestrator through the same queue as review replies: `send_agent_input` when it is idle, never mid-turn, with one fixed line (`Item <key>: <kind> <id>. Read it with status_list / decision_get.`). Wake sources: a routed question or brief (I4), a claim (I3), the user, and opt-in rules after I7. Nothing wakes it on a timer.
+
+**Routing (I4).** When a worker emits `request_decision`, or a `waiting_for_user` question, the engine checks whether an orchestrator is alive, the item's mandate is not `none`, and the item is not a tool-permission approval. If all three hold, the item is created with `holder: orchestrator`. The row reads "orchestrator · looking" and the orchestrator is woken. It resolves the item with one of:
+- `decision_answer {id, choice, comment, reason}` with its token, checked against its mandate;
+- `decision_escalate {id, note, suggestion?}`, after which the item goes to the user's zone (Now / Round / To sit down with by the usual class) with the suggestion preselected and labelled "orchestrator suggests B".
+
+If it has done neither after `escalate_after_min` (10), the engine escalates on its own and adds "orchestrator did not answer".
+
+**Mandate.** `presence` is `present` or `away`. It is `present` while a desktop client reports user input in the last `away_after_min` (15). The Home toggle overrides it until changed. No UI connected means `away`. The engine checks an allowlist per mandate:
+
+| Action | present | away |
+|---|---|---|
+| Answer a brief / question with `reversible: yes` and class Quick | ✓ | ✓ |
+| Answer with `reversible: yes` (Deep) or `partly` | propose (escalate with a suggestion) | ✓ |
+| Answer with `reversible: no` | escalate | escalate |
+| Relay to an agent (`send_agent_input`), restore the owner agent, CI re-run | ✓ | ✓ |
+| Rebase / resolve a conflict through the owner agent, spawn a worker (within caps), start the next project task | propose | ✓ |
+| **Never alone:** merge to a default/protected branch, close/reopen a PR, GitHub comment/review/label, tracker write, publish (tag, release, package), force-push a shared branch, delete a branch/worktree with unpushed work | ✗ | ✗ |
+
+The never-alone list is fixed in code. Config can only shorten the other rows (`[orchestrator] away_allow = [...]`), never add to them.
+
+**Log and revert (I4, I5).** Every orchestrator decision or action writes a timeline entry `{actor: "orchestrator", mandate, action, reason, inverse?}` and appends to the worker's notes Decisions: `- <date> · <question> → <choice> (orchestrator, away): <reason>`. **Revert** (row, I4; decision view, I5) sends the worker `Decision <id> overridden by the user: <choice>. <comment>`. It also runs the recorded inverse when there is one: stop the spawned agent, or `git reset` to the pre-action commit while the branch is unpushed. Revert counts as a user gesture. The orchestrator's actions are counted separately (`auto_actions`, `auto_reverted` per day on Home).
+
+**Caps on autonomy (I4).** `[orchestrator] max_decisions_per_item_day` (3) and `max_decisions_day` (20). Past either cap, the engine routes that item to the user (To sit down with) for the rest of the day.
+
+**Claims (I3).** The user gesture `status_gesture {key, kind: "delegate", to: "orchestrator", ttl_s?}` creates `claim {holder, until, allowed}`. `allowed` is the current mandate's allowlist, and the default `ttl_s` is 7200. The orchestrator ends a claim with `orchestrator_release {key, outcome, note}`. If the claim expires, or the orchestrator slot exits, the item returns to Round marked "delegation lapsed". `auto_delegate_target = "orchestrator"` (§7) creates the same claim without the gesture.
+
+**Projects (I6).** `work_items_upsert` gains `project {id, title, policy?}` and `depends_on [url]`. In flight groups items by project, and an item whose dependency is open shows "waits on <title>". `policy.continue_while_review` (default false) lets the orchestrator start the next task whose dependencies are merged or in review, within its mandate (away: ✓; present: propose) and the spawn caps. The DAG, next-task choice and stacked-PR retargeting stay in the project-orchestration skill. The engine only stores and shows them.
+
+**Later (after I7, opt-in).** Compiled-in wake rules, such as "CI red / conflict with no owner agent for > 1 h → claim for the orchestrator". They are off by default and count against the same caps.
+
+---
+
 ## 6. Files to touch
 
 | Phase | Files |
 |---|---|
+| I1 (orchestrator) | `engine/methods.py` (token-less caller ≠ orchestrator; spawn/concurrency caps), `config.py` (`[orchestrator]`), `orchestrator_prompt.py` (read `status_list`, never build tables), `tests/engine/test_orchestrator_role.py` |
 | I1 | `engine/status.py` (new: membership, derivation, projection, coalesced events), `engine/engine.py` (own it; feed events), `engine/worktrees.py` (`engine:status` interest), `engine/notes.py` (public `section_bullets`), `engine/methods.py`, `engine/server.py` (`FEATURES`), `engine/events.py`, `mcp_server.py` (`status_list`), `cli.py` / engine CLI (`lazyagent status`), `config.py` (`[status]`), `protocol/schema/v1/*`, `tests/engine/test_status.py` (derivation table as golden tests) |
 | I2 | `engine/actionables.py` (new, 0012 A1 minus score), `engine/status.py` (`needs_you` from the queue), schemas, `tests/engine/test_actionables.py` (port of attention.rs tests) |
 | I3 | desktop: `proto/src/types.rs` (`StatusRow`, `Actionable`, events), `app/src/home_view.rs` (new), `app/src/attention.rs` (fallback only), `app.rs` (default view, keys, noise cut), `persist.rs` (marks import once) |
-| I4 | `engine/status.py` (overlay store, gestures, report expiry, timeline ring, per-item seen), `engine/decisions.py` (new: brief validation, limits, lifecycle), `engine/actionables.py` (class per kind, Deep zone), `mcp_server.py` (`status_report`, `request_decision`, `decision_withdraw`; descriptions with when-to-use and the brief template), `orchestrator_prompt.py` (when to write a brief), `worker_prompt.py` (new: default worker preamble), `agent_providers.py` (inject it: Claude `--append-system-prompt`, Codex prepended), `config.py` (`[agents] worker_preamble`), desktop gestures + To sit down with zone |
+| I4 | `engine/status.py` (overlay store, gestures, report expiry, timeline ring, per-item seen), `engine/decisions.py` (new: brief validation, limits, lifecycle), `engine/actionables.py` (class per kind, Deep zone), `mcp_server.py` (`status_report`, `request_decision`, `decision_withdraw`; descriptions with when-to-use and the brief template), `orchestrator_prompt.py` (when to write a brief), `worker_prompt.py` (new: default worker preamble), `agent_providers.py` (inject it: Claude `--append-system-prompt`, Codex prepended), `config.py` (`[agents] worker_preamble`, `[orchestrator]`), `engine/orchestrator.py` (new: routing, presence, mandate allowlist, caps, claims, escalation timer), desktop gestures + To sit down with zone |
 | I5 | desktop `decision_view.rs` (new: brief \| evidence tabs \| timeline, reusing `diff_view.rs`), `engine/decisions.py` (answer queue through the review-reply path, explain request), `engine/notes.py` (engine append to Decisions), `mcp_server.py` (`decision_explain`) |
-| I6 | `mcp_server.py` (`work_items_*`), `engine/status.py` (external rows, ticket link), `models.py` (configurable ticket pattern); the planner skill (owner's file, owner's go) |
+| I6 | `mcp_server.py` (`work_items_*`), `engine/status.py` (external rows, ticket link, `project`/`depends_on`), `engine/orchestrator.py` (`continue_while_review`), `models.py` (configurable ticket pattern); the planner skill (owner's file, owner's go) |
 | I8 | `engine/trackers/__init__.py` (protocol, registry, entry point `lazyagent.trackers`), `engine/trackers/github_issues.py`, `engine/trackers/jira_example.py`, `engine/status.py` (row enrichment), `engine/actionables.py` (`tracker_status` kind), `config.py` (`trackers.toml` loader), tests with fake HTTP |
 | I7 | `worktree_manager.py` (`head_sha`, Actions runs with ETag, jobs), `models.py` (`WorkflowRun`), `engine/actionables.py` (`ci_failed`), desktop "delegate" action |
 
@@ -218,6 +267,7 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 auto_delegate = []            # e.g. ["conflict_with_base", "ci_red", "agent_dead"]
 ```
 
+- Target: `auto_delegate_target = "owner"` (default) or `"orchestrator"` (a claim, §5c: the orchestrator chooses to restore the owner, spawn one, or escalate).
 - Trigger: a stalled item of a listed kind enters Round (conflict with no live agent, dead agent, CI red with no agent; `ci_red` needs I7's "fresh red on head").
 - Action: exactly what the manual **Delegate** key does, to the branch's **owner agent**: a live idle one gets the brief (busy → when idle); a dead one is restored with its notes; only with no owner at all is one spawned with the brief. Never a separate fixer or a triage agent. No model decides.
 - Limits as code: the engine's concurrency limits, ≤ 2 attempts per item per fingerprint, `max_per_day` (10), never on default/protected branches, never on a teammate's branch.
@@ -317,3 +367,11 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 | Q-B32 | A brief whose evidence is outdated (the branch moved) | Evidence pinned to a commit; "outdated" banner in the view; the user can still answer or press Explain this |
 | Q-B33 | Opt-in auto-delegation of stalled items (conflict with no agent, dead agent, CI red with no agent)? | Yes, opt-in per kind (`[inbox] auto_delegate = [...]`, default empty), fixed rule, owner agent only (restore with notes; spawn with the brief only if none), concurrency limits, ≤ 2 attempts per item per fingerprint, then To sit down with with a brief. I4 or later (`ci_red` after I7). Alternatives: never automatic; automatic by default |
 | Q-B34 | How do agents learn `status_report` / `request_decision` / notes? | Four layers, no plugin (§7a): (a) tool descriptions, (b) worker preamble at spawn, (c) Claude hook nudge, (d) engine backstop. a+b+d in I4, c after. Alternatives: only tool descriptions; a plugin/skill |
+| Q-B35 | Principle: split state from action? | Yes. State (rows, ball, level, class, zone) is the engine's, deterministic, no LLM. Action may be taken by an LLM only as a delegate, under engine-enforced limits, every action visible on the row. Alternatives: no LLM anywhere (the orchestrator stays outside the core, unsupported); allow LLM summaries in the state path |
+| Q-B36 | Orchestrator as first responder for worker questions and briefs, and the escalation timeout | Yes, when one is running and the item's mandate allows; it answers within mandate or escalates; the engine escalates after N = 10 min. Tool-permission approvals are not routed. Alternatives: user first always (orchestrator only on Pass); no timeout |
+| Q-B37 | Mandate by presence, and how presence is detected | Present → propose, decide only small reversible things; away → decide everything reversible. Presence = desktop input in the last 15 min, overridden by a Home toggle; no UI → away. Alternatives: one mandate always (propose only); a mandate set per item |
+| Q-B38 | The never-alone list | Fixed in code: merge to default/protected, close/reopen PR, GitHub comment/review/label, tracker write, publish (tag/release/package), force-push a shared branch, delete branch/worktree with unpushed work. Config may only narrow the allowed rows. Alternatives: configurable per repo; also forbid spawns while away |
+| Q-B39 | Caps on autonomous decisions and Revert | 3 per item per day, 20 per day; past them → To sit down with. Revert on the row (I4) and in the decision view (I5); autonomous actions and reverts counted apart from gestures. Alternatives: no caps (trust the log); only a daily cap |
+| Q-B40 | "Pass to orchestrator" gesture and claim timeout | Yes, at I3; claim TTL 2 h with the mandate's allowed actions; on expiry or orchestrator death → Round with "delegation lapsed". Alternatives: 30 min TTL; no gesture (rules only) |
+| Q-B41 | Projects as work items with `depends_on`, and the per-project continue policy | Yes, at I6: `project` + `depends_on` in `work_items_upsert`; the skill keeps the DAG and stacked PRs; `continue_while_review` (default off) run by the orchestrator within mandate and caps. Alternatives: projects only in the skill; the engine runs the DAG |
+| Q-B42 | I1 prerequisites and the external planner's tick | Yes, in I1: spawn/concurrency caps in the engine, authenticated orchestrator role (no token ≠ orchestrator), orchestrator reads `status_list`. An external planner moves from a fixed-interval tick to engine events once they exist (its change stays the owner's). Alternatives: prerequisites with I4; keep the tick |
