@@ -15,12 +15,12 @@
 | — | (gate) | One week of real use (Q-B1) | Status questions to the orchestrator drop ≥ 50 % and the table needs fewer hand corrections than before. If not, stop at I1 and keep the CLI |
 | I2 | `inbox-i2-engine-queue` | 0012 A1, trimmed: `engine/actionables.py` store, today's 10 attention kinds derived in the engine, the fixed kind → level table, marks (dismiss, park) in the engine, `actionables_*` methods + events + feature. No score, no criteria file | An agent waiting on approval yields a Now item with no UI open; dismissing it in one client hides it in the other; `status_list` reports `needs_you` from the queue |
 | I3 | `inbox-i3-desktop-home` | Desktop Home: inbox (Now, Round) grouped by work item + in-flight list; rounds; "changed since last look"; one-key actions; noise cut (path, "engine connected", age "0s", Stop next to Open); fallback to the client derivation for old engines | Opening the desktop shows Home, not a terminal; an item is shown once; a new item never reorders the list under the cursor |
-| I4 | `inbox-i4-gestures-briefs` | Store for what cannot be derived: label (ball + text, expires on fingerprint change), park until event, close, 24 h tombstones; MCP `status_report` with its expiry rules. **Quick/Deep classes** (fixed rule per kind) and the **To sit down with** zone with `deep_max`; MCP `request_decision` (brief template + validation, §5b); **since you looked** timeline per work item and per-item seen marks | A row labelled "others: QA" keeps its label through a conflict and loses it on merge; a brief with options and evidence lands in To sit down with, one without evidence becomes a Quick item; the timeline lists a commit and a CI run made while the user was away |
+| I4 | `inbox-i4-gestures-briefs` | Store for what cannot be derived: label (ball + text, expires on fingerprint change), park until event, close, 24 h tombstones; MCP `status_report` with its expiry rules. **Quick/Deep classes** (fixed rule per kind) and the **To sit down with** zone with `deep_max`; MCP `request_decision` (brief template + validation, §5b); **since you looked** timeline per work item and per-item seen marks. **Tool discovery** (Q-B34 a+b+d): tool descriptions with when-to-use and the brief template, worker preamble at spawn (`[agents] worker_preamble`) | A row labelled "others: QA" keeps its label through a conflict and loses it on merge; a freshly spawned worker calls `request_decision` with no hand-written instruction; a brief with options and evidence lands in To sit down with, one without evidence becomes a Quick item; the timeline lists a commit and a CI run made while the user was away |
 | I5 | `inbox-i5-decision-view` | Desktop decision view (brief \| evidence \| timeline), `decision_answer` delivered through the review-reply queue, **Explain this** (`decision_explain_request` / `decision_explain`), decision log in the agent's notes (Decisions) and on the work item | Answering B sends the agent one line when it is idle and appends it to its notes; a restored agent sees it after compaction; Explain is disabled with no live agent |
 | I6 | `inbox-i6-feeders` | MCP `work_items_upsert` / `work_items_close` (dedupe by URL, cap per source, `expires_at`); "N not started" counter; link a URL to a branch by its ticket id; the planner change (owner's file, owner's go) | A tracker card with no branch shows in the counter and, once a branch with its ticket id exists, joins that row |
 | I7 | `inbox-i7-gha` | 0012 A2: Actions runs per repo (REST + ETag), `PrInfo.head_sha`, "fresh red on head", CI items for branches with no PR; "Delegate to the owner agent" action | A red run on a branch with no PR becomes a Round item; one key sends its failed-log summary to the branch's live agent |
 | I8 | `inbox-i8-trackers` | Optional `TrackerAdapter` protocol, GitHub Issues reference adapter, status mapping, edge-triggered inbox rules, polling with cache/ETag/caps, credentials by env/keyring, `trackers.toml` (global + per repo); a generic Jira example adapter (§7b) | With GitHub Issues on, a branch `fix-123-…` whose issue gets the label mapped to "returned" yields a Round item; with no adapter configured, `status_list` output is byte-identical |
-| later | — | Rounds as notifications at cut points, Focus mode, backpressure (Round > 7 stops new work), ntfy notifier; **opt-in auto-delegation of red CI to the owner agent** (0012 A3 trimmed, §7) | — |
+| later | — | Rounds as notifications at cut points, Focus mode, backpressure (Round > 7 stops new work), ntfy notifier; **opt-in auto-delegation of stalled items to the owner agent** (0012 A3 trimmed, §7; may come as early as I4, Q-B33); hook nudge for briefs (Q-B34 c) | — |
 
 Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` once `uv run pytest` and (for desktop phases) `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` are green. Every phase updates the docs it changes (engine-split §4d/§4e/§4g, ui-plan §3b, desktop-app D4, this plan §8, proposal status).
 
@@ -200,7 +200,7 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 | I1 | `engine/status.py` (new: membership, derivation, projection, coalesced events), `engine/engine.py` (own it; feed events), `engine/worktrees.py` (`engine:status` interest), `engine/notes.py` (public `section_bullets`), `engine/methods.py`, `engine/server.py` (`FEATURES`), `engine/events.py`, `mcp_server.py` (`status_list`), `cli.py` / engine CLI (`lazyagent status`), `config.py` (`[status]`), `protocol/schema/v1/*`, `tests/engine/test_status.py` (derivation table as golden tests) |
 | I2 | `engine/actionables.py` (new, 0012 A1 minus score), `engine/status.py` (`needs_you` from the queue), schemas, `tests/engine/test_actionables.py` (port of attention.rs tests) |
 | I3 | desktop: `proto/src/types.rs` (`StatusRow`, `Actionable`, events), `app/src/home_view.rs` (new), `app/src/attention.rs` (fallback only), `app.rs` (default view, keys, noise cut), `persist.rs` (marks import once) |
-| I4 | `engine/status.py` (overlay store, gestures, report expiry, timeline ring, per-item seen), `engine/decisions.py` (new: brief validation, limits, lifecycle), `engine/actionables.py` (class per kind, Deep zone), `mcp_server.py` (`status_report`, `request_decision`, `decision_withdraw`), `orchestrator_prompt.py` (when to write a brief), desktop gestures + To sit down with zone |
+| I4 | `engine/status.py` (overlay store, gestures, report expiry, timeline ring, per-item seen), `engine/decisions.py` (new: brief validation, limits, lifecycle), `engine/actionables.py` (class per kind, Deep zone), `mcp_server.py` (`status_report`, `request_decision`, `decision_withdraw`; descriptions with when-to-use and the brief template), `orchestrator_prompt.py` (when to write a brief), `worker_prompt.py` (new: default worker preamble), `agent_providers.py` (inject it: Claude `--append-system-prompt`, Codex prepended), `config.py` (`[agents] worker_preamble`), desktop gestures + To sit down with zone |
 | I5 | desktop `decision_view.rs` (new: brief \| evidence tabs \| timeline, reusing `diff_view.rs`), `engine/decisions.py` (answer queue through the review-reply path, explain request), `engine/notes.py` (engine append to Decisions), `mcp_server.py` (`decision_explain`) |
 | I6 | `mcp_server.py` (`work_items_*`), `engine/status.py` (external rows, ticket link), `models.py` (configurable ticket pattern); the planner skill (owner's file, owner's go) |
 | I8 | `engine/trackers/__init__.py` (protocol, registry, entry point `lazyagent.trackers`), `engine/trackers/github_issues.py`, `engine/trackers/jira_example.py`, `engine/status.py` (row enrichment), `engine/actionables.py` (`tracker_status` kind), `config.py` (`trackers.toml` loader), tests with fake HTTP |
@@ -208,14 +208,20 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 
 ---
 
-## 7. Later: opt-in auto-delegation of red CI
+## 7. Opt-in auto-delegation of stalled items (I4 or later)
 
-0012 A3, trimmed. Off by default (`[inbox.autodelegate] enabled = false`).
+0012 A3, trimmed and widened from red CI to every stalled kind (Q-B33). Off by default:
 
-- Trigger: 0012's "fresh red on head" (I7).
-- Action: if the branch has a **live agent of its own** that is idle, the engine sends it the failure brief (the same text as the manual `d` key). It never spawns a separate fixer or a triage agent in this first version. A busy agent gets it when it is idle; no agent → stays a Round item.
-- Limits from 0012 stay as code: `max_attempts` per branch + signature (2), `max_per_day` (10), never on default/protected branches, never on a teammate's branch, a dirty worktree with no agent is skipped.
-- Verify on the next run; red twice → Round item "CI still red after 2 tries".
+```toml
+# .lazyagent.toml
+[inbox]
+auto_delegate = []            # e.g. ["conflict_with_base", "ci_red", "agent_dead"]
+```
+
+- Trigger: a stalled item of a listed kind enters Round (conflict with no live agent, dead agent, CI red with no agent; `ci_red` needs I7's "fresh red on head").
+- Action: exactly what the manual **Delegate** key does, to the branch's **owner agent**: a live idle one gets the brief (busy → when idle); a dead one is restored with its notes; only with no owner at all is one spawned with the brief. Never a separate fixer or a triage agent. No model decides.
+- Limits as code: the engine's concurrency limits, ≤ 2 attempts per item per fingerprint, `max_per_day` (10), never on default/protected branches, never on a teammate's branch.
+- After 2 failed attempts the item goes to **To sit down with** with an engine-written brief (what was tried, the last log lines); verify on the next run.
 - Spawning a fixer for branches with no agent, the Haiku triage agent and revert handling (0012 Q-A1, Q-A7) are reconsidered only if this proves useful.
 
 ---
@@ -255,6 +261,18 @@ max_calls_per_min = 30
 - Adapters run in the engine's poll loop, not as agents; each call has a timeout.
 - The engine's own facts (PR merged, agent waiting) win over a tracker status on ball; the tracker text shows next to them ("in QA · CI green").
 
+## 7a. How agents learn the tools (I4; c after)
+
+Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestrator_prompt.py` `compose_orchestrator_prompt`, via `--append-system-prompt` in `agent_providers.py`).
+
+- **a. Tool descriptions.** `status_report`, `request_decision`, `decision_withdraw` and the notes tools say when to use them; `request_decision` carries the §5b template. Reaches every MCP provider.
+- **b. Worker preamble.** ~10 lines at spawn, default in `worker_prompt.py`, overridable or empty (`""` disables it) in `.lazyagent.toml` `[agents] worker_preamble`. Claude: `--append-system-prompt`; Codex: prepended to the instruction. Fixed text, no model.
+- **c. Hook nudge (after I4).** A Claude `Stop` hook marks a turn that ended with a question longer than 2 lines and no open brief; the next `UserPromptSubmit` adds one line suggesting `request_decision` (same path as the "notes updated" notice in `notes_hook.py`).
+- **d. Engine backstop.** §5b validation: no options or no evidence → Quick item.
+- A plugin/skill for Claude sessions not spawned by lazyagent: later, only if needed.
+
+---
+
 ## 8. As landed
 
 (empty)
@@ -280,7 +298,7 @@ max_calls_per_min = 30
 | Q-B13 | Show external items with no branch as rows or only as a counter? | Counter "N not started" in the MVP; rows only when `needs_user` or `ball: others` (e.g. a peer review) |
 | Q-B14 | The web UI: port Home? | No (frozen). It keeps its client-side attention |
 | Q-B15 | The TUI | Badge with Now/Round counts and "open in desktop" (strategy §4); `lazyagent status` covers SSH |
-| Q-B16 | Auto-delegation of red CI (§7): when, and default? | After I7, opt-in, owner agent only. Revisit 0012 A3's separate fixer only with evidence |
+| Q-B16 | Auto-delegation of red CI (§7): when, and default? | After I7, opt-in, owner agent only. Revisit 0012 A3's separate fixer only with evidence. Widened by Q-B33 |
 | Q-B17 | Tracker adapters: in the MVP or after? | After (I8). The planner can feed tracker states through `work_items_upsert` (I6) meanwhile, so the MVP loses nothing |
 | Q-B18 | Which adapters ship in the core? | GitHub Issues (reference, via `gh`). Jira as a generic example. Others as third-party packages through the `lazyagent.trackers` entry point |
 | Q-B19 | Inbox items from tracker states: on entering a status, or while in it? | On entering (edge), auto-clear on leaving. Avoids re-creating dismissed items on every poll |
@@ -297,3 +315,5 @@ max_calls_per_min = 30
 | Q-B30 | "Explain this": who answers and how much? | The owner agent only, on click, ≤ 10 lines, via `decision_explain`; disabled with no live agent. No fallback model |
 | Q-B31 | Where is the decision log kept? | The agent's notes, section Decisions (re-injected after compaction, inherited in handoffs), plus a 30-day copy on the work item |
 | Q-B32 | A brief whose evidence is outdated (the branch moved) | Evidence pinned to a commit; "outdated" banner in the view; the user can still answer or press Explain this |
+| Q-B33 | Opt-in auto-delegation of stalled items (conflict with no agent, dead agent, CI red with no agent)? | Yes, opt-in per kind (`[inbox] auto_delegate = [...]`, default empty), fixed rule, owner agent only (restore with notes; spawn with the brief only if none), concurrency limits, ≤ 2 attempts per item per fingerprint, then To sit down with with a brief. I4 or later (`ci_red` after I7). Alternatives: never automatic; automatic by default |
+| Q-B34 | How do agents learn `status_report` / `request_decision` / notes? | Four layers, no plugin (§7a): (a) tool descriptions, (b) worker preamble at spawn, (c) Claude hook nudge, (d) engine backstop. a+b+d in I4, c after. Alternatives: only tool descriptions; a plugin/skill |
