@@ -179,7 +179,7 @@ class TestClaudeMcpSettings:
 
 class TestSessionName:
     def test_worktree_folder_and_agent_id(self):
-        assert agent_session_name("/repos/smith-PROJ-25382", "a1") == "smith-PROJ-25382-a1"
+        assert agent_session_name("/repos/acme-TASK-123", "a1") == "acme-TASK-123-a1"
 
     def test_without_agent_id(self):
         assert agent_session_name("/repos/app") == "app"

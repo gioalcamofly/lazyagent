@@ -5,14 +5,14 @@
 
 ## Problem
 
-- Several agents compete for things only one (or a few) can use at once: the shared dev DB / Docker Postgres used by VART evals and PoL evidence runs, and the machine itself (too many agents at once).
-- The rules exist only in skills and in Giovanni's head, so nothing enforces them.
+- Several agents compete for things only one (or a few) can use at once: the shared dev DB / Docker Postgres used by eval suites and end-to-end evidence runs, and the machine itself (too many agents at once).
+- The rules exist only in skills and in the user's head, so nothing enforces them.
 
 ## Today's workaround
 
-- The `eval-orchestrator` skill watches worktrees and hands an "eval slot" around by polling.
-- The smith orchestrator enforces a manual 2-agent cap.
-- PoL evidence runs on the shared dev stack are serialized by convention ("coordinate a window first").
+- An eval-slot skill watches worktrees and hands an "eval slot" around by polling.
+- The project orchestrator enforces a manual 2-agent cap.
+- End-to-end evidence runs on the shared dev stack are serialized by convention ("coordinate a window first").
 
 ## Proposal
 
@@ -38,12 +38,12 @@
 
 | Value | Effort |
 |---|---|
-| ★★★ (retires `eval-orchestrator` and the manual cap) | M |
+| ★★★ (retires the eval-slot skill and the manual cap) | M |
 
 ## Risks
 
 - Agents forget to release: TTL + release on exit covers it, but a TTL that is too short evicts a live eval mid-run. Allow `renew`.
-- Slots only guard work that asks for them; a bare `make vart.eval` in a shell bypasses them. Skills must be updated to call `acquire_slot`.
+- Slots only guard work that asks for them; a bare `make eval` in a shell bypasses them. Skills must be updated to call `acquire_slot`.
 
 ## Open questions
 

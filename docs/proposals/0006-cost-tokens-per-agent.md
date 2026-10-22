@@ -5,7 +5,7 @@
 
 ## Problem
 
-- No visibility into what each agent or ClickUp task costs in tokens. Hard to tell a runaway agent from a productive one, or to compare providers.
+- No visibility into what each agent or tracker task costs in tokens. Hard to tell a runaway agent from a productive one, or to compare providers.
 
 ## Today's workaround
 

@@ -419,7 +419,7 @@ def test_an_engine_inside_a_tui_is_not_stopped_from_the_cli(world):
 def test_cold_start_auto_starts_the_engine_and_agents_outlive_the_tui(world):
     """K8, the unattended boot: no engine; ``lazyagent --remote`` in a
     terminal starts one, and an agent spawned over MCP (the legacy socket,
-    as /gio-planner's orchestrator does) runs on it, keeps running when the
+    as a planner's orchestrator does) runs on it, keeps running when the
     TUI quits, and is still reachable over MCP afterwards."""
     assert world.engine_pids() == []
     with tui(world, world.repo, "--remote") as t:

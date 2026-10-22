@@ -86,11 +86,11 @@ class TestComposeOrchestratorPrompt:
     def test_with_template(self, tmp_path: Path):
         config = Config(
             orchestrator=OrchestratorConfig(
-                agent_instruction_template="/clickup-fix-card {task_id}"
+                agent_instruction_template="/fix-task {task_id}"
             )
         )
         result = compose_orchestrator_prompt(config, tmp_path)
-        assert "/clickup-fix-card {task_id}" in result
+        assert "/fix-task {task_id}" in result
         assert "Agent instruction template" in result
 
     def test_with_template_and_user_file(self, tmp_path: Path):

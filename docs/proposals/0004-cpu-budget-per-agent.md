@@ -9,7 +9,7 @@
 
 ## Today's workaround
 
-- None. Giovanni notices the machine is slow and finds the culprit by hand.
+- None. The user notices the machine is slow and finds the culprit by hand.
 
 ## Proposal
 

@@ -124,9 +124,9 @@ class TestEnvExports:
 
     def test_custom_var_included(self, monkeypatch):
         """Custom env vars like API keys should be exported."""
-        monkeypatch.setenv("CLICKUP_API_KEY", "test-key-123")
+        monkeypatch.setenv("TRACKER_API_KEY", "test-key-123")
         exports = env_exports()
-        assert "CLICKUP_API_KEY=" in exports
+        assert "TRACKER_API_KEY=" in exports
         assert "test-key-123" in exports
 
     def test_values_are_quoted(self, monkeypatch):

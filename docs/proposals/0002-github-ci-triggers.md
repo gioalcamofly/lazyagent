@@ -12,7 +12,7 @@
 
 | Who polls | Cost per check | Today |
 |---|---|---|
-| An agent or skill (`/gio-planner` tick, the orchestrator) | One LLM turn: tokens, context, seconds to minutes | Every 15-30 min, even when nothing changed |
+| An agent or skill (`/planner` tick, the orchestrator) | One LLM turn: tokens, context, seconds to minutes | Every 15-30 min, even when nothing changed |
 | lazyagent TUI | One `gh pr view` subprocess (a network round trip) | Every 60 s, **selected worktree only** (app.py:156-158 timer, app.py:384-405 `_refresh_pr_status`, worktree_manager.py:366-383 `get_pr_info`) |
 | The engine, done right | One request per repo, often answered "nothing changed" | — |
 
@@ -21,7 +21,7 @@
 
 ## Today's workaround
 
-- `/gio-planner` tick mode polls every 15-30 min; `lazyagent-orchestrator` retargets stacked PRs when it next looks.
+- `/planner` tick mode polls every 15-30 min; `lazyagent-orchestrator` retargets stacked PRs when it next looks.
 - Latency of up to half an hour per hop, and every poll costs an LLM turn.
 
 ## Proposal
@@ -65,7 +65,7 @@
 | **Engine nudges an idle agent** | Rule action `send_input`, only when the agent's status is `WAITING`; otherwise queue | Zero until the nudge |
 | **To the orchestrator** | Event → the orchestrator decides whom to wake | One turn, only on a real change |
 
-### ClickUp
+### Issue tracker
 
 - Same poller pattern: list tasks with `date_updated_gt=<last poll>` so only changed tasks come back; emit `card.status_changed` / `card.comment`.
 
@@ -78,18 +78,18 @@
 
 | Value | Effort |
 |---|---|
-| ★★★ (replaces tick-mode polling) | M (L with `/notifications` and ClickUp) |
+| ★★★ (replaces tick-mode polling) | M (L with `/notifications` and the issue tracker) |
 
 ## Risks
 
 - Still polling under the hood (`gh` rate limits); mitigated by batching, `304`s and adaptive intervals.
 - Waking an agent mid-turn: `send_input` must wait for `WAITING` status or queue.
 - Rule loops (an agent's push triggers CI, which triggers the rule again): rate-limit per rule and PR.
-- **Alternative, webhooks:** GitHub/ClickUp webhooks need a public URL; a local engine would need a tunnel (smee, `gh webhook forward`). An optional accelerator later; well-done polling is the baseline.
+- **Alternative, webhooks:** GitHub/tracker webhooks need a public URL; a local engine would need a tunnel (smee, `gh webhook forward`). An optional accelerator later; well-done polling is the baseline.
 
 ## Open questions
 
 - Poll interval for PRs not in any client's interest set but with a rule attached.
 - Where rules are authored: config file, MCP, or both.
 - `--until` vocabulary for `events wait` (`checks-finished`, `merged`, `reviewed`, …): fixed list or a `where` filter like rules?
-- Split ClickUp into its own proposal (0010)?
+- Split the issue tracker into its own proposal (0010)?

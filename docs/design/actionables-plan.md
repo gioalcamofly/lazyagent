@@ -15,7 +15,7 @@
 | A3 | `actionables-a3-triage` | `engine/triage.py`: incident state machine, the 4 limits, triage agent (Haiku), `actionables_dispatch` / `_report`, fixer spawn (`spawn_agent {model}`), verify on next run, escalation, attempt ledger, restart recovery | Fake runs: red, then fixer, then push, then green resolves. Red twice escalates to human. A third incident with `max_fixers=2` waits `queued` |
 | A4 | `actionables-a4-score-ui` | Criteria file (md + toml block), deterministic score + breakdown, `notify_min_score` + engine-side `notify-send` with no UI, "review requested changes" items, desktop and web consume the engine queue (fallback kept), ignore/pause toggles, auto-triage panel | The desktop order equals the engine's score order. Editing the weights in the md file re-orders live. Only items above the threshold notify |
 | A5 | `actionables-a5-mcp-tiebreak` | MCP `actionables_list/create/resolve/boost`, per-source caps, orchestrator boost, Haiku tie-break with cache | An orchestrator `actionables_create` shows in the desktop queue with its source. A peer agent's boost is refused |
-| A6 | `actionables-a6-gio-planner` | gio-planner skill changes (tick consumes the engine queue, feeds ClickUp items, drops its own score and its red-CI row); the engine accepts ClickUp inputs | One tick creates the QA-returned card as an actionable and orders it by the engine score. Nothing in the skill computes a score |
+| A6 | `actionables-a6-planner` | The planner skill changes (tick consumes the engine queue, feeds tracker items, drops its own score and its red-CI row); the engine accepts tracker inputs | One tick creates the QA-returned card as an actionable and orders it by the engine score. Nothing in the skill computes a score |
 | A7 | `actionables-a7-tui-analysis` | TUI badge + list, "prepare analysis" agent for change requests (read-only, writes notes) | From a "Review changes" item, Prepare starts an agent that fills Notes → Decisions without pushing |
 | A8+ | (sketch) | Layer 3 board, external sources, Obsidian export | §7 |
 
@@ -54,10 +54,10 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
       "kind": "ci_failed",           // §2a
       "layer": "auto" | "human",
       "state": "open" | "queued" | "fixing" | "verifying" | "resolved" | "escalated" | "expired",
-      "source": "engine" | "agent:<wt>/<id>" | "orchestrator" | "gio-planner" | "external",
+      "source": "engine" | "agent:<wt>/<id>" | "orchestrator" | "planner" | "external",
       "subject": {"worktree_path": "...", "branch": "...", "agent_id": null, "pr": 123, "url": "...", "run_id": 987, "head_sha": "..."},
       "title": "CI failing: tests", "detail": "jobs: tests, lint",
-      "inputs": {"cu_priority": "high", "cu_status": "qa", "project_rank": 2, "effort_min": 25},  // optional, from feeders (A6)
+      "inputs": {"tracker_priority": "high", "tracker_status": "qa", "project_rank": 2, "effort_min": 25},  // optional, from feeders (A6)
       "score": 84, "breakdown": {"kind": 30, "project": 12, "completion": 28, "effort": 8, "age": 4, "boost": 2},
       "boost": {"delta": 2, "by": "orchestrator", "reason": "...", "expires_at": null},
       "first_seen": 1760950000.0, "updated_at": 1760950300.0, "expires_at": null,
@@ -81,7 +81,7 @@ Each phase is its own branch from up-to-date `develop`, merged with `--no-ff` on
 | `ci_escalated` | human | `ci_failed` past its limits, or the fixer gave up / reverted | — |
 | `changes_requested` | human | A human `CHANGES_REQUESTED` review (or unresolved human threads, A7) on an open PR | `review` |
 | `conflict` | human | PR `CONFLICTING` | `conflict` |
-| `merge_ready` | human | PR open, approved by a human, checks green, not draft | — (gio-planner's `Merge`) |
+| `merge_ready` | human | PR open, approved by a human, checks green, not draft | — (the planner's `Merge`) |
 | `triage_blocked` | human | Auto-triage skipped: dirty worktree, live busy agent for > `busy_wait`, teammate's PR | — |
 | `custom` | any | Created / resolved through MCP (A5) | — |
 
@@ -139,7 +139,7 @@ weights = { kind = 3, project = 2, completion = 4, effort = 2 }
 age = { per_hour = 0.5, max = 10 }
 notify_min_score = 70
 
-[kind]            # D1, 0-10 (gio-planner radar events)
+[kind]            # D1, 0-10 (the planner radar events)
 approval = 10
 question = 10
 ci_escalated = 9
@@ -155,13 +155,13 @@ ci_failed = 4
 job = 3
 custom = 5
 
-[completion]      # D3, 0-10 (gio-planner Phase 4 dimension 3)
+[completion]      # D3, 0-10 (the planner Phase 4 dimension 3)
 merge_ready = 10
 pr_in_review = 9
 pr_open = 7
 in_progress = 5
 no_pr = 3
-cu_status = { "qa complete" = 10, "code review" = 9, "ready for qa" = 7, "qa" = 7, "in progress" = 5, "to do" = 3, "backlog" = 1 }
+tracker_status = { "qa complete" = 10, "code review" = 9, "ready for qa" = 7, "qa" = 7, "in progress" = 5, "to do" = 3, "backlog" = 1 }
 
 [effort]          # D4, 0-10, minutes → score (quick wins first)
 "<=15" = 10
@@ -171,12 +171,12 @@ cu_status = { "qa complete" = 10, "code review" = 9, "ready for qa" = 7, "qa" = 
 "*" = 2
 defaults_min = { merge_ready = 15, question = 10, approval = 5, changes_requested = 60, ci_escalated = 60, done = 25 }
 
-[project]         # D2, 0-10: worktree pin (-2..+2 → 2..10), the CU project rank from feeders, else 5
-cu_priority = { urgent = 10, high = 8, normal = 5, low = 3 }
+[project]         # D2, 0-10: worktree pin (-2..+2 → 2..10), the tracker project rank from feeders, else 5
+tracker_priority = { urgent = 10, high = 8, normal = 5, low = 3 }
 ```
 ````
 
-`score = Σ weightᵢ·dimᵢ + age + boost`, clamped to 0-120. With all-10 dimensions and the default weights, the base is 110, as in gio-planner. The score is a pure function `score(item, criteria, now) -> (int, breakdown)`, with golden tests over fixtures that mirror gio-planner's examples. Order: score desc, then `first_seen` desc (newest first, as today), then the tie-break (A5).
+`score = Σ weightᵢ·dimᵢ + age + boost`, clamped to 0-120. With all-10 dimensions and the default weights, the base is 110, as in the planner. The score is a pure function `score(item, criteria, now) -> (int, breakdown)`, with golden tests over fixtures that mirror the planner's examples. Order: score desc, then `first_seen` desc (newest first, as today), then the tie-break (A5).
 
 **Notifications:** `actionable.notify` when an occurrence first reaches `score ≥ notify_min_score`, or when it rises over the threshold through age. It fires once per occurrence and not at all while snoozed. The engine runs `notify-send -a lazyagent` itself only when no UI is attached. The desktop and the web keep a per-kind "mute" filter on top.
 
@@ -215,7 +215,7 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 | A3 | `engine/triage.py` (new: rules, state machine, limits, ledger, restart), `engine/triage_prompt.py` (new), `engine/engine.py` (`spawn_agent {model}`, kinds `triage`/`fixer`), `agent_providers.py` (model flag per provider), `mcp_server.py` (dispatch/report/list/get), `orchestrator_prompt.py` (tell the orchestrator about the triage agent and claims), tests with a fake `gh` |
 | A4 | `engine/criteria.py` (new: md + toml parse, `score`), `docs/actionables-criteria.example.md` (new), `engine/notifier.py` (new: `notify-send` when headless), `worktree_manager.py` (review authors), desktop: `proto/src/types.rs` (`Actionable`, events), `app/src/attention.rs` (fallback only), `attention_view.rs` (score + breakdown, layer badge, triage panel, ignore/pause), `app.rs` (notify on `actionable.notify`), `persist.rs` (marks import); web: `lib/attention.js`, `components/attention.js` |
 | A5 | `mcp_server.py`, `engine/actionables.py` (sources, caps, boost), `engine/criteria.py` (tie-break call through a one-shot `claude -p --model haiku` job) |
-| A6 | `~/.claude/skills/gio-planner/SKILL.md` (**the user's file, edited only with their go**): Phase 4 weights → the criteria file; T1/T6c read `actionables_list`; T2 feeds with `actionables_create` |
+| A6 | `~/.claude/skills/planner/SKILL.md` (**the user's file, edited only with their go**): Phase 4 weights → the criteria file; T1/T6c read `actionables_list`; T2 feeds with `actionables_create` |
 | A7 | `app.py`, `widgets/` (TUI), analysis agent template |
 | Docs | engine-split §4d/§4e, ui-plan §3b, desktop-app D4, proposals README, this plan §8 |
 
@@ -223,11 +223,11 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 
 ## 7. Layer 3: sketched
 
-- **Model:** `WorkItem {key: url, title (CU name verbatim), verb, lane, set_by: hand|planner, fingerprint, due (frozen 📅), estimate_min, actionables: [id]}`. Lanes: Todo · Doing · Delegated · Waiting · Blocked · Done. An actionable attaches to the work item of its branch/PR (the PR URL, or the ClickUp card through `PROJ-XXXX` in the branch name).
-- **State machine** = gio-planner's T2 table as rules over actionable events (red CI with no agent → Todo `Dev`; approved → `Merge`; peer review requested → Todo `Review`; my PR waiting on a coworker → Delegated `Chase`; agent finished → Doing `Review`; CU `blocked` → Blocked). Stickiness: a `hand` card moves only when its fingerprint changes.
-- **Sources** (`Source.poll()`): `github.review_requests` (`gh pr list --search review-requested:@me`), `clickup.returned` (QA/CR returned, read-only API token), `gio-planner` (pushes). Disabled until the board lands.
+- **Model:** `WorkItem {key: url, title (card name verbatim), verb, lane, set_by: hand|planner, fingerprint, due (frozen 📅), estimate_min, actionables: [id]}`. Lanes: Todo · Doing · Delegated · Waiting · Blocked · Done. An actionable attaches to the work item of its branch/PR (the PR URL, or the tracker card through `TASK-123` in the branch name).
+- **State machine** = the planner's T2 table as rules over actionable events (red CI with no agent → Todo `Dev`; approved → `Merge`; peer review requested → Todo `Review`; my PR waiting on a coworker → Delegated `Chase`; agent finished → Doing `Review`; card `blocked` → Blocked). Stickiness: a `hand` card moves only when its fingerprint changes.
+- **Sources** (`Source.poll()`): `github.review_requests` (`gh pr list --search review-requested:@me`), `tracker.returned` (QA/CR returned, read-only API token), `planner` (pushes). Disabled until the board lands.
 - **Budget:** Doing + Todo ≤ 270 min, overflow → Waiting.
-- **Views:** desktop "Board" tab (lanes, drag = `set_by: hand`), web, and a read-only export to `board.md` in the Kanban format while Obsidian is still used. The Done sweep and the monthly log stay in gio-planner (scrum layer).
+- **Views:** desktop "Board" tab (lanes, drag = `set_by: hand`), web, and a read-only export to `board.md` in the Kanban format while Obsidian is still used. The Done sweep and the monthly log stay in the planner (standup layer).
 
 ---
 
@@ -256,10 +256,10 @@ v1 schemas in `protocol/schema/v1/methods.json` and `events.json`, plus golden f
 | Q-A13 | Keep each client's own derivation as a fallback for older engines, for how long? | One release, then remove |
 | Q-A14 | "Review requested changes": start the analysis agent automatically or with a button? | Button (A7); opt-in auto later |
 | Q-A15 | Ignore bot reviews (the `claude` reviewer) for `changes_requested` | Yes; a `bots` list in config |
-| Q-A16 | One agent cap shared with gio-planner (its 2-agent cap) and the orchestrator? | Fixers have their own `max_fixers`. gio-planner skips claimed branches; a global cap is left to layer 3 |
+| Q-A16 | One agent cap shared with the planner (its 2-agent cap) and the orchestrator? | Fixers have their own `max_fixers`. The planner skips claimed branches; a global cap is left to layer 3 |
 | Q-A17 | Layer 3 storage: the engine store with an Obsidian export, or `board.md` stays the source? | Engine store + export; `board.md` read-only after the switch |
 | Q-A18 | Cost cap beyond attempts (0006 not landed) | `max_fixes_per_day`; a token budget once 0006 lands |
 | Q-A19 | Tie-break: when exactly, and its cost | Only within ε=3 in the top 5; cached per fingerprint; ≤ 1 call / 10 min |
 | Q-A20 | The `ci` kind for a PR whose run is outside Actions (an external status check) | Human `ci_failed` without auto-triage |
 | Q-A21 | Ship `triage.enabled = false` by default until real runs have been watched? | Yes; turn it on after one day of `dry_run` (the engine logs what it would dispatch) |
-| Q-A22 | gio-planner A6 changes edit the user's skill: who does them, and when? | The user's go, after A4; the skill keeps working until then (the engine queue is additive) |
+| Q-A22 | The planner A6 changes edit the user's skill: who does them, and when? | The user's go, after A4; the skill keeps working until then (the engine queue is additive) |

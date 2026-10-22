@@ -78,7 +78,7 @@ Performance notes:
 
 ### 0e. Roadmap: features that make the engine worth it
 
-Ranked by value for Giovanni's workflow. The top three replace skill-based workarounds that **poll**. Each row has its own proposal under [`docs/proposals/`](../proposals/README.md) (problem, today's workaround, protocol additions, risks); "Fits after" maps it onto §6/§6b.
+Ranked by value for the user's workflow. The top three replace skill-based workarounds that **poll**. Each row has its own proposal under [`docs/proposals/`](../proposals/README.md) (problem, today's workaround, protocol additions, risks); "Fits after" maps it onto §6/§6b.
 
 | # | Feature | Value | Fits after |
 |---|---|---|---|
@@ -597,7 +597,7 @@ Each PR keeps `lazyagent` behaving as today and the 523 tests passing (some move
 
 ### 6f. Remote-mode soak and the flip-to-remote checklist (2026-10-17)
 
-The default stays embedded; flipping it is Giovanni's call. This is what a realistic session in `--remote` showed, against the same session in `--embedded`.
+The default stays embedded; flipping it is the user's call. This is what a realistic session in `--remote` showed, against the same session in `--embedded`.
 
 - **Session:** `lazyagent repo --remote` in tmux on a scratch repo with two worktrees; fake agents (a `claude` shim) and, for redraws, the real `claude` (its onboarding screen, run with an isolated HOME so no account is used) and a shell. Spawn an agent and the orchestrator, type, Ctrl+L shell, Ctrl+D diff, create and remove a worktree, stop an agent (`x`), resize the window through six sizes, `q` and relaunch, `lazyagent engine stop` while attached, a manual `engine start`, `engine restore`, a SIGKILLed engine.
 - **The same in both modes:** every action above; the selection after a remove (the orchestrator); the PTY size following the view; agent ids (shared by both modes, D8).
@@ -611,7 +611,7 @@ The default stays embedded; flipping it is Giovanni's call. This is what a reali
   1. ~~**Restorable agents are invisible in the TUI** (Q30)~~ **Done:** on connecting to an engine (once per engine) the TUI toasts "N agents from an earlier session can be brought back: press R"; `R` and the command palette's "Restore agents" call `restore_agents` (from the TUI's env) and toast what came back or failed. Both modes (embedded quits feed the same list).
   2. **The engine's environment is the first TUI's** (Q22, K4): agents spawned from a TUI get that TUI's env (D5), but MCP spawns, restores from MCP and `restore_on_start` get the engine's, frozen at its start (a stale `SSH_AUTH_SOCK`, `DISPLAY`, PATH after a profile change).
   3. **Upgrades:** the engine keeps running the old code until restarted (now warned). Restarting it stops the agents (they are restorable, each into its conversation for Claude). An "upgrade when idle" restart could automate it.
-  4. **Unattended boot (K8):** the boot script needs `--remote` until the flip, and a choice between `[engine] restore_on_start` and `lazyagent engine restore --all` before `/gio-planner`.
+  4. **Unattended boot (K8):** the boot script needs `--remote` until the flip, and a choice between `[engine] restore_on_start` and `lazyagent engine restore --all` before `/planner`.
   5. ~~**`lazyagent host`** with a detached engine~~ **Done:** `lazyagent host --remote` runs the hosted TUI on the repo's engine (starting it); the page spawns and types into agents, quitting the host leaves them running (the host says so), and a new host's page shows them with their screen (tests/host/test_host_remote.py, plus a headless-Chrome pass). Agents and shells no longer inherit `LAZYAGENT_HOST` (`ENV_SKIP`): with a detached engine they outlive the host, and a lazyagent started inside one would have thought it was hosted. U7 (a host with no TUI) remains.
   6. **Two TUIs on one engine** both work; the latest one to type owns the size (D3), so switching between differently sized TUIs SIGWINCHes the agent.
   7. **Width changes and Ink:** pyte does not reflow wrapped lines, so an Ink program's erase-by-line-count after a width change leaves a stale line above its redraw (seen with `claude`; tmux reflows and does not). Both modes; E2's native emulator is the fix.
@@ -695,7 +695,7 @@ Both orderings share the protocol and the contract suite, so choosing one doesn'
 | K5 | Running agents hold `mcp-config.json` files that point at `sys.executable -m lazyagent.mcp_server` and a socket path (agent_providers.py:427-441) | Never move that module path; keep the legacy socket; an engine upgrade means restarting agents |
 | K6 | Web exposure: a localhost WS that can spawn shells is reachable from any browser tab | Token plus strict Origin/Host checks (§4f), 127.0.0.1 only, no CORS |
 | K7 | Snapshot fidelity is limited to pyte's model (no OSC 8 links, images, some modes) | Prefer the raw tail when it is available (§3b option C); snapshot only as a fallback |
-| K8 | Unattended boot (tmux → `lazyagent` → `/gio-planner`) changes once the TUI auto-starts a detached engine | D4: the TUI auto-starts the engine, so the boot script needs no change. PR 8 must include a test of the cold-start path. **Done (PR 8):** `test_cold_start_auto_starts_the_engine_and_agents_outlive_the_tui` runs the real `lazyagent --remote` on a PTY with no engine, spawns an agent over the legacy socket as the orchestrator's MCP does, quits and checks agent and MCP survive. The boot script needs `--remote` (or `LAZYAGENT_ENGINE=remote`) until the default flips |
+| K8 | Unattended boot (tmux → `lazyagent` → `/planner`) changes once the TUI auto-starts a detached engine | D4: the TUI auto-starts the engine, so the boot script needs no change. PR 8 must include a test of the cold-start path. **Done (PR 8):** `test_cold_start_auto_starts_the_engine_and_agents_outlive_the_tui` runs the real `lazyagent --remote` on a PTY with no engine, spawns an agent over the legacy socket as the orchestrator's MCP does, quits and checks agent and MCP survive. The boot script needs `--remote` (or `LAZYAGENT_ENGINE=remote`) until the default flips |
 | K9 | Textual-coupled tests (test_app_integration, test_center_panel, test_multi_agent_panel) need fixtures for the backend | Parametrised backend fixture in PR 7: `backend_kind`, 58 pilot tests on both backends (§6c) |
 
 ### Open questions (PR 5)
@@ -767,14 +767,14 @@ Decided for PR 9 as below; open for review.
 | Q26 | Agents stopped by `engine stop` | Offered back like a crash's (an upgrade restart wants them) | Only offer what a crash left; `engine stop` dismisses |
 | Q27 | Which conversation | The exact one from Claude's hooks (`--resume <id>`), else the provider's last in that directory (`--continue`), which two agents in one worktree would share | Always `--continue`, as the plan said |
 | Q28 | Interrupted turn | Resumed as is; no "you were interrupted" prompt is typed (proposal 0009's risk) | Send a short note after the resume |
-| Q29 | `engine.restored` for MCP | **Resolved (MCP follow-up):** MCP tools `list_restorable`, `restore_agents`, `dismiss_restorable` over the legacy socket, and the legacy `list_events` carries `restores` (each `engine.restored` after `since`, with its `seq`; absent when none) next to the `agent.status` events, so /gio-planner can restore and see the result over MCP | Leave restores to the CLI and v1 |
+| Q29 | `engine.restored` for MCP | **Resolved (MCP follow-up):** MCP tools `list_restorable`, `restore_agents`, `dismiss_restorable` over the legacy socket, and the legacy `list_events` carries `restores` (each `engine.restored` after `since`, with its `seq`; absent when none) next to the `agent.status` events, so /planner can restore and see the result over MCP | Leave restores to the CLI and v1 |
 | Q30 | The TUI | **Resolved:** a toast when a TUI connects to an engine with restorable agents, and `R` / the palette's "Restore agents" (§6f) | — |
 | Q31 | An offered agent started again without a restore (the orchestrator relaunched with `--continue`, an agent resumed in its worktree) | **Resolved: consumed**, as a restore would have: it is running, so the entry is taken out of the manifest (gone from the file too) and never comes back; when it stops, this engine's own entry for it is what the next engine offers. A live agent "is" an entry when: the entry is the orchestrator and an orchestrator runs (one slot; the UIs start it with `--continue` in the repo root); or both conversation ids are known and equal; or an agent spawned with `--continue` (`resume_mode=last`, no explicit id) runs in the entry's worktree and the entry has no conversation id (a restore would `--continue` there too). An entry with a known id and such an agent whose id is not reported yet is **hidden** (not offered, a restore refused "may be running") until the hooks report it, then consumed if equal, shown again if not or when the agent exits. Checked on each spawn, each newly reported conversation id, each exit, and before every list and restore, and inside a restore before each spawn (two entries of one conversation: the second is refused). `restore_agents` refuses a live entry by id with "already running in this engine (the orchestrator \| agent … in …)". A fresh agent (`resume_mode=new`) in the same slot does not consume (a new conversation; a restore takes another id). The change is announced as `restorable.changed {agents}`: the desktop banner takes the list from it; the TUI toast is a one-shot on connect, now computed from the filtered list (Textual has no public way to withdraw a toast, and `R` refuses what is live) | Hide only (consumed entries would be offered again after the agent stops, then twice: the old entry and this engine's); dedupe by slot only (misses `--resume <id>` under another agent id, and would hide a fresh agent's predecessor) |
 | Q32 | An agent's "resume last" in the repo root, where the orchestrator runs too | **Refused** while an orchestrator of the same provider runs or is restorable (its `--continue` would take the orchestrator's conversation as a plain agent); the orchestrator's "resume last" brings back its restorable entry (conversation and notes); an entry whose conversation runs as the other kind is hidden until that agent stops | Run the orchestrator in a directory of its own; or turn the agent's spawn into the orchestrator's restore |
 
 ### Decisions (2026-10-15)
 
-Giovanni answered the open questions; the sections above already reflect these.
+The user answered the open questions; the sections above already reflect these.
 
 | # | Topic | Decision |
 |---|---|---|

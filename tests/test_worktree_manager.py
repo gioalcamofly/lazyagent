@@ -15,25 +15,25 @@ worktree /home/user/repo
 HEAD 6e23555e0c62e491fa146ee27457d6999c868b7d
 branch refs/heads/fix-prompt-fixture-reference-date-ordering
 
-worktree /home/user/repo-PROJ-10761
+worktree /home/user/repo-TASK-10761
 HEAD 53f2d34b6d9155e0e05c1ba88457a92f6d96b134
-branch refs/heads/PROJ-13026-fix-nested-validators
+branch refs/heads/TASK-13026-fix-nested-forms
 
-worktree /home/user/repo-PROJ-11067
+worktree /home/user/repo-TASK-11067
 HEAD 94959417dca5a9877ea56b3f86aedfc1157da295
-branch refs/heads/PROJ-11067-Remove-Feature-Flags
+branch refs/heads/TASK-11067-Remove-Feature-Flags
 
-worktree /home/user/repo-PROJ-12413
+worktree /home/user/repo-TASK-12413
 HEAD 93d4eed576e4841287e60cd88c2d99540a45d48d
-branch refs/heads/PROJ-12413-AIR-Instructions-for-New-Customers-updated-event-is-missing
+branch refs/heads/TASK-12413-Welcome-email-for-new-customers-is-never-sent-out
 
-worktree /home/user/repo-PROJ-12756
+worktree /home/user/repo-TASK-12756
 HEAD a6b80f3538b6f4756197e56ce053dd53a1271824
-branch refs/heads/PROJ-12756-Add-automatic-LLM-fallback-for-call-evaluation
+branch refs/heads/TASK-12756-Add-automatic-retry-for-failed-uploads
 
-worktree /home/user/repo-PROJ-12802
+worktree /home/user/repo-TASK-12802
 HEAD 93018f3d91c94f7a40e6fb0a4417fd4aa714631d
-branch refs/heads/PROJ-12802-Instrumentation-Event-Tracking
+branch refs/heads/TASK-12802-Add-usage-metrics
 
 worktree /home/user/repo-fix-service-choice
 HEAD 064d8c544fdf95ae5d8aefd4d36ba27d17b6b409
@@ -54,7 +54,7 @@ class TestParsePorcelain:
     def test_paths_parsed(self):
         worktrees = WorktreeManager._parse_porcelain(SAMPLE_PORCELAIN)
         assert worktrees[0].path == "/home/user/repo"
-        assert worktrees[1].path == "/home/user/repo-PROJ-10761"
+        assert worktrees[1].path == "/home/user/repo-TASK-10761"
 
     def test_heads_parsed(self):
         worktrees = WorktreeManager._parse_porcelain(SAMPLE_PORCELAIN)
@@ -63,7 +63,7 @@ class TestParsePorcelain:
     def test_branch_strips_refs_heads(self):
         worktrees = WorktreeManager._parse_porcelain(SAMPLE_PORCELAIN)
         assert worktrees[0].branch == "fix-prompt-fixture-reference-date-ordering"
-        assert worktrees[2].branch == "PROJ-11067-Remove-Feature-Flags"
+        assert worktrees[2].branch == "TASK-11067-Remove-Feature-Flags"
 
     def test_no_worktrees_is_bare(self):
         worktrees = WorktreeManager._parse_porcelain(SAMPLE_PORCELAIN)
@@ -129,15 +129,15 @@ class TestCreate:
         assert args[-1] == "master"
 
     def test_create_derives_path_from_repo_name(self, tmp_path):
-        repo = tmp_path / "smith"
+        repo = tmp_path / "acme"
         repo.mkdir()
         (repo / ".git").mkdir()
         manager = WorktreeManager(repo)
 
         with patch("lazyagent.worktree_manager.subprocess.run"):
-            result = manager.create("PROJ-123-fix")
+            result = manager.create("TASK-123-fix")
 
-        assert result == str(tmp_path / "smith-PROJ-123-fix")
+        assert result == str(tmp_path / "acme-TASK-123-fix")
 
     def test_create_raises_on_failure(self, tmp_path):
         import subprocess as sp

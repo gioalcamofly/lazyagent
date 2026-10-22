@@ -3,18 +3,18 @@
 - **Status:** Proposed (2026-10-20); plan in [actionables-plan.md](../design/actionables-plan.md); open doubts Q-A1-Q-A22 at the end of the plan
 - **Design refs:** [engine-split.md](../design/engine-split.md) §0e, §4d, §4e; [ui-plan.md](../design/ui-plan.md) §3b (attention queue); [desktop-app.md](../design/desktop-app.md) D4; proposals [0002](0002-github-ci-triggers.md) (GitHub events), [0003](0003-phone-notifications-approvals.md) (notifications), [0011](0011-session-notes.md) (notes, agent token)
 
-An **actionable** is something that needs doing on one of the user's worktrees: a red CI run, an agent waiting on approval, a reviewer's change request. The engine owns them, so they exist with no UI open. They come in two layers. **Layer 1 (auto-triage):** fixed, deterministic rules (MVP: failed GitHub Actions runs) hand the problem to a fix agent within hard limits. **Layer 2 (human):** a single queue ordered by a deterministic score, with criteria in an editable Markdown file. A cheap agent only breaks ties. **Layer 3** is sketched here and not designed: a local board that replaces gio-planner's Obsidian board and takes external sources (peer review requests, ClickUp cards returned by QA/CR).
+An **actionable** is something that needs doing on one of the user's worktrees: a red CI run, an agent waiting on approval, a reviewer's change request. The engine owns them, so they exist with no UI open. They come in two layers. **Layer 1 (auto-triage):** fixed, deterministic rules (MVP: failed GitHub Actions runs) hand the problem to a fix agent within hard limits. **Layer 2 (human):** a single queue ordered by a deterministic score, with criteria in an editable Markdown file. A cheap agent only breaks ties. **Layer 3** is sketched here and not designed: a local board that replaces the planner's Obsidian board and takes external sources (peer review requests, tracker cards returned by QA/CR).
 
 ## Problem
 
 - A user who runs several worktrees at once has no common place for "what needs me now". The Attention tab shows agent states and open-PR problems, but it is derived **in each client**, separately (`desktop/crates/app/src/attention.rs`, `host/static/lib/attention.js`). It exists only while a window is open, and dismiss/snooze are per client.
 - Red CI on a worktree's branch is noticed late. The PR poller only covers the worktrees a client has in its interest set (`WorktreeService.set_interest`, engine/worktrees.py:134). With no UI open, nothing polls. A branch without a PR has no CI data at all.
-- Fixing a red run is usually mechanical (read the failed log, fix, push), yet it waits for the user or for the next gio-planner tick.
-- The order of the queue is fixed by kind (`Kind::rank`, attention.rs:28), and it says nothing about which PR is closest to merge or which project matters most. gio-planner knows that (Phase 4 score), but only inside its own LLM turn every 30 minutes.
+- Fixing a red run is usually mechanical (read the failed log, fix, push), yet it waits for the user or for the next the planner tick.
+- The order of the queue is fixed by kind (`Kind::rank`, attention.rs:28), and it says nothing about which PR is closest to merge or which project matters most. The planner knows that (Phase 4 score), but only inside its own LLM turn every 30 minutes.
 
 ## Today's workaround
 
-- `/gio-planner tick` every 30 min (`/loop 30m`). T1 polls `gh` and ClickUp. T6c sends a red check on an agent's PR to that agent. T2 classifies events into board lanes. Each tick is one LLM turn, even when nothing changed. It runs only while a Claude session with the loop is alive, and its rules are prose that a model interprets.
+- `/planner tick` every 30 min (`/loop 30m`). T1 polls `gh` and the issue tracker. T6c sends a red check on an agent's PR to that agent. T2 classifies events into board lanes. Each tick is one LLM turn, even when nothing changed. It runs only while a Claude session with the loop is alive, and its rules are prose that a model interprets.
 - The user watches the Attention tab, or GitHub's emails, and sends "CI failed, please fix" by hand (`ci_failure_prompt`, attention.rs:240).
 - Agent caps ("at most 2 planner-started agents") are prompt text, not code.
 
@@ -29,13 +29,13 @@ An **actionable** is something that needs doing on one of the user's worktrees: 
 | Layers | `auto` (layer 1: the engine acts within limits) and `human` (layer 2: the user decides). An auto actionable that exhausts its limits **escalates** to a human one, with the same id and its history |
 | Lifecycle | `open → (auto: queued → fixing → verifying) → resolved \| escalated \| dismissed \| expired`. A condition-backed actionable resolves itself when its condition clears, as the attention queue does today |
 | Storage | `state_dir()/actionables/<repo digest>.json` (atomic write, like the manifest): open items, marks (dismiss/snooze), and the **attempt ledger** for layer 1. It survives engine restarts, while the event log does not (0007) |
-| Sources | MVP: agent statuses and exits, jobs (what attention shows today), PR info, **GitHub Actions runs**. Later: MCP `actionables_create` (agents, orchestrator, gio-planner). Then layer 3: review requests, ClickUp |
+| Sources | MVP: agent statuses and exits, jobs (what attention shows today), PR info, **GitHub Actions runs**. Later: MCP `actionables_create` (agents, orchestrator, the planner). Then layer 3: review requests, the issue tracker |
 
 ### Layer 1: auto-triage (fixed rules, MVP = GitHub Actions failures)
 
 | Rule part | Design (decision 2) |
 |---|---|
-| Trigger | A workflow run on a **lazyagent worktree's branch** ends with `failure` or `timed_out` (`cancelled`, `skipped` and `action_required` don't count). It must run on the branch's **current head**, with no later successful run of the same workflow (gio-planner's "fresh red" rule) |
+| Trigger | A workflow run on a **lazyagent worktree's branch** ends with `failure` or `timed_out` (`cancelled`, `skipped` and `action_required` don't count). It must run on the branch's **current head**, with no later successful run of the same workflow (the planner's "fresh red" rule) |
 | Signature | `workflow name + failed job names`, normalised. Attempts are counted per **branch + signature** |
 | (a) Activity | The worktree had activity in the last `active_days` (default 7): last commit on the branch, an agent event, or a notes write. Older worktrees get a human actionable, not a fixer |
 | (b) Ignored / paused | The user marks a worktree **ignored** (never auto-triaged; human items still show) or **paused until** a date, from any UI. Stored in the engine state, not in toml |
@@ -51,9 +51,9 @@ An **actionable** is something that needs doing on one of the user's worktrees: 
 
 | Aspect | Design (decision 3) |
 |---|---|
-| Score | Deterministic `score = Σ weight·dimension` (0-110, like gio-planner's `final_score`) computed by the engine on every change. A **breakdown** goes with each item so the UIs can show why it ranks where it does |
-| Dimensions (MVP) | Taken from gio-planner Phase 4 and its radar events, mapped to what the engine knows: **D1 urgency of the kind** (agent blocked on you > escalated CI > changes requested > conflict > your turn > job), weight 3. **D2 project/worktree priority** (user pin, later the orchestrator's weight), weight 2. **D3 proximity to completion** (approved + green = "just merge" 10, in review 9, in progress 5), weight 4. **D4 effort / quick win** (Merge ~15m, Decide ~10m, Review ~25m), weight 2. **Age** adds up to +10, so slipping is visible (gio-planner's frozen `📅`) |
-| Criteria file | `~/.config/lazyagent/actionables.md`, a prompt-style Markdown file the user edits. Its fenced ```` ```toml ```` block holds the weights and the per-kind tables, which the engine parses. The prose around it is the tie-break agent's prompt. A repo `.lazyagent/actionables.md` overrides it. The engine ships an example generated from gio-planner's rules |
+| Score | Deterministic `score = Σ weight·dimension` (0-110, like the planner's `final_score`) computed by the engine on every change. A **breakdown** goes with each item so the UIs can show why it ranks where it does |
+| Dimensions (MVP) | Taken from the planner Phase 4 and its radar events, mapped to what the engine knows: **D1 urgency of the kind** (agent blocked on you > escalated CI > changes requested > conflict > your turn > job), weight 3. **D2 project/worktree priority** (user pin, later the orchestrator's weight), weight 2. **D3 proximity to completion** (approved + green = "just merge" 10, in review 9, in progress 5), weight 4. **D4 effort / quick win** (Merge ~15m, Decide ~10m, Review ~25m), weight 2. **Age** adds up to +10, so slipping is visible (the planner's frozen `📅`) |
+| Criteria file | `~/.config/lazyagent/actionables.md`, a prompt-style Markdown file the user edits. Its fenced ```` ```toml ```` block holds the weights and the per-kind tables, which the engine parses. The prose around it is the tie-break agent's prompt. A repo `.lazyagent/actionables.md` overrides it. The engine ships an example generated from the planner's rules |
 | Tie-break | Only when two items in the top `tiebreak_top` (5) are within `tiebreak_epsilon` (3 points). A cheap agent (`haiku`) reads the criteria prose and the two items and returns an order. The result is cached by the items' fingerprints, at most one call per `tiebreak_min_interval`. Phase A5, not the MVP |
 | Notifications | System notifications only for items with `score ≥ notify_min_score` (default 70), once per occurrence. The engine emits `actionable.notify`. A UI that is open shows it. With **no UI attached**, the engine runs `notify-send` itself (Linux; Q-A11) |
 | Existing kinds | Every kind the attention queue has (approval, question, hanged, failed, exited, ci, review, conflict, done, job) becomes an engine actionable with the same condition and auto-clear. The behaviour does not change; only the place it lives and its order do |
@@ -64,22 +64,22 @@ An **actionable** is something that needs doing on one of the user's worktrees: 
 |---|---|
 | Deterministic creation over MCP | `actionables_create {kind: "custom", title, subject: {worktree_path?, pr?, url?}, dedupe_key, base_score?, expires_at?, body?}` and `actionables_resolve {dedupe_key}`. The caller's token gives the `source` (agent, orchestrator, outside MCP client = "external"). Each source has a cap on open items and a cap on `base_score` |
 | Orchestrator weight | A `boost` per item or per worktree (`actionables_boost {target, delta, reason, expires_at}`), bounded to ±20. Only the orchestrator's token or the user may set it. It shows in the breakdown |
-| New layer-1 rules | `engine/triage.py` has a `Rule` protocol (`detect(snapshot) → incidents`, `limits`, `dispatch_template`). Only rules compiled in are allowed, never rules from config or MCP. Future rules: conflict → `/base-merge` (gio-planner state D), lint-only failures |
-| Sources | A `Source` protocol (`poll() → [ExternalItem]`) for layer 3 (GitHub review requests, ClickUp). Disabled until the board exists (decision 5) |
+| New layer-1 rules | `engine/triage.py` has a `Rule` protocol (`detect(snapshot) → incidents`, `limits`, `dispatch_template`). Only rules compiled in are allowed, never rules from config or MCP. Future rules: conflict → `/base-merge` (the planner state D), lint-only failures |
+| Sources | A `Source` protocol (`poll() → [ExternalItem]`) for layer 3 (GitHub review requests, the issue tracker). Disabled until the board exists (decision 5) |
 
 ### Layer 3, sketched: an integrated local board
 
 Not designed. Recorded here so that layers 1-2 leave room for it.
 
-- **Board = lanes over actionables grouped by work item.** A work item is identified by its URL, the board's identity key (ClickUp card or PR), and holds the actionables of its branch/PR. Lanes are the user's work states from `~/.claude/CLAUDE.md`: **Todo · Doing · Delegated · Waiting · Blocked · Done**. The column is the source of truth, and a card carries exactly one verb (`Dev · Review · Test · Merge · Decide · Assign · Chase · Check · Land · Triage`).
-- **Cards change state by themselves**, following gio-planner's T2 table, now as engine rules: a red CI with no agent goes to Todo `Dev`, approved goes to `Merge`, a review requested from a coworker goes to Delegated `Chase`, an agent finished goes to Doing `Review`. **Lane stickiness** (`set_by: hand` pins a card until its fingerprint changes) and the **frozen `📅`** carry over as they are.
-- **External sources** plug in as `Source`s: review requests from teammates (`gh pr list --search review-requested:@me`), and ClickUp cards returned from QA/CR. ClickUp stays the system of record. The engine reads it (the token in its env) and never writes to it.
-- **Budget:** Doing + Todo ≤ ~4.5 h, with gio-planner's estimates. Overflow goes to Waiting, never out of Doing.
-- **Transition:** an export to `~/Documentos/smith/scrum/board.md` in the Kanban plugin format (a read-only view) until the desktop board replaces Obsidian. The Done sweep logs to the monthly file as today.
+- **Board = lanes over actionables grouped by work item.** A work item is identified by its URL, the board's identity key (tracker card or PR), and holds the actionables of its branch/PR. Lanes are the user's work states from `~/.claude/CLAUDE.md`: **Todo · Doing · Delegated · Waiting · Blocked · Done**. The column is the source of truth, and a card carries exactly one verb (`Dev · Review · Test · Merge · Decide · Assign · Chase · Check · Land · Triage`).
+- **Cards change state by themselves**, following the planner's T2 table, now as engine rules: a red CI with no agent goes to Todo `Dev`, approved goes to `Merge`, a review requested from a coworker goes to Delegated `Chase`, an agent finished goes to Doing `Review`. **Lane stickiness** (`set_by: hand` pins a card until its fingerprint changes) and the **frozen `📅`** carry over as they are.
+- **External sources** plug in as `Source`s: review requests from teammates (`gh pr list --search review-requested:@me`), and tracker cards returned from QA/CR. The tracker stays the system of record. The engine reads it (the token in its env) and never writes to it.
+- **Budget:** Doing + Todo ≤ ~4.5 h, with the planner's estimates. Overflow goes to Waiting, never out of Doing.
+- **Transition:** an export to `~/notes/board.md` in the Kanban plugin format (a read-only view) until the desktop board replaces Obsidian. The Done sweep logs to the monthly file as today.
 
-### Engine vs "gio-planner does it all" (decision 6)
+### Engine vs "the planner does it all" (decision 6)
 
-| | Actionables in the engine | gio-planner does it all (tick every 30 min) |
+| | Actionables in the engine | The planner does it all (tick every 30 min) |
 |---|---|---|
 | Latency | The PR/run poller every 60 s (5-10 min at rest), event-driven | Up to 30 min per hop |
 | Cost when nothing changes | 0 tokens (one conditional REST call per repo, which a `304` answers) | One LLM turn per tick |
@@ -87,15 +87,15 @@ Not designed. Recorded here so that layers 1-2 leave room for it.
 | Visible in desktop / web / TUI | Yes, one queue for every UI | No (terminal text plus the Obsidian board) |
 | Limits (agents, attempts) | Code, with tests | Prompt text the model must follow |
 | Determinism and tests | Rules and score as pure functions, golden tests | Prose rules interpreted each turn |
-| ClickUp, scrum, budget, morning plan | Not its job (layer 3 is only a sketch) | Already done and tuned |
+| Tracker, standup log, budget, morning plan | Not its job (layer 3 is only a sketch) | Already done and tuned |
 | Judgement (complexity, "blocked per its latest comment") | No, apart from the tie-break | Yes, LLM |
 | Cost to build | New engine code (A1-A4, ~M-L) | Already exists |
-| Risk | Duplicating gio-planner logic in two places | A single brain that is slow, costly and invisible to the UIs |
+| Risk | Duplicating the planner logic in two places | A single brain that is slow, costly and invisible to the UIs |
 
-**How they coexist** (**decided** 2026-10-20): the engine **detects, scores and auto-fixes**, driven by events and fixed rules. gio-planner stays the **daily-planning and ClickUp/scrum layer** (morning plan, ClickUp fetch, monthly log). There is **one priority logic, the engine's**, with its criteria in the editable Markdown file. It is not duplicated in gio-planner's prompt.
-1. **Consumes:** on each tick, gio-planner reads the engine's actionables over MCP (`actionables_list`, with score and breakdown). When the engine advertises `actionables`, T6c drops its "red check on an agent's PR" row and its own `gh` polling of agent PRs, and it respects the engine's claims, so the two never fix the same branch. T2 places cards by the engine's score and layer.
-2. **Feeds:** gio-planner pushes the ClickUp-derived items (QA return, @mention, urgent card, unassigned urgent bug) with `actionables_create` (source `gio-planner`, dedupe by card URL). It passes the ClickUp facts as **inputs** (priority, status, project position, its effort estimate). The engine scores them with the same criteria file: Phase 4's weights move there and are no longer in the skill's prompt. Those items then show in the desktop queue and use its notification threshold.
-3. **Later (layer 3):** once the board exists in the engine, gio-planner becomes **one more source** that feeds it (ClickUp adapter plus morning plan). It writes to the engine board instead of `board.md`, and its tick could run less often, or stop.
+**How they coexist** (**decided** 2026-10-20): the engine **detects, scores and auto-fixes**, driven by events and fixed rules. The planner stays the **daily-planning and tracker/standup layer** (morning plan, tracker fetch, monthly log). There is **one priority logic, the engine's**, with its criteria in the editable Markdown file. It is not duplicated in the planner's prompt.
+1. **Consumes:** on each tick, the planner reads the engine's actionables over MCP (`actionables_list`, with score and breakdown). When the engine advertises `actionables`, T6c drops its "red check on an agent's PR" row and its own `gh` polling of agent PRs, and it respects the engine's claims, so the two never fix the same branch. T2 places cards by the engine's score and layer.
+2. **Feeds:** The planner pushes the tracker-derived items (QA return, @mention, urgent card, unassigned urgent bug) with `actionables_create` (source `planner`, dedupe by card URL). It passes the tracker facts as **inputs** (priority, status, project position, its effort estimate). The engine scores them with the same criteria file: Phase 4's weights move there and are no longer in the skill's prompt. Those items then show in the desktop queue and use its notification threshold.
+3. **Later (layer 3):** once the board exists in the engine, the planner becomes **one more source** that feeds it (tracker adapter plus morning plan). It writes to the engine board instead of `board.md`, and its tick could run less often, or stop.
 
 ## Feasibility in the code
 
@@ -131,7 +131,7 @@ Not designed. Recorded here so that layers 1-2 leave room for it.
 |---|---|
 | An auto-fix pushes something wrong to a shared branch | Only worktree branches, never the default or `protected` branches. Revert commits, no force-push. Attempt cap. The engine verifies the next run and escalates. A teammate-authored PR on that branch skips auto-triage (Q-A8) |
 | Runaway cost (agents in a loop on a flaky test) | `max_fixers`, `max_attempts`, `max_fixes_per_day` (Q-A18). An item that comes back with the same signature after being resolved uses the same ledger within 24 h |
-| Fighting gio-planner (both start a fixer) | Engine claims are visible over MCP. gio-planner skips branches the engine claims (§ coexistence). One shared cap (Q-A16) |
+| Fighting the planner (both start a fixer) | Engine claims are visible over MCP. The planner skips branches the engine claims (§ coexistence). One shared cap (Q-A16) |
 | Touching the user's own work | Dirty worktree guard; an idle agent gets the failure (no second agent); ignore/pause per worktree |
 | Notification fatigue | Threshold, once per occurrence, snooze in the engine |
 | An opaque order | A score breakdown on every item. Weights in a file the user edits. The tie-break is optional and cached |

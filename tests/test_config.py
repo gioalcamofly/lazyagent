@@ -112,11 +112,11 @@ prompt_file = "my-prompt.md"
     def test_orchestrator_agent_instruction_template(self, tmp_path: Path):
         toml_content = """\
 [orchestrator]
-agent_instruction_template = "/clickup-fix-card {task_id}"
+agent_instruction_template = "/fix-task {task_id}"
 """
         (tmp_path / ".lazyagent.toml").write_text(toml_content)
         config = load_config(tmp_path)
-        assert config.orchestrator.agent_instruction_template == "/clickup-fix-card {task_id}"
+        assert config.orchestrator.agent_instruction_template == "/fix-task {task_id}"
 
     def test_orchestrator_partial_config(self, tmp_path: Path):
         toml_content = """\

@@ -17,8 +17,8 @@ def _make_worktree(**kwargs) -> WorktreeInfo:
 
 class TestName:
     def test_returns_dirname(self):
-        wt = _make_worktree(path="/home/user/repo-PROJ-10761")
-        assert wt.name == "repo-PROJ-10761"
+        wt = _make_worktree(path="/home/user/repo-TASK-10761")
+        assert wt.name == "repo-TASK-10761"
 
     def test_returns_dirname_for_root(self):
         wt = _make_worktree(path="/home/user/repo")
@@ -27,12 +27,19 @@ class TestName:
 
 class TestTicketId:
     def test_extracts_ticket_from_branch(self):
-        wt = _make_worktree(branch="PROJ-11067-Remove-Feature-Flags")
-        assert wt.ticket_id == "PROJ-11067"
+        wt = _make_worktree(branch="TASK-11067-Remove-Feature-Flags")
+        assert wt.ticket_id == "TASK-11067"
 
     def test_extracts_ticket_with_prefix(self):
-        wt = _make_worktree(branch="feat/PROJ-12413-some-feature")
-        assert wt.ticket_id == "PROJ-12413"
+        wt = _make_worktree(branch="feat/TASK-12413-some-feature")
+        assert wt.ticket_id == "TASK-12413"
+
+    def test_extracts_ticket_with_any_project_key(self):
+        assert _make_worktree(branch="ENG-42-retry").ticket_id == "ENG-42"
+        assert _make_worktree(branch="feat/AB2-7").ticket_id == "AB2-7"
+
+    def test_lowercase_is_not_a_ticket(self):
+        assert _make_worktree(branch="release-2").ticket_id is None
 
     def test_no_ticket_in_branch(self):
         wt = _make_worktree(branch="fix-prompt-fixture-reference-date-ordering")
@@ -49,8 +56,8 @@ class TestDisplayLabel:
         assert wt.display_label == "(main)"
 
     def test_ticket_branch(self):
-        wt = _make_worktree(branch="PROJ-10761-fix-nested-validators")
-        assert wt.display_label == "PROJ-10761"
+        wt = _make_worktree(branch="TASK-10761-fix-nested-forms")
+        assert wt.display_label == "TASK-10761"
 
     def test_no_ticket_branch(self):
         wt = _make_worktree(branch="fix-service-choice-playbook-switch")
@@ -67,7 +74,7 @@ class TestDisplayBranch:
         assert wt.display_branch == "main"
 
     def test_long_branch_truncated(self):
-        long_name = "PROJ-12413-AIR-Instructions-for-New-Customers-updated-event-is-missing"
+        long_name = "TASK-12413-Welcome-email-for-new-customers-is-never-sent-out"
         wt = _make_worktree(branch=long_name)
         assert len(wt.display_branch) == 40
         assert wt.display_branch.endswith("...")

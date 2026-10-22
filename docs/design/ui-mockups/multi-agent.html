@@ -127,7 +127,7 @@ main { flex: 1; display: flex; min-height: 0; }
 <body>
 <header id="topbar">
   <span class="brand">lazyagent</span>
-  <span class="repo">~/smith/agentsmith</span>
+  <span class="repo">~/code/shop</span>
   <span class="pill ok">engine ● connected</span>
   <span class="spacer"></span>
   <nav class="views" aria-label="Views">
@@ -153,27 +153,27 @@ main { flex: 1; display: flex; min-height: 0; }
   </div>
   <div class="grid">
     <div class="tile focus">
-      <div class="th"><span class="dot s-run" style="background:var(--green)"></span><b>Agent 1</b><span class="w">csr-routing-rules</span><span class="spacer"></span><span class="sz">focused · owns 120×32</span><span class="g">running 44m</span></div>
+      <div class="th"><span class="dot s-run" style="background:var(--green)"></span><b>Agent 1</b><span class="w">discount-rules</span><span class="spacer"></span><span class="sz">focused · owns 120×32</span><span class="g">running 44m</span></div>
       <div class="term">
-<span class="g">●</span> <span class="b">Bash</span>(TESTS=agentsmith.csr.tests.test_routing make tests)
+<span class="g">●</span> <span class="b">Bash</span>(TESTS=shop.checkout.tests.test_discounts make tests)
   ⎿  Ran 18 tests in 4.211s
      <span class="g">OK</span>
 
-<span class="b">●</span> All routing tests pass, including the new shadowing case.
+<span class="b">●</span> All discount tests pass, including the new shadowing case.
   Next I'll update the admin form so rules show their computed
   specificity, then push.
 
-<span class="g">●</span> <span class="b">Read</span>(src/django/agentsmith/csr/admin.py)
+<span class="g">●</span> <span class="b">Read</span>(src/shop/checkout/admin.py)
 
 <span class="a">✻ Thinking… (6s · esc to interrupt)</span>
       </div>
       <div class="tf"><span>using Read</span><span class="spacer"></span><span>142k tok</span><span>· Enter full size · x stop</span></div>
     </div>
     <div class="tile alert scaled">
-      <div class="th"><span class="dot s-wait" style="background:var(--yellow)"></span><b>Agent 2</b><span class="w">transfer-dir-availability</span><span class="spacer"></span><span class="sz">160×40 → scaled</span><span class="y b">approval 2m</span></div>
+      <div class="th"><span class="dot s-wait" style="background:var(--yellow)"></span><b>Agent 2</b><span class="w">delivery-slots</span><span class="spacer"></span><span class="sz">160×40 → scaled</span><span class="y b">approval 2m</span></div>
       <div class="term">
-<span class="b">●</span> <span class="b">Bash</span>(docker compose exec db psql -U smith -c "DELETE FROM
-       transfer_hours WHERE directory_entry_id IN (…)")
+<span class="b">●</span> <span class="b">Bash</span>(docker compose exec db psql -U store -c "DELETE FROM
+       delivery_slots WHERE delivery_window_id IN (…)")
 
 <span class="box" style="border-color:var(--yellow)"> Do you want to proceed?                                     
  <span class="c">❯ 1. Yes</span>                                                    
@@ -183,19 +183,19 @@ main { flex: 1; display: flex; min-height: 0; }
       <div class="tf"><span class="y">needs approval</span><span class="spacer"></span><span>301k tok</span><span>· 1 approve · Enter open</span></div>
     </div>
     <div class="tile scaled">
-      <div class="th"><span class="dot s-run" style="background:var(--green)"></span><b>Agent 3 · evals</b><span class="w">transfer-dir-availability</span><span class="spacer"></span><span class="sz">120×32</span><span class="g">running 12m</span></div>
+      <div class="th"><span class="dot s-run" style="background:var(--green)"></span><b>Agent 3 · evals</b><span class="w">delivery-slots</span><span class="spacer"></span><span class="sz">120×32</span><span class="g">running 12m</span></div>
       <div class="term">
-<span class="dim">$ TEST=test_transfer_hours OPTIONS='-m "not wip" --repeat=3' make vart.eval</span>
-tests/vart/test_transfer_hours.py::test_overlap[1-3] <span class="g">PASSED</span>
-tests/vart/test_transfer_hours.py::test_overlap[2-3] <span class="g">PASSED</span>
-tests/vart/test_transfer_hours.py::test_overlap[3-3] <span class="r">FAILED</span>
-tests/vart/test_transfer_hours.py::test_after_hours[1-3] <span class="g">PASSED</span>
-tests/vart/test_transfer_hours.py::test_after_hours[2-3] <span class="dim">…</span>
+<span class="dim">$ pytest tests/e2e/test_delivery_slots.py --count=3</span>
+tests/e2e/test_delivery_slots.py::test_overlap[1-3] <span class="g">PASSED</span>
+tests/e2e/test_delivery_slots.py::test_overlap[2-3] <span class="g">PASSED</span>
+tests/e2e/test_delivery_slots.py::test_overlap[3-3] <span class="r">FAILED</span>
+tests/e2e/test_delivery_slots.py::test_after_hours[1-3] <span class="g">PASSED</span>
+tests/e2e/test_delivery_slots.py::test_after_hours[2-3] <span class="dim">…</span>
       </div>
       <div class="tf"><span>using Bash · dev-db slot held</span><span class="spacer"></span><span>87k tok</span></div>
     </div>
     <div class="tile scaled">
-      <div class="th"><span class="dot s-wait" style="background:var(--yellow)"></span><b>Agent 1</b><span class="w">nested-validator</span><span class="spacer"></span><span class="sz">100×30</span><span class="y b">input 9m</span></div>
+      <div class="th"><span class="dot s-wait" style="background:var(--yellow)"></span><b>Agent 1</b><span class="w">nested-forms</span><span class="spacer"></span><span class="sz">100×30</span><span class="y b">input 9m</span></div>
       <div class="term">
 <span class="b">●</span> Empty nested lists already raise <span class="mono">ValidationError("may not
   be empty")</span>, but empty nested dicts pass silently. Two options:

@@ -1788,17 +1788,17 @@ mod tests {
 
     fn pr_base() -> DiffBase {
         DiffBase {
-            ref_: "origin/PROJ-25996-intake".into(),
-            branch: Some("PROJ-25996-intake".into()),
+            ref_: "origin/TASK-456-checkout".into(),
+            branch: Some("TASK-456-checkout".into()),
             source: "pr".into(),
             merge_base: "0123456789abcdef".into(),
-            pr_number: Some(20163),
+            pr_number: Some(4242),
         }
     }
 
     #[test]
     fn the_base_label_says_where_the_base_came_from() {
-        assert_eq!(base_label(&pr_base()), "PR #20163 base");
+        assert_eq!(base_label(&pr_base()), "PR #4242 base");
         assert_eq!(base_label(&DiffBase { pr_number: None, ..pr_base() }), "PR base");
         assert_eq!(base_label(&DiffBase { source: "default".into(), ..pr_base() }), "default branch");
         assert_eq!(base_label(&DiffBase { source: "override".into(), ..pr_base() }), "override");
@@ -1809,7 +1809,7 @@ mod tests {
     fn the_base_field_shows_the_resolved_base_and_takes_an_override() {
         let mut d = DiffState::loaded("/r/f", "", Diff::default());
         d.applied(Some(pr_base()), None, None);
-        assert_eq!(d.base, "origin/PROJ-25996-intake", "the field shows what is used");
+        assert_eq!(d.base, "origin/TASK-456-checkout", "the field shows what is used");
         assert_eq!(d.base_request(), "", "unchanged: still the engine's pick");
         d.base = "  ".into();
         assert_eq!(d.base_request(), "", "cleared: the engine's pick");

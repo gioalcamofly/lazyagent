@@ -21,7 +21,7 @@
 
 | Fact | Where | Consequence |
 |---|---|---|
-| The user's install is **editable**: `.venv` → `file:///home/giovanni/smith/lazyagent` (`direct_url.json`, `editable: true`); the desktop binary is `~/.cargo/bin/lazyagent-desktop` (found on PATH by `desktop.py`) | `src/lazyagent/desktop.py` | A `git pull` changes the Python code of every **new** process at once; the binary only after `cargo install` |
+| The user's install is **editable**: `.venv` → `file:///home/u/code/lazyagent` (`direct_url.json`, `editable: true`); the desktop binary is `~/.cargo/bin/lazyagent-desktop` (found on PATH by `desktop.py`) | `src/lazyagent/desktop.py` | A `git pull` changes the Python code of every **new** process at once; the binary only after `cargo install` |
 | Version is `0.8.0` on both `develop` and the last tag (`v0.8.0`); `engine_version` = package version | `pyproject.toml`, `hello` | The version cannot tell an update from a source checkout: git commits must |
 | `shutdown {stop_agents}` stops a **detached** engine; an engine hosted by a TUI refuses it; `hello`/`get_engine_info` say `detached` | `engine/server.py:1142`, `:650` | "Restart the engine" is offered only for a detached engine |
 | A stopped engine keeps its agents in the manifest's `agents`; the next engine offers `agents + restorable` as restorable; entry ids are stable; a restore keeps the agent id when free and resumes the exact conversation (`--resume <id>`), else "resume last" | `engine/manifest.py`, `engine.py:1864` | A restart = stop, start, restore the ids that were live. No new engine method needed |
@@ -30,7 +30,7 @@
 | The desktop never spawns on its own at start. The only "resume last" buttons: the spawn dialog, and the attention item "Spawn again (resume the last session)" on an exit | `attention_view.rs:222`, `dialogs.rs:232` | After a manual engine stop with the app open, every killed agent becomes an "exited" item with that button; in the root the engine now refuses it, elsewhere it resumes the worktree's last conversation, not necessarily the agent's. U3 drops exits of a previous engine (Q-U11) |
 | The connection supervisor does not restart an engine that announced `engine.shutdown` (Stopped), but reconnects as soon as one is located; `Conn::shutdown()` ends the supervisor | `conn.rs` | The old app quits its supervisor before the engine stops, so it never meets the new engine |
 | `cargo install` of the app (release, `lto = "thin"`, `codegen-units = 1`) takes minutes; replacing the binary does not disturb the running process | `desktop/Cargo.toml` | The build runs in the background, in the jobs drawer; the restart is offered when it ends |
-| The main checkout `/home/giovanni/smith/lazyagent` is on `develop` tracking `origin/develop`, with the user's uncommitted changes (`M .claude/skills/release/SKILL.md`, `?? orchestrator-epic-plan.md`, `?? scripts/`) | `git status` (read only) | Those are never touched: no stash, reset, checkout, clean or rebase, ever |
+| The main checkout `~/code/lazyagent` is on `develop` tracking `origin/develop`, with the user's uncommitted changes (`M .claude/skills/release/SKILL.md`, `?? orchestrator-epic-plan.md`, `?? scripts/`) | `git status` (read only) | Those are never touched: no stash, reset, checkout, clean or rebase, ever |
 
 ## 2. What "an update" is
 
@@ -40,7 +40,7 @@
 
 | Signal | Mode |
 |---|---|
-| The `lazyagent` distribution is editable (`direct_url.json` → `dir_info.editable`) and its source root (`Path(lazyagent.__file__).parents[2]`, as `desktop.py`'s `SOURCE_ROOT`) holds `.git` and a `pyproject.toml` named `lazyagent` | development (the user's case: `.venv` → `/home/giovanni/smith/lazyagent`) |
+| The `lazyagent` distribution is editable (`direct_url.json` → `dir_info.editable`) and its source root (`Path(lazyagent.__file__).parents[2]`, as `desktop.py`'s `SOURCE_ROOT`) holds `.git` and a `pyproject.toml` named `lazyagent` | development (the user's case: `.venv` → `~/code/lazyagent`) |
 | The desktop binary that runs (`LAZYAGENT_DESKTOP_BIN`, else the one `desktop.py` found; passed by the app as `--app-binary`) is under `<checkout>/desktop/target/` | development, that checkout |
 | Otherwise | published |
 
@@ -221,7 +221,7 @@ As planned, with these differences:
 | Q-U2 | Published installs: who runs the upgrade | `uv tool upgrade` / `pipx upgrade` when that is the installer; otherwise show the command | Always only show the command; or run pip in whatever env |
 | Q-U3 | Automatic checks | At start (+10 s) and every 6 h, quiet chip; switch in Help | Only on demand |
 | Q-U4 | Local commits / diverged | Refuse, explain, update by hand | Rebase or merge for the user |
-| Q-U5 | Uncommitted changes (dev mode) | **User decision (revised):** let git decide. Changes that do not collide stay as they are and the update goes on; when `merge --ff-only` would overwrite local changes or untracked files: warn with the list, change nothing. Never stash/reset | Block on any modified tracked file (first version: the user would never update) |
+| Q-U5 | Uncommitted changes (dev mode) | **User decision (revised):** let git decide. Changes that do not collide stay as they are and the update goes on; when `merge --ff-only` would overwrite local changes or untracked files: warn with the list, change nothing. Never stash/reset | Block on any modified tracked file (first version: The user would never update) |
 | Q-U6 | What "restore all" restores | Only the agents this restart stopped (`after − before`) | Every restorable entry (today's `restore --all`) |
 | Q-U7 | Defaults of the restart dialog | After an update: engine checked iff Python changed or engine behind; restore checked. From the menu: engine unchecked, restore checked; both remembered | Always unchecked |
 | Q-U8 | When to rebuild the app | Only when `desktop/` changed or the binary is behind | Always |

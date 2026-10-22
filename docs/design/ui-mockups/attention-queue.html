@@ -144,7 +144,7 @@ main { flex: 1; display: flex; min-height: 0; }
 <body>
 <header id="topbar">
   <span class="brand">lazyagent</span>
-  <span class="repo">~/smith/agentsmith</span>
+  <span class="repo">~/code/shop</span>
   <span class="pill ok">engine ● connected</span>
   <span class="spacer"></span>
   <nav class="views" aria-label="Views">
@@ -164,8 +164,8 @@ main { flex: 1; display: flex; min-height: 0; }
   <div class="filters"><span class="chip on">All 4</span><span class="chip">Approvals 1</span><span class="chip">Questions 1</span><span class="chip">CI 1</span><span class="chip">Done 1</span><span class="spacer"></span><span class="chip">Snoozed 0</span></div>
   <div class="item sel">
     <span class="ic y">⚠</span><span class="t"><span class="kind y">Approval</span> · Agent 2</span><span class="age">2m</span>
-    <span class="w">transfer-dir-availability</span>
-    <span class="d">Bash: docker compose exec db psql -c "DELETE FROM transfer_hours…"</span>
+    <span class="w">delivery-slots</span>
+    <span class="d">Bash: docker compose exec db psql -c "DELETE FROM delivery_slots…"</span>
     <div class="phone-only mini">Do you want to proceed?
 ❯ 1. Yes
   2. Yes, and don't ask again for docker
@@ -174,17 +174,17 @@ main { flex: 1; display: flex; min-height: 0; }
   </div>
   <div class="item">
     <span class="ic y">?</span><span class="t"><span class="kind y">Question</span> · Agent 1</span><span class="age">9m</span>
-    <span class="w">nested-validator</span>
+    <span class="w">nested-forms</span>
     <span class="d">"Should empty nested dicts be valid, or raise like empty lists?"</span>
   </div>
   <div class="item">
-    <span class="ic r">✗</span><span class="t"><span class="kind r">CI failed</span> · #17298</span><span class="age">14m</span>
-    <span class="w">transfer-dir-availability</span>
-    <span class="d">tests / django (3/4), vart / evals-smoke</span>
+    <span class="ic r">✗</span><span class="t"><span class="kind r">CI failed</span> · #298</span><span class="age">14m</span>
+    <span class="w">delivery-slots</span>
+    <span class="d">tests / django (3/4), e2e / smoke</span>
   </div>
   <div class="item">
     <span class="ic c">✓</span><span class="t"><span class="kind c">Completed</span> · Agent 4</span><span class="age">31m</span>
-    <span class="w">amplitude-cleanup</span>
+    <span class="w">analytics-cleanup</span>
     <span class="d">PR approved, CI green · review diff (+42 −310)</span>
   </div>
   <div style="flex:1"></div>
@@ -193,28 +193,28 @@ main { flex: 1; display: flex; min-height: 0; }
 <section class="detail">
   <div class="dh">
     <span class="dot s-wait" style="background:var(--yellow)"></span>
-    <b>Agent 2</b><span class="wt-branch">transfer-dir-availability · PROJ-17298-dir-hours</span>
+    <b>Agent 2</b><span class="wt-branch">delivery-slots · TASK-298-delivery-slots</span>
     <span class="pill warn">waiting_for_approval · needs approval</span>
     <span class="spacer"></span>
     <span class="muted" style="font-size:12px">live terminal · <kbd>Ctrl+J</kbd> to type</span>
   </div>
   <div class="term" style="flex:1">
-<span class="dim">● Read(src/django/agentsmith/transfers/models.py)</span>
+<span class="dim">● Read(src/shop/delivery/models.py)</span>
 <span class="dim">  ⎿  Read 340 lines</span>
 
-<span class="b">●</span> The failing eval seeds overlapping hours for the same directory entry.
+<span class="b">●</span> The failing eval seeds overlapping slots for the same delivery window.
   I'll clear the seeded rows in the dev DB and re-run the fixture loader.
 
-<span class="b">●</span> <span class="b">Bash</span>(docker compose exec db psql -U smith -c "DELETE FROM
-       transfer_hours WHERE directory_entry_id IN (SELECT id FROM
-       directory_entry WHERE name LIKE 'eval-%');")
+<span class="b">●</span> <span class="b">Bash</span>(docker compose exec db psql -U store -c "DELETE FROM
+       delivery_slots WHERE delivery_window_id IN (SELECT id FROM
+       delivery_window WHERE name LIKE 'eval-%');")
 
 <span class="box" style="padding:4px 10px;border-color:var(--yellow)"> <span class="b">Bash command</span>                                                            
                                                                           
-   docker compose exec db psql -U smith -c "DELETE FROM transfer_hours    
-   WHERE directory_entry_id IN (SELECT id FROM directory_entry WHERE      
+   docker compose exec db psql -U store -c "DELETE FROM delivery_slots    
+   WHERE delivery_window_id IN (SELECT id FROM delivery_window WHERE      
    name LIKE 'eval-%');"                                                  
-   Clear eval-seeded transfer hours in the shared dev DB                  
+   Clear eval-seeded delivery slots in the shared dev DB                  
                                                                           
  Do you want to proceed?                                                  
  <span class="c">❯ 1. Yes</span>                                                                 

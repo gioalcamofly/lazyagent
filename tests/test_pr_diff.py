@@ -54,7 +54,7 @@ def origin(tmp_path) -> Path:
 def repo(tmp_path, origin) -> Path:
     """A clone whose local main is stale (from before main moved on), with
     feature-b stacked on feature-a and main's newer commit merged in: the
-    smith-PROJ-26001 shape."""
+    shape of a stacked feature branch."""
     repo = tmp_path / "repo"
     _git(tmp_path, "clone", "-q", str(origin), str(repo))
     _git(repo, "reset", "-q", "--hard", "origin/main~1")  # stale local main
@@ -146,7 +146,7 @@ def _service(repo: Path) -> WorktreeService:
 
 
 def _pr(base_ref: str, state: str = "OPEN") -> PrInfo:
-    return PrInfo(number=20163, title="b", state=state, checks=[], base_ref=base_ref)
+    return PrInfo(number=4242, title="b", state=state, checks=[], base_ref=base_ref)
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,7 @@ class TestResolvedBase:
             "branch": "feature-a",
             "source": "pr",
             "merge_base": _git(repo, "rev-parse", "origin/feature-a"),
-            "pr_number": 20163,
+            "pr_number": 4242,
         }
         assert _files(reply["diff"]) == ["b.txt", "later.txt"]
         assert reply["uncommitted"] == ""

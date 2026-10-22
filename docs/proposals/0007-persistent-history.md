@@ -9,7 +9,7 @@
 
 ## Today's workaround
 
-- The morning summary is rebuilt by hand (or by `/gio-planner`) from ClickUp, GitHub and agent screens.
+- The morning summary is rebuilt by hand (or by `/planner`) from the issue tracker, GitHub and agent screens.
 
 ## Proposal
 
@@ -22,7 +22,7 @@
 | method | `subscribe {since}` | Unchanged; `since` can now reach before the engine started |
 | method | `get_timeline {session_id? \| worktree_path?, since?, until?}` | Ordered events + rollups |
 | method | `get_digest {since}` | Per worktree: status changes, PR events, waiting time, exits, usage ([0006](0006-cost-tokens-per-agent.md)) |
-| MCP | `get_digest` | For `/gio-planner` and the orchestrator |
+| MCP | `get_digest` | For `/planner` and the orchestrator |
 
 ## Fits after
 
