@@ -371,6 +371,34 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - `actionables_list {repo?, include_hidden?}` → `{items, counts {now, round, parked}, generated_at}`, `actionables_get {id}`, `actionables_mark {id, action, until?, caller?}`; all three are also on the legacy socket. Feature `actionables`. Schemas: `actionable`, `actionable_until`, `actionable.*`; golden fixtures. MCP `actionables_list` is read-only and adds a ready `table`; MCP has no mark. The orchestrator prompt names it.
 - Not in I2: the engine notifying with no UI attached (Q-B10), and importing the desktop's marks (I3). Desktop: only `proto/tests/golden.rs` (the `actionables_*` fixtures and `actionable.*` events are skipped until I3).
 
+**I3** (`inbox-i3-desktop-home`):
+
+- Engine, `engine/claims.py` (Pass to orchestrator): `status_gesture {key, kind: "delegate", to: "orchestrator", ttl_s?}` (user only, no token) creates `claim {key, holder, at, until, by, allowed}`; refused with no orchestrator running, for an unknown or done item, or a `ttl_s` outside 60 s-24 h. Default TTL `[orchestrator] claim_ttl_s` (7200). A second pass renews it. `kind: "clear"` is the user taking it back. The other §4 gesture kinds (label, park, close) wait for I4 and are refused.
+- While a claim holds, the row is in flight with ball `agent`, state `with orchestrator`, rule 13 (not a §3 row) and `claim` set; its inbox items leave the user's inbox, except `approval` items, which stay in Now. The queue itself keeps them (`actionables_list` still lists them).
+- The orchestrator is woken once, when its turn is over (never mid-turn), with one line: `Item <key>: passed to you by the user until HH:MM. Read it with status_list; …call orchestrator_release.`
+- `orchestrator_release {key, outcome: done | returned, note}`: orchestrator token only. `returned` puts the item back in the user's Round with the note.
+- **Lapse:** a claim that expires, or whose orchestrator exits, becomes a `delegation` actionable (Round, title "Back from the orchestrator", state `delegation lapsed`). It is checked on every status pass (events plus the 60 s tick), and dismissing it clears it. A claim whose worktree is removed is dropped silently.
+- Claims live in memory only: an engine restart ends them, and the rows fall back to their own derivation.
+- `allowed` records the away mandate's rows of §5c. In I3 the engine enforces only who may claim, release and take back; the per-method mandate checks come with I4.
+- Events `orchestrator.claim {claim}`, `orchestrator.released {key, outcome, note, claim}` (outcome `done` · `returned` · `taken_back`), `orchestrator.lapsed {key, reason: expired | orchestrator_gone, claim}`. Feature `claims`. Row field `claim` (null otherwise). Schemas and golden fixtures. MCP `orchestrator_release`; the orchestrator prompt says how to handle a passed item.
+- `ActionableQueue.on_dismiss` hooks let a detector's owner forget what was dismissed.
+- Desktop, `home.rs` (model) and `home_view.rs` (view): the app opens on **Home** (`View::Home`). Ctrl+K / Ctrl+J / Ctrl+L, a sidebar click and `g w` go to the worktrees; `g h` (and the old `g a`) come back.
+- **Engine mode** (features `status` and `actionables`): rows come from `status_list` and items from `actionables_list`, then from `status.*` / `actionable.*` events. A work item shows **once**: its top item and `+N`. Items with no work item (the orchestrator's dialogs, jobs) get one line per place.
+- **Fallback** (older engines): lines come from the client's attention queue plus the sidebar facts: ball `agent` / `others` / `stalled`, and the age since the client saw the line change. attention.rs is used only for this fallback.
+- **Rounds (Q-B9):** Now lines show at once. A line entering Round waits for a cut point and shows a "next round: N ▸" counter (clicking it is a cut point too). Until then the line stays where it was, in flight, marked `you · next round`. Cut points: a dismiss, a park, a pass or a take back; coming back from the worktrees; every 30 min (a constant in the desktop: `[inbox] round_every_minutes` is not read yet). The first complete load is a cut point. Round lines that leave on their own are counted as "N resolved on their own".
+- **Order:** between cut points nothing moves. Lines keep their places, new lines go to the end of their zone, and only a cut point sorts again (§4 order, ported). The selection follows the key, not the index.
+- **Since last look:** a dot on in-flight lines changed since the last look, which is the time Home was last left or the app last closed (`home_seen` in the desktop's state file). "mark seen" sets it to now. The engine's `status_seen` is left to I4, with the per-item seen marks.
+- **Keys:** `Enter` answers a Now line (opens the agent's terminal) and expands any other line (agents, PR, the agent's note with its age, the claim). Also `o` terminal, `n` notes, `p` PR, `x` dismiss, `z` park until (1 h / 4 h / 24 h / CI ends / the agent stops / a human reviews), `Shift+O` pass to orchestrator, `u` take back, `f` fold.
+- Key deviations from §5: `z` instead of `k` (j/k move), `f` instead of `s` (s spawns), `Shift+O` for the pass. No close / label / delegate keys yet (I4 / I7). A CI line keeps "Send the failures to its agent".
+- Pass to orchestrator is disabled, with the reason shown, when the engine lacks `claims` or no orchestrator runs.
+- The desktop's own marks are imported once (`marks_imported`). A dismissal becomes `dismiss` when the engine has seen the item since before the dismissal. A snooze becomes a park until its time.
+- **Noise cut:** the engine pill shows only when the link is not connected, and the engine version is gone from the top bar. No shell until Ctrl+L or "Shell ▸". Ages are minute-level (`<1m`, never `0s`). There is no Stop next to Open: the attention view is gone, and Stop stays in the worktree header. No info toasts that repeat the screen (worktree created / removed, job done, agents restored).
+- **Badges:** "Home · ● N now · M round" in the top bar, and `(N now · M)` in the window title.
+- **Notifications** cover only Now items, once per occurrence (Q-B10). The settings menu lists only those kinds.
+- Not in I3: the TUI badge (Q-B15), the engine notifying with no UI, and the `round_every_minutes` config.
+- Screenshots: [dark](desktop-screenshots/i3-home-dark.png) and [light](desktop-screenshots/i3-home-light.png), neutral demo data, rendered by the `home_screenshots` test.
+- Tests: `tests/engine/test_claims.py` (10), MCP release in `tests/test_mcp_status.py`, golden fixtures `status_gesture/*` and `orchestrator_release/*`. Desktop: `home.rs` units (order, rounds, one line per item, ages), persist (marks import), headless Home tests (opens on Home, frozen order, rounds, resolved count, pass gating), and a real-engine pass / take back.
+
 ---
 
 ## 9. Open questions (answered 2026-10-23)
