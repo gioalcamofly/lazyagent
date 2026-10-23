@@ -95,6 +95,10 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             // call yet (gestures, timeline, seen marks, briefs).
             "status_report" | "request_decision" | "decision_withdraw" => continue,
             "status_seen" | "status_timeline" | "decision_get" | "decisions_list" => continue,
+            // I4b (the orchestrator as first responder): the desktop does not
+            // call these yet (I4c).
+            "decision_answer" | "decision_escalate" | "decision_revert" => continue,
+            "presence_report" | "presence_set" | "inbox_config_get" | "inbox_config_set" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -159,6 +163,7 @@ const IGNORED_EVENTS: &[&str] = &[
     "status.timeline",
     "decision.created",
     "decision.resolved",
+    "decision.answered",
 ];
 
 #[test]

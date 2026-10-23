@@ -200,6 +200,13 @@ class EngineMethods:
             "decision_withdraw": self.decision_withdraw,
             "decision_get": self.decision_get,
             "decisions_list": self.decisions_list,
+            "decision_answer": self.decision_answer,
+            "decision_escalate": self.decision_escalate,
+            "decision_revert": self.decision_revert,
+            "presence_report": self.presence_report,
+            "presence_set": self.presence_set,
+            "inbox_config_get": self.inbox_config_get,
+            "inbox_config_set": self.inbox_config_set,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -299,6 +306,9 @@ class EngineMethods:
         if type(custom) is not bool:
             raise ValueError("custom must be a boolean")
         env = check_env(params.get("env"))
+        role, _ = self._caller(params)
+        if role == ORCHESTRATOR_BY:
+            await self._engine.first_responder.check_remove(worktree_path)
 
         job_id = await self._engine.remove_worktree(
             worktree_path, force, custom=custom, env=env
@@ -358,6 +368,15 @@ class EngineMethods:
 
         # The caps bind agents (the orchestrator included), not the user.
         role, _ = self._caller(params)
+        responder = self._engine.first_responder
+        held_key = None
+        if role == ORCHESTRATOR_BY and kind == AGENT_KIND:
+            # On an item it holds (a routed brief, a claim) the orchestrator
+            # acts as a delegate: the mandate decides.
+            key = self._engine.status.key_of(worktree_path)
+            if key is not None and responder.holds(key):
+                held_key = key
+                mandate = responder.check_action("spawn_worker", key)
         caps = self._engine.spawn_caps if role != USER_BY else None
         reserved = caps.reserve(self._engine) if caps is not None else 0.0
 
@@ -384,6 +403,13 @@ class EngineMethods:
             raise
         if caps is not None:
             caps.done()
+        if held_key is not None:
+            responder.record_action(
+                held_key, "spawn_worker", mandate=mandate,
+                inverse={"kind": "stop_agent", "worktree_path": worktree_path,
+                         "agent_id": info.agent_id},
+                text=f"spawned agent {info.agent_id}",
+            )
         return {
             "worktree_path": worktree_path
             if kind == AGENT_KIND
@@ -974,11 +1000,25 @@ class EngineMethods:
             if to != "orchestrator":
                 raise ValueError("to must be 'orchestrator'")
             claim = claims.claim(key, ttl_s=params.get("ttl_s"), by=role)
-        elif kind == "clear":
-            gesture = engine.overlay.clear_gesture(key)
+            # Passing it is the opposite of keeping it.
+            if engine.overlay.kept.pop(key, None) is not None:
+                engine.overlay.changed()
+        elif kind == "keep_for_me":
+            if status.row(key) is None:
+                raise ValueError(f"No work item {key!r}")
+            engine.overlay.kept[key] = {"at": status.clock(), "by": role}
+            engine.overlay.changed()
             if claims.get(key) is not None:
                 claims.clear(key)
-            elif gesture is None:
+            status.by(key, role)
+        elif kind == "clear":
+            gesture = engine.overlay.clear_gesture(key)
+            kept = engine.overlay.kept.pop(key, None)
+            if kept is not None:
+                engine.overlay.changed()
+            if claims.get(key) is not None:
+                claims.clear(key)
+            elif gesture is None and kept is None:
                 raise ValueError(f"{key} has no gesture and is not with the orchestrator")
             status.by(key, role)
         elif kind in ("label", "park", "close"):
@@ -1002,13 +1042,16 @@ class EngineMethods:
                 claims.clear(key)
             status.by(key, role)
         else:
-            raise ValueError("kind must be one of label, park, close, delegate, clear")
+            raise ValueError(
+                "kind must be one of label, park, close, delegate, keep_for_me, clear"
+            )
         status.flush()
         row = status.row(key)
         return {
             "key": key,
             "claim": claim.to_dict() if claim is not None else claims.get(key),
             "gesture": row["gesture"] if row is not None else None,
+            "kept": key in engine.overlay.kept,
             "row": row,
         }
 
@@ -1181,6 +1224,132 @@ class EngineMethods:
             raise ValueError("note must be a string")
         claim = self._engine.claims.release(key, outcome, note)
         return {"key": key, "outcome": outcome, "claim": claim.to_dict()}
+
+    async def decision_answer(self, params: dict) -> Any:
+        """Answer a brief. Params: id, choice (an option's key; with no
+        options, the answer itself), comment?, reason (the orchestrator's:
+        required), caller. The orchestrator's token answers only a brief it
+        holds, within its mandate and caps; no token is the user (any open
+        brief). The answer reaches the agent when it is idle and is logged
+        in its notes (Decisions)."""
+        role, _ = self._caller(params)
+        if role == AGENT_BY:
+            raise ValueError("A worker does not answer briefs: the user or the orchestrator does")
+        engine = self._engine
+        record = await engine.first_responder.answer(
+            _decision_id(params),
+            params.get("choice"),
+            comment=params.get("comment"),
+            reason=params.get("reason"),
+            by=role,
+            now=engine.status.clock(),
+        )
+        engine.status.flush()
+        return {"decision": record}
+
+    async def decision_escalate(self, params: dict) -> Any:
+        """The orchestrator hands a brief it holds to the user. Params: id,
+        note, suggestion? (an option's key), caller (its token)."""
+        role, _ = self._caller(params)
+        if role != ORCHESTRATOR_BY:
+            raise ValueError("Only the orchestrator escalates (its token)")
+        engine = self._engine
+        record = engine.first_responder.escalate(
+            _decision_id(params), params.get("note", ""), params.get("suggestion"),
+            engine.status.clock(),
+        )
+        engine.status.flush()
+        return {"decision": record}
+
+    async def decision_revert(self, params: dict) -> Any:
+        """The user overrides an orchestrator's answer. Params: id, choice?,
+        comment?. The worker is told; the recorded inverses run where safe
+        (stop an agent it spawned; reset the branch while unpushed)."""
+        role, _ = self._caller(params)
+        if role != USER_BY:
+            raise ValueError("Only the user reverts the orchestrator's decisions")
+        engine = self._engine
+        record = await engine.first_responder.revert(
+            _decision_id(params), params.get("choice"), params.get("comment"),
+            engine.status.clock(),
+        )
+        engine.status.flush()
+        return {"decision": record}
+
+    def _user_only(self, params: dict, what: str) -> None:
+        role, _ = self._caller(params)
+        if role != USER_BY:
+            raise ValueError(f"{what} is the user's (a client with no token)")
+
+    async def presence_report(self, params: dict) -> Any:
+        """A client saw user input. Params: input_at (Unix seconds)."""
+        self._user_only(params, "presence_report")
+        engine = self._engine
+        now = engine.status.clock()
+        presence = engine.first_responder.presence
+        presence.report(params.get("input_at"), now)
+        return {"presence": presence.to_dict(now)}
+
+    async def presence_set(self, params: dict) -> Any:
+        """The user's presence override. Params: mode (auto, present, away)."""
+        self._user_only(params, "presence_set")
+        engine = self._engine
+        presence = engine.first_responder.presence
+        presence.set(params.get("mode"))
+        now = engine.status.clock()
+        engine.status.mark_dirty()
+        return {"presence": presence.to_dict(now)}
+
+    def _repo(self, params: dict) -> str:
+        from lazyagent.engine.status import repo_name
+
+        engine = self._engine
+        repo = params.get("repo")
+        root = engine.repo_root
+        if not root:
+            raise ValueError("The engine has no repo")
+        if repo is not None and repo not in (repo_name(engine), root):
+            raise ValueError(f"This engine serves {repo_name(engine)} ({root}), not {repo!r}")
+        return root
+
+    async def inbox_config_get(self, params: dict) -> Any:
+        """The repo's auto-delegation settings ([inbox] in .lazyagent.toml).
+        Params: repo? (its name or root)."""
+        from lazyagent.engine.status import repo_name
+
+        from lazyagent.config import load_config
+
+        root = self._repo(params)
+        # The file is the source of truth.
+        inbox = (await asyncio.to_thread(load_config, root)).inbox
+        return {
+            "repo": repo_name(self._engine),
+            "auto_delegate": list(inbox.auto_delegate),
+            "auto_delegate_target": inbox.auto_delegate_target,
+        }
+
+    async def inbox_config_set(self, params: dict) -> Any:
+        """Write the repo's auto-delegation settings in .lazyagent.toml
+        (the file stays the source of truth; other content is kept).
+        Params: repo?, auto_delegate (kinds), auto_delegate_target (owner,
+        orchestrator). The user's only."""
+        from lazyagent.config import write_inbox_config
+        from lazyagent.engine.autodelegate import KINDS, TARGETS
+
+        self._user_only(params, "inbox_config_set")
+        root = self._repo(params)
+        inbox = self._engine.config.inbox
+        kinds = params.get("auto_delegate", inbox.auto_delegate)
+        if not isinstance(kinds, list) or any(k not in KINDS for k in kinds):
+            raise ValueError(f"auto_delegate must be a list of {', '.join(KINDS)}")
+        target = params.get("auto_delegate_target", inbox.auto_delegate_target)
+        if target not in TARGETS:
+            raise ValueError(f"auto_delegate_target must be one of {', '.join(TARGETS)}")
+        kinds = list(dict.fromkeys(kinds))
+        await asyncio.to_thread(write_inbox_config, root, kinds, target)
+        self._engine.load_config()
+        self._engine.status.mark_dirty()
+        return await self.inbox_config_get({"repo": root})
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

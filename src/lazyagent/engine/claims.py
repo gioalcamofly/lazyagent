@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine.actionables import Item, Kind, Snapshot, register_kind
+from lazyagent.engine.orchestrator import AWAY_ACTIONS, NEVER_ALONE  # noqa: F401
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.engine.status import _IDLE, clip_words
 
@@ -46,24 +47,10 @@ MIN_TTL = 60.0
 # orchestrator_release: done (nothing for the user), returned (back to the
 # user's Round with the note).
 OUTCOMES = ("done", "returned")
-# What a claim allows (§5c, the away column: the user handed it over). The
-# engine checks only its own methods; the never-alone list stays out.
-ALLOWED = (
-    "answer_reversible",
-    "relay",
-    "restore_owner",
-    "ci_rerun",
-    "rebase_via_owner",
-    "spawn_worker",
-    "mark",
-)
-NEVER_ALONE = (
-    "merge_default_branch",
-    "publish",
-    "force_push_shared",
-    "delete_unpushed",
-    "close_reopen_pr",
-)
+# What a claim allows (§5c, the away column: the user handed it over,
+# shortened by [orchestrator] away_allow), plus marking its inbox items.
+# The never-alone list stays out (engine/orchestrator.py).
+ALLOWED = (*AWAY_ACTIONS, "mark")
 NOTE_CHARS = 200
 
 DELEGATION = register_kind(Kind("delegation", "round", "Back from the orchestrator", 5))
@@ -175,7 +162,8 @@ class Claims:
         if not MIN_TTL <= ttl_s <= MAX_TTL:
             raise ValueError(f"ttl_s must be between {MIN_TTL:g} and {MAX_TTL:g}")
         now = self.clock()
-        claim = Claim(key, row["worktree_path"], now, now + float(ttl_s), by)
+        allowed = (*self._engine.first_responder.away_allowed(), "mark")
+        claim = Claim(key, row["worktree_path"], now, now + float(ttl_s), by, allowed=allowed)
         self.active[key] = claim
         self.returned.pop(key, None)
         self._engine.events.emit(CLAIM_CREATED, {"claim": claim.to_dict()})

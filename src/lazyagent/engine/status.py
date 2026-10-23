@@ -95,6 +95,10 @@ STATE_WORDS = 5
 # Not a §3 row: the user passed the item to the orchestrator (claims.py).
 CLAIM_RULE = 13
 CLAIM_STATE = "with orchestrator"
+# Not a §3 row either: the orchestrator holds a routed brief or question
+# (engine/orchestrator.py) and nothing else is the user's.
+HELD_RULE = 14
+HELD_STATE = "orchestrator · looking"
 # Turn over (or a question to the user): an agent's report holds until it
 # runs again after one of these.
 TURN_OVER = _IDLE | {AgentStatus.WAITING_FOR_USER.value}
@@ -136,6 +140,8 @@ class Facts:
     gesture: dict[str, Any] | None = None
     # The agent's last status_report on this item (overlay.py).
     report: dict[str, Any] | None = None
+    # "orchestrator" while it holds an open routed item here.
+    holder: str | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +240,8 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         top = queue[0]
         blocks = any(i["blocks_agent"] for i in queue)
         return Derived(2, "you", top["state"], top["level"], blocks)
+    if facts.holder == "orchestrator":
+        return Derived(HELD_RULE, "agent", HELD_STATE)
     for status, level, text, blocks in _NEEDS_YOU if queue is None else ():
         agent = next((a for a in agents if a.status == status), None)
         if agent is not None:
@@ -341,6 +349,8 @@ def fingerprint(facts: Facts, derived: Derived) -> str:
     ]
     if facts.claim is not None:
         data.append(["claim", facts.claim["at"]])
+    if facts.holder is not None:
+        data.append(["holder", facts.holder])
     if facts.tracker is not None:
         data.append([facts.tracker.status, facts.tracker.level])
     if facts.gesture is not None:
@@ -432,6 +442,9 @@ def build_row(
         "class": None,
         "seen_at": seen_at,
         "last_event_at": last_event_at,
+        # Who answers what the item asks: the orchestrator while it holds a
+        # routed brief or question, the user while the row is in the inbox.
+        "holder": facts.holder or ("user" if zone == "inbox" else None),
     }
     if zone == "inbox":
         row["class"] = "deep" if derived.level == "deep" else "quick"
@@ -697,7 +710,11 @@ class StatusProjection:
             not_started=self.not_started(),
             deep_max=self._engine.config.inbox.deep_max,
         )
-        result["generated_at"] = self.clock()
+        now = self.clock()
+        responder = self._engine.first_responder
+        result["counts"].update(responder.counts(now))
+        result["presence"] = responder.presence.to_dict(now)
+        result["generated_at"] = now
         return result
 
     def row(self, key: str) -> dict[str, Any] | None:
@@ -723,12 +740,14 @@ class StatusProjection:
         claims = self._engine.claims
         overlay = self._engine.overlay
         claims.check(now)
+        self._engine.first_responder.check(now)
         overlay.expire_reports(now)
         rows: dict[str, dict[str, Any]] = {}
         facts_by_key: dict[str, Facts] = {}
         live_agents: set[tuple[str, str]] = set()
         queue: dict[str, list[dict[str, Any]]] = {}
-        for item in self._engine.actionables.flush(now):
+        visible_items = self._engine.actionables.flush(now)
+        for item in visible_items:
             if item["work_item"] is not None:
                 queue.setdefault(item["work_item"], []).append(item)
         for facts in self._facts(now):
@@ -742,6 +761,7 @@ class StatusProjection:
                 claim=claim,
                 gesture=overlay.gesture(facts, now),
                 report=overlay.reports.get(facts.key),
+                holder="orchestrator" if self._engine.first_responder.held(facts.key) else None,
             )
             facts_by_key[facts.key] = facts
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
@@ -770,6 +790,7 @@ class StatusProjection:
         for slot in [s for s in self._since if s not in live_agents]:
             del self._since[slot]
         self._facts_by_key = facts_by_key
+        self._engine.autodelegate.check(rows, visible_items, now)
         return rows
 
     def _track(

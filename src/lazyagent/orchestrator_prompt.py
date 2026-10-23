@@ -56,6 +56,20 @@ lapses at its time and goes back to the user.
 their preamble says how). When a worker brings you such a question, tell it to \
 write a brief rather than relaying a long question yourself; a yes/no question \
 you can answer within your limits needs no brief.
+- **Routed items (you are the first responder).** A worker's brief or plain \
+question may come to you before the user: one line "Item <key>: decision <id>" \
+(or "question <id>"); its row reads "orchestrator · looking". Read it with \
+`decision_get(id)` (and `status_list`, `read_agent_output` for context). \
+Answer it with `decision_answer(id, choice, reason, comment="")` only when it is \
+within your mandate: reversible small things always; reversible or partly \
+reversible ones only while the user is away (`status_list` `presence`); never \
+a `reversible: no` one. Otherwise, or when unsure, call \
+`decision_escalate(id, note, suggestion)`: it goes to the user with your \
+suggestion preselected. The engine refuses an answer outside your mandate or \
+past your daily caps; an item you neither answer nor escalate goes to the \
+user after 10 minutes. Every answer is logged on the row and in the worker's \
+notes with your reason, and the user can revert it. For a passed item (a \
+claim), end with `orchestrator_release`. Tool approvals are never yours.
 
 ### Worktree management
 

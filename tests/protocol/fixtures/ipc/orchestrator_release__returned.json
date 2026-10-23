@@ -12,12 +12,15 @@
     "result": {
       "claim": {
         "allowed": [
+          "answer_quick",
           "answer_reversible",
+          "answer_partly",
           "relay",
           "restore_owner",
           "ci_rerun",
           "rebase_via_owner",
           "spawn_worker",
+          "next_project_task",
           "mark"
         ],
         "at": 1700000000.0,

@@ -248,7 +248,7 @@ async def remove_worktree(worktree_path: str, force: bool = False) -> dict:
     """
     return await _get_client().call(
         "remove_worktree",
-        {"worktree_path": worktree_path, "force": force},
+        _add_caller({"worktree_path": worktree_path, "force": force}),
     )
 
 
@@ -402,6 +402,72 @@ async def orchestrator_release(key: str, outcome: str, note: str = "") -> dict:
     """
     params = _add_caller({"key": key, "outcome": outcome, "note": note})
     return await _get_client().call("orchestrator_release", params)
+
+
+@mcp.tool()
+async def decision_get(decision_id: str) -> dict:
+    """Read one decision brief (or routed question): its question, options,
+    recommendation, what was tried, evidence, reversibility, who holds it
+    and its answer.
+
+    When to use: you were woken with "Item <key>: decision <id>" (or
+    "question <id>") as the first responder, or you want a brief's details.
+
+    Args:
+        decision_id: e.g. "d3".
+
+    Returns:
+        Object with ``decision``.
+    """
+    return await _get_client().call("decision_get", {"id": decision_id})
+
+
+@mcp.tool()
+async def decision_answer(decision_id: str, choice: str, reason: str, comment: str = "") -> dict:
+    """Answer a brief you hold as the first responder (orchestrator only).
+
+    Only within your mandate: a reversible quick one always; reversible or
+    partly reversible ones while the user is away; never ``reversible: no``.
+    The engine refuses anything else, and past your daily caps: then call
+    decision_escalate. The worker gets "Decision <id>: <choice> — <label>.
+    <comment>" when it is idle; the row and the worker's notes record your
+    reason, and the user can revert it.
+
+    Args:
+        decision_id: The brief's id, e.g. "d3".
+        choice: An option's key; for a plain question (no options), the answer.
+        reason: Why (≤ 300 chars), shown to the user.
+        comment: Extra words for the worker (optional).
+
+    Returns:
+        Object with the answered ``decision``.
+    """
+    params = {"id": decision_id, "choice": choice, "reason": reason, "comment": comment}
+    return await _get_client().call("decision_answer", _add_caller(params))
+
+
+@mcp.tool()
+async def decision_escalate(decision_id: str, note: str, suggestion: str | None = None) -> dict:
+    """Hand a brief you hold to the user (orchestrator only): it goes to
+    their inbox by class (Now, Round or To sit down with), with your
+    suggestion preselected ("orchestrator suggests B").
+
+    When to use: it is outside your mandate (the user is present and it is
+    not a small reversible thing; ``reversible: no``), you are unsure, or
+    the engine refused your answer.
+
+    Args:
+        decision_id: The brief's id.
+        note: What the user should know (≤ 200 chars).
+        suggestion: The option key you would pick (optional).
+
+    Returns:
+        Object with the escalated ``decision``.
+    """
+    params: dict[str, Any] = {"id": decision_id, "note": note}
+    if suggestion is not None:
+        params["suggestion"] = suggestion
+    return await _get_client().call("decision_escalate", _add_caller(params))
 
 
 @mcp.tool()

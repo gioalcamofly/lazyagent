@@ -24,6 +24,10 @@ The rows themselves stay a projection (status.py); this store keeps only:
   Nothing in it is generated text: each entry is a fact and its time.
 - **seen**, per client: the last look at everything (``*``) and per item.
 - **decisions**, the briefs (engine/decisions.py keeps their rules).
+- **kept**, the user's "keep for me" per work item: the orchestrator's
+  mandate there is none (engine/orchestrator.py).
+- **orchestrator**, today's counts of its own decisions and actions (the
+  caps on autonomy, ``auto_actions`` / ``auto_reverted``).
 
 Kept in ``$XDG_STATE_HOME/lazyagent/status/<repo hash>.json`` (0600, atomic)
 by the engine that owns the repo, written at most once per :data:`SAVE_EVERY`.
@@ -72,6 +76,8 @@ TIMELINE_KINDS = (
     "decision",
     "review",
     "outward",
+    "action",
+    "delegate",
 )
 LABEL_CHARS = 40
 NOTE_CHARS = 200
@@ -141,6 +147,8 @@ class Overlay:
         self.timeline: dict[str, list[dict[str, Any]]] = {}
         self.decisions: dict[str, dict[str, Any]] = {}
         self.next_decision = 1
+        self.kept: dict[str, dict[str, Any]] = {}
+        self.orchestrator: dict[str, Any] = {}
         self._saved: str | None = None
         self._handle: asyncio.TimerHandle | None = None
 
@@ -189,6 +197,10 @@ class Overlay:
                 if isinstance(v, list)
             }
         self.decisions = table("decisions")
+        self.kept = table("kept")
+        orchestrator = data.get("orchestrator")
+        if isinstance(orchestrator, dict):
+            self.orchestrator = orchestrator
         next_decision = data.get("next_decision")
         if type(next_decision) is int and next_decision > 0:
             self.next_decision = next_decision
@@ -206,6 +218,8 @@ class Overlay:
                 "timeline": self.timeline,
                 "decisions": self.decisions,
                 "next_decision": self.next_decision,
+                "kept": self.kept,
+                "orchestrator": self.orchestrator,
             },
             indent=1,
             sort_keys=True,
@@ -249,10 +263,12 @@ class Overlay:
         *,
         ref: str | None = None,
         at: float | None = None,
+        **extra: Any,
     ) -> dict[str, Any]:
         """Add a fact to ``key``'s timeline (kept in time order, at most
         :data:`RING`, none older than :data:`KEEP`) and emit
-        ``status.timeline {key, entry}``."""
+        ``status.timeline {key, entry}``. ``extra``: the orchestrator's
+        ``mandate``, ``action``, ``reason`` and ``inverse`` (None left out)."""
         now = self.clock()
         entry: dict[str, Any] = {
             "at": now if at is None else at,
@@ -262,6 +278,7 @@ class Overlay:
         }
         if ref:
             entry["ref"] = ref
+        entry.update({k: v for k, v in extra.items() if v is not None})
         ring = self.timeline.setdefault(key, [])
         ring.append(entry)
         ring.sort(key=lambda e: e["at"])
@@ -320,7 +337,7 @@ class Overlay:
 
     def forget(self, key: str) -> None:
         """A tombstone ran out: drop what was kept for the item."""
-        for table in (self.gestures, self.reports, self.closed, self.timeline):
+        for table in (self.gestures, self.reports, self.closed, self.timeline, self.kept):
             table.pop(key, None)
         for marks in self.seen.values():
             marks.pop(key, None)

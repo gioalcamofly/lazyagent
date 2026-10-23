@@ -1,0 +1,17 @@
+{
+  "case": "presence_report/present",
+  "method": "presence_report",
+  "params": {
+    "input_at": 1699999940.0
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "presence": {
+        "effective": "present",
+        "mode": "auto",
+        "since": 1700000000.0
+      }
+    }
+  }
+}

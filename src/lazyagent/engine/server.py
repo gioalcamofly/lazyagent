@@ -118,6 +118,12 @@ FEATURES: tuple[str, ...] = (
     # request_decision, decision_withdraw, decision_get, decisions_list and
     # decision.* (I4): decision briefs.
     "decisions",
+    # The orchestrator as first responder (I4b): routing (holder),
+    # decision_answer / decision_escalate / decision_revert,
+    # decision.answered, presence_report / presence_set and status_list
+    # presence, auto_actions / auto_reverted counts, keep_for_me,
+    # inbox_config_get / inbox_config_set.
+    "first_responder",
 )
 
 STREAM_RESIZED = "stream.resized"

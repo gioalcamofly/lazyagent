@@ -138,6 +138,13 @@ EVENT_SAMPLES = {
     },
     "decision.created": {"decision": DECISION},
     "decision.resolved": {"decision": {**DECISION, "state": "withdrawn", "closed_at": 2.0}},
+    "decision.answered": {"decision": {
+        **DECISION, "holder": "orchestrator", "state": "answered", "closed_at": 2.0,
+        "answer": {"choice": "A", "label": "Exponential", "reason": "3/30 time out",
+                   "presence": "away", "at": 2.0},
+        "answered_by": "orchestrator", "revertible": True,
+        "inverse": [{"kind": "git_reset", "sha": "abc123", "branch": "feat"}],
+    }},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

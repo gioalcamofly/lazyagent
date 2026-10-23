@@ -604,6 +604,10 @@ pub struct StatusRow {
     /// Its latest timeline entry (`status_timeline`).
     #[serde(default)]
     pub last_event_at: Option<f64>,
+    /// `orchestrator` while it holds a routed item ("orchestrator ·
+    /// looking"), `user` for inbox rows (feature `first_responder`).
+    #[serde(default)]
+    pub holder: Option<String>,
 }
 
 /// A row's tracker task: read-only, the last good value when `stale`.
@@ -677,12 +681,21 @@ pub struct StatusCounts {
     pub deep: u32,
     #[serde(default)]
     pub deep_max: u32,
+    /// The orchestrator's own actions today, and those reverted (feature
+    /// `first_responder`; older engines: 0).
+    #[serde(default)]
+    pub auto_actions: u32,
+    #[serde(default)]
+    pub auto_reverted: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusList {
     pub rows: Vec<StatusRow>,
     pub counts: StatusCounts,
+    /// `{mode, effective, since}` (feature `first_responder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<Value>,
     pub generated_at: f64,
 }
 
@@ -694,6 +707,9 @@ pub struct StatusGestureResult {
     /// The row's gesture now (feature `gestures`).
     #[serde(default)]
     pub gesture: Option<Value>,
+    /// `keep_for_me` holds (feature `first_responder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<bool>,
     pub row: Option<StatusRow>,
 }
 

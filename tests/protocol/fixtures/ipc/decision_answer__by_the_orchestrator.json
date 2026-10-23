@@ -1,0 +1,84 @@
+{
+  "case": "decision_answer/by_the_orchestrator",
+  "method": "decision_answer",
+  "params": {
+    "caller": "tok-orch",
+    "choice": "A",
+    "id": "d1",
+    "reason": "3/30 runs time out with fixed"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "decision": {
+        "agent": "a2",
+        "answer": {
+          "at": 1700000000.0,
+          "choice": "A",
+          "label": "Exponential, cap 30 s",
+          "presence": "away",
+          "reason": "3/30 runs time out with fixed"
+        },
+        "answered_by": "orchestrator",
+        "blocking": false,
+        "brief": {
+          "evidence": [
+            {
+              "hunk": "@@ -40,7 +40,12 @@",
+              "kind": "diff",
+              "path": "src/retry.py",
+              "sha": "abc123"
+            },
+            {
+              "kind": "log",
+              "lines": "120-134",
+              "ref": "job:tests"
+            }
+          ],
+          "impact_if_wrong": "slower failures under load",
+          "options": [
+            {
+              "consequence": "slower failure on outages",
+              "key": "A",
+              "label": "Exponential, cap 30 s"
+            },
+            {
+              "consequence": "3/30 runs time out",
+              "key": "B",
+              "label": "Fixed 2 s, 5 tries"
+            }
+          ],
+          "question": "Retries: fixed or exponential backoff?",
+          "recommendation": "A",
+          "reversible": "yes",
+          "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+        },
+        "class": "deep",
+        "closed_at": 1700000000.0,
+        "created_at": 1700000000.0,
+        "holder": "orchestrator",
+        "id": "d1",
+        "invalid": [],
+        "inverse": [
+          {
+            "branch": "export-csv",
+            "kind": "git_reset",
+            "sha": "abc123"
+          }
+        ],
+        "key": "repo:export-csv",
+        "problems": [],
+        "replaces": null,
+        "revertible": true,
+        "routed": {
+          "at": 1700000000.0,
+          "mandate": "away"
+        },
+        "sha": "abc123",
+        "state": "answered",
+        "valid": true,
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}

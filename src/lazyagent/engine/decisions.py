@@ -26,9 +26,17 @@ At most ``[inbox] max_briefs_per_agent`` (2) open briefs per agent: a third
 is refused with a message (a ``replaces`` brief takes its place instead).
 Lifecycle: ``open`` → ``answered`` → ``resolved`` (I5); ``withdrawn`` by the
 agent; ``superseded`` by a brief that ``replaces`` it; ``expired`` when its
-work item closes. Every brief carries ``holder`` (``user`` here; the
-orchestrator's routing comes later) and ``replaces``. Briefs are kept in the
-status overlay (overlay.py), closed ones for 30 days.
+work item closes. Every brief carries ``holder`` and ``replaces``. Briefs are
+kept in the status overlay (overlay.py), closed ones for 30 days.
+
+The orchestrator as first responder (engine/orchestrator.py, I4b) may hold a
+new brief before the user sees it (``holder: "orchestrator"``: no inbox
+item) and answer or escalate it; it also turns an agent's plain question
+(``waiting_for_user``) into a record of its own (``source: "question"``).
+An answered brief carries ``answer {choice, label?, comment?, reason?,
+presence?, at, delivered_at?}``, ``answered_by`` and ``revertible``.
+Auto-delegation (engine/autodelegate.py) writes a brief of its own
+(``source: "auto_delegate"``) after two failed attempts.
 """
 
 from __future__ import annotations
@@ -235,9 +243,11 @@ class Decisions:
     def store(self) -> dict[str, dict[str, Any]]:
         return self._engine.overlay.decisions
 
-    def _changed(self) -> None:
+    def changed(self) -> None:
         self._engine.overlay.changed()
         self._engine.status.mark_dirty()
+
+    _changed = changed
 
     # --- Reads ---
 
@@ -331,11 +341,98 @@ class Decisions:
         self.store[decision_id] = record
         actor = f"agent:{agent_id}"
         if old is not None:
-            self._close(old, "superseded", now, actor, f"replaced by {decision_id}")
+            self.close(old, "superseded", now, actor, f"replaced by {decision_id}")
+        if holder == "user":
+            self._engine.first_responder.route(record, now)
         overlay.add(key, "decision", actor, f"asked: {brief['question']}", ref=decision_id)
         self._engine.events.emit(DECISION_CREATED, {"decision": dict(record)})
         self._changed()
         return dict(record), _message(record)
+
+    def _new(self, **fields: Any) -> dict[str, Any]:
+        overlay = self._engine.overlay
+        decision_id = f"d{overlay.next_decision}"
+        overlay.next_decision += 1
+        record = {
+            "id": decision_id,
+            "holder": "user",
+            "replaces": None,
+            "state": "open",
+            "valid": False,
+            "blocking": False,
+            "invalid": [],
+            "problems": [],
+            "sha": None,
+            "closed_at": None,
+            "answer": None,
+            **fields,
+        }
+        self.store[decision_id] = record
+        return record
+
+    def question(
+        self, *, key: str, worktree_path: str, agent_id: str, detail: str, now: float
+    ) -> dict[str, Any]:
+        """An agent's plain question (it waits in its terminal), routed to
+        the orchestrator: a record of its own, answered with free text."""
+        question = f"agent {agent_id} waits for an answer"
+        if detail:
+            question += f": {detail}"
+        record = self._new(
+            key=key,
+            worktree_path=worktree_path,
+            agent=agent_id,
+            source="question",
+            **{"class": "quick"},
+            blocking=True,
+            brief={
+                "question": one_line(question, QUESTION_CHARS),
+                "options": [],
+                "recommendation": None,
+                "tried": "",
+                "evidence": [],
+                "reversible": None,
+                "impact_if_wrong": "",
+            },
+            invalid=["a question in the agent's terminal, not a brief"],
+            created_at=now,
+        )
+        self._engine.first_responder.route(record, now)
+        self._engine.overlay.add(key, "decision", f"agent:{agent_id}",
+                                 f"asked: {record['brief']['question']}", ref=record["id"])
+        self._engine.events.emit(DECISION_CREATED, {"decision": dict(record)})
+        self._changed()
+        return record
+
+    def engine_brief(
+        self, *, key: str, worktree_path: str, agent_id: str, question: str, tried: str,
+        now: float,
+    ) -> dict[str, Any]:
+        """A brief the engine writes (auto-delegation failed twice): To sit
+        down with, the user's."""
+        record = self._new(
+            key=key,
+            worktree_path=worktree_path,
+            agent=agent_id,
+            source="auto_delegate",
+            **{"class": "deep"},
+            brief={
+                "question": one_line(question, QUESTION_CHARS),
+                "options": [],
+                "recommendation": None,
+                "tried": _block(tried, TRIED_CHARS),
+                "evidence": [],
+                "reversible": None,
+                "impact_if_wrong": "",
+            },
+            invalid=["written by the engine"],
+            created_at=now,
+        )
+        self._engine.overlay.add(key, "decision", "engine",
+                                 f"asked: {record['brief']['question']}", ref=record["id"])
+        self._engine.events.emit(DECISION_CREATED, {"decision": dict(record)})
+        self._changed()
+        return record
 
     def withdraw(self, decision_id: str, worktree_path: str, agent_id: str, now: float) -> dict[str, Any]:
         record = self.store.get(decision_id)
@@ -343,7 +440,7 @@ class Decisions:
             raise ValueError(f"No brief {decision_id!r} of yours")
         if record["state"] != "open":
             raise ValueError(f"Brief {decision_id} is {record['state']}: nothing to withdraw")
-        self._close(record, "withdrawn", now, f"agent:{agent_id}", "withdrawn")
+        self.close(record, "withdrawn", now, f"agent:{agent_id}", "withdrawn")
         return dict(record)
 
     # --- The engine's ---
@@ -353,9 +450,9 @@ class Decisions:
         now = self._engine.status.clock()
         for record in list(self.store.values()):
             if record["key"] == key and record["state"] == "open":
-                self._close(record, "expired", now, "engine", f"expired: {how.replace('_', ' ')}")
+                self.close(record, "expired", now, "engine", f"expired: {how.replace('_', ' ')}")
 
-    def _close(self, record: dict[str, Any], state: str, now: float, actor: str, text: str) -> None:
+    def close(self, record: dict[str, Any], state: str, now: float, actor: str, text: str) -> None:
         record["state"] = state
         record["closed_at"] = now
         if state == "superseded":
@@ -371,12 +468,22 @@ class Decisions:
 
     def items(self, snap: Snapshot) -> Iterable[Item]:
         for record in self.store.values():
-            if record["state"] != "open":
+            # Held by the orchestrator: not the user's (yet).
+            if record["state"] != "open" or record.get("holder") == "orchestrator":
                 continue
             brief = record["brief"]
             agent = record["agent"]
             question = brief["question"]
-            if record["valid"]:
+            source = record.get("source")
+            if source == "auto_delegate":
+                label = question
+                detail = "auto-delegation failed: see what was tried"
+                state = clip_words(question)
+            elif source == "question":
+                label = f"agent {agent} asks"
+                detail = "open terminal"
+                state = "answer"
+            elif record["valid"]:
                 label = question
                 reversible = brief["reversible"] or "reversibility not given"
                 detail = (
@@ -387,6 +494,14 @@ class Decisions:
                 label = f"agent {agent} asks: {question}"
                 detail = "open terminal"
                 state = clip_words(f"asks: {question}")
+            escalation = record.get("escalation")
+            if escalation is not None:
+                if escalation.get("suggestion"):
+                    detail = f"orchestrator suggests {escalation['suggestion']}: {escalation['note']}"
+                else:
+                    detail = f"{escalation['note']} · {detail}"
+            elif record.get("capped"):
+                detail = f"{detail} · orchestrator capped: {record['capped']}"
             yield Item(
                 f"Decision:{record['id']}",
                 DECISION.name,
@@ -404,7 +519,10 @@ class Decisions:
     def _briefed(self, found: dict[str, Item]) -> None:
         """An agent with an open brief: the brief stands for its question."""
         for record in self.store.values():
-            if record["state"] == "open":
+            pending = record["state"] == "answered" and not (
+                record.get("answer") or {}
+            ).get("delivered_at")
+            if record["state"] == "open" or pending:
                 found.pop(f"Question:{record['worktree_path']}/{record['agent']}", None)
 
 
@@ -425,6 +543,11 @@ def _message(record: dict[str, Any]) -> str:
         )
     where = "To sit down with" if record["class"] == "deep" else "inbox"
     text = f"Brief {did} is in the user's {where}."
+    if record.get("holder") == "orchestrator":
+        text = (
+            f"Brief {did} went to the orchestrator first: it answers within its "
+            "limits or passes it to the user."
+        )
     if record["blocking"]:
         text += f" End your turn now; the answer comes as a line \"Decision {did}: …\"."
     else:

@@ -70,6 +70,15 @@ LEGACY_METHODS: tuple[str, ...] = (
     "decision_withdraw",
     "decision_get",
     "decisions_list",
+    # The orchestrator as first responder, presence, auto-delegation
+    # settings (proposal 0013 I4b).
+    "decision_answer",
+    "decision_escalate",
+    "decision_revert",
+    "presence_report",
+    "presence_set",
+    "inbox_config_get",
+    "inbox_config_set",
 )
 
 # The methods protocol v1 adds.
@@ -139,6 +148,7 @@ EVENTS: tuple[str, ...] = (
     "orchestrator.lapsed",
     "status.timeline",
     "decision.created",
+    "decision.answered",
     "decision.resolved",
     "ui.command",
     "ui.view_changed",

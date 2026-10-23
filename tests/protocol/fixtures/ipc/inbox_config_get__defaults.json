@@ -1,0 +1,13 @@
+{
+  "case": "inbox_config_get/defaults",
+  "method": "inbox_config_get",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "auto_delegate": [],
+      "auto_delegate_target": "owner",
+      "repo": "repo"
+    }
+  }
+}

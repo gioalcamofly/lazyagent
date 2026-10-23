@@ -6,6 +6,8 @@
     "id": "req-1",
     "result": {
       "counts": {
+        "auto_actions": 0,
+        "auto_reverted": 0,
         "deep": 0,
         "deep_max": 5,
         "done": 1,
@@ -16,6 +18,11 @@
         "stale": 0
       },
       "generated_at": 1700000000.0,
+      "presence": {
+        "effective": "away",
+        "mode": "auto",
+        "since": 1700000000.0
+      },
       "rows": [
         {
           "agents": [
@@ -33,6 +40,7 @@
           "class": "quick",
           "fingerprint": "51e6c20d2f4b",
           "gesture": null,
+          "holder": "user",
           "key": "repo:login-ttl",
           "last_event_at": null,
           "level": "now",
@@ -63,6 +71,7 @@
           "class": "quick",
           "fingerprint": "4dce709c96f5",
           "gesture": null,
+          "holder": "user",
           "key": "repo:docs-index",
           "last_event_at": null,
           "level": "round",
@@ -104,6 +113,7 @@
           "class": null,
           "fingerprint": "d95513a0e536",
           "gesture": null,
+          "holder": null,
           "key": "repo:export-csv",
           "last_event_at": null,
           "level": null,

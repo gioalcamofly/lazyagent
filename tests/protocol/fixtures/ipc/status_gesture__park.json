@@ -16,6 +16,7 @@
         "kind": "park",
         "until": "agent_stopped"
       },
+      "kept": false,
       "key": "repo:export-csv",
       "row": {
         "agents": [
@@ -38,6 +39,7 @@
           "kind": "park",
           "until": "agent_stopped"
         },
+        "holder": null,
         "key": "repo:export-csv",
         "last_event_at": 1700000000.0,
         "level": null,

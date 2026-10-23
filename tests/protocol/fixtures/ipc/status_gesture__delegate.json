@@ -12,12 +12,15 @@
     "result": {
       "claim": {
         "allowed": [
+          "answer_quick",
           "answer_reversible",
+          "answer_partly",
           "relay",
           "restore_owner",
           "ci_rerun",
           "rebase_via_owner",
           "spawn_worker",
+          "next_project_task",
           "mark"
         ],
         "at": 1700000000.0,
@@ -27,6 +30,7 @@
         "until": 1700003600.0
       },
       "gesture": null,
+      "kept": false,
       "key": "repo:export-csv",
       "row": {
         "agents": [
@@ -42,12 +46,15 @@
         "changed_at": 1700000000.0,
         "claim": {
           "allowed": [
+            "answer_quick",
             "answer_reversible",
+            "answer_partly",
             "relay",
             "restore_owner",
             "ci_rerun",
             "rebase_via_owner",
             "spawn_worker",
+            "next_project_task",
             "mark"
           ],
           "at": 1700000000.0,
@@ -59,6 +66,7 @@
         "class": null,
         "fingerprint": "e23cd2ec5450",
         "gesture": null,
+        "holder": null,
         "key": "repo:export-csv",
         "last_event_at": 1700000000.0,
         "level": null,

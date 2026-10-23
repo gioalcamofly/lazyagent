@@ -16,6 +16,7 @@
         "how": "dropped",
         "kind": "close"
       },
+      "kept": false,
       "key": "repo:docs-index",
       "row": {
         "agents": [],
@@ -32,6 +33,7 @@
           "how": "dropped",
           "kind": "close"
         },
+        "holder": null,
         "key": "repo:docs-index",
         "last_event_at": 1700000000.0,
         "level": null,

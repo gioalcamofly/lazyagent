@@ -10,6 +10,7 @@
     "result": {
       "claim": null,
       "gesture": null,
+      "kept": false,
       "key": "repo:export-csv",
       "row": {
         "agents": [
@@ -27,6 +28,7 @@
         "class": null,
         "fingerprint": "d95513a0e536",
         "gesture": null,
+        "holder": null,
         "key": "repo:export-csv",
         "last_event_at": null,
         "level": null,
