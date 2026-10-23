@@ -1,0 +1,14 @@
+{
+  "case": "status_report/error_no_token",
+  "method": "status_report",
+  "params": {
+    "note": "x"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "status_report needs the agent's token: call it from the lazyagent_app MCP server of an agent lazyagent spawned"
+    },
+    "id": "req-1"
+  }
+}

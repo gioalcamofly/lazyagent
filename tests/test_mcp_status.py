@@ -86,3 +86,38 @@ async def test_spawns_by_an_agent_are_capped_and_the_user_is_not(engine, monkeyp
     monkeypatch.delenv(AGENT_TOKEN_ENV)
     await mcp_server.spawn_agent(feat)
     assert len(engine.agent_ids(feat)) == 2
+
+
+async def test_a_worker_reports_and_asks_for_a_decision(engine, monkeypatch):
+    feat = engine.feat
+    worker = await engine.spawn_agent(feat)
+    _as_agent(engine, worker, monkeypatch)
+
+    report = await mcp_server.status_report(
+        note="PR up, waiting for QA", ball="others",
+        outward={"kind": "pr_create", "ref": "https://example.com/pull/3", "text": "opened"},
+    )
+    assert (report["key"], report["report"]["ball"]) == ("repo:feat", "others")
+    assert report["outward"]["actor"] == f"agent:{worker.agent_id}"
+
+    asked = await mcp_server.request_decision(
+        question="Keep the old endpoint?",
+        options=[{"key": "A", "label": "Keep it a release"}, {"key": "B", "label": "Drop it"}],
+        recommendation="A",
+        tried="grep: 2 callers left",
+        evidence=[{"kind": "file", "path": "api/routes.py", "lines": "10-20"}],
+        reversible="partly",
+        impact_if_wrong="a client breaks",
+    )
+    decision = asked["decision"]
+    assert (decision["id"], decision["class"], decision["valid"]) == ("d1", "deep", True)
+    assert "To sit down with" in asked["message"]
+    [item] = [i for i in (await mcp_server.actionables_list())["items"] if i["kind"] == "decision"]
+    assert item["level"] == "deep"
+
+    withdrawn = await mcp_server.decision_withdraw("d1")
+    assert withdrawn["decision"]["state"] == "withdrawn"
+
+    monkeypatch.delenv(AGENT_TOKEN_ENV)  # a session lazyagent did not spawn
+    with pytest.raises(Exception, match="needs the agent's token"):
+        await mcp_server.status_report(note="x")

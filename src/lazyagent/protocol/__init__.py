@@ -61,6 +61,15 @@ LEGACY_METHODS: tuple[str, ...] = (
     # Pass to orchestrator (claims, proposal 0013 I3).
     "status_gesture",
     "orchestrator_release",
+    # Agents' reports, the timeline and seen marks, decision briefs
+    # (proposal 0013 I4).
+    "status_report",
+    "status_seen",
+    "status_timeline",
+    "request_decision",
+    "decision_withdraw",
+    "decision_get",
+    "decisions_list",
 )
 
 # The methods protocol v1 adds.
@@ -128,6 +137,9 @@ EVENTS: tuple[str, ...] = (
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
+    "status.timeline",
+    "decision.created",
+    "decision.resolved",
     "ui.command",
     "ui.view_changed",
 )

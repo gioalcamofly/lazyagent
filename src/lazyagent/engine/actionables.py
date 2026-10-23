@@ -8,9 +8,13 @@ resolves itself when the condition clears: the desktop's attention queue
 no UI open. Its ``occurrence`` is ``id@since``: dismissing hides that
 occurrence, not a later one.
 
-Each kind has a fixed level (:data:`KINDS`: ``now`` or ``round``, no score).
-Inside a level items sort by blocks a live agent, the work item's priority
-(medium until a feeder sets one) and age, oldest first (Q-B8).
+Each kind has a fixed level (:data:`KINDS`: ``now`` or ``round``, no score)
+and a fixed class (I4): **quick** (decided from the row in under a minute:
+Now and Round) or **deep** (needs reading: level ``deep``, the "To sit down
+with" zone, shown against ``[inbox] deep_max`` but never capped). A brief
+(engine/decisions.py) carries its own class. Inside a level items sort by
+blocks a live agent, the work item's priority (medium until a feeder sets
+one) and age, oldest first (Q-B8).
 
 The user's marks are the engine's too, so every client sees them: dismiss
 (one occurrence), park until a time or an event (``ci_done``,
@@ -91,6 +95,11 @@ class Kind:
     # An agent waits on the answer: first in its level.
     blocks_agent: bool = False
 
+    @property
+    def cls(self) -> str:
+        """``deep`` for the "To sit down with" level, else ``quick``."""
+        return "deep" if self.level == "deep" else "quick"
+
 
 KINDS: dict[str, Kind] = {}
 
@@ -102,19 +111,26 @@ def register_kind(kind: Kind) -> Kind:
     return kind
 
 
-# The attention queue's ten kinds (0013 "Kinds → level").
+# The attention queue's ten kinds (0013 "Kinds → level"), with the class of
+# 0013 "Class per kind": a change request and a finished branch with no PR
+# need reading (deep); the rest are decided from the row (quick).
 APPROVAL = register_kind(Kind("approval", "now", "Needs approval", 1, True))
 QUESTION = register_kind(Kind("question", "now", "Question", 2, True))
 HANGED = register_kind(Kind("hanged", "round", "Hanged?", 3))
 FAILED = register_kind(Kind("failed", "round", "Failed", 4))
 EXITED = register_kind(Kind("exited", "round", "Exited", 4))
 CI = register_kind(Kind("ci", "round", "CI failing", 5))
-REVIEW = register_kind(Kind("review", "round", "Changes requested", 5))
+REVIEW = register_kind(Kind("review", "deep", "Changes requested", 5))
 CONFLICT = register_kind(Kind("conflict", "round", "Merge conflict", 5))
-DONE = register_kind(Kind("done", "round", "Your turn", 6))
+DONE = register_kind(Kind("done", "deep", "Your turn", 6))
 JOB = register_kind(Kind("job", "round", "Job failed", 7))
 # A linked tracker task entered a status mapped with a level (its own).
 TRACKER_STATUS = register_kind(Kind("tracker_status", "round", "Tracker", 5))
+# An agent's status_report with needs_user (overlay.py).
+REPORT = register_kind(Kind("report", "round", "Agent reports", 5))
+# A brief (decisions.py): deep unless it failed validation or says quick;
+# its level and blocks_agent are the item's own.
+DECISION = register_kind(Kind("decision", "deep", "Decide", 2))
 
 
 @dataclass
@@ -135,8 +151,12 @@ class Item:
     exit_code: int | None = None
     priority: str = DEFAULT_PRIORITY
     since: float = 0.0
-    # The kind's level unless the item carries its own (tracker_status).
+    # The kind's level unless the item carries its own (tracker_status,
+    # decision).
     level: str | None = None
+    # The kind's blocks_agent unless the item says (a blocking brief).
+    blocks_agent: bool | None = None
+    decision_id: str | None = None
 
     @property
     def occurrence(self) -> str:
@@ -144,11 +164,13 @@ class Item:
 
     def to_dict(self, park: dict[str, Any] | None = None) -> dict[str, Any]:
         kind = KINDS[self.kind]
+        level = self.level or kind.level
         return {
             "id": self.id,
             "occurrence": self.occurrence,
             "kind": self.kind,
-            "level": self.level or kind.level,
+            "level": level,
+            "class": "deep" if level == "deep" else "quick",
             "title": kind.title,
             "label": self.label,
             "detail": self.detail,
@@ -159,10 +181,11 @@ class Item:
             "pr": self.pr,
             "job_id": self.job_id,
             "exit_code": self.exit_code,
-            "blocks_agent": kind.blocks_agent,
+            "blocks_agent": kind.blocks_agent if self.blocks_agent is None else self.blocks_agent,
             "priority": self.priority,
             "since": self.since,
             "park": park,
+            "decision_id": self.decision_id,
         }
 
 
@@ -236,6 +259,9 @@ class Snapshot:
 
 
 Detector = Callable[[Snapshot], Iterable[Item]]
+# Runs on every pass's items (by id) and may drop some: a brief stands for
+# its agent's question.
+Filter = Callable[[dict[str, Item]], None]
 
 _AGENT_KINDS = {
     AgentStatus.WAITING_FOR_APPROVAL.value: (APPROVAL, "approve"),
@@ -483,6 +509,7 @@ class ActionableQueue:
         self._engine = engine
         self._clock = clock
         self.detectors: list[Detector] = list(DEFAULT_DETECTORS)
+        self.filters: list[Filter] = []
         self._path: Path | None = None
         # id → first seen, for the conditions that hold now.
         self._since: dict[str, float] = {}
@@ -648,6 +675,8 @@ class ActionableQueue:
         now = self.clock() if now is None else now
         snap = self.snapshot()
         found = derive(snap, self.detectors)
+        for keep in self.filters:
+            keep(found)
         if now >= self._carry_until:
             self._carried.clear()
         since = {}
@@ -732,11 +761,14 @@ class ActionableQueue:
             items = sorted(items + parked, key=sort_key)
         if repo is not None:
             items = [i for i in items if (i["work_item"] or "").startswith(f"{repo}:")]
+        config = getattr(self._engine, "config", None)
         return {
             "items": items,
             "counts": {
                 "now": sum(i["level"] == "now" for i in visible),
                 "round": sum(i["level"] == "round" for i in visible),
+                "deep": sum(i["level"] == "deep" for i in visible),
+                "deep_max": config.inbox.deep_max if config is not None else 5,
                 "parked": len(parked),
             },
             "generated_at": now,
@@ -820,6 +852,8 @@ def format_items(result: dict[str, Any], now: float | None = None) -> str:
     now = time.time() if now is None else now
     counts = result["counts"]
     head = f"NOW {counts['now']}   ROUND {counts['round']}"
+    if counts.get("deep"):
+        head += f"   TO SIT DOWN WITH {counts['deep']} of {counts.get('deep_max', 5)}"
     if counts.get("parked"):
         head += f"   ({counts['parked']} parked)"
     lines = [head]

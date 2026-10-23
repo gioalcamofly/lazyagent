@@ -43,6 +43,9 @@ class AgentConfig:
     # Claude's crossSessionInbound for spawned agents: "accept", "hold" or
     # "refuse". None leaves Claude Code's own setting alone.
     cross_session_inbound: str | None = None
+    # [agents] worker_preamble: the fixed lines a worker is spawned with
+    # (worker_prompt.py). None: the default text; "": none.
+    worker_preamble: str | None = None
 
 
 @dataclass
@@ -67,6 +70,17 @@ class StatusConfig:
     stale_days: int = 14
     # No agent and no change for this long: "stalled".
     stalled_hours: int = 24
+
+
+@dataclass
+class InboxConfig:
+    """The inbox (proposal 0013, I4)."""
+
+    # "To sit down with" (deep items): the number shown against it; never
+    # enforced by refusing briefs.
+    deep_max: int = 5
+    # Open decision briefs per agent; a third is refused (0: no limit).
+    max_briefs_per_agent: int = 2
 
 
 @dataclass
@@ -105,6 +119,7 @@ class Config:
     engine: EngineConfig = field(default_factory=EngineConfig)
     notes: NotesConfig = field(default_factory=NotesConfig)
     status: StatusConfig = field(default_factory=StatusConfig)
+    inbox: InboxConfig = field(default_factory=InboxConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -141,6 +156,13 @@ def load_config(repo_root: str | Path) -> Config:
     cross_session_inbound = agent_data.get("cross_session_inbound")
     if cross_session_inbound not in CROSS_SESSION_INBOUND_VALUES:
         cross_session_inbound = None
+    # [agents] as the plan names it; [agent] (this file's older table) too.
+    agents_data = data.get("agents", {})
+    worker_preamble = None
+    for table in (agents_data, agent_data):
+        if isinstance(table, dict) and isinstance(table.get("worker_preamble"), str):
+            worker_preamble = table["worker_preamble"]
+            break
     orch_data = data.get("orchestrator", {})
     orchestrator_config = OrchestratorConfig(
         prompt_file=orch_data.get("prompt_file"),
@@ -161,14 +183,31 @@ def load_config(repo_root: str | Path) -> Config:
     return Config(
         worktree=worktree_config,
         agent=AgentConfig(
-            provider=provider, cross_session_inbound=cross_session_inbound
+            provider=provider,
+            cross_session_inbound=cross_session_inbound,
+            worker_preamble=worker_preamble,
         ),
         orchestrator=orchestrator_config,
         engine=engine_config,
         notes=_notes_config(data.get("notes", {})),
         status=_status_config(data.get("status", {})),
+        inbox=_inbox_config(data.get("inbox", {})),
         default_branch=default_branch,
     )
+
+
+def _inbox_config(data: object) -> InboxConfig:
+    """``[inbox]``; a missing or invalid value keeps its default."""
+    config = InboxConfig()
+    if not isinstance(data, dict):
+        return config
+    deep_max = data.get("deep_max")
+    if type(deep_max) is int and deep_max > 0:
+        config.deep_max = deep_max
+    briefs = data.get("max_briefs_per_agent")
+    if type(briefs) is int and briefs >= 0:
+        config.max_briefs_per_agent = briefs
+    return config
 
 
 def _status_config(data: object) -> StatusConfig:

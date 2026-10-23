@@ -228,7 +228,7 @@ class Claims:
             self._wakes.clear()
             return
         alive = self.orchestrator_alive()
-        keys = set(self._engine.status.keys())
+        keys = set(self._engine.status.live_keys())
         for key, claim in list(self.active.items()):
             if not alive:
                 self._lapse(key, "orchestrator_gone", now)

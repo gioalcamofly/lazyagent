@@ -176,7 +176,8 @@
         "notes_id": {"type": "string"},
         "rev": {"type": "integer", "description": "+1 per write; a write with a stale if_rev is refused."},
         "size": {"type": "integer", "description": "UTF-8 bytes of the text."},
-        "by": {"type": "string", "x-known-values": ["user", "agent", "orchestrator"]}
+        "by": {"type": "string", "x-known-values": ["user", "agent", "orchestrator"]},
+        "sections": {"type": "array", "items": {"type": "string"}, "description": "The headings whose body this write changed (the work item's timeline)."}
       }
     },
     "notes.removed": {
@@ -306,11 +307,32 @@
     },
     "status.removed": {
       "type": "object",
-      "description": "A work item left the list (its worktree is gone).",
+      "description": "A work item left the list: its worktree is gone and its 24 h tombstone (a done row) ran out.",
       "required": ["key"],
       "properties": {
         "key": {"type": "string"}
       }
+    },
+    "status.timeline": {
+      "type": "object",
+      "description": "A fact was added to a work item's timeline (feature gestures).",
+      "required": ["key", "entry"],
+      "properties": {
+        "key": {"type": "string"},
+        "entry": {"$ref": "methods.json#/$defs/timeline_entry"}
+      }
+    },
+    "decision.created": {
+      "type": "object",
+      "description": "An agent wrote a decision brief (feature decisions).",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "methods.json#/$defs/decision"}}
+    },
+    "decision.resolved": {
+      "type": "object",
+      "description": "A brief closed: withdrawn, superseded or expired (its state says which).",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "methods.json#/$defs/decision"}}
     },
     "ui_command_name": {
       "type": "string",

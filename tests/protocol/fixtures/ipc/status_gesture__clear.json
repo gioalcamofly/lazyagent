@@ -9,6 +9,7 @@
     "id": "req-1",
     "result": {
       "claim": null,
+      "gesture": null,
       "key": "repo:export-csv",
       "row": {
         "agents": [
@@ -23,9 +24,11 @@
         "branch": "export-csv",
         "changed_at": 1700000000.0,
         "claim": null,
+        "class": null,
         "fingerprint": "d95513a0e536",
         "gesture": null,
         "key": "repo:export-csv",
+        "last_event_at": null,
         "level": null,
         "needs_you": null,
         "note": null,
@@ -33,6 +36,7 @@
         "priority": "medium",
         "repo": "repo",
         "rule": 9,
+        "seen_at": null,
         "stale": false,
         "state": "Edit",
         "title": "export-csv",

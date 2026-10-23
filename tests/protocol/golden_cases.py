@@ -789,6 +789,144 @@ async def _():
     )
 
 
+# --- Gestures, reports, timeline, decision briefs (proposal 0013 I4) ---------
+
+
+def _worker_engine():
+    """The status engine with its working agent a2 (token ``tok-a2``) on
+    repo:export-csv."""
+    engine = _status_engine()
+    add_session(engine, _session_in("/tmp/repo-export", "a2"))
+    engine._tokens["tok-a2"] = ("/tmp/repo-export", "a2")
+    return engine
+
+
+BRIEF = {
+    "question": "Retries: fixed or exponential backoff?",
+    "options": [
+        {"key": "A", "label": "Exponential, cap 30 s", "consequence": "slower failure on outages"},
+        {"key": "B", "label": "Fixed 2 s, 5 tries", "consequence": "3/30 runs time out"},
+    ],
+    "recommendation": "A",
+    "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit",
+    "evidence": [
+        {"kind": "diff", "path": "src/retry.py", "hunk": "@@ -40,7 +40,12 @@"},
+        {"kind": "log", "ref": "job:tests", "lines": "120-134"},
+    ],
+    "reversible": "yes",
+    "impact_if_wrong": "slower failures under load",
+    "caller": "tok-a2",
+}
+
+
+async def _brief(engine, **changes):
+    from lazyagent.engine.methods import EngineMethods
+
+    return await EngineMethods(engine).request_decision({**BRIEF, **changes})
+
+
+@case("status_gesture/label")
+async def _():
+    return await _call(
+        _status_engine(),
+        "status_gesture",
+        {"key": "repo:export-csv", "kind": "label", "ball": "others", "text": "QA"},
+    )
+
+
+@case("status_gesture/park")
+async def _():
+    return await _call(
+        _status_engine(),
+        "status_gesture",
+        {"key": "repo:export-csv", "kind": "park", "until": "agent_stopped"},
+    )
+
+
+@case("status_gesture/close")
+async def _():
+    return await _call(
+        _status_engine(), "status_gesture", {"key": "repo:docs-index", "kind": "close", "how": "dropped"}
+    )
+
+
+@case("status_gesture/error_label_without_a_ball")
+async def _():
+    return await _call(
+        _status_engine(), "status_gesture", {"key": "repo:export-csv", "kind": "label"}
+    )
+
+
+@case("status_report/needs_user_and_outward")
+async def _():
+    return await _call(
+        _worker_engine(),
+        "status_report",
+        {"note": "PR up: pick a reviewer", "needs_user": True,
+         "outward": {"kind": "pr_create", "ref": "https://example.com/pull/15", "text": "opened"},
+         "caller": "tok-a2"},
+    )
+
+
+@case("status_report/error_no_token")
+async def _():
+    return await _call(_worker_engine(), "status_report", {"note": "x"})
+
+
+@case("status_seen/item")
+async def _():
+    return await _call(_status_engine(), "status_seen", {"key": "repo:export-csv"})
+
+
+@case("status_timeline/entries")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(engine, "status_timeline", {"key": "repo:export-csv"})
+
+
+@case("request_decision/brief")
+async def _():
+    return await _call(_worker_engine(), "request_decision", dict(BRIEF))
+
+
+@case("request_decision/no_evidence_is_quick")
+async def _():
+    return await _call(
+        _worker_engine(), "request_decision", {**BRIEF, "evidence": [], "blocking": True}
+    )
+
+
+@case("request_decision/error_over_the_limit")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    await _brief(engine)
+    return await _call(engine, "request_decision", dict(BRIEF))
+
+
+@case("decision_withdraw/withdrawn")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(engine, "decision_withdraw", {"id": "d1", "caller": "tok-a2"})
+
+
+@case("decision_get/open")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(engine, "decision_get", {"id": "d1"})
+
+
+@case("decisions_list/by_item")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    await _brief(engine, evidence=[])
+    return await _call(engine, "decisions_list", {"key": "repo:export-csv"})
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):
@@ -822,6 +960,7 @@ async def _write_all() -> None:
     # As the test suite's conftest: the engines here must not keep notes (or
     # anything else) in the real state dir.
     os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="golden-state-")
+    os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="golden-config-")
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     for stale in FIXTURE_DIR.glob("*.json"):
         stale.unlink()

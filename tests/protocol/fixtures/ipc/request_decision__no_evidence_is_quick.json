@@ -1,0 +1,72 @@
+{
+  "case": "request_decision/no_evidence_is_quick",
+  "method": "request_decision",
+  "params": {
+    "blocking": true,
+    "caller": "tok-a2",
+    "evidence": [],
+    "impact_if_wrong": "slower failures under load",
+    "options": [
+      {
+        "consequence": "slower failure on outages",
+        "key": "A",
+        "label": "Exponential, cap 30 s"
+      },
+      {
+        "consequence": "3/30 runs time out",
+        "key": "B",
+        "label": "Fixed 2 s, 5 tries"
+      }
+    ],
+    "question": "Retries: fixed or exponential backoff?",
+    "recommendation": "A",
+    "reversible": "yes",
+    "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "decision": {
+        "agent": "a2",
+        "answer": null,
+        "blocking": true,
+        "brief": {
+          "evidence": [],
+          "impact_if_wrong": "slower failures under load",
+          "options": [
+            {
+              "consequence": "slower failure on outages",
+              "key": "A",
+              "label": "Exponential, cap 30 s"
+            },
+            {
+              "consequence": "3/30 runs time out",
+              "key": "B",
+              "label": "Fixed 2 s, 5 tries"
+            }
+          ],
+          "question": "Retries: fixed or exponential backoff?",
+          "recommendation": "A",
+          "reversible": "yes",
+          "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+        },
+        "class": "quick",
+        "closed_at": null,
+        "created_at": 1700000000.0,
+        "holder": "user",
+        "id": "d1",
+        "invalid": [
+          "no evidence"
+        ],
+        "key": "repo:export-csv",
+        "problems": [],
+        "replaces": null,
+        "sha": "abc123",
+        "state": "open",
+        "valid": false,
+        "worktree_path": "/tmp/repo-export"
+      },
+      "message": "Brief d1 is not a full brief (no evidence): the user sees it as a quick question \"agent a2 asks: \u2026\" with your terminal one key away. If the choice needs reading, send a full one (2-4 options, a recommendation among them, at least one piece of evidence) with replaces=\"d1\"."
+    }
+  }
+}

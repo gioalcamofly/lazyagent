@@ -701,6 +701,10 @@ async def notes_append(
     """Add lines to a section of session notes (see notes_read). Each line
     becomes a list item; a missing section is created at the end.
 
+    When to use: when the goal or a constraint is set, a decision is
+    taken, a doubt comes up or is settled, or a step is added or done:
+    your notes are what you (or a successor) get back after a compaction.
+
     Write in your own notes only what the user agreed or asked to keep
     (goal, what not to touch, decisions, open doubts, pending steps): in
     "manual" mode (notes_read's ``mode``) write only when the user asks.
@@ -788,6 +792,149 @@ async def review_reply(comment_id: str, text: str) -> dict:
     if caller:
         params["caller"] = caller
     return await _get_client().call("review_reply", params)
+
+
+# ------------------------------------------------------------------
+# Reports and decision briefs (proposal 0013 I4)
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+async def status_report(
+    note: str = "",
+    ball: str | None = None,
+    needs_user: bool = False,
+    outward: dict | None = None,
+) -> dict:
+    """Tell the user's inbox where your work item stands, in one line.
+
+    When to use: when the ball moves and the engine cannot see it: you now
+    wait on someone else (``ball="others"``, e.g. "waiting for QA"), you
+    are blocked (``ball="stalled"``), or the user must act
+    (``needs_user=True``: a Round item for the user until you run again
+    after your turn, or are sent input). Also, best effort, after an action
+    outside the repo (an issue-tracker comment, a PR, a PR comment):
+    ``outward={"kind": "tracker" | "github_comment" | "pr_create", "ref":
+    "<url or id>", "text": "<what>"}`` adds it to the item's timeline.
+    Not for progress chatter: the engine already sees commits, CI and your
+    status. For a choice that needs reading, use request_decision instead.
+
+    Only for your own work item (lazyagent's agent token); the note shows
+    on the row with its age.
+
+    Args:
+        note: One line (≤ 200 chars), e.g. "PR up, waiting for QA".
+        ball: "agent", "others" or "stalled"; omit to leave it to the engine.
+        needs_user: True only when the user must do something.
+        outward: Optional {kind, ref, text} of an action outside the repo.
+
+    Returns:
+        Object with key (your work item), report and outward (the timeline
+        entry, if any).
+    """
+    params: dict[str, Any] = {"note": note, "needs_user": needs_user}
+    if ball is not None:
+        params["ball"] = ball
+    if outward is not None:
+        params["outward"] = outward
+    return await _get_client().call("status_report", _add_caller(params))
+
+
+@mcp.tool()
+async def request_decision(
+    question: str,
+    options: list[dict],
+    recommendation: str,
+    tried: str,
+    evidence: list[dict],
+    reversible: str,
+    impact_if_wrong: str,
+    decision_class: str = "deep",
+    blocking: bool = False,
+    replaces: str | None = None,
+) -> dict:
+    """Ask the user for a choice that needs reading: a decision brief. It
+    waits in the user's "To sit down with" zone, with your evidence beside
+    it, instead of a long question in your terminal.
+
+    When to use: two designs, a trade-off, a risky or hard-to-undo step,
+    what to do after your tries failed: anything the user must read before
+    answering. A short question (yes/no, A or B with no reading) goes in the
+    conversation as usual. At most 2 open briefs per agent.
+
+    Template (fill every field; a brief with fewer than 2 options, a
+    recommendation that is not one of them, or no evidence is shown only as
+    a quick "agent <id> asks: <question>"):
+
+        question: "Retries: fixed or exponential backoff?"      (≤ 200 chars)
+        options: [{"key": "A", "label": "Exponential, cap 30 s",
+                   "consequence": "slower failure on outages"},
+                  {"key": "B", "label": "Fixed 2 s, 5 tries",
+                   "consequence": "3/30 runs time out"}]          (2-4)
+        recommendation: "A"
+        tried: "fixed 2 s: 3 of 30 runs hit the 10 s limit"      (≤ 600 chars)
+        evidence: [{"kind": "diff", "path": "src/retry.py", "hunk": "@@ -40,7 +40,12 @@"},
+                   {"kind": "log", "ref": "job:tests", "lines": "120-134"},
+                   {"kind": "file", "path": "docs/retry.md", "lines": "10-24"},
+                   {"kind": "notes", "section": "Doubts"},
+                   {"kind": "url", "url": "https://..."}]          (1-8)
+        reversible: "yes" | "partly" | "no"
+        impact_if_wrong: "slower failures under load"
+
+    Paths are relative to your worktree (outside it they are dropped); a
+    diff or file is pinned to your branch head unless you give ``sha``.
+
+    Args:
+        question: The one thing to decide.
+        options: 2-4 objects {key, label, consequence}.
+        recommendation: The key of the option you recommend.
+        tried: What you tried and what happened.
+        evidence: 1-8 pointers (see the template).
+        reversible: "yes", "partly" or "no".
+        impact_if_wrong: What goes wrong if the choice is wrong.
+        decision_class: "deep" (default: needs reading) or "quick" (small).
+        blocking: True only if you cannot go on without the answer; then end
+            your turn. Otherwise keep working on what does not depend on it.
+        replaces: The id of one of your open briefs this one replaces.
+
+    Returns:
+        Object with ``decision`` (its id, state, class, valid, ...) and
+        ``message`` (where it went, or why it is not a full brief). The
+        answer comes later as a line "Decision <id>: <choice> ...".
+    """
+    params: dict[str, Any] = {
+        "question": question,
+        "options": options,
+        "recommendation": recommendation,
+        "tried": tried,
+        "evidence": evidence,
+        "reversible": reversible,
+        "impact_if_wrong": impact_if_wrong,
+        "class": decision_class,
+        "blocking": blocking,
+    }
+    if replaces is not None:
+        params["replaces"] = replaces
+    return await _get_client().call("request_decision", _add_caller(params))
+
+
+@mcp.tool()
+async def decision_withdraw(decision_id: str) -> dict:
+    """Withdraw one of your open decision briefs (request_decision).
+
+    When to use: the question no longer matters (you found the answer, the
+    task changed), so it leaves the user's inbox. To change a brief, send a
+    new one with ``replaces`` instead.
+
+    Args:
+        decision_id: The brief's id, e.g. "d3".
+
+    Returns:
+        Object with the withdrawn ``decision``.
+    """
+    return await _get_client().call(
+        "decision_withdraw", _add_caller({"id": decision_id})
+    )
 
 
 if __name__ == "__main__":

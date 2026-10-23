@@ -787,7 +787,7 @@
     "status_row": {
       "type": "object",
       "description": "One work item (proposal 0013): a branch with its worktree, agents and PR, projected by the engine; nothing in it is stored.",
-      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint"],
+      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint", "class", "seen_at", "last_event_at"],
       "properties": {
         "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached)."},
         "repo": {"type": "string", "description": "The repo root's directory name."},
@@ -796,7 +796,7 @@
         "title": {"type": "string", "description": "The PR title, else the linked tracker task's title, else the branch."},
         "urls": {"type": "array", "items": {"type": "string"}},
         "zone": {"enum": ["inbox", "in_flight"], "description": "inbox: the ball is the user's."},
-        "level": {"enum": ["now", "round", null], "description": "Inbox rows only. now: an agent is blocked on the user."},
+        "level": {"enum": ["now", "round", "deep", null], "description": "Inbox rows only. now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "ball": {"enum": ["you", "agent", "others", "stalled", "done"]},
         "priority": {"enum": ["high", "medium", "low"]},
         "state": {"type": "string", "description": "A fact in at most five words, e.g. 'review requested, CI green'."},
@@ -845,7 +845,7 @@
             "agent_id": {"type": "string"}
           }
         },
-        "gesture": {"type": ["object", "null"], "description": "A user's label or park; null for now."},
+        "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}], "description": "The user's label, park or close while it holds (feature gestures)."},
         "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}], "description": "The orchestrator holds the item (Pass to orchestrator, feature claims); null otherwise."},
         "tracker": {
           "type": "object",
@@ -863,7 +863,24 @@
         },
         "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
         "changed_at": {"type": "number", "description": "When its facts last changed (Unix time): the row's age."},
-        "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."}
+        "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."},
+        "class": {"enum": ["quick", "deep", null], "description": "Inbox rows only: deep when its level is deep (needs reading), else quick."},
+        "seen_at": {"type": ["number", "null"], "description": "The user's last look at it (status_seen: this item's mark or 'all seen', the later); null: never."},
+        "last_event_at": {"type": ["number", "null"], "description": "Its latest timeline entry (status_timeline); later than seen_at: changed since the user looked."}
+      }
+    },
+    "gesture": {
+      "type": "object",
+      "description": "A user's gesture on a work item (proposal 0013 I4).",
+      "required": ["kind", "at", "by"],
+      "properties": {
+        "kind": {"enum": ["label", "park", "close"]},
+        "at": {"type": "number"},
+        "by": {"type": "string"},
+        "ball": {"enum": ["agent", "others", "stalled"], "description": "label: the ball it puts on the row (rule 8); the state stays a fact."},
+        "text": {"type": "string", "description": "label: at most 40 characters, e.g. 'QA'."},
+        "until": {"$ref": "#/$defs/actionable_until", "description": "park: the row is in flight, 'parked until ...' (rule 7)."},
+        "how": {"enum": ["done", "dropped"], "description": "close: the row is done (rule 1)."}
       }
     },
     "status_list.params": {
@@ -881,10 +898,12 @@
         "rows": {"type": "array", "items": {"$ref": "#/$defs/status_row"}, "description": "Inbox first (level, blocks an agent, priority, oldest first), then in flight (ball: agent, others, stalled, done; priority; latest change first)."},
         "counts": {
           "type": "object",
-          "required": ["now", "round", "in_flight", "done", "stale", "not_started"],
+          "required": ["now", "round", "deep", "in_flight", "done", "stale", "not_started", "deep_max"],
           "properties": {
             "now": {"type": "integer"},
             "round": {"type": "integer"},
+            "deep": {"type": "integer", "description": "Rows in To sit down with."},
+            "deep_max": {"type": "integer", "description": "[inbox] deep_max: shown against deep, never enforced."},
             "in_flight": {"type": "integer"},
             "done": {"type": "integer"},
             "stale": {"type": "integer"},
@@ -897,12 +916,14 @@
     "actionable": {
       "type": "object",
       "description": "An inbox item (proposal 0013): it lives while its condition holds and resolves itself when it clears.",
-      "required": ["id", "occurrence", "kind", "level", "title", "label", "detail", "state", "work_item", "worktree_path", "agent_id", "pr", "job_id", "exit_code", "blocks_agent", "priority", "since", "park"],
+      "required": ["id", "occurrence", "kind", "level", "title", "label", "detail", "state", "work_item", "worktree_path", "agent_id", "pr", "job_id", "exit_code", "blocks_agent", "priority", "since", "park", "class", "decision_id"],
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "review", "conflict", "done", "job", "tracker_status"], "description": "Open set."},
-        "level": {"enum": ["now", "round"], "description": "Fixed per kind (tracker_status: the tracker mapping's). now: an agent is blocked on the user."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision"], "description": "Open set."},
+        "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
+        "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
+        "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
         "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
         "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>', the job's title, or the tracker task's title."},
         "detail": {"type": "string", "description": "tracker_status: the task's URL."},
@@ -950,13 +971,15 @@
       "type": "object",
       "required": ["items", "counts", "generated_at"],
       "properties": {
-        "items": {"type": "array", "items": {"$ref": "#/$defs/actionable"}, "description": "Level (now, round), then blocks an agent, priority, oldest first."},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/actionable"}, "description": "Level (now, round, deep), then blocks an agent, priority, oldest first."},
         "counts": {
           "type": "object",
-          "required": ["now", "round", "parked"],
+          "required": ["now", "round", "deep", "deep_max", "parked"],
           "properties": {
             "now": {"type": "integer"},
             "round": {"type": "integer"},
+            "deep": {"type": "integer", "description": "Items in To sit down with."},
+            "deep_max": {"type": "integer", "description": "[inbox] deep_max: shown against deep, never enforced."},
             "parked": {"type": "integer"}
           }
         },
@@ -1006,7 +1029,11 @@
       "required": ["key", "kind"],
       "properties": {
         "key": {"type": "string", "description": "A work item key (status_list rows)."},
-        "kind": {"enum": ["delegate", "clear"], "description": "delegate: pass the item to the orchestrator (a claim); clear: take it back. Label, park and close come later."},
+        "kind": {"enum": ["label", "park", "close", "delegate", "clear"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); clear: drop the gesture and take back a pass."},
+        "ball": {"enum": ["agent", "others", "stalled"], "description": "label only (required)."},
+        "text": {"type": "string", "description": "label only: at most 40 characters."},
+        "until": {"$ref": "#/$defs/actionable_until", "description": "park only (required)."},
+        "how": {"enum": ["done", "dropped"], "default": "done", "description": "close only."},
         "to": {"enum": ["orchestrator"], "description": "delegate only."},
         "ttl_s": {"type": "number", "minimum": 60, "description": "delegate only: how long the claim lasts, at most 86400; default [orchestrator] claim_ttl_s (7200)."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "None: gestures are the user's."}
@@ -1014,10 +1041,11 @@
     },
     "status_gesture.result": {
       "type": "object",
-      "required": ["key", "claim", "row"],
+      "required": ["key", "claim", "gesture", "row"],
       "properties": {
         "key": {"type": "string"},
         "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}]},
+        "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}]},
         "row": {"oneOf": [{"$ref": "#/$defs/status_row"}, {"type": "null"}]}
       }
     },
@@ -1039,6 +1067,215 @@
         "outcome": {"type": "string"},
         "claim": {"$ref": "#/$defs/claim"}
       }
+    },
+
+    "timeline_entry": {
+      "type": "object",
+      "description": "A fact on a work item's timeline (since you looked, proposal 0013 I4): no generated text.",
+      "required": ["at", "kind", "actor", "text"],
+      "properties": {
+        "at": {"type": "number", "description": "When it happened (a commit: its commit time)."},
+        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward"]},
+        "actor": {"type": "string", "description": "user, agent:<id>, orchestrator or engine (what the engine saw)."},
+        "text": {"type": "string", "description": "At most 200 characters."},
+        "ref": {"type": "string", "description": "A commit sha, a decision id, a notes id, or an outward action's ref."}
+      }
+    },
+    "status_report.params": {
+      "type": "object",
+      "properties": {
+        "note": {"type": "string", "description": "One line (at most 200 characters): the row's note, with its age."},
+        "ball": {"enum": ["agent", "others", "stalled"], "description": "Who has the ball now, when the engine cannot see it (e.g. others: QA)."},
+        "needs_user": {"type": "boolean", "default": false, "description": "The user must act: a Round item until the agent runs again after its turn, or is sent input."},
+        "outward": {
+          "type": "object",
+          "description": "Best effort: something done outside the repo, added to the item's timeline as done by the agent.",
+          "required": ["kind"],
+          "properties": {
+            "kind": {"type": "string", "x-known-values": ["tracker", "github_comment", "pr_create"]},
+            "ref": {"type": "string"},
+            "text": {"type": "string"}
+          }
+        },
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The agent's token (required): the report is on its own work item."}
+      }
+    },
+    "status_report.result": {
+      "type": "object",
+      "required": ["key", "report", "outward"],
+      "properties": {
+        "key": {"type": "string"},
+        "report": {
+          "type": ["object", "null"],
+          "required": ["agent", "worktree_path", "label", "note", "ball", "needs_user", "at", "turn_over"],
+          "properties": {
+            "agent": {"type": "string"},
+            "worktree_path": {"type": "string"},
+            "label": {"type": "string"},
+            "note": {"type": "string"},
+            "ball": {"enum": ["agent", "others", "stalled", null]},
+            "needs_user": {"type": "boolean"},
+            "at": {"type": "number"},
+            "turn_over": {"type": "boolean", "description": "The agent has ended a turn since."}
+          }
+        },
+        "outward": {"oneOf": [{"$ref": "#/$defs/timeline_entry"}, {"type": "null"}]}
+      }
+    },
+    "status_seen.params": {
+      "type": "object",
+      "properties": {
+        "key": {"type": ["string", "null"], "description": "One work item; none: mark all seen."},
+        "at": {"type": "number", "description": "Unix time, default now (never later than now)."},
+        "client": {"type": "string", "default": "user", "description": "Whose look."}
+      }
+    },
+    "status_seen.result": {
+      "type": "object",
+      "required": ["client", "seen"],
+      "properties": {
+        "client": {"type": "string"},
+        "seen": {"type": "object", "description": "'*' (all seen) and per work item key: Unix times.", "additionalProperties": {"type": "number"}}
+      }
+    },
+    "status_timeline.params": {
+      "type": "object",
+      "required": ["key"],
+      "properties": {
+        "key": {"type": "string"},
+        "since": {"type": ["number", "null"], "description": "Default: the client's last look at the item; none either: every entry kept."},
+        "client": {"type": "string", "default": "user"}
+      }
+    },
+    "status_timeline.result": {
+      "type": "object",
+      "required": ["key", "since", "seen_at", "entries"],
+      "properties": {
+        "key": {"type": "string"},
+        "since": {"type": ["number", "null"]},
+        "seen_at": {"type": ["number", "null"]},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/timeline_entry"}, "description": "Oldest first; at most 50 per item, none older than 7 days."}
+      }
+    },
+    "decision_option": {
+      "type": "object",
+      "required": ["key", "label"],
+      "properties": {
+        "key": {"type": "string", "description": "At most 8 characters, e.g. A."},
+        "label": {"type": "string", "description": "At most 120 characters."},
+        "consequence": {"type": "string", "description": "At most 200 characters."}
+      }
+    },
+    "decision_evidence": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["diff", "log", "file", "notes", "url"]},
+        "path": {"type": "string", "description": "diff, file: inside the worktree (kept relative to it)."},
+        "hunk": {"type": "string", "description": "diff: e.g. '@@ -40,7 +40,12 @@'."},
+        "sha": {"type": ["string", "null"], "description": "diff, file: the commit it is pinned to; default the branch head at request time."},
+        "ref": {"type": "string", "description": "log: e.g. job:tests."},
+        "lines": {"type": "string", "description": "log, file: e.g. 120-134."},
+        "section": {"type": "string", "description": "notes: a section of the agent's notes."},
+        "url": {"type": "string", "description": "url: http(s)."}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "description": "A decision brief (proposal 0013 §5b): an agent's question that needs reading.",
+      "required": ["id", "key", "worktree_path", "agent", "holder", "replaces", "state", "valid", "class", "blocking", "brief", "invalid", "problems", "sha", "created_at", "closed_at", "answer"],
+      "properties": {
+        "id": {"type": "string", "description": "e.g. d3."},
+        "key": {"type": "string", "description": "Its work item."},
+        "worktree_path": {"type": "string"},
+        "agent": {"type": "string", "description": "The asking agent's id."},
+        "holder": {"enum": ["user", "orchestrator"], "description": "Who is to answer it (user until the orchestrator's routing)."},
+        "replaces": {"type": ["string", "null"], "description": "The brief this one superseded."},
+        "superseded_by": {"type": "string"},
+        "state": {"enum": ["open", "answered", "resolved", "withdrawn", "superseded", "expired"]},
+        "valid": {"type": "boolean", "description": "false: fewer than 2 options, an unknown recommendation or no evidence; shown as a quick 'agent <id> asks: ...'."},
+        "class": {"enum": ["deep", "quick"]},
+        "blocking": {"type": "boolean", "description": "The agent waits for the answer: first in its level (quick: Now)."},
+        "brief": {
+          "type": "object",
+          "required": ["question", "options", "recommendation", "tried", "evidence", "reversible", "impact_if_wrong"],
+          "properties": {
+            "question": {"type": "string", "description": "At most 200 characters."},
+            "options": {"type": "array", "items": {"$ref": "#/$defs/decision_option"}, "description": "At most 4."},
+            "recommendation": {"type": ["string", "null"]},
+            "tried": {"type": "string", "description": "At most 600 characters; may hold line breaks."},
+            "evidence": {"type": "array", "items": {"$ref": "#/$defs/decision_evidence"}, "description": "At most 8."},
+            "reversible": {"enum": ["yes", "partly", "no", null]},
+            "impact_if_wrong": {"type": "string", "description": "At most 200 characters."}
+          }
+        },
+        "invalid": {"type": "array", "items": {"type": "string"}, "description": "Why it is not valid (empty when it is)."},
+        "problems": {"type": "array", "items": {"type": "string"}, "description": "What was dropped or capped."},
+        "sha": {"type": ["string", "null"], "description": "The branch head when it was asked."},
+        "created_at": {"type": "number"},
+        "closed_at": {"type": ["number", "null"]},
+        "answer": {"type": ["object", "null"], "description": "The user's answer (later phases)."}
+      }
+    },
+    "request_decision.params": {
+      "type": "object",
+      "required": ["question"],
+      "properties": {
+        "question": {"type": "string"},
+        "options": {"type": "array", "items": {"$ref": "#/$defs/decision_option"}},
+        "recommendation": {"type": "string"},
+        "tried": {"type": "string"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/decision_evidence"}},
+        "reversible": {"enum": ["yes", "partly", "no"]},
+        "impact_if_wrong": {"type": "string"},
+        "class": {"enum": ["deep", "quick"], "default": "deep"},
+        "blocking": {"type": "boolean", "default": false},
+        "replaces": {"type": "string", "description": "One of the agent's open briefs: superseded by this one."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The agent's token (required)."}
+      }
+    },
+    "request_decision.result": {
+      "type": "object",
+      "required": ["decision", "message"],
+      "properties": {
+        "decision": {"$ref": "#/$defs/decision"},
+        "message": {"type": "string", "description": "What the agent is told: where the brief is, or why it is not a full one."}
+      }
+    },
+    "decision_withdraw.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string"},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token (required)."}
+      }
+    },
+    "decision_withdraw.result": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "#/$defs/decision"}}
+    },
+    "decision_get.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {"id": {"type": "string"}}
+    },
+    "decision_get.result": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "#/$defs/decision"}}
+    },
+    "decisions_list.params": {
+      "type": "object",
+      "properties": {
+        "key": {"type": ["string", "null"], "description": "One work item."},
+        "state": {"type": ["string", "null"], "description": "One state."}
+      }
+    },
+    "decisions_list.result": {
+      "type": "object",
+      "required": ["decisions"],
+      "properties": {"decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}, "description": "Newest first."}}
     },
 
     "ui.get_view.params": {"type": "object", "properties": {}},

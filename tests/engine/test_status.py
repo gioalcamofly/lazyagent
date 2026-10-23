@@ -83,7 +83,7 @@ DERIVATION = {
     ),
     "changes_requested_even_with_an_agent": (
         facts(agent("running"), pr_info=pr(review="CHANGES_REQUESTED")),
-        (5, "you", "round", "changes requested"),
+        (5, "you", "deep", "changes requested"),
     ),
     "conflict_no_agent": (
         facts(pr_info=pr(mergeable="CONFLICTING")),
@@ -102,8 +102,8 @@ DERIVATION = {
         facts(agent("running", "Edit"), pr_info=pr(checks=RED)),
         (9, "agent", None, "fixing CI"),
     ),
-    "finished_no_pr": (facts(agent("completed")), (6, "you", "round", "review: agent finished")),
-    "idle_no_pr": (facts(agent("waiting")), (6, "you", "round", "review: agent finished")),
+    "finished_no_pr": (facts(agent("completed")), (6, "you", "deep", "review: agent finished")),
+    "idle_no_pr": (facts(agent("waiting")), (6, "you", "deep", "review: agent finished")),
     "one_idle_one_working": (
         facts(agent("waiting"), agent("running", agent_id="a2")),
         (9, "agent", None, "working"),
@@ -205,7 +205,8 @@ def test_inbox_first_then_in_flight_in_their_orders():
         "stalled",
     ]
     assert result["counts"] == {
-        "now": 2, "round": 2, "in_flight": 4, "done": 1, "stale": 1, "not_started": 0,
+        "now": 2, "round": 2, "deep": 0, "in_flight": 4, "done": 1, "stale": 1,
+        "not_started": 0, "deep_max": 5,
     }
     every = summarize(rows, include_done=True)["rows"]
     assert [r["key"] for r in every][-2:] == ["old-branch", "merged"]
@@ -436,7 +437,7 @@ async def test_the_engine_keeps_pr_interest_in_every_work_item():
 @pytest.mark.asyncio
 async def test_events_are_coalesced_and_only_for_what_changed(monkeypatch):
     monkeypatch.setattr(status_mod, "COALESCE", 0.05)
-    engine, _ = _engine()
+    engine, clock = _engine()
     seen = []
     engine.events.subscribe(lambda e: seen.append(e), {STATUS_UPDATED, STATUS_REMOVED})
     engine.status.start()
@@ -463,6 +464,15 @@ async def test_events_are_coalesced_and_only_for_what_changed(monkeypatch):
         engine.world.worktrees = [wt for wt in engine.world.worktrees if wt.path != FIX]
         engine.refresh_worktrees()
         await asyncio.sleep(0.15)
+        # A removed worktree's row is a done tombstone for a day, then goes.
+        [(event, data)] = [(e.event, e.data) for e in seen]
+        assert event == STATUS_UPDATED
+        assert (data["row"]["ball"], data["row"]["state"], data["row"]["worktree_path"]) == (
+            "done", "worktree removed", None,
+        )
+        seen.clear()
+        clock.now += 86400
+        engine.status.flush()
         assert [(e.event, e.data) for e in seen] == [
             (STATUS_REMOVED, {"key": "repo:fix-typo"})
         ]

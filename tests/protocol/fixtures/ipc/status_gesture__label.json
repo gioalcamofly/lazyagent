@@ -1,0 +1,63 @@
+{
+  "case": "status_gesture/label",
+  "method": "status_gesture",
+  "params": {
+    "ball": "others",
+    "key": "repo:export-csv",
+    "kind": "label",
+    "text": "QA"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "ball": "others",
+        "by": "user",
+        "kind": "label",
+        "text": "QA"
+      },
+      "key": "repo:export-csv",
+      "row": {
+        "agents": [
+          {
+            "id": "a2",
+            "since": 1700000000.0,
+            "status": "running"
+          }
+        ],
+        "ball": "others",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "fingerprint": "9f60e6ccd4a9",
+        "gesture": {
+          "at": 1700000000.0,
+          "ball": "others",
+          "by": "user",
+          "kind": "label",
+          "text": "QA"
+        },
+        "key": "repo:export-csv",
+        "last_event_at": 1700000000.0,
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 8,
+        "seen_at": null,
+        "stale": false,
+        "state": "Edit",
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      }
+    }
+  }
+}

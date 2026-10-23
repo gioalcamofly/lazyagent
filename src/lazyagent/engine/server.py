@@ -112,6 +112,12 @@ FEATURES: tuple[str, ...] = (
     # status_gesture delegate / clear, orchestrator_release and
     # orchestrator.* (proposal 0013, I3): Pass to orchestrator.
     "claims",
+    # status_gesture label / park / close, status_report, status_seen,
+    # status_timeline and status.timeline; the deep level (I4).
+    "gestures",
+    # request_decision, decision_withdraw, decision_get, decisions_list and
+    # decision.* (I4): decision briefs.
+    "decisions",
 )
 
 STREAM_RESIZED = "stream.resized"
