@@ -1,0 +1,14 @@
+{
+  "case": "actionables_get/error_unknown",
+  "method": "actionables_get",
+  "params": {
+    "id": "Approval:/nope/a9"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "No actionable 'Approval:/nope/a9': it is resolved or dismissed"
+    },
+    "id": "req-1"
+  }
+}

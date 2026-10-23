@@ -31,7 +31,10 @@
           "gesture": null,
           "key": "repo:login-ttl",
           "level": "now",
-          "needs_you": null,
+          "needs_you": {
+            "count": 1,
+            "top": "Approval:/tmp/repo-login/a1"
+          },
           "note": null,
           "pr": null,
           "priority": "medium",

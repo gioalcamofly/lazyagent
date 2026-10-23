@@ -40,6 +40,9 @@ once and show its `table` as it is; add only what it does not say (e.g. what \
 you did meanwhile). Never build a status table yourself from `list_worktrees`, \
 `list_agents` or agent output: the engine's is complete and current, yours \
 goes stale.
+- **`actionables_list()`** — The user's inbox item by item (approvals, \
+questions, failed or exited agents, red or conflicting PRs, changes \
+requested), `now` first. Items the user dismissed or parked are not in it.
 
 ### Worktree management
 
