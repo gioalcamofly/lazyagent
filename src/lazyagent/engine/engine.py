@@ -69,6 +69,7 @@ from lazyagent.engine.manifest import (
     clip_instruction,
     manifest_path,
 )
+from lazyagent.engine.actionables import ActionableQueue, actionables_path
 from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
     ADOPTED,
@@ -264,7 +265,9 @@ class Engine:
             find_root=find_root or (lambda: find_repo_root()),
         )
         self.worktree_service.subscribe(self._on_worktree_event)
-        # Work items (proposal 0013): kept current from the events above.
+        # Work items (proposal 0013): kept current from the events above,
+        # with the inbox queue they read.
+        self.actionables = ActionableQueue(self)
         self.status = StatusProjection(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()
@@ -342,6 +345,10 @@ class Engine:
         # only for the clients' interest sets (PR info also for every work
         # item: the status projection's own interest).
         self.worktree_service.start()
+        # Marks are kept by the engine that owns the repo (as the manifest).
+        if self.manifest is not None and self.repo_root:
+            self.actionables.open(actionables_path(self.repo_root))
+        self.actionables.start()
         self.status.start()
         if (
             self.manifest is not None
@@ -362,6 +369,7 @@ class Engine:
         self._started = False
         self._scheduler.stop()
         self.status.stop()
+        self.actionables.stop()
         self.worktree_service.stop()
         for task in list(self._tasks):
             task.cancel()

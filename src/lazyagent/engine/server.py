@@ -107,6 +107,8 @@ FEATURES: tuple[str, ...] = (
     "size.latest",
     # status_list and status.updated / status.removed (proposal 0013).
     "status",
+    # actionables_* and actionable.* (proposal 0013, I2): the engine's inbox.
+    "actionables",
 )
 
 STREAM_RESIZED = "stream.resized"

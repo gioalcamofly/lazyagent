@@ -1,0 +1,38 @@
+{
+  "case": "actionables_mark/park_until_a_time",
+  "method": "actionables_mark",
+  "params": {
+    "action": "park",
+    "id": "Approval:/tmp/repo-login/a1",
+    "until": 1700003600.0
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "item": {
+        "agent_id": "a1",
+        "blocks_agent": true,
+        "detail": "Bash",
+        "exit_code": null,
+        "id": "Approval:/tmp/repo-login/a1",
+        "job_id": null,
+        "kind": "approval",
+        "label": "Agent a1",
+        "level": "now",
+        "occurrence": "Approval:/tmp/repo-login/a1@1700000000.0",
+        "park": {
+          "at": 1700000000.0,
+          "by": "user",
+          "until": 1700003600.0
+        },
+        "pr": null,
+        "priority": "medium",
+        "since": 1700000000.0,
+        "state": "approve: Bash",
+        "title": "Needs approval",
+        "work_item": "repo:login-ttl",
+        "worktree_path": "/tmp/repo-login"
+      }
+    }
+  }
+}

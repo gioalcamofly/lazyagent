@@ -86,7 +86,7 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             // review_reply is the agents' (MCP).
             "review_register" | "review_reply" => continue,
             // Not read yet: the desktop Home (proposal 0013, I3) will.
-            "status_list" => continue,
+            "status_list" | "actionables_list" | "actionables_get" | "actionables_mark" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -142,6 +142,9 @@ const IGNORED_EVENTS: &[&str] = &[
     // Until the desktop Home (proposal 0013, I3).
     "status.updated",
     "status.removed",
+    "actionable.created",
+    "actionable.updated",
+    "actionable.resolved",
 ];
 
 #[test]

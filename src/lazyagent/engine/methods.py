@@ -95,6 +95,13 @@ def check_env(env: Any) -> dict[str, str] | None:
     return env
 
 
+def _item_id(params: dict) -> str:
+    item_id = params.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        raise ValueError("id must be an actionable's id")
+    return item_id
+
+
 class SpawnCaps:
     """``[orchestrator] max_spawns_per_day`` / ``max_concurrent_agents``,
     applied to the spawns asked for with an agent token. One per engine:
@@ -173,6 +180,9 @@ class EngineMethods:
             "review_reply": self.review_reply,
             "review_replies": self.review_replies,
             "status_list": self.status_list,
+            "actionables_list": self.actionables_list,
+            "actionables_get": self.actionables_get,
+            "actionables_mark": self.actionables_mark,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -877,6 +887,40 @@ class EngineMethods:
         # The 0013 gate's metric: how often the table is asked for, by whom.
         diag.event(log, "status.list", by=role)
         return self._engine.status.list(repo=repo or None, include_done=include_done)
+
+    async def actionables_list(self, params: dict) -> Any:
+        """The inbox queue (proposal 0013): what needs the user, Now first,
+        then Round. Params: repo (only items of that repo's work items),
+        include_hidden (also the parked ones)."""
+        repo = params.get("repo")
+        if repo is not None and not isinstance(repo, str):
+            raise ValueError("repo must be a string")
+        include_hidden = params.get("include_hidden", False)
+        if type(include_hidden) is not bool:
+            raise ValueError("include_hidden must be a boolean")
+        return self._engine.actionables.list(
+            repo=repo or None, include_hidden=include_hidden
+        )
+
+    async def actionables_get(self, params: dict) -> Any:
+        """One item of the inbox queue, parked or not. Params: id."""
+        return {"item": self._engine.actionables.get(_item_id(params))}
+
+    async def actionables_mark(self, params: dict) -> Any:
+        """Dismiss an item's occurrence, park it until a time or an event
+        (ci_done, agent_stopped, human_review), or unpark it, for every
+        client. Params: id, action, until (park only). The user's (no token)
+        or the orchestrator's; a worker's token is refused."""
+        role, _ = self._caller(params)
+        if role == AGENT_BY:
+            raise ValueError("Only the user or the orchestrator marks inbox items")
+        action = params.get("action")
+        if not isinstance(action, str):
+            raise ValueError("action must be a string")
+        item = self._engine.actionables.mark(
+            _item_id(params), action, until=params.get("until"), by=role
+        )
+        return {"item": item}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.
