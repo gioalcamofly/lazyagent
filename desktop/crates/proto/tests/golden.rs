@@ -91,14 +91,17 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "status_gesture" => round_trip::<StatusGestureResult>(case, result),
             // The orchestrator's (MCP).
             "orchestrator_release" => continue,
-            // Agents' (MCP), and the I4 engine methods the desktop does not
-            // call yet (gestures, timeline, seen marks, briefs).
+            // Agents' (MCP).
             "status_report" | "request_decision" | "decision_withdraw" => continue,
-            "status_seen" | "status_timeline" | "decision_get" | "decisions_list" => continue,
-            // I4b (the orchestrator as first responder): the desktop does not
-            // call these yet (I4c).
-            "decision_answer" | "decision_escalate" | "decision_revert" => continue,
-            "presence_report" | "presence_set" | "inbox_config_get" | "inbox_config_set" => continue,
+            "status_seen" => round_trip::<StatusSeen>(case, result),
+            "status_timeline" => round_trip::<StatusTimeline>(case, result),
+            "decision_get" => round_trip::<DecisionResult>(case, result),
+            "decisions_list" => round_trip::<DecisionsList>(case, result),
+            "decision_revert" => round_trip::<DecisionResult>(case, result),
+            "inbox_config_get" | "inbox_config_set" => round_trip::<InboxConfig>(case, result),
+            "presence_report" | "presence_set" => round_trip::<PresenceResult>(case, result),
+            // The orchestrator's (MCP).
+            "decision_answer" | "decision_escalate" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -149,6 +152,15 @@ const METHODS_USED: &[&str] = &[
     "actionables_list",
     "actionables_mark",
     "status_gesture",
+    "status_seen",
+    "status_timeline",
+    "decisions_list",
+    "decision_get",
+    "presence_report",
+    "presence_set",
+    "decision_revert",
+    "inbox_config_get",
+    "inbox_config_set",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
@@ -159,11 +171,6 @@ const IGNORED_EVENTS: &[&str] = &[
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
-    // I4: the desktop shows neither the timeline nor briefs yet.
-    "status.timeline",
-    "decision.created",
-    "decision.resolved",
-    "decision.answered",
 ];
 
 #[test]

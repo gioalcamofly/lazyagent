@@ -2928,6 +2928,405 @@ fn tracker_rows_and_items_show_on_home() {
     h.get_by_label("github issues 41: returned by QA (10m ago)");
 }
 
+// --- Home, I4c: gestures, To sit down with, briefs, since you looked, and
+// the orchestrator as first responder (against a fake engine) ---------------
+
+type Calls = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
+/// A fake engine: `answer` gives each request's result (`None`: `{}`); every
+/// request and notification is recorded.
+fn fake_engine(
+    h: &Harness<'static, App>,
+    mut answer: impl FnMut(&str, &serde_json::Value) -> Option<serde_json::Value> + Send + 'static,
+) -> Calls {
+    let calls: Calls = Default::default();
+    let seen = calls.clone();
+    *h.state().state.conn.fake.lock().unwrap() = Some(Box::new(move |method, params| {
+        seen.lock().unwrap().push((method.to_string(), params.clone()));
+        Some(Ok(answer(method, params).unwrap_or_else(|| json!({}))))
+    }));
+    calls
+}
+
+fn calls_of(calls: &Calls, method: &str) -> Vec<serde_json::Value> {
+    calls.lock().unwrap().iter().filter(|(m, _)| m == method).map(|(_, p)| p.clone()).collect()
+}
+
+const I4: &[&str] = &["status", "actionables", "claims", "gestures", "decisions"];
+
+fn brief(id: &str, key: &str, valid: bool) -> serde_json::Value {
+    json!({"id": id, "key": format!("repo:{key}"), "worktree_path": format!("/r/repo-{key}"), "agent": "a2",
+           "holder": "user", "replaces": null, "state": "open", "valid": valid,
+           "class": if valid { "deep" } else { "quick" }, "blocking": false,
+           "brief": {"question": "Retries: fixed or exponential backoff?",
+                     "options": [{"key": "A", "label": "Exponential, cap 30 s", "consequence": "slower failure on outages"},
+                                 {"key": "B", "label": "Fixed 2 s, 5 tries", "consequence": "3/30 runs time out"}],
+                     "recommendation": "A", "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit",
+                     "evidence": [{"kind": "diff", "path": "src/retry.py", "hunk": "@@ -40,7 +40,12 @@"},
+                                  {"kind": "log", "ref": "job:tests", "lines": "120-134"}],
+                     "reversible": "yes", "impact_if_wrong": "slower failures under load"},
+           "invalid": if valid { json!([]) } else { json!(["no evidence"]) }, "problems": [], "sha": "abc123",
+           "created_at": crate::app::unix_now() - 600.0, "closed_at": null, "answer": null})
+}
+
+fn brief_item(id: &str, key: &str, level: &str, valid: bool) -> serde_json::Value {
+    let (label, detail) = if valid {
+        ("Retries: fixed or exponential backoff?".to_string(), "brief by agent a2 · 2 options · yes")
+    } else {
+        ("agent a2 asks: Retries: fixed or exponential backoff?".to_string(), "open terminal")
+    };
+    json!({"id": format!("Decision:{id}"), "occurrence": format!("{id}@1"), "kind": "decision", "level": level,
+           "title": "Decide", "label": label, "detail": detail, "state": "decide: retries: fixed or exponential?",
+           "work_item": format!("repo:{key}"), "worktree_path": format!("/r/repo-{key}"), "agent_id": "a2",
+           "pr": null, "job_id": null, "exit_code": null, "blocks_agent": false, "priority": "medium",
+           "since": crate::app::unix_now() - 600.0, "park": null, "class": if valid { "deep" } else { "quick" },
+           "decision_id": id})
+}
+
+fn inbox_row(key: &str, level: &str, item: &str, state: &str) -> serde_json::Value {
+    let mut r = status_row(key, "inbox", Some(level), "you", state, 600.0);
+    r["needs_you"] = json!({"count": 1, "top": item});
+    r["class"] = json!(if level == "deep" { "deep" } else { "quick" });
+    r
+}
+
+#[test]
+fn to_sit_down_with_shows_deep_items_at_once_with_deep_max() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(I4);
+    let mut h = harness(app);
+    h.state_mut().state.status_counts.deep_max = 2;
+    h.run_steps(2);
+    h.get_by_label("TO SIT DOWN WITH (0 of 2)");
+    h.get_by_label("Nothing to sit down with.");
+    for (id, key) in [("d1", "billing"), ("d2", "export"), ("d3", "search")] {
+        tx.send(event("decision.created", json!({"decision": brief(id, key, true)}))).unwrap();
+        tx.send(event("actionable.created", json!({"item": brief_item(id, key, "deep", true)}))).unwrap();
+        tx.send(event("status.updated", json!({"row": inbox_row(key, "deep", &format!("Decision:{id}"), "decide")})))
+            .unwrap();
+    }
+    h.run_steps(3);
+    // Deep is outside the rounds: no cut point needed, nothing waits.
+    assert_eq!(home_names(&h, Zone::Deep), ["billing", "export", "search"]);
+    assert!(h.query_by_label("next round: 1 ▸").is_none());
+    // Shown, never enforced: three of two is a line, not a refusal.
+    h.get_by_label("TO SIT DOWN WITH (3 of 2)");
+    h.get_by_label("over your limit of 2");
+    assert_eq!(h.query_all_by_label("Decide").count(), 3);
+    assert_eq!(h.state().state.home.counts(), (0, 0), "the badges count Now and Round only");
+    // Without the engine's gestures (and no deep lines) the zone is not there.
+    let (app, _tx) = engine_home(&["status", "actionables"]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    assert!(h.query_by_label("Nothing to sit down with.").is_none());
+}
+
+#[test]
+fn briefs_show_compactly_read_only_and_invalid_ones_ask_in_the_terminal() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(I4);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "decision_get" => Some(json!({"decision": brief(p["id"].as_str().unwrap(), "billing", true)})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    // The brief is not known yet: Enter fetches it with the timeline.
+    tx.send(event("actionable.created", json!({"item": brief_item("d1", "billing", "deep", true)}))).unwrap();
+    tx.send(event("status.updated", json!({"row": inbox_row("billing", "deep", "Decision:d1", "decide")}))).unwrap();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_get"), [json!({"id": "d1"})]);
+    h.get_by_label("brief by agent a2 · 2 options · reversible: yes · recommends A");
+    h.get_by_label("Retries: fixed or exponential backoff?");
+    h.get_by_label("A  Exponential, cap 30 s — slower failure on outages   (recommended)");
+    h.get_by_label("B  Fixed 2 s, 5 tries — 3/30 runs time out");
+    h.get_by_label("Reversible: yes · If wrong: slower failures under load");
+    h.get_by_label("Evidence: diff src/retry.py · log job:tests:120-134");
+    assert!(h.query_by_label("Dismiss  (x)").is_some());
+    // An invalid brief is a quick "agent a2 asks: …": Enter opens its terminal.
+    tx.send(event("decision.created", json!({"decision": brief("d2", "export", false)}))).unwrap();
+    tx.send(event("actionable.created", json!({"item": brief_item("d2", "export", "now", false)}))).unwrap();
+    tx.send(event("status.updated", json!({"row": inbox_row("export", "now", "Decision:d2", "asks: retries")})))
+        .unwrap();
+    h.run_steps(2);
+    let line = h.state().state.home.shown_in(Zone::Now)[0].clone();
+    assert_eq!((line.name.as_str(), line.verb()), ("export", "Answer"));
+    h.state_mut().state.home.selected = Some("repo:export".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let s = &h.state().state;
+    assert_eq!((s.view, s.selected.as_deref()), (crate::app::View::Worktrees, Some("/r/repo-export")));
+}
+
+#[test]
+fn row_gestures_label_park_close_and_clear_through_the_engine() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(I4);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "status_gesture" => {
+            let mut row = status_row("cart", "in_flight", None, "others", "CI running", 60.0);
+            if p["kind"] == "label" {
+                row["gesture"] = json!({"kind": "label", "at": crate::app::unix_now(), "by": "user",
+                                        "ball": p["ball"], "text": p["text"]});
+                row["rule"] = json!(8);
+            }
+            Some(json!({"key": p["key"], "claim": null, "gesture": row["gesture"], "row": row}))
+        }
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    tx.send(event(
+        "status.updated",
+        json!({"row": status_row("cart", "in_flight", None, "agent", "CI running", 60.0)}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    // l: the label form; a ball and a short text, Enter saves.
+    h.key_press(egui::Key::L);
+    h.run_steps(2);
+    h.get_by_label("Ball with");
+    h.event(egui::Event::Text("QA".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(
+        calls_of(&calls, "status_gesture"),
+        [json!({"key": "repo:cart", "kind": "label", "ball": "others", "text": "QA"})]
+    );
+    let line = h.state().state.home.shown_in(Zone::Flight)[0].clone();
+    assert_eq!((line.ball.as_str(), line.state.as_str()), ("others", "QA · CI running"));
+    h.get_by_label("QA · CI running");
+    h.get_by_label_contains("labelled \"QA\" (others), by you");
+    // z on a row with no inbox item parks the work item.
+    h.key_press(egui::Key::Z);
+    h.run_steps(2);
+    h.get_by_label("Park the work item until");
+    h.get_by_label("CI ends").click();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "status_gesture")[1], json!({"key": "repo:cart", "kind": "park", "until": "ci_done"}));
+    // Shift+X: close, as done or dropped.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    h.run_steps(2);
+    h.get_by_label("dropped").click();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "status_gesture")[2], json!({"key": "repo:cart", "kind": "close", "how": "dropped"}));
+    // u clears the user's gesture (the row still says it has one).
+    let mut labelled = status_row("cart", "in_flight", None, "others", "CI running", 60.0);
+    labelled["gesture"] =
+        json!({"kind": "label", "at": crate::app::unix_now(), "by": "user", "ball": "others", "text": "QA"});
+    tx.send(event("status.updated", json!({"row": labelled}))).unwrap();
+    h.run_steps(2);
+    h.key_press(egui::Key::U);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "status_gesture")[3], json!({"key": "repo:cart", "kind": "clear"}));
+    // A closed row is a dimmed tombstone for a day, then gone.
+    let mut done = status_row("cart", "in_flight", None, "done", "dropped by you", 60.0);
+    done["rule"] = json!(1);
+    tx.send(event("status.updated", json!({"row": done}))).unwrap();
+    let mut old = status_row("export", "in_flight", None, "done", "merged", 90000.0);
+    old["rule"] = json!(1);
+    tx.send(event("status.updated", json!({"row": old}))).unwrap();
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
+    h.get_by_label("IN FLIGHT (0) · 1 done today");
+    // No gestures on a done row.
+    h.key_press(egui::Key::L);
+    h.run_steps(1);
+    assert!(h.state().state.home.labeling.is_none());
+}
+
+#[test]
+fn since_you_looked_fetches_the_timeline_and_marks_the_item_seen() {
+    let (app, tx) = engine_home(I4);
+    let mut h = harness(app);
+    let now = crate::app::unix_now();
+    let calls = fake_engine(&h, move |m, p| match m {
+        "status_timeline" => Some(json!({"key": p["key"], "since": now - 3600.0, "seen_at": now - 3600.0, "entries": [
+            {"at": now - 1800.0, "kind": "commit", "actor": "engine", "text": "try fixed backoff", "ref": "abc123"},
+            {"at": now - 1200.0, "kind": "ci", "actor": "engine", "text": "CI red"}]})),
+        _ => None,
+    });
+    h.run_steps(2);
+    let mut row = status_row("billing", "in_flight", None, "agent", "Edit", 60.0);
+    (row["seen_at"], row["last_event_at"]) = (json!(now - 3600.0), json!(now - 1200.0));
+    let mut quiet = status_row("export", "in_flight", None, "agent", "Read", 30.0);
+    (quiet["seen_at"], quiet["last_event_at"]) = (json!(now - 60.0), json!(now - 600.0));
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    tx.send(event("status.updated", json!({"row": quiet}))).unwrap();
+    h.run_steps(2);
+    let unseen = |h: &Harness<'static, App>| -> Vec<String> {
+        let s = &h.state().state;
+        s.home.lines.values().filter(|l| l.unseen(s.look_from)).map(|l| l.name.clone()).collect()
+    };
+    assert_eq!(unseen(&h), ["billing"], "the engine's per-item marks, not the client's last look");
+    h.state_mut().state.home.selected = Some("repo:billing".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "status_timeline"), [json!({"key": "repo:billing"})]);
+    let seen = calls_of(&calls, "status_seen");
+    assert_eq!((seen.len(), &seen[0]["key"]), (1, &json!("repo:billing")));
+    h.get_by_label("Since you looked");
+    h.get_by_label("30m ago  commit  try fixed backoff");
+    h.get_by_label("20m ago  ci  CI red");
+    assert!(unseen(&h).is_empty());
+    // A new fact while it is open joins the list.
+    tx.send(event(
+        "status.timeline",
+        json!({"key": "repo:billing", "entry": {"at": now, "kind": "decision", "actor": "agent:a2", "text": "asked: retries?", "ref": "d1"}}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    h.get_by_label("<1m ago  decision  asked: retries? · agent:a2");
+    // Shift+M: all seen, in the engine too (no key).
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::M);
+    h.run_steps(1);
+    let all = calls_of(&calls, "status_seen").pop().unwrap();
+    assert!(all.get("key").is_none() && all["at"].as_f64().is_some(), "{all}");
+}
+
+#[test]
+fn first_responder_is_hidden_without_its_feature() {
+    let (app, tx) = engine_home(I4);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |_, _| None);
+    h.run_steps(2);
+    let mut row = status_row("billing", "in_flight", None, "agent", "Edit", 60.0);
+    row["holder"] = json!("orchestrator");
+    let mut d = brief("d1", "billing", true);
+    (d["answered_by"], d["revertible"], d["state"]) = (json!("orchestrator"), json!(true), json!("answered"));
+    d["answer"] = json!({"choice": "B", "reason": "fixed is enough here"});
+    d["closed_at"] = json!(crate::app::unix_now() - 60.0);
+    tx.send(event("decision.created", json!({"decision": d}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.state_mut().state.status_counts.auto_actions = Some(3);
+    h.state_mut().state.presence =
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into(), since: None });
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
+    h.run_steps(2);
+    for hidden in ["You are", "looking", "Auto-delegation ▾", "Revert…  (U)"] {
+        assert!(h.query_by_label(hidden).is_none(), "{hidden}");
+    }
+    assert!(h.query_by_label_contains("decided by orchestrator").is_none());
+    assert!(h.query_by_label_contains("orchestrator today").is_none());
+    assert!(h.state().state.home.reverting.is_none());
+    assert!(!h.state_mut().state.user_input(crate::app::unix_now()));
+    let called: Vec<String> = calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect();
+    for m in ["presence_report", "presence_set", "decision_revert", "inbox_config_get"] {
+        assert!(!called.iter().any(|c| c == m), "{m} called: {called:?}");
+    }
+}
+
+#[test]
+fn presence_is_reported_at_most_once_a_minute() {
+    let (app, _tx) = engine_home(&["status", "actionables", "gestures", "first_responder"]);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |_, _| None);
+    let s = &mut h.state_mut().state;
+    assert!(s.user_input(1000.4));
+    assert!(!s.user_input(1030.0));
+    assert!(!s.user_input(1060.3));
+    assert!(s.user_input(1060.4));
+    assert_eq!(calls_of(&calls, "presence_report"), [json!({"input_at": 1000}), json!({"input_at": 1060})]);
+    // Real input reaches it through the frame (a key press is activity).
+    h.state_mut().state.presence_reported = f64::NEG_INFINITY;
+    h.run_steps(1);
+    h.key_press(egui::Key::J);
+    h.run_steps(1);
+    assert_eq!(calls_of(&calls, "presence_report").len(), 3);
+}
+
+#[test]
+fn first_responder_presence_looking_decided_revert_and_counts() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(&["status", "actionables", "claims", "gestures", "decisions", "first_responder"]);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "presence_set" => Some(json!({"presence": {"mode": p["mode"], "effective": "present"}})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.state_mut().state.status_counts.auto_actions = Some(4);
+    h.state_mut().state.status_counts.auto_reverted = Some(1);
+    h.state_mut().state.presence =
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into(), since: None });
+    h.run_steps(2);
+    h.get_by_label("You are");
+    h.get_by_label("· counted as away");
+    h.get_by_label("orchestrator today: 4 actions · 1 reverted");
+    h.get_by_label("present").click();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "presence_set"), [json!({"mode": "present"})]);
+    assert_eq!(h.state().state.presence.as_ref().unwrap().effective, "present");
+    // A routed question: "orchestrator · looking".
+    let mut looking = inbox_row("search", "round", "Question:/r/repo-search/a3", "answer");
+    looking["holder"] = json!("orchestrator");
+    looking["zone"] = json!("in_flight");
+    looking["level"] = json!(null);
+    tx.send(event("status.updated", json!({"row": looking}))).unwrap();
+    // The orchestrator answered a brief on billing, revertible.
+    let mut d = brief("d1", "billing", true);
+    (d["answered_by"], d["revertible"], d["state"]) = (json!("orchestrator"), json!(true), json!("answered"));
+    d["answer"] = json!({"choice": "B", "reason": "fixed is enough here"});
+    d["closed_at"] = json!(crate::app::unix_now() - 60.0);
+    tx.send(event("decision.answered", json!({"decision": d}))).unwrap();
+    tx.send(event("status.updated", json!({"row": status_row("billing", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Flight), ["billing", "search"]);
+    h.get_by_label("looking");
+    h.get_by_label("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here");
+    // Shift+U: Revert, with an optional comment for the agent.
+    h.state_mut().state.home.selected = Some("repo:billing".into());
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
+    h.run_steps(2);
+    h.event(egui::Event::Text("use A, outages matter".into()));
+    h.run_steps(1);
+    h.get_by_label("Revert").click();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_revert"), [json!({"id": "d1", "comment": "use A, outages matter"})]);
+    assert!(h.state().state.toasts.iter().any(|t| t.text == "Reverted: the agent is told."));
+    h.get_by_label("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here (final)");
+    assert!(h.query_by_label("Revert…  (U)").is_none(), "reverted once");
+}
+
+#[test]
+fn auto_delegation_is_set_per_repo_from_the_settings_menu() {
+    let (app, tx) = engine_home(&["status", "actionables", "gestures", "first_responder"]);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, _| match m {
+        "inbox_config_get" => Some(json!({"repo": "repo", "auto_delegate": ["conflict_with_base"],
+                                          "auto_delegate_target": "owner"})),
+        _ => None,
+    });
+    tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(2);
+    h.get_by_label("Auto-delegation ▾").click();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "inbox_config_get"), [json!({"repo": "repo"})]);
+    h.get_by_label("CI red (needs CI tracking, inactive)");
+    h.get_by_label("Agent died").click();
+    h.run_steps(2);
+    h.get_by_label("the orchestrator").click();
+    h.run_steps(2);
+    let sets = calls_of(&calls, "inbox_config_set");
+    assert_eq!(
+        sets,
+        [
+            json!({"repo": "repo", "auto_delegate": ["conflict_with_base", "agent_dead"], "auto_delegate_target": "owner"}),
+            json!({"repo": "repo", "auto_delegate": ["conflict_with_base", "agent_dead"],
+                   "auto_delegate_target": "orchestrator"}),
+        ]
+    );
+}
+
 #[test]
 fn a_restart_is_offered_only_when_the_app_could_be_rebuilt() {
     use crate::lifecycle::{ApplyResult, RestartWanted, Sheet, restart_after};
@@ -2996,4 +3395,156 @@ fn an_app_behind_the_checkout_is_rebuilt_before_its_restart() {
     step_until(&mut h, "the rebuild", |a| matches!(a.state.life.sheet, Some(Sheet::Restart { .. })));
     assert_eq!(h.state().state.life.sheet, Some(Sheet::Restart { engine: false, restore: true, after_update: true }));
     assert_eq!(h.state().state.life.info.as_ref().unwrap().app_behind, Some(false));
+}
+
+/// Home with I4's zones and gestures, in dark and light, from neutral demo
+/// data, for docs/design/desktop-screenshots/i4c-home-*.png.
+#[test]
+fn home_i4c_screenshots() {
+    let now = crate::app::unix_now();
+    let w = |b: &str| format!("/home/dev/shop-{b}");
+    let (tx, rx) = mpsc::channel();
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/home/dev/shop".into(), env, tx.clone(), egui::Context::default());
+    let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.capabilities = Some(
+        ["status", "actionables", "claims", "gestures", "decisions", "first_responder"]
+            .iter()
+            .map(|c| c.to_string())
+            .collect(),
+    );
+    state.look_from = now - 1800.0;
+    state.presence =
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "present".into(), since: None });
+    let branches = [
+        "cart-discount",
+        "billing-retries",
+        "api-pagination",
+        "search-filters",
+        "invoice-pdf",
+        "payments-hook",
+        "order-export",
+        "stock-sync",
+        "docs-index",
+    ];
+    let trees: Vec<_> = std::iter::once(worktree("/home/dev/shop", "main", vec![]))
+        .chain(branches.iter().map(|b| worktree(&w(b), b, vec![])))
+        .collect();
+    let seed: SidebarState = serde_json::from_value(json!({
+        "worktrees": trees, "orchestrator": {"agents": [agent("", "Orchestrator", "waiting", "so")]},
+        "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+    }))
+    .unwrap();
+    tx.send(Msg::Link(Link::Connected)).unwrap();
+    tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+    let row = |b: &str, zone: &str, level: Option<&str>, ball: &str, st: &str, ago: f64, pr: Option<u64>| {
+        let mut r = status_row(b, zone, level, ball, st, ago);
+        r["key"] = json!(format!("shop:{b}"));
+        r["repo"] = json!("shop");
+        r["worktree_path"] = json!(w(b));
+        (r["seen_at"], r["last_event_at"]) = (json!(now - 1800.0), json!(now - ago.min(3600.0) * 2.0));
+        if let Some(n) = pr {
+            r["pr"] = json!({"number": n, "state": "OPEN", "review": "REVIEW_REQUIRED", "ci": "green", "mergeable": "MERGEABLE"});
+            r["urls"] = json!([format!("https://example.com/shop/pull/{n}")]);
+        }
+        r
+    };
+    let mut d1 = brief("d1", "billing-retries", true);
+    (d1["key"], d1["worktree_path"]) = (json!("shop:billing-retries"), json!(w("billing-retries")));
+    let mut i1 = brief_item("d1", "billing-retries", "deep", true);
+    (i1["work_item"], i1["worktree_path"]) = (json!("shop:billing-retries"), json!(w("billing-retries")));
+    let mut billing = row("billing-retries", "inbox", Some("deep"), "you", "decide: retries", 720.0, Some(15));
+    billing["needs_you"] = json!({"count": 1, "top": "Decision:d1"});
+    let review = json!({"id": format!("review:{}", w("api-pagination")), "occurrence": "r@1", "kind": "review",
+        "level": "deep", "title": "Changes requested", "label": "PR #21", "detail": "2 comments",
+        "state": "changes requested by a reviewer", "work_item": "shop:api-pagination",
+        "worktree_path": w("api-pagination"), "agent_id": null, "pr": null, "job_id": null, "exit_code": null,
+        "blocks_agent": false, "priority": "medium", "since": now - 5400.0, "park": null, "class": "deep"});
+    let mut api =
+        row("api-pagination", "inbox", Some("deep"), "you", "changes requested by a reviewer", 5400.0, Some(21));
+    api["needs_you"] = json!({"count": 1, "top": format!("review:{}", w("api-pagination"))});
+    let approval = json!({"id": format!("approval:{}", w("cart-discount")), "occurrence": "a@1", "kind": "approval",
+        "level": "now", "title": "Needs approval", "label": "Agent a1", "detail": "npm test", "state": "approve: npm test",
+        "work_item": "shop:cart-discount", "worktree_path": w("cart-discount"), "agent_id": "a1", "pr": null,
+        "job_id": null, "exit_code": null, "blocks_agent": true, "priority": "medium", "since": now - 120.0, "park": null});
+    let mut cart = row("cart-discount", "inbox", Some("now"), "you", "approve: npm test", 120.0, None);
+    cart["needs_you"] = json!({"count": 1, "top": format!("approval:{}", w("cart-discount"))});
+    let mut docs = row("docs-index", "inbox", Some("round"), "you", "merge: approved, CI green", 3600.0, Some(14));
+    docs["rule"] = json!(4);
+    let mut qa = row("invoice-pdf", "in_flight", None, "others", "CI running", 2400.0, Some(16));
+    qa["gesture"] = json!({"kind": "label", "at": now - 7200.0, "by": "user", "ball": "others", "text": "QA"});
+    let mut looking = row("search-filters", "in_flight", None, "agent", "answer", 180.0, None);
+    looking["holder"] = json!("orchestrator");
+    let mut d2 = brief("d2", "payments-hook", true);
+    (d2["key"], d2["worktree_path"]) = (json!("shop:payments-hook"), json!(w("payments-hook")));
+    (d2["answered_by"], d2["revertible"], d2["state"]) = (json!("orchestrator"), json!(true), json!("answered"));
+    d2["answer"] = json!({"choice": "A", "reason": "outages matter more than latency here"});
+    d2["closed_at"] = json!(now - 900.0);
+    let payments = row("payments-hook", "in_flight", None, "agent", "Edit src/payments/retry.py", 900.0, None);
+    let mut parked = row("order-export", "in_flight", None, "others", "parked until CI ends", 4000.0, Some(12));
+    parked["gesture"] = json!({"kind": "park", "at": now - 4000.0, "by": "user", "until": "ci_done"});
+    let mut merged = row("stock-sync", "in_flight", None, "done", "merged", 7200.0, Some(9));
+    merged["rule"] = json!(1);
+    let events = vec![
+        event("decision.created", json!({"decision": d1})),
+        event("decision.answered", json!({"decision": d2})),
+        event("actionable.created", json!({"item": i1})),
+        event("actionable.created", json!({"item": review})),
+        event("actionable.created", json!({"item": approval})),
+        event("status.updated", json!({"row": cart})),
+        event("status.updated", json!({"row": docs})),
+        event("status.updated", json!({"row": billing})),
+        event("status.updated", json!({"row": api})),
+        event("status.updated", json!({"row": qa})),
+        event("status.updated", json!({"row": looking})),
+        event("status.updated", json!({"row": payments})),
+        event("status.updated", json!({"row": parked})),
+        event("status.updated", json!({"row": merged})),
+    ];
+    let mut h = Harness::builder()
+        .with_size([1400.0, 960.0])
+        .wgpu()
+        .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+    h.run_steps(2);
+    let calls = fake_engine(&h, move |m, p| match m {
+        "status_timeline" => Some(json!({"key": p["key"], "since": now - 1800.0, "seen_at": now - 1800.0, "entries": [
+            {"at": now - 1500.0, "kind": "commit", "actor": "engine", "text": "try fixed backoff", "ref": "abc123"},
+            {"at": now - 1100.0, "kind": "ci", "actor": "engine", "text": "CI red"},
+            {"at": now - 720.0, "kind": "decision", "actor": "agent:a2", "text": "asked: Retries: fixed or exponential backoff?", "ref": "d1"}]})),
+        _ => None,
+    });
+    for e in events {
+        tx.send(e).unwrap();
+    }
+    h.run_steps(3);
+    h.state_mut().state.inbox_loaded = 3;
+    h.state_mut().state.inbox_gen += 1;
+    h.state_mut().state.status_counts.deep_max = 5;
+    h.state_mut().state.status_counts.auto_actions = Some(3);
+    h.state_mut().state.status_counts.auto_reverted = Some(0);
+    h.run_steps(2);
+    h.state_mut().state.home.selected = Some("shop:billing-retries".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert_eq!(calls_of(&calls, "status_timeline").len(), 1);
+    h.state_mut().state.toasts.clear();
+    h.run_steps(2);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    assert_eq!(h.state().state.home.count(crate::home::Zone::Deep), 2);
+    if !shot(&mut h, "i4c-home-dark") {
+        return;
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().state.toggle_theme(&ctx);
+    h.run_steps(4);
+    shot(&mut h, "i4c-home-light");
 }

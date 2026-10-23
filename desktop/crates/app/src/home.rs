@@ -14,10 +14,15 @@
 //! and left where it was until then. Between cut points nothing reorders:
 //! lines keep their places, new ones are added at the end of their zone, and
 //! only a cut sorts again.
+//!
+//! I4 adds a third inbox zone, **To sit down with** ([`Zone::Deep`]): items
+//! that need reading (briefs, changes requested, a finished branch). They
+//! show at once and stay outside the rounds; `deep_max` is shown, never
+//! enforced. Done rows (merged, closed by the user) stay 24 h, dimmed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lazyagent_proto::types::{Actionable, Claim, PrInfo, StatusRow};
+use lazyagent_proto::types::{Actionable, Claim, Decision, PrInfo, StatusRow};
 
 use crate::attention::{self, Kind};
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -25,12 +30,22 @@ use crate::store::{self, ORCHESTRATOR_KEY, Store};
 /// A Round is delivered at least this often (seconds).
 pub const ROUND_EVERY: f64 = 30.0 * 60.0;
 
+/// A done row (a tombstone) stays on Home this long, dimmed.
+pub const DONE_FOR: f64 = 86400.0;
+
+/// An orchestrator's decision shows on its row this long.
+pub const DECIDED_FOR: f64 = 86400.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Zone {
     Now,
     Round,
+    /// To sit down with (level `deep`).
+    Deep,
     Flight,
 }
+
+pub const ZONES: [Zone; 4] = [Zone::Now, Zone::Round, Zone::Deep, Zone::Flight];
 
 /// An inbox item, as a line shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +57,16 @@ pub struct Top {
     pub detail: String,
     pub pr_url: Option<String>,
     pub since: f64,
+    /// A `decision` item's brief.
+    pub decision_id: Option<String>,
+}
+
+impl Top {
+    /// A brief that failed validation: a quick "agent a2 asks: …", answered
+    /// in the agent's terminal.
+    pub fn asks(&self, decisions: Option<&Decision>) -> bool {
+        self.kind == "decision" && decisions.map(|d| !d.valid).unwrap_or(self.detail == "open terminal")
+    }
 }
 
 /// One line of Home: a work item, or an item that has none (the
@@ -64,9 +89,37 @@ pub struct Line {
     pub url: Option<String>,
     pub row: Option<StatusRow>,
     pub claim: Option<Claim>,
+    /// The top item's brief, when the client has it.
+    pub brief: Option<Decision>,
+    /// The orchestrator's latest decision on this work item (first responder).
+    pub decided: Option<Decision>,
 }
 
 impl Line {
+    /// The user's gesture on the row: `label`, `park` or `close`.
+    pub fn gesture(&self) -> Option<&serde_json::Value> {
+        self.row.as_ref().and_then(|r| r.gesture.as_ref())
+    }
+
+    /// A done row (merged, closed): shown dimmed for a day.
+    pub fn done(&self) -> bool {
+        self.ball == "done"
+    }
+
+    /// A routed question the orchestrator is on (first responder).
+    pub fn looking(&self) -> bool {
+        self.row.as_ref().and_then(|r| r.holder.as_deref()) == Some("orchestrator")
+    }
+
+    /// Something happened since the last look: the engine's per-item seen
+    /// mark when it keeps them, else the client's own last look.
+    pub fn unseen(&self, look: f64) -> bool {
+        match self.row.as_ref().and_then(|r| r.last_event_at) {
+            Some(last) => last > self.row.as_ref().and_then(|r| r.seen_at).unwrap_or(0.0),
+            None => self.changed_at > look,
+        }
+    }
+
     /// The one-word action an inbox line asks for.
     pub fn verb(&self) -> &'static str {
         let Some(top) = &self.top else {
@@ -84,6 +137,9 @@ impl Line {
             "job" => "Job",
             "delegation" => "Decide",
             "tracker_status" => "Tracker",
+            "decision" if top.asks(self.brief.as_ref()) => "Answer",
+            "decision" => "Decide",
+            "report" => "Read",
             _ => "Look",
         }
     }
@@ -100,6 +156,7 @@ impl Line {
 fn level_zone(level: Option<&str>) -> Zone {
     match level {
         Some("now") => Zone::Now,
+        Some("deep") => Zone::Deep,
         Some(_) => Zone::Round,
         None => Zone::Flight,
     }
@@ -117,7 +174,18 @@ fn top_of(item: &Actionable) -> Top {
             (item.kind == "tracker_status" && item.detail.starts_with("http")).then(|| item.detail.clone())
         }),
         since: item.since,
+        decision_id: item.decision_id.clone(),
     }
+}
+
+/// The orchestrator's latest decision on `key`, within [`DECIDED_FOR`].
+fn decided_on(decisions: &BTreeMap<String, Decision>, key: &str, now: f64) -> Option<Decision> {
+    decisions
+        .values()
+        .filter(|d| d.key == key && d.answered_by.as_deref() == Some("orchestrator"))
+        .filter(|d| now - d.closed_at.unwrap_or(d.created_at) < DECIDED_FOR)
+        .max_by(|a, b| a.closed_at.unwrap_or(a.created_at).total_cmp(&b.closed_at.unwrap_or(b.created_at)))
+        .cloned()
 }
 
 /// `branch #12`, the way the engine's table names an item.
@@ -130,31 +198,45 @@ pub fn row_name(row: &StatusRow) -> String {
     name
 }
 
-/// The lines of an engine with the `status` and `actionables` features.
-pub fn engine_lines(rows: &BTreeMap<String, StatusRow>, items: &BTreeMap<String, Actionable>) -> Vec<Line> {
+/// The lines of an engine with the `status` and `actionables` features
+/// (and, from I4, the briefs it holds).
+pub fn engine_lines(
+    rows: &BTreeMap<String, StatusRow>,
+    items: &BTreeMap<String, Actionable>,
+    decisions: &BTreeMap<String, Decision>,
+    now: f64,
+) -> Vec<Line> {
     let mut out = vec![];
     for row in rows.values() {
-        if row.stale || row.ball == "done" {
+        if row.stale || (row.ball == "done" && now - row.changed_at >= DONE_FOR) {
             continue;
         }
         let zone = if row.zone == "inbox" { level_zone(row.level.as_deref()) } else { Zone::Flight };
         let top = row.needs_you.as_ref().and_then(|n| items.get(&n.top)).map(top_of);
         let count = row.needs_you.as_ref().map(|n| n.count).unwrap_or(0);
+        // A label is the user's word next to the fact: "QA · CI running".
+        let label = row.gesture.as_ref().filter(|g| g["kind"] == "label").and_then(|g| g["text"].as_str());
+        let state = match label {
+            Some(text) if !text.is_empty() => format!("{text} · {}", row.state),
+            _ => row.state.clone(),
+        };
         out.push(Line {
             key: row.key.clone(),
             name: row_name(row),
             place: row.worktree_path.clone(),
             zone,
             ball: row.ball.clone(),
-            state: row.state.clone(),
+            state,
             priority: row.priority.clone(),
             blocks_agent: row.blocks_agent,
             changed_at: row.changed_at,
             more: count.saturating_sub(1),
             url: row.urls.first().cloned().or_else(|| top.as_ref().and_then(|t| t.pr_url.clone())),
+            brief: top.as_ref().and_then(|t| t.decision_id.as_ref()).and_then(|id| decisions.get(id)).cloned(),
             top,
             row: Some(row.clone()),
             claim: row.claim.clone(),
+            decided: decided_on(decisions, &row.key, now),
         });
     }
     out.extend(loose_lines(items.values().filter(|i| i.work_item.is_none()).map(|i| Loose {
@@ -213,6 +295,8 @@ fn loose_lines(items: impl Iterator<Item = Loose>) -> Vec<Line> {
                 top: Some(top),
                 row: None,
                 claim: None,
+                brief: None,
+                decided: None,
             }
         })
         .collect()
@@ -261,6 +345,7 @@ pub fn fallback_lines(
         detail: i.detail.clone(),
         pr_url: i.pr.as_ref().and_then(|p| p.url.clone()),
         since: i.since,
+        decision_id: None,
     };
     let mut by_place: HashMap<&str, Vec<&attention::Item>> = HashMap::new();
     for i in items {
@@ -323,6 +408,8 @@ pub fn fallback_lines(
             url: pr.and_then(|p| p.url.clone()),
             row: None,
             claim: None,
+            brief: None,
+            decided: None,
         });
     }
     changed.retain(|k, _| keys.contains(k));
@@ -379,7 +466,7 @@ pub fn cmp(a: &Line, b: &Line) -> std::cmp::Ordering {
 #[derive(Debug, Default)]
 pub struct Home {
     pub lines: HashMap<String, Line>,
-    order: [Vec<String>; 3],
+    order: [Vec<String>; 4],
     /// The Round as delivered at the last cut point.
     delivered: HashSet<String>,
     pub round_at: f64,
@@ -389,6 +476,14 @@ pub struct Home {
     pub expanded: Option<String>,
     /// The park choices are open on this line.
     pub parking: Option<String>,
+    /// The close choices (done / dropped) are open on this line.
+    pub closing: Option<String>,
+    /// The label form is open on this line.
+    pub labeling: Option<Label>,
+    /// The revert form (an optional comment) is open on this line.
+    pub reverting: Option<(String, String)>,
+    /// Give the form just opened (label, revert) the keyboard once.
+    pub focus_form: bool,
     /// The first complete lines came: from then on, nothing reorders
     /// between cut points (before, every update is a cut).
     pub ready: bool,
@@ -400,7 +495,7 @@ impl Home {
         match line.zone {
             Zone::Round if self.delivered.contains(&line.key) => Zone::Round,
             Zone::Round => match before {
-                Some(Zone::Round) | None | Some(Zone::Now) => Zone::Flight,
+                Some(Zone::Round) | None | Some(Zone::Now) | Some(Zone::Deep) => Zone::Flight,
                 Some(z) => z,
             },
             z => z,
@@ -408,7 +503,7 @@ impl Home {
     }
 
     fn zone_of(&self, key: &str) -> Option<Zone> {
-        [Zone::Now, Zone::Round, Zone::Flight].into_iter().find(|z| self.order[*z as usize].iter().any(|k| k == key))
+        ZONES.into_iter().find(|z| self.order[*z as usize].iter().any(|k| k == key))
     }
 
     /// Takes the latest lines; nothing already shown moves but a Now line,
@@ -419,7 +514,7 @@ impl Home {
             self.cut(now);
             return;
         }
-        for z in 0..3 {
+        for z in 0..ZONES.len() {
             let lines = &self.lines;
             let before = self.order[z].len();
             self.order[z].retain(|k| lines.contains_key(k));
@@ -487,6 +582,7 @@ impl Home {
     pub fn visible(&self, folded: bool) -> Vec<&Line> {
         let mut v = self.shown_in(Zone::Now);
         v.extend(self.shown_in(Zone::Round));
+        v.extend(self.shown_in(Zone::Deep));
         if !folded {
             v.extend(self.shown_in(Zone::Flight));
         }
@@ -495,8 +591,11 @@ impl Home {
 
     /// Now and Round as the engine counts them (for the badges).
     pub fn counts(&self) -> (usize, usize) {
-        let n = |z| self.lines.values().filter(|l| l.zone == z).count();
-        (n(Zone::Now), n(Zone::Round))
+        (self.count(Zone::Now), self.count(Zone::Round))
+    }
+
+    pub fn count(&self, zone: Zone) -> usize {
+        self.lines.values().filter(|l| l.zone == zone).count()
     }
 
     pub fn select_next(&mut self, delta: i32, folded: bool) {
@@ -522,6 +621,17 @@ impl Home {
         line
     }
 }
+
+/// The label form: a ball and a short text (at most [`LABEL_CHARS`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Label {
+    pub key: String,
+    pub ball: String,
+    pub text: String,
+}
+
+pub const LABEL_CHARS: usize = 40;
+pub const LABEL_BALLS: [&str; 3] = ["others", "agent", "stalled"];
 
 /// `<1m`, `4m`, `2h`, `3d`: never `0s` (the engine's `format_age`).
 pub fn age(seconds: f64) -> String {
@@ -554,7 +664,12 @@ mod tests {
     }
 
     fn lines(rows: &[StatusRow]) -> Vec<Line> {
-        engine_lines(&rows.iter().map(|r| (r.key.clone(), r.clone())).collect(), &BTreeMap::new())
+        engine_lines(
+            &rows.iter().map(|r| (r.key.clone(), r.clone())).collect(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            0.0,
+        )
     }
 
     fn keys(h: &Home, z: Zone) -> Vec<String> {
@@ -623,10 +738,85 @@ mod tests {
             ("Approval:__orchestrator__/".into(), None, Some(ORCHESTRATOR_KEY.into()));
         let rows = BTreeMap::from([(r.key.clone(), r)]);
         let items = BTreeMap::from([(item.id.clone(), item), (orch.id.clone(), orch)]);
-        let got = engine_lines(&rows, &items);
+        let got = engine_lines(&rows, &items, &BTreeMap::new(), 0.0);
         assert_eq!(got.len(), 2, "the work item once, the orchestrator's dialog on its own line");
         assert_eq!((got[0].more, got[0].verb(), got[0].agent().as_deref()), (2, "Approve", Some("a1")));
         assert_eq!((got[1].name.as_str(), got[1].zone), ("orchestrator", Zone::Now));
+    }
+
+    fn decision(id: &str, key: &str, valid: bool) -> Decision {
+        serde_json::from_value(json!({
+            "id": id, "key": key, "worktree_path": "/w", "agent": "a2", "holder": "user", "replaces": null,
+            "state": "open", "valid": valid, "class": if valid { "deep" } else { "quick" }, "blocking": false,
+            "brief": {"question": "Retries?", "options": [{"key": "A", "label": "Exponential"}, {"key": "B", "label": "Fixed"}],
+                      "recommendation": "A", "tried": "", "evidence": [], "reversible": "yes", "impact_if_wrong": ""},
+            "invalid": [], "problems": [], "sha": null, "created_at": 100.0, "closed_at": null, "answer": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deep_lines_show_at_once_and_stay_outside_the_rounds() {
+        let mut h = Home::default();
+        let mut rows = vec![row("a", "in_flight", None, "agent", 1.0)];
+        h.update(lines(&rows), 100.0);
+        h.ready = true;
+        rows[0] = row("a", "inbox", Some("deep"), "you", 101.0);
+        rows.push(row("b", "inbox", Some("round"), "you", 101.0));
+        h.update(lines(&rows), 102.0);
+        assert_eq!(keys(&h, Zone::Deep), ["a"], "no cut point needed");
+        assert_eq!(h.waiting(), 1, "only the Round line waits");
+        assert_eq!((h.count(Zone::Deep), h.counts()), (1, (0, 1)));
+        assert_eq!(h.visible(true).len(), 1, "folding hides only the in-flight list");
+        h.cut(200.0);
+        assert_eq!((keys(&h, Zone::Round), keys(&h, Zone::Deep)), (vec!["b".to_string()], vec!["a".to_string()]));
+    }
+
+    #[test]
+    fn labels_read_text_then_fact_and_done_rows_stay_a_day() {
+        let mut r = row("cart", "in_flight", None, "others", 1.0);
+        r.state = "CI running".into();
+        r.gesture = Some(json!({"kind": "label", "at": 1.0, "by": "user", "ball": "others", "text": "QA"}));
+        let mut done = row("old", "in_flight", None, "done", 1000.0);
+        done.state = "merged".into();
+        let rows: BTreeMap<_, _> = [r, done].into_iter().map(|r| (r.key.clone(), r)).collect();
+        let got = engine_lines(&rows, &BTreeMap::new(), &BTreeMap::new(), 1000.0 + DONE_FOR - 1.0);
+        assert_eq!(got.iter().map(|l| l.state.as_str()).collect::<Vec<_>>(), ["QA · CI running", "merged"]);
+        assert!(got[1].done() && !got[0].done());
+        let got = engine_lines(&rows, &BTreeMap::new(), &BTreeMap::new(), 1000.0 + DONE_FOR);
+        assert_eq!(got.len(), 1, "a tombstone leaves after 24 h");
+    }
+
+    #[test]
+    fn a_brief_decides_its_verb_and_the_orchestrators_decision_finds_its_row() {
+        let mut r = row("hook", "inbox", Some("deep"), "you", 1.0);
+        r.needs_you = Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Decision:d1".into() });
+        let item: Actionable = serde_json::from_value(json!({
+            "id": "Decision:d1", "occurrence": "d1@1", "kind": "decision", "level": "deep", "title": "Decide",
+            "label": "Retries?", "detail": "brief by agent a2", "state": "decide: Retries?", "work_item": "shop:hook",
+            "worktree_path": "/w", "agent_id": "a2", "pr": null, "job_id": null, "exit_code": null,
+            "blocks_agent": false, "priority": "medium", "since": 1.0, "park": null, "decision_id": "d1"
+        }))
+        .unwrap();
+        let rows = BTreeMap::from([(r.key.clone(), r)]);
+        let items = BTreeMap::from([(item.id.clone(), item)]);
+        let mut ds = BTreeMap::from([("d1".to_string(), decision("d1", "shop:hook", true))]);
+        let l = &engine_lines(&rows, &items, &ds, 200.0)[0];
+        assert_eq!((l.verb(), l.zone, l.brief.as_ref().map(|d| d.id.as_str())), ("Decide", Zone::Deep, Some("d1")));
+        ds.insert("d1".into(), decision("d1", "shop:hook", false));
+        assert_eq!(engine_lines(&rows, &items, &ds, 200.0)[0].verb(), "Answer");
+        // Not loaded yet: the item's own detail says it is a quick one.
+        let mut quick = items.clone();
+        quick.get_mut("Decision:d1").unwrap().detail = "open terminal".into();
+        assert_eq!(engine_lines(&rows, &quick, &BTreeMap::new(), 200.0)[0].verb(), "Answer");
+        // The orchestrator answered d2 an hour ago; the user's d1 is not its.
+        let mut d2 = decision("d2", "shop:hook", true);
+        (d2.answered_by, d2.state, d2.closed_at) = (Some("orchestrator".into()), "answered".into(), Some(3600.0));
+        d2.answer = Some(json!({"choice": "B", "reason": "fixed is enough here"}));
+        ds.insert("d2".into(), d2);
+        let l = &engine_lines(&rows, &items, &ds, 7200.0)[0];
+        assert_eq!(l.decided.as_ref().map(|d| d.id.as_str()), Some("d2"));
+        assert!(engine_lines(&rows, &items, &ds, 3600.0 + DECIDED_FOR)[0].decided.is_none(), "a day later");
     }
 
     #[test]
