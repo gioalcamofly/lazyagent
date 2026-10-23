@@ -69,7 +69,7 @@ from lazyagent.engine.manifest import (
     clip_instruction,
     manifest_path,
 )
-from lazyagent.engine.actionables import ActionableQueue, actionables_path
+from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
 from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
     ADOPTED,
@@ -268,6 +268,7 @@ class Engine:
         # Work items (proposal 0013): kept current from the events above,
         # with the inbox queue they read.
         self.actionables = ActionableQueue(self)
+        self.actionables.add_detector(lambda snap: tracker_items(self.trackers, snap))
         self.status = StatusProjection(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()

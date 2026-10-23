@@ -101,15 +101,39 @@ def test_a_returned_label_yields_a_round_item_and_leaving_clears_it():
         "tracker:github_issues:123:qa-returned"
     )
     assert listing(engine)["counts"]["round"] == 1
+    assert row["needs_you"] == {"count": 1, "top": "tracker:github_issues:123:qa-returned"}
+    [item] = engine.actionables.list()["items"]
+    assert (item["kind"], item["level"], item["state"], item["work_item"]) == (
+        "tracker_status", "round", "returned by QA", "repo:fix-123-login",
+    )
+    assert (item["label"], item["detail"]) == (
+        "Login fails", "https://github.com/acme/widgets/issues/123",
+    )
+    validation.validate_result("actionables_list", engine.actionables.list(), strict=True)
+
+    # Dismissed: it stays dismissed while the issue stays returned; the
+    # row keeps the fact, out of the inbox.
+    engine.actionables.mark(item["id"], "dismiss")
+    poll(engine, clock, 300)
+    row = rows(engine)["repo:fix-123-login"]
+    assert (row["zone"], row["needs_you"], row["tracker"]["status"]) == (
+        "in_flight", None, "qa-returned",
+    )
+    assert engine.actionables.list()["items"] == []
 
     gh.set(123, labels=["qa"])
     poll(engine, clock, 300)
     assert rows(engine)["repo:fix-123-login"]["ball"] == "others"
     assert not engine.trackers.items
 
+    # Entering again: a new occurrence, back in the inbox.
+    gh.set(123, labels=["qa-returned"])
+    poll(engine, clock, 300)
+    assert rows(engine)["repo:fix-123-login"]["level"] == "round"
+
 
 def test_engine_facts_win_the_ball_and_the_tracker_text_shows_beside():
-    gh = FakeGh(issue(123, labels=("qa-returned",)))
+    gh = FakeGh(issue(123, labels=("qa",)))
     engine, clock = _engine(gh)
     engine.registry.states.setdefault(FIX, {})["a1"] = AgentState(
         status=AgentStatus.RUNNING, agent_id="a1", detail="Bash"
@@ -132,7 +156,14 @@ def test_engine_facts_win_the_ball_and_the_tracker_text_shows_beside():
         "https://github.com/acme/widgets/issues/123",
     ]
     table = format_table(listing(engine), NOW)
-    assert "Bash · returned by QA" in table
+    assert "Bash · in QA" in table
+
+    # An inbox item is the queue's: it puts the row in the inbox even while
+    # the agent works.
+    gh.set(123, labels=["qa-returned"])
+    poll(engine, clock, 300)
+    row = rows(engine)["repo:fix-123-login"]
+    assert (row["ball"], row["level"], row["rule"]) == ("you", "round", 2)
 
 
 def test_unmapped_status_shows_raw_text_with_the_ball_unchanged():
@@ -254,3 +285,15 @@ def test_a_failing_adapter_never_breaks_the_rows():
     poll(engine, clock)
     assert rows(engine)["repo:ABC-1-x"]["ball"] == "stalled"
     assert "tracker" not in rows(engine)["repo:ABC-1-x"]
+
+
+def test_a_now_mapping_makes_a_now_item():
+    gh = FakeGh(issue(123, labels=("blocker",)))
+    engine, clock = _engine(gh)
+    [(_, config)] = [(f.adapter, f.config) for f in engine.trackers._feeds]
+    config.status["blocker"] = StatusRule("you", "blocks a release", "now")
+    poll(engine, clock)
+    [item] = engine.actionables.list()["items"]
+    assert (item["kind"], item["level"]) == ("tracker_status", "now")
+    row = rows(engine)["repo:fix-123-login"]
+    assert (row["level"], row["state"]) == ("now", "blocks a release")

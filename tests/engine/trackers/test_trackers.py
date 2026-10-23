@@ -201,31 +201,17 @@ class FakeAdapter:
         return [self.task(k) for k in self.assigned]
 
 
-class Sink:
-    def __init__(self) -> None:
-        self.log: list[tuple[str, str]] = []
-
-    def open(self, item) -> None:
-        self.log.append(("open", item.id))
-
-    def resolve(self, item_id) -> None:
-        self.log.append(("resolve", item_id))
-
-
 MAP = {
     "qa": StatusRule("others", "in QA"),
     "returned": StatusRule("you", "returned by QA", "round"),
 }
 
 
-def hub(**config) -> tuple[TrackerHub, FakeAdapter, Clock, Sink]:
+def hub(**config) -> tuple[TrackerHub, FakeAdapter, Clock]:
     adapter = FakeAdapter()
     clock = Clock()
     cfg = TrackerConfig("fake", True, status=dict(MAP), **config)
-    h = TrackerHub([(adapter, cfg)], clock=clock)
-    sink = Sink()
-    h.set_sink(sink)
-    return h, adapter, clock, sink
+    return TrackerHub([(adapter, cfg)], clock=clock), adapter, clock
 
 
 def run(coro):
@@ -233,7 +219,7 @@ def run(coro):
 
 
 def test_polls_linked_keys_batched_and_maps_them():
-    h, a, _, _ = hub()
+    h, a, _ = hub()
     a.statuses = {"1": "qa", "2": "weird"}
     assert run(h.poll(["fix-1", "feat-2", "main", "fix-1-again"]))
     assert a.fetched == [["1", "2"]]
@@ -247,7 +233,7 @@ def test_polls_linked_keys_batched_and_maps_them():
 
 
 def test_poll_s_at_rest_and_new_keys_at_once():
-    h, a, clock, _ = hub(poll_s=300)
+    h, a, clock = hub(poll_s=300)
     a.statuses = {"1": "qa", "2": "qa"}
     run(h.poll(["fix-1"]))
     clock.now += 60
@@ -262,7 +248,7 @@ def test_poll_s_at_rest_and_new_keys_at_once():
 
 
 def test_rate_cap_per_adapter():
-    h, a, clock, _ = hub(max_calls_per_min=2, assigned_to_me=False)
+    h, a, clock = hub(max_calls_per_min=2, assigned_to_me=False)
     for n in range(4):
         a.statuses[str(n)] = "qa"
         run(h.poll([f"fix-{k}" for k in range(n + 1)]))
@@ -273,7 +259,7 @@ def test_rate_cap_per_adapter():
 
 
 def test_errors_keep_the_last_good_value_and_mark_it_stale():
-    h, a, clock, _ = hub(poll_s=60, assigned_to_me=False)
+    h, a, clock = hub(poll_s=60, assigned_to_me=False)
     a.statuses = {"1": "qa"}
     run(h.poll(["fix-1"]))
     a.error = TrackerError("boom")
@@ -288,7 +274,7 @@ def test_errors_keep_the_last_good_value_and_mark_it_stale():
 
 
 def test_429_backs_off():
-    h, a, clock, _ = hub(poll_s=60, assigned_to_me=False)
+    h, a, clock = hub(poll_s=60, assigned_to_me=False)
     a.statuses = {"1": "qa"}
     a.error = RateLimited("slow down", retry_after=600)
     run(h.poll(["fix-1"]))
@@ -315,7 +301,7 @@ def test_429_backs_off():
 
 def test_a_slow_adapter_times_out(monkeypatch):
     monkeypatch.setattr(trackers_mod, "CALL_TIMEOUT", 0.01)
-    h, a, _, _ = hub(assigned_to_me=False)
+    h, a, _ = hub(assigned_to_me=False)
 
     async def slow(keys):
         await asyncio.sleep(1)
@@ -326,57 +312,40 @@ def test_a_slow_adapter_times_out(monkeypatch):
 
 
 def test_inbox_items_on_entering_a_level_status_and_resolved_on_leaving():
-    h, a, clock, sink = hub(poll_s=60, assigned_to_me=False)
-    a.statuses = {"1": "qa"}
-    run(h.poll(["fix-1"]))
-    assert sink.log == []
+    h, a, clock = hub(poll_s=60, assigned_to_me=False)
+    opened = []
 
-    a.statuses["1"] = "returned"
-    clock.now += 60
-    run(h.poll(["fix-1"]))
-    assert sink.log == [("open", "tracker:fake:1:returned")]
+    def step(statuses=None, branches=("fix-1",)):
+        if statuses is not None:
+            a.statuses = statuses
+        clock.now += 60
+        run(h.poll(list(branches)))
+        item = h.items.get(("fake", "1"))
+        opened.append(None if item is None else (item.id, item.since))
+
+    step({"1": "qa"})
+    step({"1": "returned"})
     item = h.items[("fake", "1")]
-    assert (item.level, item.state, item.since, item.url) == (
-        "round", "returned by QA", NOW + 60, "https://t/1",
-    )
+    assert item.id == "tracker:fake:1:returned"
+    assert (item.level, item.state, item.url) == ("round", "returned by QA", "https://t/1")
     assert h.fact("fix-1").level == "round"
 
-    # Still in it: no second item (edge, not level).
+    # Still in it: the same item (edge, not level).
     for _ in range(3):
-        clock.now += 60
-        run(h.poll(["fix-1"]))
-    assert len(sink.log) == 1
-
-    a.statuses["1"] = "qa"
-    clock.now += 60
-    run(h.poll(["fix-1"]))
-    assert sink.log[-1] == ("resolve", "tracker:fake:1:returned")
-    assert h.fact("fix-1").level is None and not h.items
-
-    # Entering again is a new edge.
-    a.statuses["1"] = "returned"
-    clock.now += 60
-    run(h.poll(["fix-1"]))
-    assert sink.log[-1] == ("open", "tracker:fake:1:returned")
-
-    # The branch goes away: its item too.
-    run(h.poll([]))
-    assert sink.log[-1] == ("resolve", "tracker:fake:1:returned")
+        step()
+    step({"1": "qa"})
+    assert h.fact("fix-1").level is None
+    # Entering again is a new edge; the branch going away resolves it.
+    step({"1": "returned"})
+    step(branches=())
+    entered = ("tracker:fake:1:returned", NOW + 120)
+    again = ("tracker:fake:1:returned", NOW + 420)
+    assert opened == [None, entered, entered, entered, entered, None, again, None]
     assert h.fact("fix-1") is None
 
 
-def test_a_sink_set_late_gets_the_open_items():
-    adapter = FakeAdapter()
-    adapter.statuses = {"1": "returned"}
-    h = TrackerHub([(adapter, TrackerConfig("fake", True, status=dict(MAP)))])
-    run(h.poll(["fix-1"]))
-    sink = Sink()
-    h.set_sink(sink)
-    assert sink.log == [("open", "tracker:fake:1:returned")]
-
-
 def test_not_started_counts_assigned_tasks_with_no_branch():
-    h, a, _, _ = hub()
+    h, a, _ = hub()
     a.assigned = ["1", "2", "3"]
     run(h.poll(["fix-1"]))
     assert h.not_started(["fix-1"]) == 2
@@ -384,7 +353,7 @@ def test_not_started_counts_assigned_tasks_with_no_branch():
 
 
 def test_assigned_to_me_is_optional():
-    h, a, clock, _ = hub()
+    h, a, clock = hub()
     a.assigned_error = NotImplementedError()
     run(h.poll(["fix-1"]))
     clock.now += 1000

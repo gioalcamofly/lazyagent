@@ -12,7 +12,7 @@ calls per minute, backing off on 429; on an error the last good value is
 kept (and marked stale). It maps each task's raw status to ``{ball, state,
 level}`` and opens an inbox item when a task *enters* a status mapped with a
 ``level`` (dedupe ``tracker:<adapter>:<key>:<status>``), resolving it when
-the task leaves.
+the task leaves; the inbox queue shows them (``tracker_status``).
 
 Config: ``$XDG_CONFIG_HOME/lazyagent/trackers.toml``, one table per adapter;
 a repo's ``.lazyagent/trackers.toml`` may change only the ``[<adapter>.status]``
@@ -318,14 +318,6 @@ class TrackerItem:
     since: float
 
 
-class InboxSink(Protocol):
-    """Where tracker items go (the engine's inbox queue)."""
-
-    def open(self, item: TrackerItem) -> None: ...
-
-    def resolve(self, item_id: str) -> None: ...
-
-
 def item_id(adapter: str, key: str, status: str) -> str:
     return f"tracker:{adapter}:{key}:{status}"
 
@@ -390,11 +382,9 @@ class TrackerHub:
         adapters: Iterable[tuple[TrackerAdapter, TrackerConfig]] = (),
         *,
         clock: Callable[[], float] = time.time,
-        sink: InboxSink | None = None,
     ) -> None:
         self._feeds = [_Feed(a, c) for a, c in adapters]
         self.clock = clock
-        self.sink = sink
         # Open items by work-item key (adapter, key).
         self.items: dict[tuple[str, str], TrackerItem] = {}
         self._polling = False
@@ -427,12 +417,6 @@ class TrackerHub:
     @property
     def enabled(self) -> bool:
         return bool(self._feeds)
-
-    def set_sink(self, sink: InboxSink | None) -> None:
-        self.sink = sink
-        if sink is not None:
-            for item in self.items.values():
-                sink.open(item)
 
     # --- Reading ---
 
@@ -569,8 +553,6 @@ class TrackerHub:
             return False
         if current is not None:
             del self.items[(feed.name, key)]
-            if self.sink is not None:
-                self.sink.resolve(current.id)
         if want is None or task is None or rule is None or rule.level is None:
             return current is not None
         item = TrackerItem(
@@ -585,6 +567,4 @@ class TrackerHub:
             since=now,
         )
         self.items[(feed.name, key)] = item
-        if self.sink is not None:
-            self.sink.open(item)
         return True

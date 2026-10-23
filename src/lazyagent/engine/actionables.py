@@ -47,6 +47,7 @@ from lazyagent.engine.status import (
     _failing_check,
     _with,
     ci_state,
+    clip_words,
     format_age,
     repo_name,
     work_item_key,
@@ -56,6 +57,7 @@ from lazyagent.models import AgentStatus, PrInfo
 if TYPE_CHECKING:
     from lazyagent.engine.engine import Engine
     from lazyagent.engine.events import EngineEvent
+    from lazyagent.engine.trackers import TrackerHub
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +113,8 @@ REVIEW = register_kind(Kind("review", "round", "Changes requested", 5))
 CONFLICT = register_kind(Kind("conflict", "round", "Merge conflict", 5))
 DONE = register_kind(Kind("done", "round", "Your turn", 6))
 JOB = register_kind(Kind("job", "round", "Job failed", 7))
+# A linked tracker task entered a status mapped with a level (its own).
+TRACKER_STATUS = register_kind(Kind("tracker_status", "round", "Tracker", 5))
 
 
 @dataclass
@@ -131,6 +135,8 @@ class Item:
     exit_code: int | None = None
     priority: str = DEFAULT_PRIORITY
     since: float = 0.0
+    # The kind's level unless the item carries its own (tracker_status).
+    level: str | None = None
 
     @property
     def occurrence(self) -> str:
@@ -142,7 +148,7 @@ class Item:
             "id": self.id,
             "occurrence": self.occurrence,
             "kind": self.kind,
-            "level": kind.level,
+            "level": self.level or kind.level,
             "title": kind.title,
             "label": self.label,
             "detail": self.detail,
@@ -351,6 +357,33 @@ def job_items(snap: Snapshot) -> Iterable[Item]:
 
 
 DEFAULT_DETECTORS: tuple[Detector, ...] = (agent_items, pr_items, exit_items, job_items)
+
+
+def tracker_items(hub: TrackerHub, snap: Snapshot) -> Iterable[Item]:
+    """The tracker items open now (engine/trackers: a task that entered a
+    status mapped with a level, until it leaves), on the work item whose
+    branch links the task. The id stays while the task stays, so a
+    dismissal holds; entering again is a new occurrence."""
+    if not hub.items:
+        return
+    for place in snap.places:
+        branch = (place.work_item or "").rpartition(":")[2]
+        if not branch or branch.startswith("@"):
+            continue
+        for feed, key in hub.links(branch):
+            t = hub.items.get((feed.name, key))
+            if t is None:
+                continue
+            yield Item(
+                t.id,
+                TRACKER_STATUS.name,
+                clip_words(t.state),
+                label=t.title,
+                detail=t.url,
+                work_item=place.work_item,
+                worktree_path=place.path,
+                level=t.level,
+            )
 
 
 def derive(
