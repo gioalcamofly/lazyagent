@@ -1,0 +1,17 @@
+{
+  "status": 429,
+  "headers": {
+    "Retry-After": "120",
+    "X-RateLimit-Limit": "350",
+    "X-RateLimit-Remaining": "0",
+    "X-RateLimit-NearLimit": "true",
+    "RateLimit-Reason": "jira-quota-tenant-based",
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "errorMessages": [
+      "Rate limit exceeded."
+    ],
+    "errors": {}
+  }
+}

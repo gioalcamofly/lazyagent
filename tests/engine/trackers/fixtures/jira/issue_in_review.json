@@ -1,0 +1,43 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "issues": [
+      {
+        "expand": "",
+        "id": "10012",
+        "self": "https://example.atlassian.net/rest/api/3/issue/10012",
+        "key": "SHOP-12",
+        "fields": {
+          "summary": "Login fails with SSO",
+          "status": {
+            "self": "https://example.atlassian.net/rest/api/3/status/10002",
+            "description": "",
+            "iconUrl": "https://example.atlassian.net/images/icons/statuses/generic.png",
+            "name": "In Review",
+            "id": "10002",
+            "statusCategory": {
+              "self": "https://example.atlassian.net/rest/api/3/statuscategory/4",
+              "id": 4,
+              "key": "indeterminate",
+              "colorName": "yellow",
+              "name": "In Progress"
+            }
+          },
+          "assignee": {
+            "self": "https://example.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+            "accountId": "5b10ac8d82e05b22cc7d4ef5",
+            "displayName": "Alex Doe",
+            "active": true,
+            "timeZone": "UTC",
+            "accountType": "atlassian"
+          },
+          "updated": "2026-10-21T09:00:00.000+0000"
+        }
+      }
+    ],
+    "isLast": true
+  }
+}
