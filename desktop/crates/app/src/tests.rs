@@ -44,7 +44,10 @@ fn app(worktrees: Vec<serde_json::Value>) -> (App, mpsc::Sender<Msg>) {
     .unwrap();
     tx.send(Msg::Link(Link::Connected)).unwrap();
     tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
-    (App::new(state, rx, None), tx)
+    let mut app = App::new(state, rx, None);
+    // Most tests are about the worktree view; Home's own start further down.
+    app.state.view = crate::app::View::Worktrees;
+    (app, tx)
 }
 
 fn harness(app: App) -> Harness<'static, App> {
@@ -198,7 +201,8 @@ fn terminal_cells_render_on_the_gpu() {
 
 #[test]
 fn a_shell_that_cannot_open_is_not_retried_every_frame() {
-    let (app, tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    let (mut app, tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    app.state.shell_shown.insert("/r/repo".into());
     let mut h = harness(app);
     h.run_steps(5);
     // Connected per the link, but no client: the request fails once.
@@ -242,7 +246,8 @@ fn against_a_real_engine_spawn_type_and_see_the_echo() {
     let ctx = egui::Context::default();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, ctx);
     conn.spawn_supervisor();
-    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    let mut state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.view = crate::app::View::Worktrees;
     let mut h = harness(App::new(state, rx, None));
     step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
     h.get_by_label("Spawn an agent").click();
@@ -258,7 +263,9 @@ fn against_a_real_engine_spawn_type_and_see_the_echo() {
     step_until(&mut h, "the fake agent's answer", |a| {
         a.state.panes.values().any(|p| p.inner.lock().unwrap().term.frame().text().contains("got: 'hello desktop'"))
     });
-    // The shell pane opened too, in the same worktree.
+    // No shell until asked for (Ctrl+L), then in the same worktree.
+    assert!(!h.state().state.shells.contains_key(&world.repo));
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::L);
     step_until(&mut h, "the shell", |a| a.state.shells.contains_key(&world.repo));
     conn.shutdown();
 }
@@ -270,7 +277,8 @@ fn world_app() -> Option<(lazyagent_testkit::World, Harness<'static, App>, std::
     let (tx, rx) = mpsc::channel();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, egui::Context::default());
     conn.spawn_supervisor();
-    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    let mut state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.view = crate::app::View::Worktrees;
     let mut h = harness(App::new(state, rx, None));
     step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
     Some((world, h, conn))
@@ -505,7 +513,7 @@ fn pr_json() -> serde_json::Value {
 }
 
 #[test]
-fn the_attention_queue_ranks_badges_dismisses_and_snoozes() {
+fn home_without_an_engine_inbox_derives_its_lines_dismisses_and_parks() {
     use crate::app::View;
     let (app, tx) = app(vec![
         worktree("/r/repo", "main", vec![agent("a1", "Done one", "completed", "s1")]),
@@ -517,27 +525,34 @@ fn the_attention_queue_ranks_badges_dismisses_and_snoozes() {
     ]);
     let mut h = harness(app);
     h.run_steps(3);
-    let order: Vec<String> = h.state().state.attention.iter().map(|i| i.label.clone()).collect();
-    assert_eq!(order, ["Gate", "Asker", "Done one"]);
-    assert!(h.state().title.starts_with("(3) lazyagent"), "{}", h.state().title);
-    // g a (outside a terminal: the agent's terminal has the keyboard, so
-    // Ctrl+K first): the attention view, with the most urgent item picked.
+    // One line per worktree: f once (approval on top, +1), main in the Round.
+    let now: Vec<String> =
+        h.state().state.home.shown_in(crate::home::Zone::Now).iter().map(|l| l.name.clone()).collect();
+    assert_eq!(now, ["f"]);
+    assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Now)[0].more, 1);
+    assert!(h.state().title.starts_with("(1 now · 1) lazyagent"), "{}", h.state().title);
+    // g h (outside a terminal: Ctrl+K first, then the keys).
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
     h.run_steps(2);
     h.key_press(egui::Key::G);
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::H);
     h.run_steps(2);
-    assert_eq!(h.state().state.view, View::Attention);
-    assert!(h.query_all_by_label("Needs approval").count() >= 1);
-    h.get_by_label("Dismiss").click();
+    assert_eq!(h.state().state.view, View::Home);
+    h.get_by_label("Approve");
+    // x dismisses the selected line's top item: the question shows next.
+    h.key_press(egui::Key::X);
     h.run_steps(2);
     assert_eq!(h.state().state.attention.len(), 2);
-    h.get_by_label("Snooze 1h").click();
-    h.run_steps(2);
-    assert_eq!(h.state().state.attention.len(), 1);
     assert_eq!(h.state().state.saved.marks.dismissed.len(), 1);
+    h.get_by_label("Answer");
+    // z: park it for an hour (a snooze, here).
+    h.key_press(egui::Key::Z);
+    h.run_steps(2);
+    h.get_by_label("1 hour").click();
+    h.run_steps(2);
     assert_eq!(h.state().state.saved.marks.snoozed.len(), 1);
-    // The asker stops asking, then asks again: a new occurrence shows.
+    assert!(h.state().state.home.shown_in(crate::home::Zone::Now).is_empty());
+    // The gate stops asking, then asks again: a new occurrence shows.
     let set = |status: &str| {
         event(
             "agent.updated",
@@ -548,10 +563,12 @@ fn the_attention_queue_ranks_badges_dismisses_and_snoozes() {
     h.run_steps(2);
     tx.send(set("waiting_for_approval")).unwrap();
     h.run_steps(2);
-    assert_eq!(h.state().state.attention.len(), 2, "dismissing hid that occurrence only");
-    // g w: back.
-    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
+    assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Now).len(), 1, "dismissing hid that occurrence only");
+    // Pass to orchestrator needs the engine's claims: disabled, with why.
+    h.key_press(egui::Key::K);
+    h.key_press(egui::Key::Enter);
     h.run_steps(2);
+    // g w: back to the worktrees.
     h.key_press(egui::Key::G);
     h.key_press(egui::Key::W);
     h.run_steps(2);
@@ -576,11 +593,13 @@ fn a_failing_pr_is_queued_toasted_and_shown_in_the_panel() {
     h.get_by_label("#7 Login");
     h.get_by_label("tests");
     h.get_by_label("lint");
-    // In the queue, the CI item offers to send the failures to the agent.
-    h.state_mut().state.view = crate::app::View::Attention;
-    h.state_mut().state.att_selected = Some("Ci:/r/repo:7".into());
+    // On Home, the CI line offers to send the failures to the agent.
+    h.state_mut().state.view = crate::app::View::Home;
+    h.state_mut().state.home.selected = Some("/r/repo".into());
     h.run_steps(2);
-    h.get_by_label("Send the failures to Fixer").click();
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label("Send the failures to its agent").click();
     h.run_steps(2);
     // No engine here: the send fails, and says so.
     assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("Not sent")));
@@ -658,7 +677,7 @@ fn deriving_the_queue_for_200_agents_is_cheap() {
 }
 
 #[test]
-fn render_the_attention_view_and_the_pr_panel() {
+fn render_home_without_an_engine_inbox_and_the_pr_panel() {
     let (app, tx) = app(vec![
         worktree("/r/repo", "main", vec![agent("a1", "Fixer", "completed", "s1")]),
         worktree("/r/repo-login", "feat-login", vec![agent("a2", "Implementer", "waiting_for_approval", "s2")]),
@@ -675,11 +694,11 @@ fn render_the_attention_view_and_the_pr_panel() {
         "\x1b[1mBash command\x1b[0m\r\n\r\n  \x1b[33mnpm test -- --watch=false\x1b[0m\r\n\r\nDo you want to proceed?\r\n\x1b[36m❯ 1. Yes\x1b[0m\r\n  2. No, and tell Claude what to do differently\r\n"
             .as_bytes(),
     );
-    h.state_mut().state.view = crate::app::View::Attention;
+    h.state_mut().state.view = crate::app::View::Home;
     h.run_steps(3);
     let out = std::env::temp_dir();
     match h.render() {
-        Ok(image) => image.save(out.join("lazyagent-desktop-attention.png")).unwrap(),
+        Ok(image) => image.save(out.join("lazyagent-desktop-home-fallback.png")).unwrap(),
         Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
         Err(_) => return,
     }
@@ -2387,7 +2406,8 @@ fn restarting_the_engine_restores_its_agents_before_the_app_comes_back() {
     let (tx, rx) = mpsc::channel();
     let conn = Conn::new(world.repo.clone(), world.env.clone(), tx, egui::Context::default());
     conn.spawn_supervisor();
-    let state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    let mut state = State::new(conn.clone(), FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.view = crate::app::View::Worktrees;
     let mut h = harness(App::new(state, rx, None));
     step_until(&mut h, "connected and seeded", |a| a.state.seeded && a.state.link == Link::Connected);
     assert_eq!(h.state().state.engine_detached, Some(true));
@@ -2508,6 +2528,7 @@ fn sidebar_terminals_and_spawn_screenshots() {
     feed(&mut h, "s3", PaneKind::Agent, "working\ngot: 'second agent' paste=False\nyour turn> ");
     for (path, shell) in [("/r/repo", "sh1"), ("/r/repo-feat-login", "sh2"), ("/r/repo-fix-typo", "sh3")] {
         h.state_mut().state.shells.insert(path.into(), shell.into());
+        h.state_mut().state.shell_shown.insert(path.into());
     }
     feed(
         &mut h,
@@ -2535,4 +2556,343 @@ fn sidebar_terminals_and_spawn_screenshots() {
     h.event(egui::Event::Text("implement the login form".into()));
     h.run_steps(3);
     shot(&mut h, "d3-spawn");
+}
+
+// --- Home (proposal 0013, I3) ----------------------------------------------
+
+fn status_row(key: &str, zone: &str, level: Option<&str>, ball: &str, state: &str, ago: f64) -> serde_json::Value {
+    json!({"key": format!("repo:{key}"), "repo": "repo", "branch": key, "worktree_path": format!("/r/repo-{key}"),
+           "title": key, "urls": [], "zone": zone, "level": level, "ball": ball, "priority": "medium",
+           "state": state, "rule": if zone == "inbox" { 6 } else { 9 }, "blocks_agent": level == Some("now"),
+           "needs_you": null, "agents": [], "pr": null, "note": null, "gesture": null, "claim": null,
+           "stale": false, "changed_at": crate::app::unix_now() - ago, "fingerprint": "f"})
+}
+
+fn engine_home(caps: &[&str]) -> (App, mpsc::Sender<Msg>) {
+    let (mut app, tx) = app(vec![worktree("/r/repo", "main", vec![])]);
+    app.state.view = crate::app::View::Home;
+    app.state.capabilities = Some(caps.iter().map(|c| c.to_string()).collect());
+    // As if status_list and actionables_list had answered (empty).
+    app.state.inbox_loaded = 3;
+    (app, tx)
+}
+
+fn home_names(h: &Harness<'static, App>, zone: crate::home::Zone) -> Vec<String> {
+    h.state().state.home.shown_in(zone).iter().map(|l| l.name.clone()).collect()
+}
+
+#[test]
+fn the_app_opens_on_home_not_a_terminal() {
+    let (tx, rx) = mpsc::channel();
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/r/repo".into(), env, tx.clone(), egui::Context::default());
+    let state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+    let seed: SidebarState = serde_json::from_value(json!({
+        "worktrees": [worktree("/r/repo-feat", "feat", vec![agent("a1", "Implementer", "running", "s1")])],
+        "orchestrator": {"agents": []}, "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+    }))
+    .unwrap();
+    tx.send(Msg::Link(Link::Connected)).unwrap();
+    tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+    let mut h = harness(App::new(state, rx, None));
+    h.run_steps(4);
+    assert_eq!(h.state().state.view, crate::app::View::Home);
+    assert!(h.state().state.panes.is_empty(), "no terminal, and no shell, opened on start");
+    h.get_by_label("IN FLIGHT (1)");
+    assert!(h.query_all_by_label("feat").count() >= 2, "the sidebar's branch and Home's line");
+    // Noise cut: no "engine connected" pill, no version, no "0s".
+    assert!(h.query_by_label("engine ● connected").is_none());
+    assert!(h.query_all_by_label("<1m").count() >= 1);
+    // o opens the line's agent in the worktree view.
+    h.key_press(egui::Key::O);
+    h.run_steps(2);
+    let s = &h.state().state;
+    assert_eq!((s.view, s.selected.as_deref()), (crate::app::View::Worktrees, Some("/r/repo-feat")));
+}
+
+#[test]
+fn home_shows_the_engines_rows_once_and_never_reorders_under_the_cursor() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(&["status", "actionables"]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    for row in [
+        status_row("cart", "in_flight", None, "agent", "Edit", 600.0),
+        status_row("search", "in_flight", None, "others", "review requested", 300.0),
+    ] {
+        tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    }
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Flight), ["cart", "search"]);
+    h.key_press(egui::Key::J);
+    h.key_press(egui::Key::J);
+    h.run_steps(1);
+    assert_eq!(h.state().state.home.selected.as_deref(), Some("repo:search"));
+    // A new row that sorts first, an update that would move one: nothing
+    // moves under the cursor; the new one comes last.
+    tx.send(event("status.updated", json!({"row": status_row("wishlist", "in_flight", None, "agent", "Bash", 1.0)})))
+        .unwrap();
+    tx.send(event("status.updated", json!({"row": status_row("search", "in_flight", None, "agent", "Read", 2.0)})))
+        .unwrap();
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Flight), ["cart", "search", "wishlist"]);
+    assert_eq!(h.state().state.home.selected.as_deref(), Some("repo:search"));
+    // A Round item waits for the next round; a Now one shows at once.
+    tx.send(event(
+        "status.updated",
+        json!({"row": status_row("cart", "inbox", Some("round"), "you", "review: agent finished", 0.0)}),
+    ))
+    .unwrap();
+    let mut now = status_row("wishlist", "inbox", Some("now"), "you", "approve: npm test", 0.0);
+    now["needs_you"] = json!({"count": 2, "top": "Approval:/r/repo-wishlist/a1"});
+    let item = json!({"id": "Approval:/r/repo-wishlist/a1", "occurrence": "o@1", "kind": "approval", "level": "now",
+                      "title": "Needs approval", "label": "Agent a1", "detail": "npm test", "state": "approve: npm test",
+                      "work_item": "repo:wishlist", "worktree_path": "/r/repo-wishlist", "agent_id": "a1", "pr": null,
+                      "job_id": null, "exit_code": null, "blocks_agent": true, "priority": "medium",
+                      "since": crate::app::unix_now(), "park": null});
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": now}))).unwrap();
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Now), ["wishlist"]);
+    assert!(home_names(&h, Zone::Round).is_empty());
+    assert_eq!(home_names(&h, Zone::Flight), ["cart", "search"], "each work item once");
+    h.get_by_label("next round: 1 ▸");
+    h.get_by_label("+1");
+    assert!(h.state().title.starts_with("(1 now · 1) "), "{}", h.state().title);
+    // Back from a terminal is a cut point: the Round is delivered.
+    h.key_press(egui::Key::G);
+    h.key_press(egui::Key::W);
+    h.run_steps(1);
+    h.key_press(egui::Key::G);
+    h.key_press(egui::Key::H);
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Round), ["cart"]);
+    assert!(h.query_by_label("next round: 1 ▸").is_none());
+    // It resolves on its own: out of the Round, counted.
+    tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 0.0)})))
+        .unwrap();
+    h.run_steps(2);
+    assert!(home_names(&h, Zone::Round).is_empty());
+    h.get_by_label("1 resolved on their own");
+    tx.send(event("status.removed", json!({"key": "repo:search"}))).unwrap();
+    h.run_steps(2);
+    assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
+}
+
+#[test]
+fn pass_to_orchestrator_is_offered_only_when_it_can_work() {
+    let (app, tx) = engine_home(&["status", "actionables"]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label("This engine is too old to pass items to the orchestrator: restart it (File → Restart…)");
+    h.state_mut().state.capabilities.as_mut().unwrap().push("claims".into());
+    h.run_steps(2);
+    h.get_by_label("No orchestrator is running: start one (the ◆ Orchestrator row), then pass the item");
+    tx.send(event(
+        "agent.spawned",
+        json!({"worktree_path": "__orchestrator__", "agent_id": "", "session_id": "so", "label": "Orchestrator",
+               "session_name": "", "kind": "orchestrator"}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("No orchestrator is running: start one (the ◆ Orchestrator row), then pass the item")
+            .is_none()
+    );
+    // No engine behind this one: the gesture fails, and says so.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::O);
+    h.run_steps(2);
+    assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("Could not pass it to the orchestrator")));
+    // A claimed row shows it, with the time left and Take back.
+    let mut row = status_row("cart", "in_flight", None, "agent", "with orchestrator", 0.0);
+    row["claim"] = json!({"key": "repo:cart", "holder": "orchestrator", "at": crate::app::unix_now(),
+                          "until": crate::app::unix_now() + 7200.0, "by": "user", "allowed": ["relay"]});
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Take back  (u)");
+    h.get_by_label("orchestrator");
+}
+
+#[test]
+fn home_against_a_real_engine_passes_an_item_to_the_orchestrator_and_takes_it_back() {
+    let Some((world, mut h, conn)) = world_app() else { return };
+    h.state_mut().state.spawn_agent(None);
+    h.state_mut().state.spawn_agent(Some(world.repo.clone()));
+    step_until(&mut h, "the orchestrator and an agent", |a| {
+        !a.state.store.orchestrator.is_empty() && !a.state.store.agents(&world.repo).is_empty()
+    });
+    h.state_mut().state.go_home();
+    step_until(&mut h, "the work item on Home", |a| a.state.home.lines.contains_key("repo:main"));
+    h.state_mut().state.home.selected = Some("repo:main".into());
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::O);
+    step_until(&mut h, "the claim on the row", |a| {
+        a.state.status_rows.get("repo:main").is_some_and(|r| r.claim.is_some())
+    });
+    let (probe, _hello, _rx) = world.connect();
+    let rows = probe.request("status_list", json!({}), lazyagent_testkit::TIMEOUT).unwrap();
+    let row = rows["rows"].as_array().unwrap().iter().find(|r| r["key"] == "repo:main").unwrap().clone();
+    assert_eq!(
+        (row["state"].as_str(), row["claim"]["holder"].as_str()),
+        (Some("with orchestrator"), Some("orchestrator"))
+    );
+    assert!(row["claim"]["until"].as_f64().unwrap() > row["claim"]["at"].as_f64().unwrap() + 7000.0);
+    h.key_press(egui::Key::U);
+    step_until(&mut h, "taken back", |a| a.state.status_rows.get("repo:main").is_some_and(|r| r.claim.is_none()));
+    conn.shutdown();
+}
+
+/// Home in dark and light, from neutral demo data (a "shop" repo), for
+/// docs/design/desktop-screenshots/i3-home-*.png.
+#[test]
+fn home_screenshots() {
+    let now = crate::app::unix_now();
+    let w = |b: &str| format!("/home/dev/shop-{b}");
+    let (tx, rx) = mpsc::channel();
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/home/dev/shop".into(), env, tx.clone(), egui::Context::default());
+    let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.capabilities = Some(vec!["status".into(), "actionables".into(), "claims".into()]);
+    state.look_from = now - 1800.0;
+    let branches = [
+        ("cart-discount", "running"),
+        ("checkout-copy", "completed"),
+        ("product-images", ""),
+        ("invoice-pdf", "waiting"),
+        ("search-filters", "running"),
+        ("payments-retry", "completed"),
+        ("order-export", "waiting"),
+        ("stock-sync", ""),
+        ("shipping-rates", ""),
+    ];
+    let trees: Vec<_> = std::iter::once(worktree("/home/dev/shop", "main", vec![]))
+        .chain(branches.iter().enumerate().map(|(i, (b, st))| {
+            let agents = if st.is_empty() {
+                vec![]
+            } else {
+                vec![agent(&format!("a{}", i + 1), &format!("Agent a{}", i + 1), st, &format!("s{i}"))]
+            };
+            worktree(&w(b), b, agents)
+        }))
+        .collect();
+    let seed: SidebarState = serde_json::from_value(json!({
+        "worktrees": trees,
+        "orchestrator": {"agents": [agent("", "Orchestrator", "waiting", "so")]},
+        "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+    }))
+    .unwrap();
+    tx.send(Msg::Link(Link::Connected)).unwrap();
+    tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+    let row = |b: &str, zone: &str, level: Option<&str>, ball: &str, state: &str, ago: f64, pr: Option<u64>| {
+        let mut r = status_row(b, zone, level, ball, state, ago);
+        r["key"] = json!(format!("shop:{b}"));
+        r["repo"] = json!("shop");
+        r["worktree_path"] = json!(w(b));
+        if let Some(n) = pr {
+            r["pr"] = json!({"number": n, "state": "OPEN", "review": "REVIEW_REQUIRED", "ci": "green", "mergeable": "MERGEABLE"});
+            r["urls"] = json!([format!("https://example.com/shop/pull/{n}")]);
+        }
+        r
+    };
+    let item = |b: &str, kind: &str, level: &str, title: &str, detail: &str, state: &str, ago: f64| {
+        json!({"id": format!("{kind}:{}", w(b)), "occurrence": format!("{kind}:{}@1", w(b)), "kind": kind,
+               "level": level, "title": title, "label": "Agent", "detail": detail, "state": state,
+               "work_item": format!("shop:{b}"), "worktree_path": w(b), "agent_id": "a1", "pr": null, "job_id": null,
+               "exit_code": null, "blocks_agent": level == "now", "priority": "medium", "since": now - ago, "park": null})
+    };
+    let mut cart = row("cart-discount", "inbox", Some("now"), "you", "approve: npm test", 120.0, None);
+    cart["needs_you"] = json!({"count": 1, "top": format!("approval:{}", w("cart-discount"))});
+    cart["agents"] = json!([{"id": "a1", "status": "waiting_for_approval", "since": now - 120.0}]);
+    let mut copy = row("checkout-copy", "inbox", Some("round"), "you", "review: agent finished", 900.0, None);
+    copy["needs_you"] = json!({"count": 1, "top": format!("done:{}", w("checkout-copy"))});
+    let mut images =
+        row("product-images", "inbox", Some("round"), "you", "merge: approved, CI green", 3600.0, Some(14));
+    images["rule"] = json!(4);
+    images["pr"]["review"] = json!("APPROVED");
+    let mut invoice = row("invoice-pdf", "inbox", Some("round"), "you", "CI red: tests", 1800.0, Some(15));
+    invoice["needs_you"] = json!({"count": 2, "top": format!("ci:{}", w("invoice-pdf"))});
+    invoice["pr"]["ci"] = json!("red");
+    let mut payments =
+        row("payments-retry", "in_flight", None, "others", "review requested, CI green", 600.0, Some(12));
+    payments["agents"] = json!([{"id": "a6", "status": "completed", "since": now - 2400.0}]);
+    payments["note"] = json!({"text": "retry holds 30/30 runs; waiting on review", "by": "notes", "at": now - 2400.0, "agent_id": "a6"});
+    let mut export = row("order-export", "in_flight", None, "agent", "with orchestrator", 300.0, None);
+    export["claim"] = json!({"key": "shop:order-export", "holder": "orchestrator", "at": now - 300.0,
+                             "until": now + 6900.0, "by": "user", "allowed": ["relay", "restore_owner", "ci_rerun"]});
+    let events = vec![
+        event(
+            "actionable.created",
+            json!({"item": item("cart-discount", "approval", "now", "Needs approval", "npm test", "approve: npm test", 120.0)}),
+        ),
+        event(
+            "actionable.created",
+            json!({"item": item("checkout-copy", "done", "round", "Your turn", "completed", "review: agent finished", 900.0)}),
+        ),
+        event(
+            "actionable.created",
+            json!({"item": item("invoice-pdf", "ci", "round", "CI failing", "tests", "CI red: tests", 1800.0)}),
+        ),
+        event("status.updated", json!({"row": cart})),
+        event("status.updated", json!({"row": copy})),
+        event("status.updated", json!({"row": images})),
+        event("status.updated", json!({"row": invoice})),
+        event(
+            "status.updated",
+            json!({"row": row("search-filters", "in_flight", None, "agent", "Edit src/search/filters.py", 240.0, None)}),
+        ),
+        event("status.updated", json!({"row": payments})),
+        event("status.updated", json!({"row": export})),
+        event(
+            "status.updated",
+            json!({"row": row("stock-sync", "in_flight", None, "stalled", "no agent", 7200.0, Some(16))}),
+        ),
+        event(
+            "status.updated",
+            json!({"row": row("shipping-rates", "in_flight", None, "others", "review requested", 86400.0 * 2.0, Some(11))}),
+        ),
+    ];
+    let mut h = Harness::builder()
+        .with_size([1400.0, 880.0])
+        .wgpu()
+        .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+    h.run_steps(2);
+    for e in events {
+        tx.send(e).unwrap();
+    }
+    h.run_steps(3);
+    // status_list and actionables_list answered: the first Round is delivered.
+    h.state_mut().state.inbox_loaded = 3;
+    h.state_mut().state.inbox_gen += 1;
+    h.run_steps(2);
+    // One more for the next round, after this one was delivered.
+    let mut wish = row("wishlist", "inbox", Some("round"), "you", "agent may hang", 60.0, None);
+    wish["worktree_path"] = json!(null);
+    tx.send(event("status.updated", json!({"row": wish}))).unwrap();
+    h.state_mut().state.home.selected = Some("shop:payments-retry".into());
+    h.state_mut().state.home.expanded = Some("shop:payments-retry".into());
+    h.state_mut().state.toasts.clear();
+    h.run_steps(4);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    assert_eq!(h.state().state.home.counts(), (1, 4));
+    if !shot(&mut h, "i3-home-dark") {
+        return;
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().state.toggle_theme(&ctx);
+    h.run_steps(4);
+    shot(&mut h, "i3-home-light");
 }

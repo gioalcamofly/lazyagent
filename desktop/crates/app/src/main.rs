@@ -11,6 +11,8 @@ mod diff;
 mod diff_view;
 mod fonts;
 mod gpu;
+mod home;
+mod home_view;
 mod install;
 mod lifecycle;
 mod notes_view;

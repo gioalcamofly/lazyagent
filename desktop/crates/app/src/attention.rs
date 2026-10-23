@@ -3,6 +3,9 @@
 //! holds (an agent's status, an open PR's state, an unexpected exit, a
 //! failed job) and clears itself when the condition does. Dismissing an
 //! occurrence or snoozing an item is the app's own (kept in its state file).
+//!
+//! Only for engines without the `status` / `actionables` features: Home's
+//! fallback (home.rs `fallback_lines`). A newer engine keeps the queue.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
