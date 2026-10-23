@@ -527,6 +527,69 @@ _COMMANDS = {
 }
 
 
+def build_status_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lazyagent status",
+        description="Every work item of the repo (a branch with its worktree, "
+        "agents and PR): who has the ball, a short fact and its age, the ones "
+        "that need you first. Asks the repo's engine (exit 3: none runs).",
+    )
+    parser.add_argument(
+        "repo",
+        nargs="?",
+        default=None,
+        help="Path to git repository (default: auto-detect from cwd)",
+    )
+    parser.add_argument("--json", action="store_true", help="Print status_list's JSON")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Also merged, closed and stale branches",
+    )
+    return parser
+
+
+def status_main(argv: list[str] | None = None) -> int:
+    """``lazyagent status``: the engine's ``status_list`` as a table."""
+    from lazyagent.engine.client import RequestError
+    from lazyagent.engine.status import format_table
+    from lazyagent.worktree_manager import WorktreeManagerError
+
+    args = build_status_parser().parse_args(argv)
+
+    def error(message: str) -> None:
+        print(f"lazyagent status: {message}", file=sys.stderr, flush=True)
+
+    try:
+        root = launcher.resolve_repo_root(args.repo)
+    except WorktreeManagerError as e:
+        error(str(e))
+        return 1
+    socket = launcher.find(root)
+    if socket is None:
+        error(f"no engine running for {root} (start one: lazyagent engine start)")
+        return NOT_RUNNING
+    try:
+        result = asyncio.run(_request(socket, "status_list", include_done=args.all))
+    except RequestError as e:
+        if e.code == "UNKNOWN_METHOD":
+            error(
+                "this engine predates status_list; restart it "
+                "(lazyagent engine restart --restore)"
+            )
+        else:
+            error(e.message)
+        return 1
+    except (OSError, ConnectionError) as e:
+        error(f"could not reach the engine: {e}")
+        return 1
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(format_table(result), flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)

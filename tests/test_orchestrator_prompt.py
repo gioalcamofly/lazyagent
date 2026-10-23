@@ -42,6 +42,17 @@ class TestDefaultPrompt:
         assert "SendMessage(to=session_name" in DEFAULT_ORCHESTRATOR_PROMPT
         assert "notify_when_idle=true" in DEFAULT_ORCHESTRATOR_PROMPT
 
+    def test_answers_status_questions_with_one_status_list_call(self):
+        prompt = " ".join(DEFAULT_ORCHESTRATOR_PROMPT.split())
+        assert "call `status_list` once and show its `table` as it is" in prompt
+        assert "Never build a status table yourself" in prompt
+        assert "Call `status_list` to see every branch" in prompt
+
+    def test_tells_the_spawn_caps(self):
+        prompt = " ".join(DEFAULT_ORCHESTRATOR_PROMPT.split())
+        assert "`max_concurrent_agents`" in prompt and "`max_spawns_per_day`" in prompt
+        assert "8 by default" in prompt and "30 by default" in prompt
+
     def test_does_not_teach_blocking_waits(self):
         for gone in ["wait_for_agent", "wait_for_events", "wait_until"]:
             assert gone not in DEFAULT_ORCHESTRATOR_PROMPT

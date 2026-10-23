@@ -332,6 +332,39 @@ def test_start_status_stop(world):
     assert "no engine running" in world.lazyagent("engine", "stop", world.repo).stdout
 
 
+def test_status_lists_every_branch_with_no_ui_open(world):
+    missing = world.lazyagent("status", world.repo)
+    assert missing.returncode == 3
+    assert "no engine running" in missing.stderr
+
+    for branch in ("export-csv", "login-ttl"):
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", branch, f"{world.repo}-{branch}"],
+            cwd=world.repo, env=world.env, check=True,
+        )
+    assert world.lazyagent("engine", "start", world.repo).returncode == 0
+
+    table = world.lazyagent("status", world.repo)
+    assert table.returncode == 0, table.stderr
+    lines = table.stdout.splitlines()
+    assert lines[0].startswith("NOW 0   ROUND 0   IN FLIGHT 2")
+    assert lines[1].split() == ["LEVEL", "ITEM", "BALL", "STATE", "AGE"]
+    items = {line.split()[1]: line.split() for line in lines[2:]}
+    assert set(items) == {"export-csv", "login-ttl"}
+    # A fresh branch: its age comes from its last commit, never "0s".
+    assert items["login-ttl"][2] == "stalled" and items["login-ttl"][-1] != "0s"
+
+    as_json = world.lazyagent("status", world.repo, "--json", "--all")
+    assert as_json.returncode == 0, as_json.stderr
+    result = json.loads(as_json.stdout)
+    assert {r["branch"] for r in result["rows"]} == {"export-csv", "login-ttl"}
+    assert {r["worktree_path"] for r in result["rows"]} == {
+        f"{world.repo}-export-csv", f"{world.repo}-login-ttl",
+    }
+
+    assert world.lazyagent("engine", "stop", world.repo).returncode == 0
+
+
 def test_two_starts_make_one_engine(world):
     starts = [
         subprocess.Popen(

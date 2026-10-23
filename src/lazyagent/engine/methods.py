@@ -15,9 +15,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
 from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
@@ -36,10 +38,12 @@ log = logging.getLogger(__name__)
 
 Handler = Callable[[dict], Awaitable[Any]]
 
-# notes.updated ``by``: who wrote.
+# notes.updated ``by``: who wrote. Also the caller roles (Caller.role).
 USER_BY = "user"
 AGENT_BY = "agent"
 ORCHESTRATOR_BY = "orchestrator"
+
+_DAY = 86400.0
 
 # How long a spawn may take before the caller is told it timed out.
 _OP_TIMEOUT = 30.0
@@ -91,6 +95,54 @@ def check_env(env: Any) -> dict[str, str] | None:
     return env
 
 
+class SpawnCaps:
+    """``[orchestrator] max_spawns_per_day`` / ``max_concurrent_agents``,
+    applied to the spawns asked for with an agent token. One per engine:
+    every server's methods share it."""
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self.clock = clock
+        self._spawns: list[float] = []
+        # Spawns checked but not started yet: they count as running.
+        self._pending = 0
+
+    def reserve(self, engine: Engine) -> float:
+        """Take one spawn from the caps, or raise ``ValueError`` (a
+        VALIDATION_ERROR) saying which one is full. Give it back with
+        :meth:`release` when the spawn fails, :meth:`done` when it starts."""
+        config = engine.config.orchestrator
+        now = self.clock()
+        self._spawns = [t for t in self._spawns if now - t < _DAY]
+        cap = config.max_spawns_per_day
+        if cap and len(self._spawns) >= cap:
+            raise ValueError(
+                f"spawn refused: agents spawned {len(self._spawns)} agents in "
+                f"the last 24 h (max_spawns_per_day = {cap} in [orchestrator] "
+                "of .lazyagent.toml). Ask the user to spawn it."
+            )
+        cap = config.max_concurrent_agents
+        running = self._pending + sum(
+            len(engine.agent_ids(wt.path)) for wt in engine.worktrees
+        )
+        if cap and running >= cap:
+            raise ValueError(
+                f"spawn refused: {running} agents are running "
+                f"(max_concurrent_agents = {cap} in [orchestrator] of "
+                ".lazyagent.toml). Stop one first, or ask the user."
+            )
+        self._spawns.append(now)
+        self._pending += 1
+        return now
+
+    def done(self) -> None:
+        self._pending -= 1
+
+    def release(self, reserved: float) -> None:
+        self._pending -= 1
+        if reserved in self._spawns:
+            self._spawns.remove(reserved)
+
+
 class EngineMethods:
     """The legacy method set, as plain coroutines over an :class:`Engine`."""
 
@@ -120,7 +172,22 @@ class EngineMethods:
             "review_register": self.review_register,
             "review_reply": self.review_reply,
             "review_replies": self.review_replies,
+            "status_list": self.status_list,
         }
+
+    def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
+        """``(role, slot)`` of a call: ``orchestrator`` or ``agent`` for a
+        live agent's token (``caller``), ``user`` with no token. An unknown
+        token is refused rather than taken for the user."""
+        caller = params.get("caller")
+        if caller is not None and not isinstance(caller, str):
+            raise ValueError("caller must be a string")
+        if not caller:
+            return USER_BY, None
+        slot = self._engine.token_slot(caller)
+        if slot is None:
+            raise ValueError("Unknown caller token: its agent is gone")
+        return (ORCHESTRATOR_BY if slot[0] == ORCHESTRATOR_KEY else AGENT_BY), slot
 
     async def list_worktrees(self, params: dict) -> Any:
         """List all worktrees with agent status and git status."""
@@ -262,22 +329,34 @@ class EngineMethods:
             for comment_id in review_comment_ids:
                 check_comment_id(comment_id)
 
+        # The caps bind agents (the orchestrator included), not the user.
+        role, _ = self._caller(params)
+        caps = self._engine.spawn_caps if role != USER_BY else None
+        reserved = caps.reserve(self._engine) if caps is not None else 0.0
+
         # Before the spawn, so every event of the new agent is after it.
         cursor = self._engine.events.cursor
-        info = await asyncio.wait_for(
-            self._engine.spawn_agent(
-                worktree_path,
-                instruction,
-                skip_permissions=skip_permissions,
-                resume_mode=resume_mode,
-                label=label,
-                kind=kind,
-                env=env,
-                notes_mode=notes_mode,
-                review_comment_ids=review_comment_ids,
-            ),
-            timeout=_OP_TIMEOUT,
-        )
+        try:
+            info = await asyncio.wait_for(
+                self._engine.spawn_agent(
+                    worktree_path,
+                    instruction,
+                    skip_permissions=skip_permissions,
+                    resume_mode=resume_mode,
+                    label=label,
+                    kind=kind,
+                    env=env,
+                    notes_mode=notes_mode,
+                    review_comment_ids=review_comment_ids,
+                ),
+                timeout=_OP_TIMEOUT,
+            )
+        except BaseException:
+            if caps is not None:
+                caps.release(reserved)
+            raise
+        if caps is not None:
+            caps.done()
         return {
             "worktree_path": worktree_path
             if kind == AGENT_KIND
@@ -543,18 +622,12 @@ class EngineMethods:
 
         The target is ``worktree_path`` (+ ``agent_id`` unless it has one
         agent) when given, else the calling agent (its ``caller`` token).
-        The writer is the agent itself (its own notes) or the orchestrator
-        (the orchestrator agent's token, or a caller with no token: an
-        outside session); another agent's token may read but not write.
+        The writer is the agent itself (its own notes), the orchestrator
+        (only with the orchestrator agent's token) or the user (a caller
+        with no token: a client, or a session lazyagent did not spawn);
+        another agent's token may read but not write.
         """
-        caller = params.get("caller")
-        if caller is not None and not isinstance(caller, str):
-            raise ValueError("caller must be a string")
-        caller_slot = None
-        if caller:
-            caller_slot = self._engine.token_slot(caller)
-            if caller_slot is None:
-                raise ValueError("Unknown caller token: its agent is gone")
+        role, caller_slot = self._caller(params)
         worktree_path = params.get("worktree_path") or ""
         agent_id = params.get("agent_id")
         if worktree_path:
@@ -578,10 +651,10 @@ class EngineMethods:
             )
 
         if caller_slot is None:
-            by = ORCHESTRATOR_BY
+            by = USER_BY
         elif caller_slot == slot:
             by = AGENT_BY
-        elif caller_slot[0] == ORCHESTRATOR_KEY:
+        elif role == ORCHESTRATOR_BY:
             by = ORCHESTRATOR_BY
         elif writing:
             raise ValueError(
@@ -785,6 +858,25 @@ class EngineMethods:
         worktree_path = params.get("worktree_path") or None
         replies = self._engine.review_store().replies(worktree_path)
         return {"replies": [r.to_dict() for r in replies]}
+
+    async def status_list(self, params: dict) -> Any:
+        """The work items (proposal 0013): one row per branch with who has
+        the ball, a short fact and its age, inbox first. Params: repo (only
+        that repo's rows), include_done (also merged / closed / stale rows).
+        """
+        repo = params.get("repo")
+        if repo is not None and not isinstance(repo, str):
+            raise ValueError("repo must be a string")
+        include_done = params.get("include_done", False)
+        if type(include_done) is not bool:
+            raise ValueError("include_done must be a boolean")
+        try:
+            role, _ = self._caller(params)
+        except ValueError:
+            role = "unknown"
+        # The 0013 gate's metric: how often the table is asked for, by whom.
+        diag.event(log, "status.list", by=role)
+        return self._engine.status.list(repo=repo or None, include_done=include_done)
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

@@ -247,6 +247,22 @@
         "reason": {"type": "string"}
       }
     },
+    "status.updated": {
+      "type": "object",
+      "description": "A work item's row appeared or changed (feature status; at most one pass a second).",
+      "required": ["row"],
+      "properties": {
+        "row": {"type": "object", "description": "As in status_list (methods.json status_row)."}
+      }
+    },
+    "status.removed": {
+      "type": "object",
+      "description": "A work item left the list (its worktree is gone).",
+      "required": ["key"],
+      "properties": {
+        "key": {"type": "string"}
+      }
+    },
     "ui_command_name": {
       "type": "string",
       "description": "Open set: a hosted UI ignores a command it does not know.",

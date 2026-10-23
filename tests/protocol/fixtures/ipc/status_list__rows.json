@@ -1,0 +1,110 @@
+{
+  "case": "status_list/rows",
+  "method": "status_list",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "counts": {
+        "done": 1,
+        "in_flight": 1,
+        "not_started": 0,
+        "now": 1,
+        "round": 1,
+        "stale": 0
+      },
+      "generated_at": 1700000000.0,
+      "rows": [
+        {
+          "agents": [
+            {
+              "id": "a1",
+              "since": 1700000000.0,
+              "status": "waiting_for_approval"
+            }
+          ],
+          "ball": "you",
+          "blocks_agent": true,
+          "branch": "login-ttl",
+          "changed_at": 1700000000.0,
+          "fingerprint": "51e6c20d2f4b",
+          "gesture": null,
+          "key": "repo:login-ttl",
+          "level": "now",
+          "needs_you": null,
+          "note": null,
+          "pr": null,
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 2,
+          "stale": false,
+          "state": "approve: Bash",
+          "title": "login-ttl",
+          "urls": [],
+          "worktree_path": "/tmp/repo-login",
+          "zone": "inbox"
+        },
+        {
+          "agents": [],
+          "ball": "you",
+          "blocks_agent": false,
+          "branch": "docs-index",
+          "changed_at": 1700000000.0,
+          "fingerprint": "4dce709c96f5",
+          "gesture": null,
+          "key": "repo:docs-index",
+          "level": "round",
+          "needs_you": null,
+          "note": null,
+          "pr": {
+            "ci": "green",
+            "mergeable": "MERGEABLE",
+            "number": 14,
+            "review": "APPROVED",
+            "state": "OPEN"
+          },
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 4,
+          "stale": false,
+          "state": "merge: approved, CI green",
+          "title": "Index the docs",
+          "urls": [
+            "https://example.com/pull/14"
+          ],
+          "worktree_path": "/tmp/repo-docs",
+          "zone": "inbox"
+        },
+        {
+          "agents": [
+            {
+              "id": "a2",
+              "since": 1700000000.0,
+              "status": "running"
+            }
+          ],
+          "ball": "agent",
+          "blocks_agent": false,
+          "branch": "export-csv",
+          "changed_at": 1700000000.0,
+          "fingerprint": "d95513a0e536",
+          "gesture": null,
+          "key": "repo:export-csv",
+          "level": null,
+          "needs_you": null,
+          "note": null,
+          "pr": null,
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 9,
+          "stale": false,
+          "state": "Edit",
+          "title": "export-csv",
+          "urls": [],
+          "worktree_path": "/tmp/repo-export",
+          "zone": "in_flight"
+        }
+      ]
+    }
+  }
+}

@@ -43,6 +43,8 @@ class World:
         self.removed: list[tuple[str, bool]] = []
         self.create_error: Exception | None = None
         self.list_error: Exception | None = None
+        # Branch → last commit time (Unix), as `git for-each-ref` reads it.
+        self.commit_times: dict[str, float] = {}
 
     def manager(self, repo_path: str) -> FakeManager:
         return FakeManager(self, repo_path)
@@ -80,6 +82,9 @@ class FakeManager:
 
     def get_last_commit_subject(self, path) -> str:
         return ""
+
+    def branch_commit_times(self) -> dict[str, float]:
+        return dict(self.world.commit_times)
 
     def get_diff(self, path, *, base=None, max_bytes=None) -> str:
         """Empty, as a clean worktree; a ``base`` called "no-such-branch"

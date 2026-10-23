@@ -124,10 +124,10 @@ async def test_the_orchestrator_writes_a_workers_notes(engine, monkeypatch):
     )
     assert (by_token["agent_id"], by_token["by"]) == (worker.agent_id, "orchestrator")
 
-    # An outside session (the orchestrator skill): no token at all.
+    # An outside session (no token at all) is the user, not the orchestrator.
     monkeypatch.delenv(AGENT_TOKEN_ENV)
     outside = await mcp_server.notes_append("Doubts", "- [ ] which db?", feat)
-    assert outside["by"] == "orchestrator"
+    assert outside["by"] == "user"
     with pytest.raises(RuntimeError, match="no target"):
         await mcp_server.notes_read()
 

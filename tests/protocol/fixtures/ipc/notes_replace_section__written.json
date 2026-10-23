@@ -11,7 +11,7 @@
     "id": "req-1",
     "result": {
       "agent_id": "a1",
-      "by": "orchestrator",
+      "by": "user",
       "max_bytes": 8192,
       "notes_id": "0a1b2c3d4e51",
       "rev": 1,

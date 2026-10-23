@@ -340,6 +340,30 @@ class WorktreeManager:
         except (subprocess.CalledProcessError, OSError):
             return ""
 
+    def branch_commit_times(self) -> dict[str, float]:
+        """Each local branch's last commit time (Unix), in one git call."""
+        try:
+            result = _run(
+                [
+                    "git",
+                    "for-each-ref",
+                    "--format=%(refname:short)%09%(committerdate:unix)",
+                    "refs/heads",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(self.repo_path),
+                check=True,
+            )
+        except (subprocess.CalledProcessError, OSError):
+            return {}
+        times: dict[str, float] = {}
+        for line in result.stdout.splitlines():
+            name, _, stamp = line.rpartition("\t")
+            if name and stamp.isdigit():
+                times[name] = float(stamp)
+        return times
+
     def get_all_git_statuses(
         self, worktrees: list[WorktreeInfo],
     ) -> dict[str, GitStatus]:

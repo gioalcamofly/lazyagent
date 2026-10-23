@@ -125,7 +125,8 @@
           "description": "v1: environment of the calling client; the agent inherits it."
         },
         "notes_mode": {"$ref": "#/$defs/notes_mode", "description": "How the agent may write its session notes; default: [notes] mode. Orchestrator workers get free."},
-        "review_comment_ids": {"type": "array", "items": {"type": "string"}, "description": "The review comments in the instruction (review_register's comment_ids), registered for the new agent before it starts."}
+        "review_comment_ids": {"type": "array", "items": {"type": "string"}, "description": "The review comments in the instruction (review_register's comment_ids), registered for the new agent before it starts."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The spawning agent's token, when an agent (the orchestrator included) asks: [orchestrator] max_spawns_per_day and max_concurrent_agents then apply, and a spawn over either is a VALIDATION_ERROR naming it. No token: the user, uncapped."}
       }
     },
     "spawn_agent.result": {
@@ -588,7 +589,7 @@
     },
     "notes_mode": {"type": "string", "x-known-values": ["manual", "propose", "free"], "description": "manual: the agent writes only when the user asks (advisory); propose: its writes are proposals (behaves as manual until propose lands); free: it writes directly."},
     "notes_by": {"type": ["string", "null"], "x-known-values": ["user", "agent", "orchestrator", null], "description": "Who wrote last; null for the untouched template."},
-    "notes_caller": {"type": ["string", "null"], "description": "The calling agent's token (LAZYAGENT_AGENT_TOKEN in its MCP server's env). Without worktree_path the target is the caller's own notes. Another agent's token may read but not write; no token writes as the orchestrator."},
+    "notes_caller": {"type": ["string", "null"], "description": "The calling agent's token (LAZYAGENT_AGENT_TOKEN in its MCP server's env). Without worktree_path the target is the caller's own notes. Another agent's token may read but not write; the orchestrator's token writes as the orchestrator, no token as the user."},
     "notes_written": {
       "type": "object",
       "required": ["worktree_path", "agent_id", "notes_id", "rev", "size", "max_bytes", "by", "updated_at"],
@@ -782,6 +783,95 @@
       "required": ["replies"],
       "properties": {"replies": {"type": "array", "items": {"$ref": "#/$defs/review_reply_item"}, "description": "Oldest first; kept 7 days."}}
     },
+
+    "status_row": {
+      "type": "object",
+      "description": "One work item (proposal 0013): a branch with its worktree, agents and PR, projected by the engine; nothing in it is stored.",
+      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "stale", "changed_at", "fingerprint"],
+      "properties": {
+        "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached)."},
+        "repo": {"type": "string", "description": "The repo root's directory name."},
+        "branch": {"type": ["string", "null"]},
+        "worktree_path": {"type": ["string", "null"]},
+        "title": {"type": "string", "description": "The PR title, else the branch."},
+        "urls": {"type": "array", "items": {"type": "string"}},
+        "zone": {"enum": ["inbox", "in_flight"], "description": "inbox: the ball is the user's."},
+        "level": {"enum": ["now", "round", null], "description": "Inbox rows only. now: an agent is blocked on the user."},
+        "ball": {"enum": ["you", "agent", "others", "stalled", "done"]},
+        "priority": {"enum": ["high", "medium", "low"]},
+        "state": {"type": "string", "description": "A fact in at most five words, e.g. 'review requested, CI green'."},
+        "rule": {"type": "integer", "description": "The derivation rule that matched (inbox-plan.md §3)."},
+        "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
+        "needs_you": {"type": ["object", "null"], "description": "The work item's inbox items; null until the engine keeps an inbox queue."},
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status", "since"],
+            "properties": {
+              "id": {"type": "string"},
+              "status": {"type": "string", "description": "An agent status, or starting."},
+              "since": {"type": "number", "description": "When it took this status (Unix time)."}
+            }
+          }
+        },
+        "pr": {
+          "type": ["object", "null"],
+          "required": ["number", "state", "review", "ci", "mergeable"],
+          "properties": {
+            "number": {"type": "integer"},
+            "state": {"type": "string"},
+            "review": {"type": "string"},
+            "ci": {"enum": ["green", "red", "running", "none"]},
+            "mergeable": {"type": "string"}
+          }
+        },
+        "note": {
+          "type": ["object", "null"],
+          "description": "The first open Pending item, else the last Doubt, of an agent's session notes.",
+          "required": ["text", "by", "at"],
+          "properties": {
+            "text": {"type": "string"},
+            "by": {"type": "string"},
+            "at": {"type": ["number", "null"]},
+            "agent_id": {"type": "string"}
+          }
+        },
+        "gesture": {"type": ["object", "null"], "description": "A user's label or park; null for now."},
+        "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
+        "changed_at": {"type": "number", "description": "When its facts last changed (Unix time): the row's age."},
+        "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."}
+      }
+    },
+    "status_list.params": {
+      "type": "object",
+      "properties": {
+        "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
+        "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
+      }
+    },
+    "status_list.result": {
+      "type": "object",
+      "required": ["rows", "counts", "generated_at"],
+      "properties": {
+        "rows": {"type": "array", "items": {"$ref": "#/$defs/status_row"}, "description": "Inbox first (level, blocks an agent, priority, oldest first), then in flight (ball: agent, others, stalled, done; priority; latest change first)."},
+        "counts": {
+          "type": "object",
+          "required": ["now", "round", "in_flight", "done", "stale", "not_started"],
+          "properties": {
+            "now": {"type": "integer"},
+            "round": {"type": "integer"},
+            "in_flight": {"type": "integer"},
+            "done": {"type": "integer"},
+            "stale": {"type": "integer"},
+            "not_started": {"type": "integer"}
+          }
+        },
+        "generated_at": {"type": "number"}
+      }
+    },
+
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {
       "type": "object",

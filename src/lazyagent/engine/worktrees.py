@@ -99,6 +99,8 @@ class WorktreeService:
         self._diffs: dict[str, str] = {}
 
         self._interests: dict[str, frozenset[str]] = {}
+        # Interest in PR info only (no git status polling): the engine's own.
+        self._pr_interests: dict[str, frozenset[str]] = {}
         self._subscribers: list[Subscriber] = []
         self._pollers: list[asyncio.Task] = []
         self._ticks: set[asyncio.Task] = set()
@@ -139,10 +141,24 @@ class WorktreeService:
         else:
             self._interests.pop(client, None)
 
+    def set_pr_interest(self, paths: Iterable[str], client: str) -> None:
+        """Replace ``client``'s PR-only interest set: the PR poller covers
+        it, the git status poller does not."""
+        interest = frozenset(paths)
+        if interest:
+            self._pr_interests[client] = interest
+        else:
+            self._pr_interests.pop(client, None)
+
     @property
     def interest(self) -> frozenset[str]:
         """Union of every client's interest set."""
         return frozenset().union(*self._interests.values())
+
+    @property
+    def pr_interest(self) -> frozenset[str]:
+        """What the PR poller covers: :attr:`interest` and the PR-only sets."""
+        return self.interest.union(*self._pr_interests.values())
 
     # --- Worktree list ---
 
@@ -493,8 +509,8 @@ class WorktreeService:
             await self.refresh_git_status(interest)
 
     async def poll_pr_info(self) -> None:
-        """One PR info tick: the current interest set, nothing else."""
-        interest = self.interest
+        """One PR info tick: the current interest sets, nothing else."""
+        interest = self.pr_interest
         if interest:
             await self.refresh_pr_info(interest)
 

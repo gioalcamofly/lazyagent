@@ -345,7 +345,19 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 
 ## 8. As landed
 
-(empty)
+**I1** (`inbox-i1-status-projection`):
+
+- `engine/status.py`: `StatusProjection`, owned by the engine (started and stopped with it). Rows recomputed on `agent.*`, `worktrees.changed`, `pr_info.updated`, `notes.*`, `restorable.changed` (coalesced to 1/s) and on a 60 s tick; `status.updated {row}` / `status.removed {key}` only for what changed. `derive()` is §3 as a pure function (rules 3, 7, 8 and actionables wait for I2/I4); the row also carries `rule`, `blocks_agent` and `stale`.
+- Membership: every non-bare worktree; the main checkout only while an agent runs there. Detached: key `<repo>:@<head>`. Open PRs or restorable agents with no worktree are not rows yet.
+- Age: `changed_at` moves only when the fingerprint (ball, level, PR state/review/mergeable/CI, agent statuses; not the tool detail) changes. A row first seen starts at its branch's last commit (one `git for-each-ref`, re-read every 5 min), so ages are meaningful after an engine restart.
+- Rule 5 reads "no live agent" as "no running agent": an idle agent on a red or conflicting PR puts it in Round. Idle (`waiting`, `completed`, `interrupted`) counts as finished for rule 6. No-checks CI counts as green for rule 4. `waiting_for_user` is always Now.
+- Done and stale rows are hidden unless `include_done` (`--all`) and counted in `counts`.
+- PR interest: a PR-only set (`WorktreeService.set_pr_interest`, client `engine:status`) read by the PR poller; no git-status sweep and no extra `gh` call of its own (first PR info within one poll, ≤ 60 s).
+- Engine jobs are not row inputs (they are not tied to a worktree).
+- `status_list {repo?, include_done?, caller?}` on both sockets; feature `status`; schemas `status_row`, `status_list.*`, `status.updated`, `status.removed`; golden fixtures. MCP `status_list` adds a ready `table`. CLI `lazyagent status [repo] [--json] [--all]` (exit 3 with no engine; it does not start one).
+- Orchestrator role: a call with no token is the user (notes `by: user`); only the orchestrator's token writes as the orchestrator; an unknown token is refused. Caps in `spawn_agent` for any agent token (`[orchestrator] max_concurrent_agents` 8, live workers, the orchestrator not counted; `max_spawns_per_day` 30, rolling 24 h, in memory: an engine restart resets it; defaults raised from §5c's 4 / 10, which real use with 5+ parallel workers exceeds); 0 turns a cap off; refusal is a VALIDATION_ERROR naming the cap; a spawn reserves its place before it starts. MCP `spawn_agent` now sends the token. The orchestrator prompt answers status questions with one `status_list` call.
+- Metric (Q-B1, non-blocking): each `status_list` call logs the diagnostics event `status.list {by}` (user, agent, orchestrator).
+- Desktop: only `proto/tests/golden.rs` (the `status_list` fixture and `status.*` events are skipped until I3).
 
 ---
 

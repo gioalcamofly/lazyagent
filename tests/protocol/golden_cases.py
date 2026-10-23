@@ -625,6 +625,57 @@ async def _():
     return await _call(engine, "review_replies", {"worktree_path": FEAT})
 
 
+# --- status_list -------------------------------------------------------------
+
+
+def _status_engine():
+    """Four work items on a fixed clock: an agent waiting for approval, one
+    working, an approved green PR with no agent, and a merged one."""
+    from lazyagent.models import CiCheck, PrInfo
+
+    engine = _make_engine(
+        worktrees=[
+            _make_worktree("/tmp/repo", "main", is_main=True),
+            _make_worktree("/tmp/repo-login", "login-ttl", is_main=False),
+            _make_worktree("/tmp/repo-export", "export-csv", is_main=False),
+            _make_worktree("/tmp/repo-docs", "docs-index", is_main=False),
+            _make_worktree("/tmp/repo-typo", "fix-typo", is_main=False),
+        ],
+        agent_states={
+            "/tmp/repo-login": {
+                "a1": AgentState(
+                    status=AgentStatus.WAITING_FOR_APPROVAL, agent_id="a1", detail="Bash"
+                )
+            },
+            "/tmp/repo-export": {
+                "a2": AgentState(status=AgentStatus.RUNNING, agent_id="a2", detail="Edit")
+            },
+        },
+    )
+    green = [CiCheck("tests", "COMPLETED", "SUCCESS")]
+    engine.worktree_service._pr_infos.update(
+        {
+            "/tmp/repo-docs": PrInfo(
+                14, "Index the docs", "OPEN", green, "https://example.com/pull/14",
+                review_decision="APPROVED", mergeable="MERGEABLE",
+            ),
+            "/tmp/repo-typo": PrInfo(9, "Fix a typo", "MERGED", green),
+        }
+    )
+    engine.status.clock = lambda: FIXED_TIME
+    return engine
+
+
+@case("status_list/rows")
+async def _():
+    return await _call(_status_engine(), "status_list", {})
+
+
+@case("status_list/include_done")
+async def _():
+    return await _call(_status_engine(), "status_list", {"include_done": True})
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):
