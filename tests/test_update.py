@@ -41,6 +41,7 @@ def checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@t")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@t")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     remote = tmp_path / "remote.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "develop", str(remote))
     upstream = tmp_path / "upstream"
@@ -68,6 +69,7 @@ def checkout(tmp_path, monkeypatch):
             f"#!{sys.executable}\nimport json, os, sys\n"
             f"open({str(calls)!r}, 'a').write(json.dumps([{tool!r}, os.getcwd(), sys.argv[1:]]) + '\\n')\n"
             "print('built')\n"
+            "sys.exit(int(os.environ.get('FAKE_TOOL_EXIT', '0')))\n"
         )
         shim.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
@@ -215,6 +217,85 @@ def test_engine_and_app_behind(checkout):
     info = update.check(source=checkout.root, engine_commit=head, app_commit=f"{head}+dirty")
     assert not info["engine_behind"] and info["app_behind"] is False
     assert update.check(source=checkout.root, app_commit="f" * 40)["app_behind"] is None
+
+
+def _built_app(root: Path, age: float = 0) -> Path:
+    """A release build in the checkout, ``age`` seconds older than now."""
+    binary = root / "desktop/target/release/lazyagent-desktop"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("")
+    when = binary.stat().st_mtime - age
+    os.utime(binary, (when, when))
+    return binary
+
+
+def test_pulled_by_hand_the_update_rebuilds_the_app(checkout):
+    """Nothing left to pull, but the app predates the checkout: the update
+    is the build, and only then is the app's restart offered."""
+    first = _git(checkout.root, "rev-parse", "HEAD")
+    checkout.push({"desktop/app.rs": "fn main() { 2; }\n"})
+    _git(checkout.root, "pull", "-q", "--ff-only")
+    binary = _built_app(checkout.root)
+    info = update.check(source=checkout.root, app_commit=first, app_binary=str(binary))
+    assert not info["update_available"] and info["app_behind"]
+    result, events = _apply(checkout.root, app_commit=first, app_binary=str(binary))
+    assert result["ok"], result
+    assert result["steps"] == ["build"]
+    assert result["restart"] == {"app": True, "engine": False}
+    assert checkout.calls() == [["cargo", str(checkout.root), list(update.desktop.RELEASE_BUILD)]]
+    assert {"step": "build", "state": "done", "code": 0} in events
+    # Up to date and built from HEAD: nothing to do.
+    head = _git(checkout.root, "rev-parse", "HEAD")
+    result, _ = _apply(checkout.root, app_commit=head, app_binary=str(binary))
+    assert result["ok"] and result["reason"] == "already up to date" and not result["steps"]
+    assert len(checkout.calls()) == 1
+
+
+def test_a_failed_build_offers_no_restart_of_the_app(checkout, monkeypatch):
+    monkeypatch.setenv("FAKE_TOOL_EXIT", "101")
+    checkout.push({"desktop/app.rs": "fn main() { 3; }\n", "src/lazyagent/a.py": "a = 3\n"})
+    binary = _built_app(checkout.root)
+    first = _git(checkout.root, "rev-parse", "HEAD")
+    result, events = _apply(checkout.root, app_commit=first, app_binary=str(binary))
+    assert not result["ok"]
+    assert result["steps"] == ["merge"], "the pull stays; the build did not happen"
+    assert result["reason"] == "updated, but these steps failed: app build"
+    assert result["restart"] == {"app": False, "engine": True}
+    assert {"step": "build", "state": "failed", "code": 101} in events
+    # Retried with nothing left to pull: still no restart of the app.
+    result, _ = _apply(checkout.root, app_commit=first, app_binary=str(binary))
+    assert result["steps"] == [] and result["reason"] == "failed: app build"
+    assert result["restart"]["app"] is False
+
+
+def test_without_cargo_the_rebuild_names_the_command(checkout, monkeypatch):
+    first = _git(checkout.root, "rev-parse", "HEAD")
+    checkout.push({"desktop/app.rs": "fn main() { 4; }\n"})
+    _git(checkout.root, "pull", "-q", "--ff-only")
+    binary = _built_app(checkout.root)
+    monkeypatch.setattr(update, "_tool", lambda name: None)
+    result, _ = _apply(checkout.root, app_commit=first, app_binary=str(binary))
+    assert not result["ok"] and result["restart"]["app"] is False
+    assert "cargo build --release" in result["reason"]
+
+
+def test_app_behind_its_sources_by_time(checkout):
+    """A build in the checkout without a known commit (or one that knows no
+    better) is compared with its sources' modification times."""
+    src = checkout.root / "desktop/crates/app/src/main.rs"
+    src.parent.mkdir(parents=True)
+    src.write_text("fn main() {}\n")
+    binary = _built_app(checkout.root, age=60)
+    head = _git(checkout.root, "rev-parse", "HEAD")
+    for commit in (None, head):
+        info = update.check(source=checkout.root, app_commit=commit, app_binary=str(binary))
+        assert info["app_behind"] is True
+    result, _ = _apply(checkout.root, app_commit=head, app_binary=str(binary))
+    assert result["steps"] == ["build"] and result["restart"]["app"]
+    # The fake cargo built nothing (as cargo does when nothing changed): the
+    # binary is marked built, so the next check does not ask again.
+    info = update.check(source=checkout.root, app_commit=head, app_binary=str(binary))
+    assert info["app_behind"] is False
 
 
 def test_mode_detection(tmp_path, monkeypatch):

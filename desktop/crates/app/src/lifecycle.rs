@@ -136,6 +136,21 @@ pub struct RestartWanted {
     pub engine: bool,
 }
 
+/// After `lazyagent update apply`: the restart sheet to offer, if any. Only
+/// a result that allows the app's restart offers one (a build that failed
+/// would relaunch the binary that runs now).
+pub fn restart_after(applied: &ApplyResult) -> Option<Sheet> {
+    let changed = applied.steps.iter().any(|st| matches!(st.as_str(), "merge" | "upgrade" | "build"));
+    let restart = applied.restart.filter(|r| r.app)?;
+    changed.then_some(Sheet::Restart { engine: restart.engine, restore: true, after_update: true })
+}
+
+/// Development mode, nothing to pull, but this app was built from older
+/// code: the update is a rebuild.
+pub fn rebuild_wanted(i: &UpdateInfo) -> bool {
+    i.mode == "development" && !i.update_available && i.app_behind == Some(true)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Phase {
     Idle,
@@ -435,14 +450,19 @@ impl State {
                     reason: Some(end.err().unwrap_or_else(|| "no result".into())),
                     ..Default::default()
                 });
-                let updated = applied.steps.iter().any(|st| st == "merge" || st == "upgrade");
-                if updated {
-                    if let Some(info) = &mut s.life.info {
-                        info.update_available = false;
-                    }
-                    // Offer the restart (Q-U7): the engine when its code changed.
-                    let engine = applied.restart.is_some_and(|r| r.engine);
-                    s.life.sheet = Some(Sheet::Restart { engine, restore: true, after_update: true });
+                if applied.steps.iter().any(|st| st == "merge" || st == "upgrade")
+                    && let Some(info) = &mut s.life.info
+                {
+                    info.update_available = false;
+                }
+                if applied.steps.iter().any(|st| st == "build")
+                    && let Some(info) = &mut s.life.info
+                {
+                    info.app_behind = Some(false);
+                }
+                // Offer the restart (Q-U7): the engine when its code changed.
+                if let Some(sheet) = restart_after(&applied) {
+                    s.life.sheet = Some(sheet);
                 }
                 s.life.applied = Some(applied);
             },
@@ -622,7 +642,11 @@ fn update_sheet(ui: &mut egui::Ui, state: &mut State, close: &mut bool) {
         Phase::Applying { step, line } => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!("Updating: {step}"));
+                ui.label(if step == "build" {
+                    "Building the app (cargo)…".to_string()
+                } else {
+                    format!("Updating: {step}")
+                });
             });
             if !line.is_empty() {
                 ui.label(RichText::new(line).monospace().small().color(t.muted));
@@ -661,13 +685,19 @@ fn update_sheet(ui: &mut egui::Ui, state: &mut State, close: &mut bool) {
             ui.colored_label(t.yellow, "The engine runs older code than the checkout: restart it.");
         }
         if i.app_behind == Some(true) {
-            ui.colored_label(t.yellow, "This app was built from older code than the checkout.");
+            let text = if rebuild_wanted(&i) {
+                "This app was built from older code than the checkout: rebuild it, then restart."
+            } else {
+                "This app was built from older code than the checkout."
+            };
+            ui.colored_label(t.yellow, text);
         }
     }
     if let Some(a) = &state.life.applied {
         ui.add_space(4.0);
         if a.ok {
-            ui.colored_label(t.green, "Updated.");
+            let built_only = a.steps == ["build"];
+            ui.colored_label(t.green, if built_only { "Rebuilt." } else { "Updated." });
         } else {
             ui.colored_label(t.red, a.reason.clone().unwrap_or_else(|| "Not updated.".into()));
             for f in &a.files {
@@ -691,7 +721,13 @@ fn update_sheet(ui: &mut egui::Ui, state: &mut State, close: &mut bool) {
             {
                 state.apply_update();
             }
+            if rebuild_wanted(&i)
+                && ui.add_enabled(idle, egui::Button::new(RichText::new("Rebuild").strong())).clicked()
+            {
+                state.apply_update();
+            }
             if !i.update_available
+                && !rebuild_wanted(&i)
                 && (i.engine_behind == Some(true) || i.app_behind == Some(true))
                 && idle
                 && ui.button("Restart…").clicked()
