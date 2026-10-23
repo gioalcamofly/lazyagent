@@ -1,0 +1,37 @@
+{
+  "case": "status_report/needs_user_and_outward",
+  "method": "status_report",
+  "params": {
+    "caller": "tok-a2",
+    "needs_user": true,
+    "note": "PR up: pick a reviewer",
+    "outward": {
+      "kind": "pr_create",
+      "ref": "https://example.com/pull/15",
+      "text": "opened"
+    }
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "key": "repo:export-csv",
+      "outward": {
+        "actor": "agent:a2",
+        "at": 1700000000.0,
+        "kind": "outward",
+        "ref": "https://example.com/pull/15",
+        "text": "pr_create: opened"
+      },
+      "report": {
+        "agent": "a2",
+        "at": 1700000000.0,
+        "ball": null,
+        "label": "",
+        "needs_user": true,
+        "note": "PR up: pick a reviewer",
+        "turn_over": false,
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}

@@ -111,6 +111,7 @@ def test_put_bumps_rev_and_announces(store, events, clock):
                 "rev": 1,
                 "size": len("## Goal\nship\n"),
                 "by": "user",
+                "sections": ["Goal"],
             },
         )
     ]

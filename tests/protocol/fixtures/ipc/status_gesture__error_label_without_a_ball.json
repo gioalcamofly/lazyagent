@@ -1,0 +1,15 @@
+{
+  "case": "status_gesture/error_label_without_a_ball",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "label"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "ball must be one of agent, others, stalled"
+    },
+    "id": "req-1"
+  }
+}

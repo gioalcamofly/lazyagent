@@ -91,6 +91,10 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "status_gesture" => round_trip::<StatusGestureResult>(case, result),
             // The orchestrator's (MCP).
             "orchestrator_release" => continue,
+            // Agents' (MCP), and the I4 engine methods the desktop does not
+            // call yet (gestures, timeline, seen marks, briefs).
+            "status_report" | "request_decision" | "decision_withdraw" => continue,
+            "status_seen" | "status_timeline" | "decision_get" | "decisions_list" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -151,6 +155,10 @@ const IGNORED_EVENTS: &[&str] = &[
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
+    // I4: the desktop shows neither the timeline nor briefs yet.
+    "status.timeline",
+    "decision.created",
+    "decision.resolved",
 ];
 
 #[test]

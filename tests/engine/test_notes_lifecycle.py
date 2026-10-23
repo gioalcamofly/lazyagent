@@ -85,6 +85,8 @@ async def test_events_carry_the_writer(world):
         "rev": 2,
         "size": len("## Goal\nship\n"),
         "by": "user",
+        # The orchestrator's Decisions line went with the rewrite.
+        "sections": ["Goal", "Decisions"],
     }
 
 

@@ -1,0 +1,60 @@
+{
+  "case": "status_gesture/park",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "park",
+    "until": "agent_stopped"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "by": "user",
+        "kind": "park",
+        "until": "agent_stopped"
+      },
+      "key": "repo:export-csv",
+      "row": {
+        "agents": [
+          {
+            "id": "a2",
+            "since": 1700000000.0,
+            "status": "running"
+          }
+        ],
+        "ball": "agent",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "fingerprint": "41762d7ea29d",
+        "gesture": {
+          "at": 1700000000.0,
+          "by": "user",
+          "kind": "park",
+          "until": "agent_stopped"
+        },
+        "key": "repo:export-csv",
+        "last_event_at": 1700000000.0,
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 7,
+        "seen_at": null,
+        "stale": false,
+        "state": "parked until agent stops",
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      }
+    }
+  }
+}

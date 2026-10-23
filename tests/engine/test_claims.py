@@ -82,7 +82,7 @@ async def test_a_pass_takes_the_item_out_of_the_inbox_but_not_its_approvals():
     engine, _ = _engine()
     _orchestrator(engine)
     _agent(engine, FEAT, "a1", "completed")
-    assert _row(engine)["level"] == "round"
+    assert _row(engine)["level"] == "deep"
     seen = _events(engine, {CLAIM_CREATED})
 
     result = await EngineMethods(engine).status_gesture(
@@ -184,7 +184,7 @@ async def test_who_may_do_what():
     with pytest.raises(ValueError, match="outcome must be one of"):
         await methods.orchestrator_release({"key": KEY, "outcome": "merged", "caller": "tok-orch"})
     with pytest.raises(ValueError, match="kind must be one of"):
-        await methods.status_gesture({"key": KEY, "kind": "label"})
+        await methods.status_gesture({"key": KEY, "kind": "stamp"})
     with pytest.raises(ValueError, match="No work item"):
         await methods.status_gesture({"key": "repo:nope", "kind": "delegate"})
     with pytest.raises(ValueError, match="ttl_s must be between"):
@@ -206,7 +206,7 @@ async def test_the_user_takes_it_back():
     engine.claims.claim(KEY)
     seen = _events(engine, {CLAIM_RELEASED})
     result = await EngineMethods(engine).status_gesture({"key": KEY, "kind": "clear"})
-    assert result["claim"] is None and result["row"]["level"] == "round"
+    assert result["claim"] is None and result["row"]["level"] == "deep"
     assert [d["outcome"] for _, d in seen] == ["taken_back"]
     assert engine.claims.returned == {}, "taking it back raises nothing"
     with pytest.raises(ValueError, match="not with the orchestrator"):

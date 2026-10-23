@@ -49,7 +49,9 @@ def main() -> int:
     tty.setraw(0)
     if "--paste" in sys.argv:
         out("\x1b[?2004h")
-    for arg in sys.argv[1:]:
+    # An instruction may come after a prepended worker preamble (a provider
+    # with no system prompt flag): its own lines count.
+    for arg in (line for a in sys.argv[1:] for line in a.splitlines()):
         if arg.startswith("--env="):
             name = arg.removeprefix("--env=")
             out(f"env {name}={os.environ.get(name, '<unset>')}\r\n")

@@ -51,6 +51,11 @@ rebase through its agent; never merge, publish or delete), then call \
 `orchestrator_release(key, "done")`, or `orchestrator_release(key, "returned", \
 note)` to hand it back with what the user must decide. An unreleased claim \
 lapses at its time and goes back to the user.
+- **Briefs.** Workers ask the user for choices that need reading with \
+`request_decision` (a brief: question, options, recommendation, evidence; \
+their preamble says how). When a worker brings you such a question, tell it to \
+write a brief rather than relaying a long question yourself; a yes/no question \
+you can answer within your limits needs no brief.
 
 ### Worktree management
 

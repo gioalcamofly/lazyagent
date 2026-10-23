@@ -6,6 +6,8 @@
     "id": "req-1",
     "result": {
       "counts": {
+        "deep": 0,
+        "deep_max": 5,
         "now": 1,
         "parked": 0,
         "round": 0
@@ -15,6 +17,8 @@
         {
           "agent_id": "a1",
           "blocks_agent": true,
+          "class": "quick",
+          "decision_id": null,
           "detail": "Bash",
           "exit_code": null,
           "id": "Approval:/tmp/repo-login/a1",

@@ -13,7 +13,21 @@ ACTIONABLE = {
     "level": "now", "title": "Needs approval", "label": "Agent a1", "detail": "Bash",
     "state": "approve: Bash", "work_item": "r:feat", "worktree_path": "/r", "agent_id": "a1",
     "pr": None, "job_id": None, "exit_code": None, "blocks_agent": True, "priority": "medium",
-    "since": 1.0, "park": None,
+    "since": 1.0, "park": None, "class": "quick", "decision_id": None,
+}
+
+DECISION = {
+    "id": "d1", "key": "r:feat", "worktree_path": "/r", "agent": "a1", "holder": "user",
+    "replaces": None, "state": "open", "valid": True, "class": "deep", "blocking": False,
+    "brief": {
+        "question": "Retries: fixed or exponential?",
+        "options": [{"key": "A", "label": "Exponential"}, {"key": "B", "label": "Fixed"}],
+        "recommendation": "A", "tried": "fixed: 3/30 time out",
+        "evidence": [{"kind": "diff", "path": "src/retry.py", "sha": "abc123"}],
+        "reversible": "yes", "impact_if_wrong": "slower failures",
+    },
+    "invalid": [], "problems": [], "sha": "abc123", "created_at": 1.0, "closed_at": None,
+    "answer": None,
 }
 
 CLAIM = {
@@ -86,7 +100,7 @@ EVENT_SAMPLES = {
     },
     "notes.updated": {
         "worktree_path": "/r", "agent_id": "a2", "notes_id": "3f2a9c1d0b7e", "rev": 4,
-        "size": 312, "by": "user",
+        "size": 312, "by": "user", "sections": ["Decisions"],
     },
     "notes.removed": {
         "notes_id": "3f2a9c1d0b7e", "worktree_path": "/r", "agent_id": "a2",
@@ -118,6 +132,12 @@ EVENT_SAMPLES = {
         "key": "r:feat", "outcome": "done", "note": "rebased", "claim": CLAIM,
     },
     "orchestrator.lapsed": {"key": "r:feat", "reason": "expired", "claim": CLAIM},
+    "status.timeline": {
+        "key": "r:feat",
+        "entry": {"at": 1.0, "kind": "commit", "actor": "engine", "text": "commit abc123", "ref": "abc123"},
+    },
+    "decision.created": {"decision": DECISION},
+    "decision.resolved": {"decision": {**DECISION, "state": "withdrawn", "closed_at": 2.0}},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

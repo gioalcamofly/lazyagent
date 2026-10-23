@@ -1,0 +1,43 @@
+{
+  "case": "request_decision/error_over_the_limit",
+  "method": "request_decision",
+  "params": {
+    "caller": "tok-a2",
+    "evidence": [
+      {
+        "hunk": "@@ -40,7 +40,12 @@",
+        "kind": "diff",
+        "path": "src/retry.py"
+      },
+      {
+        "kind": "log",
+        "lines": "120-134",
+        "ref": "job:tests"
+      }
+    ],
+    "impact_if_wrong": "slower failures under load",
+    "options": [
+      {
+        "consequence": "slower failure on outages",
+        "key": "A",
+        "label": "Exponential, cap 30 s"
+      },
+      {
+        "consequence": "3/30 runs time out",
+        "key": "B",
+        "label": "Fixed 2 s, 5 tries"
+      }
+    ],
+    "question": "Retries: fixed or exponential backoff?",
+    "recommendation": "A",
+    "reversible": "yes",
+    "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "You already have 2 open briefs (d1, d2), the limit per agent: withdraw one with decision_withdraw, replace one (replaces=<id>), or wait for the user's answer"
+    },
+    "id": "req-1"
+  }
+}

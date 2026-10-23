@@ -1,0 +1,92 @@
+{
+  "case": "request_decision/brief",
+  "method": "request_decision",
+  "params": {
+    "caller": "tok-a2",
+    "evidence": [
+      {
+        "hunk": "@@ -40,7 +40,12 @@",
+        "kind": "diff",
+        "path": "src/retry.py"
+      },
+      {
+        "kind": "log",
+        "lines": "120-134",
+        "ref": "job:tests"
+      }
+    ],
+    "impact_if_wrong": "slower failures under load",
+    "options": [
+      {
+        "consequence": "slower failure on outages",
+        "key": "A",
+        "label": "Exponential, cap 30 s"
+      },
+      {
+        "consequence": "3/30 runs time out",
+        "key": "B",
+        "label": "Fixed 2 s, 5 tries"
+      }
+    ],
+    "question": "Retries: fixed or exponential backoff?",
+    "recommendation": "A",
+    "reversible": "yes",
+    "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "decision": {
+        "agent": "a2",
+        "answer": null,
+        "blocking": false,
+        "brief": {
+          "evidence": [
+            {
+              "hunk": "@@ -40,7 +40,12 @@",
+              "kind": "diff",
+              "path": "src/retry.py",
+              "sha": "abc123"
+            },
+            {
+              "kind": "log",
+              "lines": "120-134",
+              "ref": "job:tests"
+            }
+          ],
+          "impact_if_wrong": "slower failures under load",
+          "options": [
+            {
+              "consequence": "slower failure on outages",
+              "key": "A",
+              "label": "Exponential, cap 30 s"
+            },
+            {
+              "consequence": "3/30 runs time out",
+              "key": "B",
+              "label": "Fixed 2 s, 5 tries"
+            }
+          ],
+          "question": "Retries: fixed or exponential backoff?",
+          "recommendation": "A",
+          "reversible": "yes",
+          "tried": "fixed 2 s: 3 of 30 runs hit the 10 s limit"
+        },
+        "class": "deep",
+        "closed_at": null,
+        "created_at": 1700000000.0,
+        "holder": "user",
+        "id": "d1",
+        "invalid": [],
+        "key": "repo:export-csv",
+        "problems": [],
+        "replaces": null,
+        "sha": "abc123",
+        "state": "open",
+        "valid": true,
+        "worktree_path": "/tmp/repo-export"
+      },
+      "message": "Brief d1 is in the user's To sit down with. Keep working on what does not depend on it; the answer comes as a line \"Decision d1: \u2026\" when you are idle. Withdraw it with decision_withdraw if you no longer need it."
+    }
+  }
+}

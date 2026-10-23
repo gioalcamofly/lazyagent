@@ -1,0 +1,16 @@
+{
+  "case": "status_seen/item",
+  "method": "status_seen",
+  "params": {
+    "key": "repo:export-csv"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "client": "user",
+      "seen": {
+        "repo:export-csv": 1700000000.0
+      }
+    }
+  }
+}

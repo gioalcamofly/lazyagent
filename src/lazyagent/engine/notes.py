@@ -264,6 +264,28 @@ def _section_bounds(lines: list[str], name: str) -> tuple[int, int] | None:
     return None if start is None else (start, len(lines))
 
 
+def _sections(text: str) -> dict[str, list[str]]:
+    """Each ``##`` section's body lines (blank lines dropped), by heading."""
+    out: dict[str, list[str]] = {}
+    body: list[str] | None = None
+    for line in text.splitlines():
+        match = _HEADING.match(line)
+        if match is not None:
+            body = out.setdefault(match.group(1).strip(), [])
+        elif body is not None and line.strip():
+            body.append(line.rstrip())
+    return out
+
+
+def changed_sections(before: str, after: str) -> list[str]:
+    """The headings whose body differs between two texts, in ``after``'s
+    order (then the ones removed)."""
+    old, new = _sections(before), _sections(after)
+    names = list(new) + [n for n in old if n not in new]
+    # A section dropped with nothing in it changed nothing.
+    return [n for n in names if old.get(n, []) != new.get(n, [])]
+
+
 def _join(lines: list[str]) -> str:
     while lines and not lines[-1].strip():
         lines.pop()
@@ -571,6 +593,7 @@ class NotesStore:
         meta.rev += 1
         meta.by = by
         meta.updated_at = self._clock()
+        sections = changed_sections(self._texts.get(notes_id, ""), text)
         self._texts[notes_id] = text
         self._schedule(notes_id)
         notes = Notes(replace(meta), text, self.max_bytes)
@@ -583,6 +606,7 @@ class NotesStore:
                 "rev": meta.rev,
                 "size": notes.size,
                 "by": by,
+                "sections": sections,
             },
         )
         return notes

@@ -40,7 +40,8 @@ async def test_a_row_change_is_pushed_as_status_updated(client, harness):
     validation.validate_result(
         "status_list",
         {"rows": [event.data["row"]], "counts": {k: 0 for k in (
-            "now", "round", "in_flight", "done", "stale", "not_started")},
+            "now", "round", "deep", "in_flight", "done", "stale", "not_started",
+            "deep_max")},
          "generated_at": 0.0},
         strict=True,
     )

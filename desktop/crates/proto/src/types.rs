@@ -571,7 +571,7 @@ pub struct StatusRow {
     pub urls: Vec<String>,
     /// `inbox` · `in_flight`.
     pub zone: String,
-    /// `now` · `round` (inbox rows only).
+    /// `now` · `round` · `deep` (inbox rows only).
     pub level: Option<String>,
     /// `you` · `agent` · `others` · `stalled` · `done`.
     pub ball: String,
@@ -583,6 +583,7 @@ pub struct StatusRow {
     pub agents: Vec<RowAgent>,
     pub pr: Option<RowPr>,
     pub note: Option<RowNote>,
+    /// The user's label, park or close (feature `gestures`).
     pub gesture: Option<Value>,
     /// Older engines (before Pass to orchestrator) do not send it.
     #[serde(default)]
@@ -593,6 +594,16 @@ pub struct StatusRow {
     pub stale: bool,
     pub changed_at: f64,
     pub fingerprint: String,
+    /// `quick` · `deep` for inbox rows (feature `gestures`; older engines
+    /// do not send it, nor the two below).
+    #[serde(default)]
+    pub class: Option<String>,
+    /// The user's last look at the row (`status_seen`).
+    #[serde(default)]
+    pub seen_at: Option<f64>,
+    /// Its latest timeline entry (`status_timeline`).
+    #[serde(default)]
+    pub last_event_at: Option<f64>,
 }
 
 /// A row's tracker task: read-only, the last good value when `stale`.
@@ -661,6 +672,11 @@ pub struct StatusCounts {
     pub done: u32,
     pub stale: u32,
     pub not_started: u32,
+    /// "To sit down with" rows, and `[inbox] deep_max` (older engines: 0).
+    #[serde(default)]
+    pub deep: u32,
+    #[serde(default)]
+    pub deep_max: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -675,6 +691,9 @@ pub struct StatusList {
 pub struct StatusGestureResult {
     pub key: String,
     pub claim: Option<Claim>,
+    /// The row's gesture now (feature `gestures`).
+    #[serde(default)]
+    pub gesture: Option<Value>,
     pub row: Option<StatusRow>,
 }
 
@@ -700,6 +719,12 @@ pub struct Actionable {
     pub priority: String,
     pub since: f64,
     pub park: Option<Value>,
+    /// `quick` · `deep` (feature `gestures`; older engines: absent).
+    #[serde(default)]
+    pub class: Option<String>,
+    /// A `decision` item's brief (feature `decisions`).
+    #[serde(default)]
+    pub decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -714,6 +739,10 @@ pub struct ActionableCounts {
     pub now: u32,
     pub round: u32,
     pub parked: u32,
+    #[serde(default)]
+    pub deep: u32,
+    #[serde(default)]
+    pub deep_max: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

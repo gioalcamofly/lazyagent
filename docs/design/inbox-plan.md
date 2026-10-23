@@ -440,6 +440,54 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - Screenshots: [dark](desktop-screenshots/i3-home-dark.png) and [light](desktop-screenshots/i3-home-light.png), neutral demo data, rendered by the `home_screenshots` test.
 - Tests: `tests/engine/test_claims.py` (10), MCP release in `tests/test_mcp_status.py`, golden fixtures `status_gesture/*` and `orchestrator_release/*`. Desktop: `home.rs` units (order, rounds, one line per item, ages), persist (marks import), headless Home tests (opens on Home, frozen order, rounds, resolved count, pass gating), and a real-engine pass / take back.
 
+**I4a** (`inbox-i4a-briefs-gestures`; I4 lands in three branches: I4a the engine side of briefs and gestures, I4b the orchestrator as first responder, I4c the desktop):
+
+- `engine/overlay.py`: the store of §2's overlay, `state_dir()/status/<repo digest>.json` (0600, atomic, at most one write a second), kept by the engine that owns the repo, as the actionables marks. It holds gestures, agents' reports, 24 h tombstones, the timeline, per-client seen marks and the briefs (plus their id counter: `d1`, `d2`, …).
+- **Gestures** (`status_gesture`, user only; `delegate` as in I3):
+  - `label {ball: agent | others | stalled, text ≤ 40}` is rule 8: it sets the ball only, the state stays the fact underneath (Q-B7); the CLI/MCP table shows `QA · <state>`.
+  - It holds while its basis holds: the PR (which one, its state, its review decision) and "CI red". A conflict, a CI run or a red that clears do not end it; a merge, a close, a new PR, a review change or a new red do. Rules 1-6 still come first, so a conflicting labelled row sits in the inbox and comes back labelled once fixed (the acceptance case).
+  - `park {until}` is rule 7 (time or `ci_done` · `agent_stopped` · `human_review`, the inbox park's rules): the row is in flight with the ball of rules 9-12 and `parked until …`. It does not park the item's inbox items (they have their own park).
+  - `close {how: done | dropped}` is rule 1 (`closed by you` / `dropped by you`). It ends like a label, or when a new agent starts running there (work resumed). Closing a passed item takes the pass back.
+  - `clear` drops the gesture and takes back a pass. The row's `gesture` is `{kind, at, by, ball?, text?, until?, how?}`.
+- **Reports** (`status_report {note, ball?, needs_user?, outward?}`, a worker's token, its own work item; the orchestrator and token-less calls are refused):
+  - `needs_user` is a `report` inbox item (Round, Quick). `needs_user` and `ball` last until the agent has ended a turn (`waiting*`, `completed`, `interrupted`) and runs again, is sent input (`send_agent_input`), or is gone.
+  - The note (≤ 200) stays as the row's `note` (`by: agent:<id>`) while it is newer than the notes' bullet.
+  - A reported ball is placed like a tracker's (Q-B20): after rule 9, before 10.
+  - `outward {kind, ref?, text?}` only adds a timeline entry by `agent:<id>`.
+- **Tombstones:** a row that becomes done (merged, PR closed, closed by the user) or loses its worktree is recorded in `closed` once, and its open briefs expire. A removed worktree's row stays a done row (`worktree removed`, hidden unless `include_done`) for 24 h, then `status.removed` and its gestures, report, timeline and seen marks go. This changes I1: a removed worktree now emits `status.updated` (done) first, `status.removed` a day later. A merged row whose worktree stays keeps its tombstone.
+- **Timeline** (ring per item: 50 entries, 7 days; `{at, kind, actor, text, ref?}`, no generated text):
+  - `commit`: a newer branch commit time from the `for-each-ref` scan, at the commit's own time, ref the worktree head.
+  - `ci`: CI turned green or red.
+  - `review`: a new review decision.
+  - `ball` / `state`: the row's fingerprint changed (not a tool line); `state` only when no `ci` / `review` entry says it.
+  - `notes`: `notes.updated` now carries `sections`, the headings whose body changed.
+  - `decision`: asked, withdrawn, superseded, expired.
+  - `outward`.
+  - Actors: `engine` for what it saw, `user` for a gesture, `agent:<id>`, `orchestrator`. `status.timeline {key, entry}` per entry.
+- **Seen:** `status_seen {key?, at?, client?}` (default client `user`; no key = mark all seen, which drops the per-item marks; never later than now). `status_timeline {key, since?, client?}` gives the entries since the client's last look at the item. Rows carry `seen_at` and `last_event_at`: a dot is `last_event_at > seen_at`.
+- **Quick / Deep:** a third level, `deep` ("To sit down with"), after Round; `class` (`quick` · `deep`) on items and inbox rows.
+  - Fixed per kind (0013 "Class per kind"): `review` (changes requested) and `done` (a finished branch to review) are now Deep; every other kind stays Quick. The no-queue derivation (rules 5 and 6) says the same.
+  - New kinds: `report` (Round) and `decision` (the brief's own level).
+  - Counts gain `deep` and `deep_max` (`[inbox] deep_max`, 5), in `actionables_list` and `status_list`; nothing is refused over it.
+  - The I3 desktop shows `deep` lines in its Round until I4c.
+- `engine/decisions.py` (§5b): `request_decision` (a worker's token, its own work item), `decision_withdraw {id}`, `decision_get {id}`, `decisions_list {key?, state?}`.
+  - Validation: fewer than 2 options, a recommendation that is not an option key (case-insensitive), or no usable evidence makes the brief invalid. It is still kept, as a Quick item `agent <id> asks: <question>` (detail "open terminal"); the agent is told why.
+  - Caps: question 200, option label 120, consequence 200, tried 600 (keeps line breaks), impact 200; more than 4 options or 8 pieces of evidence keep the first ones. Everything else is one line of plain text. No question at all is refused.
+  - Evidence: `diff` / `file` paths must resolve inside the worktree (kept relative) or are dropped. `sha` defaults to the head at request time (`git rev-parse HEAD`, else the worktree scan's). `url` is http(s) only. `reversible` outside `yes` · `partly` · `no` is kept as null.
+  - Level: deep, or for a quick one (declared `class: "quick"`, or invalid) Round, Now when `blocking`. `blocking` also sorts it first. While an agent has an open brief, its `question` item is left out.
+  - Limit: `[inbox] max_briefs_per_agent` (2) open briefs per agent; a third is refused with a message naming them. `replaces: <id>` (one of its own open briefs) supersedes it instead.
+  - Lifecycle: `open` → `answered` → `resolved` (the last two are I5's); `withdrawn`, `superseded`, `expired` (work item closed). Closed briefs are kept 30 days.
+  - Every brief carries `holder` (`user`; I4b routes to the orchestrator) and `replaces`. Events: `decision.created`, `decision.resolved` (any close; `state` says which).
+- **Tool discovery** (Q-B34 a, b, d):
+  - MCP `status_report`, `request_decision` (with the §5b template in its description; `class` is `decision_class` there, a Python keyword) and `decision_withdraw` each say when to use them; so does `notes_append`.
+  - `worker_prompt.py`: a fixed preamble of about ten lines. Claude gets it with `--append-system-prompt`; a provider with no system-prompt flag (Codex, Gemini) gets it prepended to the instruction, and none when it starts with no instruction (it would become its first prompt). The manifest keeps the user's instruction, not the preamble.
+  - `.lazyagent.toml` `[agents] worker_preamble` replaces it, `""` turns it off; `[agent] worker_preamble` is read too, `[agents]` wins.
+  - The orchestrator prompt only gains a short "Briefs" note.
+- Features `gestures` and `decisions`. Schemas: `gesture`, `timeline_entry`, `decision*`, the new methods, `status.timeline`, `decision.*`, `status_row.{class, seen_at, last_event_at}`, `actionable.{class, decision_id}`, the counts, `notes.updated.sections`; golden fixtures for every new method.
+- Desktop: only `proto` (`types.rs` carries the new fields, all optional for older engines; `golden.rs` skips the new methods and events). No UI.
+- Not in I4a: the orchestrator's routing, presence, mandate, caps on autonomy, escalation and Revert (I4b); the desktop's gestures, To sit down with zone and per-item dots (I4c); answers and the decision view (I5).
+- Tests: `tests/engine/test_overlay.py`, `test_decisions.py`, `test_worker_preamble.py`, MCP in `tests/test_mcp_status.py`.
+
 ---
 
 ## 9. Open questions (answered 2026-10-23)

@@ -71,6 +71,8 @@ from lazyagent.engine.manifest import (
 )
 from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
 from lazyagent.engine.claims import Claims
+from lazyagent.engine.decisions import Decisions
+from lazyagent.engine.overlay import Overlay, overlay_path
 from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
     ADOPTED,
@@ -122,6 +124,7 @@ from lazyagent.models import (
     rollup_status,
 )
 from lazyagent.orchestrator_prompt import compose_orchestrator_prompt
+from lazyagent.worker_prompt import worker_system_prompt
 from lazyagent.worktree_manager import (
     WorktreeManager,
     WorktreeManagerError,
@@ -270,9 +273,14 @@ class Engine:
         # with the inbox queue they read.
         self.actionables = ActionableQueue(self)
         self.actionables.add_detector(lambda snap: tracker_items(self.trackers, snap))
+        # What rows cannot derive: gestures, reports, tombstones, timeline,
+        # seen marks and briefs.
+        self.overlay = Overlay(self)
+        self.actionables.add_detector(self.overlay.items)
         self.status = StatusProjection(self)
         # Pass to orchestrator (claims on work items): rows and queue read it.
         self.claims = Claims(self)
+        self.decisions = Decisions(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()
 
@@ -352,6 +360,7 @@ class Engine:
         # Marks are kept by the engine that owns the repo (as the manifest).
         if self.manifest is not None and self.repo_root:
             self.actionables.open(actionables_path(self.repo_root))
+            self.overlay.open(overlay_path(self.repo_root))
         self.actionables.start()
         self.status.start()
         if (
@@ -374,6 +383,7 @@ class Engine:
         self._scheduler.stop()
         self.status.stop()
         self.actionables.stop()
+        self.overlay.save()
         self.worktree_service.stop()
         for task in list(self._tasks):
             task.cancel()
@@ -1038,6 +1048,7 @@ class Engine:
                 skip_permissions=skip_permissions,
                 resume_mode=resume_mode,
                 instruction=instruction,
+                system_prompt=worker_system_prompt(self.config, provider, instruction),
                 session_name=session_name,
                 env=env,
                 spawn_id=spawn_id,
@@ -1404,8 +1415,31 @@ class Engine:
         if session is None or not session.running:
             raise ValueError("Agent terminal is not ready")
         await session.send_input(text, submit=submit)
+        self.status.input_sent(key, agent_id)
         if self.manifest is not None:
             self.manifest.update(key, agent_id, instruction=clip_instruction(text))
+
+    async def head_sha(self, path: str) -> str | None:
+        """The worktree's HEAD commit now (``git rev-parse``), else the one
+        the last worktree scan saw."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "-C", path, "rev-parse", "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), 5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise
+            sha = out.decode().strip()
+            if proc.returncode == 0 and sha:
+                return sha
+        except (OSError, asyncio.TimeoutError):
+            pass
+        wt = self.worktree(path)
+        return wt.head if wt is not None and wt.head else None
 
     def read_agent_output(
         self, key: str, agent_id: str, lines: int

@@ -1,0 +1,62 @@
+{
+  "case": "status_gesture/close",
+  "method": "status_gesture",
+  "params": {
+    "how": "dropped",
+    "key": "repo:docs-index",
+    "kind": "close"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "by": "user",
+        "how": "dropped",
+        "kind": "close"
+      },
+      "key": "repo:docs-index",
+      "row": {
+        "agents": [],
+        "ball": "done",
+        "blocks_agent": false,
+        "branch": "docs-index",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "fingerprint": "c082bef340c2",
+        "gesture": {
+          "at": 1700000000.0,
+          "by": "user",
+          "how": "dropped",
+          "kind": "close"
+        },
+        "key": "repo:docs-index",
+        "last_event_at": 1700000000.0,
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": {
+          "ci": "green",
+          "mergeable": "MERGEABLE",
+          "number": 14,
+          "review": "APPROVED",
+          "state": "OPEN"
+        },
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 1,
+        "seen_at": null,
+        "stale": false,
+        "state": "dropped by you",
+        "title": "Index the docs",
+        "urls": [
+          "https://example.com/pull/14"
+        ],
+        "worktree_path": "/tmp/repo-docs",
+        "zone": "in_flight"
+      }
+    }
+  }
+}

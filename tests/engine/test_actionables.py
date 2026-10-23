@@ -162,13 +162,14 @@ def test_open_prs_exits_and_jobs():
     ]
     got = _items(engine)
     # Same level, age and rank: by id.
-    assert [i["kind"] for i in got] == ["exited", "ci", "conflict", "review", "job"]
+    # Changes requested needs reading: deep, after the round.
+    assert [i["kind"] for i in got] == ["exited", "ci", "conflict", "job", "review"]
     ci = got[1]
     assert (ci["detail"], ci["state"], ci["label"]) == ("tests", "CI red: tests", "#7 Login")
     assert ci["pr"] == {"number": 7, "title": "Login", "url": "https://example.com/pull/7"}
     assert ci["work_item"] == "repo:feat"
     assert got[0]["detail"] == "exited with code 2" and got[0]["work_item"] == "repo:fix-typo"
-    assert (got[4]["label"], got[4]["detail"], got[4]["work_item"]) == ("Create x", "exit 1", None)
+    assert (got[3]["label"], got[3]["detail"], got[3]["work_item"]) == ("Create x", "exit 1", None)
     # A merged PR asks for nothing.
     engine.worktree_service._pr_infos[FEAT] = _pr(RED, state="MERGED")
     assert _kinds(engine) == ["exited", "job"]
@@ -191,8 +192,9 @@ def test_dismissals_are_pruned_after_a_week():
 def test_every_kind_has_its_fixed_level():
     assert {k: v.level for k, v in KINDS.items()} == {
         "approval": "now", "question": "now", "hanged": "round", "failed": "round",
-        "exited": "round", "ci": "round", "review": "round", "conflict": "round",
-        "done": "round", "job": "round", "delegation": "round",
+        "exited": "round", "ci": "round", "review": "deep", "conflict": "round",
+        "done": "deep", "job": "round", "delegation": "round", "report": "round",
+        "decision": "deep",
         # Its default: an item carries the tracker mapping's level.
         "tracker_status": "round",
     }
@@ -307,7 +309,7 @@ def test_parked_items_are_listed_on_request_and_unparked():
     assert marked["park"] == {"until": NOW + 60, "at": NOW, "by": "user"}
     result = engine.actionables.list(include_hidden=True)
     assert [i["park"]["until"] for i in result["items"]] == [NOW + 60]
-    assert result["counts"] == {"now": 0, "round": 0, "parked": 1}
+    assert result["counts"] == {"now": 0, "round": 0, "deep": 0, "deep_max": 5, "parked": 1}
     assert engine.actionables.get(item["id"])["park"] is not None
     engine.actionables.mark(item["id"], "unpark")
     assert [i["park"] for i in _items(engine)] == [None]
@@ -500,7 +502,7 @@ async def test_methods_list_get_and_mark():
     _agent(engine, FEAT, "a1", "waiting_for_approval")
     result = await methods.actionables_list({})
     [item] = result["items"]
-    assert result["counts"] == {"now": 1, "round": 0, "parked": 0}
+    assert result["counts"] == {"now": 1, "round": 0, "deep": 0, "deep_max": 5, "parked": 0}
     assert result["generated_at"] == NOW
     assert (await methods.actionables_list({"repo": "other"}))["items"] == []
     assert (await methods.actionables_get({"id": item["id"]}))["item"]["id"] == item["id"]

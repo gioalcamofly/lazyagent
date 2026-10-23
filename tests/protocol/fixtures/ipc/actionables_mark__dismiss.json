@@ -11,6 +11,8 @@
       "item": {
         "agent_id": "a1",
         "blocks_agent": true,
+        "class": "quick",
+        "decision_id": null,
         "detail": "Bash",
         "exit_code": null,
         "id": "Approval:/tmp/repo-login/a1",

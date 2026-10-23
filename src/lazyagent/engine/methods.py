@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
+from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
 from lazyagent.engine.notes import MODES as NOTES_MODES
 from lazyagent.engine.notes import Notes, NotesConflict, NotesStore
@@ -93,6 +94,13 @@ def check_env(env: Any) -> dict[str, str] | None:
     ):
         raise ValueError("env must be an object of string values")
     return env
+
+
+def _decision_id(params: dict) -> str:
+    decision_id = params.get("id")
+    if not isinstance(decision_id, str) or not decision_id:
+        raise ValueError("id is required: a decision id (e.g. d3)")
+    return decision_id
 
 
 def _item_id(params: dict) -> str:
@@ -185,6 +193,13 @@ class EngineMethods:
             "actionables_mark": self.actionables_mark,
             "status_gesture": self.status_gesture,
             "orchestrator_release": self.orchestrator_release,
+            "status_report": self.status_report,
+            "status_seen": self.status_seen,
+            "status_timeline": self.status_timeline,
+            "request_decision": self.request_decision,
+            "decision_withdraw": self.decision_withdraw,
+            "decision_get": self.decision_get,
+            "decisions_list": self.decisions_list,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -932,32 +947,223 @@ class EngineMethods:
         return key
 
     async def status_gesture(self, params: dict) -> Any:
-        """The user's gesture on a work item. Params: key, kind (``delegate``:
-        pass it to the orchestrator, with ``to: "orchestrator"`` and an
-        optional ``ttl_s``; ``clear``: take it back). The user's only (no
-        token). Label, park and close come later (I4)."""
+        """The user's gesture on a work item. Params: key, kind:
+
+        - ``label``: ``ball`` (agent, others, stalled) and an optional short
+          ``text``; it holds until the item's facts cross a rule (the PR
+          opens, merges or closes, its review changes, CI turns red anew);
+        - ``park``: ``until`` a future Unix time or an event (ci_done,
+          agent_stopped, human_review);
+        - ``close``: ``how`` (done, dropped), for what the engine cannot see;
+        - ``delegate``: pass it to the orchestrator (``to: "orchestrator"``,
+          optional ``ttl_s``);
+        - ``clear``: drop the gesture and take back a pass.
+
+        The user's only (no token)."""
         role, _ = self._caller(params)
         if role != USER_BY:
             raise ValueError("Only the user makes gestures on work items")
         key = self._key(params)
         kind = params.get("kind")
-        claims = self._engine.claims
+        engine = self._engine
+        claims = engine.claims
+        status = engine.status
+        claim = None
         if kind == "delegate":
             to = params.get("to", "orchestrator")
             if to != "orchestrator":
                 raise ValueError("to must be 'orchestrator'")
             claim = claims.claim(key, ttl_s=params.get("ttl_s"), by=role)
         elif kind == "clear":
-            claims.clear(key)
-            claim = None
+            gesture = engine.overlay.clear_gesture(key)
+            if claims.get(key) is not None:
+                claims.clear(key)
+            elif gesture is None:
+                raise ValueError(f"{key} has no gesture and is not with the orchestrator")
+            status.by(key, role)
+        elif kind in ("label", "park", "close"):
+            row = status.row(key)
+            facts = status.facts(key)
+            if row is None or facts is None:
+                raise ValueError(f"No work item {key!r}")
+            if row["ball"] == "done" and engine.overlay.gestures.get(key, {}).get("kind") != "close":
+                raise ValueError(f"{key} is done: nothing to {kind}")
+            engine.overlay.set_gesture(
+                facts,
+                kind,
+                now=status.clock(),
+                ball=params.get("ball"),
+                text=params.get("text"),
+                until=params.get("until"),
+                how=params.get("how"),
+                by=role,
+            )
+            if kind == "close" and claims.get(key) is not None:
+                claims.clear(key)
+            status.by(key, role)
         else:
-            raise ValueError("kind must be one of delegate, clear")
-        self._engine.status.flush()
+            raise ValueError("kind must be one of label, park, close, delegate, clear")
+        status.flush()
+        row = status.row(key)
         return {
             "key": key,
-            "claim": claim.to_dict() if claim is not None else None,
-            "row": self._engine.status.row(key),
+            "claim": claim.to_dict() if claim is not None else claims.get(key),
+            "gesture": row["gesture"] if row is not None else None,
+            "row": row,
         }
+
+    def _worker(self, params: dict, what: str) -> tuple[str, str, str]:
+        """``(worktree_path, agent_id, work item key)`` of a call that must
+        come from a worker's token."""
+        role, slot = self._caller(params)
+        if slot is None:
+            raise ValueError(
+                f"{what} needs the agent's token: call it from the lazyagent_app "
+                "MCP server of an agent lazyagent spawned"
+            )
+        if role == ORCHESTRATOR_BY:
+            raise ValueError(f"{what} is for a worker's own work item, not the orchestrator")
+        path, agent_id = slot
+        key = self._engine.status.key_of(path)
+        if key is None:
+            raise ValueError(f"No work item for {path}")
+        return path, agent_id, key
+
+    async def status_report(self, params: dict) -> Any:
+        """An agent reports on its own work item. Params: note (one line),
+        ball (agent, others, stalled; optional), needs_user (bool), outward
+        (optional ``{kind, ref, text}``: something it did outside the repo,
+        added to the item's timeline), caller (the agent's token)."""
+        path, agent_id, key = self._worker(params, "status_report")
+        note = params.get("note", "")
+        if not isinstance(note, str):
+            raise ValueError("note must be a string")
+        ball = params.get("ball")
+        if ball is not None and ball not in overlay_mod.REPORT_BALLS:
+            hint = " (use needs_user=true)" if ball == "you" else ""
+            raise ValueError(
+                f"ball must be one of {', '.join(overlay_mod.REPORT_BALLS)}{hint}"
+            )
+        needs_user = params.get("needs_user", False)
+        if type(needs_user) is not bool:
+            raise ValueError("needs_user must be a boolean")
+        outward = params.get("outward")
+        if outward is not None:
+            if not isinstance(outward, dict) or not isinstance(outward.get("kind"), str) \
+                    or not outward["kind"].strip():
+                raise ValueError("outward must be {kind, ref?, text?} with a kind")
+            for name in ("ref", "text"):
+                if outward.get(name) is not None and not isinstance(outward[name], str):
+                    raise ValueError(f"outward.{name} must be a string")
+        if not note.strip() and outward is None and ball is None and not needs_user:
+            raise ValueError("Nothing to report: give a note, a ball, needs_user or outward")
+        engine = self._engine
+        now = engine.status.clock()
+        overlay = engine.overlay
+        report = None
+        if note.strip() or ball is not None or needs_user:
+            info = engine.get_agent(path, agent_id)
+            report = overlay.report(
+                key, path, agent_id,
+                note=note, ball=ball, needs_user=needs_user,
+                label=info.label if info is not None else "", now=now,
+            )
+        entry = None
+        if outward is not None:
+            kind = overlay_mod.one_line(outward["kind"], overlay_mod.OUTWARD_KIND_CHARS)
+            text = (outward.get("text") or "").strip()
+            entry = overlay.add(
+                key, "outward", f"agent:{agent_id}",
+                f"{kind}: {text}" if text else kind,
+                ref=overlay_mod.one_line(outward.get("ref") or "", overlay_mod.OUTWARD_REF_CHARS)
+                or None,
+            )
+        engine.status.mark_dirty()
+        return {"key": key, "report": report, "outward": entry}
+
+    @staticmethod
+    def _client(params: dict) -> str:
+        client = params.get("client", overlay_mod.DEFAULT_CLIENT)
+        if not isinstance(client, str) or not client or len(client) > overlay_mod.CLIENT_CHARS:
+            raise ValueError("client must be a short string")
+        return client
+
+    async def status_seen(self, params: dict) -> Any:
+        """The user looked: at one work item (``key``) or at everything (no
+        key: "mark all seen"). Params: key?, at? (Unix time, default now),
+        client? (whose look, default ``user``)."""
+        client = self._client(params)
+        key = params.get("key")
+        if key is not None and (not isinstance(key, str) or not key):
+            raise ValueError("key must be a work item key")
+        now = self._engine.status.clock()
+        at = params.get("at", now)
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            raise ValueError("at must be a Unix time")
+        seen = self._engine.overlay.mark_seen(client, key, min(float(at), now))
+        self._engine.status.mark_dirty()
+        return {"client": client, "seen": seen}
+
+    async def status_timeline(self, params: dict) -> Any:
+        """A work item's timeline: facts since the last look at it (or
+        ``since``; all of them with neither). Params: key, since?, client?."""
+        key = self._key(params)
+        client = self._client(params)
+        overlay = self._engine.overlay
+        seen_at = overlay.seen_at(key, client)
+        since = params.get("since", seen_at)
+        if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))):
+            raise ValueError("since must be a Unix time")
+        return {
+            "key": key,
+            "since": since,
+            "seen_at": seen_at,
+            "entries": overlay.entries(key, since),
+        }
+
+    async def request_decision(self, params: dict) -> Any:
+        """An agent asks the user for a choice that needs reading (a brief).
+        Params: question, options [{key, label, consequence?}] (2-4),
+        recommendation (an option's key), tried, evidence [{kind: diff |
+        log | file | notes | url, ...}] (1-8), reversible (yes, partly, no),
+        impact_if_wrong, class? (deep, quick), blocking?, replaces? (one of
+        its open briefs), caller (the agent's token)."""
+        path, agent_id, key = self._worker(params, "request_decision")
+        engine = self._engine
+        head = await engine.head_sha(path)
+        record, message = engine.decisions.request(
+            params,
+            key=key,
+            worktree_path=path,
+            agent_id=agent_id,
+            head=head,
+            now=engine.status.clock(),
+        )
+        engine.status.flush()
+        return {"decision": record, "message": message}
+
+    async def decision_withdraw(self, params: dict) -> Any:
+        """An agent withdraws one of its open briefs. Params: id, caller."""
+        path, agent_id, _ = self._worker(params, "decision_withdraw")
+        record = self._engine.decisions.withdraw(
+            _decision_id(params), path, agent_id, self._engine.status.clock()
+        )
+        self._engine.status.flush()
+        return {"decision": record}
+
+    async def decision_get(self, params: dict) -> Any:
+        """One brief, in any state. Params: id."""
+        return {"decision": self._engine.decisions.get(_decision_id(params))}
+
+    async def decisions_list(self, params: dict) -> Any:
+        """Briefs, newest first. Params: key? (one work item), state?."""
+        key = params.get("key")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("key must be a string")
+        state = params.get("state")
+        if state is not None and not isinstance(state, str):
+            raise ValueError("state must be a string")
+        return {"decisions": self._engine.decisions.list(key=key, state=state)}
 
     async def orchestrator_release(self, params: dict) -> Any:
         """The orchestrator ends its claim on a work item. Params: key,
