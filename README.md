@@ -234,6 +234,20 @@ provider = "claude"
 # default, which holds such messages until a human approves them.
 # cross_session_inbound = "accept"
 
+[agents]
+# A few fixed lines every worker lazyagent spawns gets (when to report with
+# status_report, when to write a decision brief with request_decision, keep
+# its notes): Claude as an appended system prompt, Codex and Gemini before the
+# instruction. Replace the text here, or turn it off with "".
+# worker_preamble = ""
+
+[inbox]
+# "To sit down with" (decision briefs, changes requested, a finished branch to
+# review) shows its count against this; nothing is refused over it.
+# deep_max = 5
+# Open decision briefs per agent; a third one is refused (0: no limit).
+# max_briefs_per_agent = 2
+
 [worktree]
 # Custom command templates for worktree management. They run in the repo root,
 # and their output shows in a log under the worktree view while they run.
