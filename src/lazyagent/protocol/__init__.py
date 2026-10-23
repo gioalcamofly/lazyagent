@@ -52,8 +52,12 @@ LEGACY_METHODS: tuple[str, ...] = (
     "review_register",
     "review_reply",
     "review_replies",
-    # Work items (proposal 0013), on the legacy socket for the MCP tool.
+    # Work items and the inbox (proposal 0013), on the legacy socket for
+    # the MCP tools.
     "status_list",
+    "actionables_list",
+    "actionables_get",
+    "actionables_mark",
 )
 
 # The methods protocol v1 adds.
@@ -115,6 +119,9 @@ EVENTS: tuple[str, ...] = (
     "review.replied",
     "status.updated",
     "status.removed",
+    "actionable.created",
+    "actionable.updated",
+    "actionable.resolved",
     "ui.command",
     "ui.view_changed",
 )

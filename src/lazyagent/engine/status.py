@@ -26,7 +26,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.models import AgentStatus, PrInfo
@@ -112,6 +112,9 @@ class Facts:
     commit_time: float | None = None
     restorable: int = 0
     note: dict[str, Any] | None = None
+    # The work item's open inbox items (engine/actionables.py), top first;
+    # None derives rule 2 from the agents' statuses as before the queue.
+    actionables: tuple[dict[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,16 @@ def _failing_check(pr: PrInfo) -> str:
     return ""
 
 
+def repo_name(engine: Engine) -> str:
+    """A work item key's repo part: the repo root's directory name."""
+    return os.path.basename(engine.repo_root.rstrip("/")) if engine.repo_root else ""
+
+
+def work_item_key(repo: str, wt: Any) -> str:
+    """``<repo>:<branch>``, or ``<repo>:@<head>`` when detached."""
+    return f"{repo}:{wt.branch}" if wt.branch else f"{repo}:@{wt.short_head}"
+
+
 def clip_words(text: str, words: int = STATE_WORDS) -> str:
     """At most ``words`` words of ``text``, on one line."""
     parts = text.split()
@@ -160,8 +173,10 @@ def _with(prefix: str, detail: str) -> str:
 
 def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float) -> Derived:
     """The ball, state and level of one work item (plan §3, first match
-    wins). Rules 3, 7 and 8 (agent reports, park and label gestures) and
-    open actionables (rule 2) come with later phases."""
+    wins). Rules 3, 7 and 8 (agent reports, park and label gestures) come
+    with later phases. With the inbox queue, rule 2 is its open items and
+    rules 5 and 6 are kinds of it: a dismissed or parked item no longer
+    puts the row in the inbox."""
     pr = facts.pr
     ci = ci_state(pr)
     agents = facts.agents
@@ -174,7 +189,12 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
     if pr is not None and pr.state == "CLOSED":
         return Derived(1, "done", "PR closed")
 
-    for status, level, text, blocks in _NEEDS_YOU:
+    queue = facts.actionables
+    if queue:
+        top = queue[0]
+        blocks = any(i["blocks_agent"] for i in queue)
+        return Derived(2, "you", top["state"], top["level"], blocks)
+    for status, level, text, blocks in _NEEDS_YOU if queue is None else ():
         agent = next((a for a in agents if a.status == status), None)
         if agent is not None:
             state = _with(text, agent.detail) if blocks else text
@@ -184,15 +204,15 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         review = pr.review_decision
         if review == "APPROVED" and ci in ("green", "none") and pr.mergeable == "MERGEABLE":
             return Derived(4, "you", "merge: approved, CI green", "round")
-        if review == "CHANGES_REQUESTED":
+        if queue is None and review == "CHANGES_REQUESTED":
             return Derived(5, "you", "changes requested", "round")
-        if not running:
+        if queue is None and not running:
             if pr.mergeable == "CONFLICTING":
                 return Derived(5, "you", "conflict with base", "round")
             if ci == "red":
                 return Derived(5, "you", _with("CI red", _failing_check(pr)), "round")
 
-    if idle and not running and pr is None:
+    if queue is None and idle and not running and pr is None:
         return Derived(6, "you", "review: agent finished", "round")
 
     if running:
@@ -211,7 +231,12 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         return Derived(10, "others", state)
 
     if agents:
-        return Derived(12, "agent", "agent idle")
+        # An agent still on a dialog whose item was dismissed or parked.
+        waits = next(
+            (t for st, _, t, _ in _NEEDS_YOU if any(a.status == st for a in agents)),
+            None,
+        )
+        return Derived(12, "agent", f"waits: {waits}" if waits else "agent idle")
     if facts.restorable:
         return Derived(12, "stalled", "agent to restore")
     if now - last_change > stalled_hours * 3600:
@@ -259,7 +284,9 @@ def build_row(
         "state": derived.state,
         "rule": derived.rule,
         "blocks_agent": derived.blocks_agent,
-        "needs_you": None,
+        "needs_you": {"count": len(facts.actionables), "top": facts.actionables[0]["id"]}
+        if facts.actionables
+        else None,
         "agents": [
             {"id": a.agent_id, "status": a.status, "since": a.since}
             for a in facts.agents
@@ -440,7 +467,12 @@ class StatusProjection:
         config = self._engine.config.status
         rows: dict[str, dict[str, Any]] = {}
         live_agents: set[tuple[str, str]] = set()
+        queue: dict[str, list[dict[str, Any]]] = {}
+        for item in self._engine.actionables.flush(now):
+            if item["work_item"] is not None:
+                queue.setdefault(item["work_item"], []).append(item)
         for facts in self._facts(now):
+            facts = replace(facts, actionables=tuple(queue.get(facts.key, ())))
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
@@ -483,7 +515,7 @@ class StatusProjection:
 
     def _facts(self, now: float) -> list[Facts]:
         engine = self._engine
-        repo = os.path.basename(engine.repo_root.rstrip("/")) if engine.repo_root else ""
+        repo = repo_name(engine)
         restorable: dict[str, int] = {}
         if engine.manifest is not None:
             for entry in engine._offerable():
@@ -492,7 +524,7 @@ class StatusProjection:
         for wt in self._members():
             agents = self._agents(wt.path, now)
             branch = wt.branch
-            key = f"{repo}:{branch}" if branch else f"{repo}:@{wt.short_head}"
+            key = work_item_key(repo, wt)
             out.append(
                 Facts(
                     key=key,

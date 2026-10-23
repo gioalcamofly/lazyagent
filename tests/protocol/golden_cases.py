@@ -676,6 +676,62 @@ async def _():
     return await _call(_status_engine(), "status_list", {"include_done": True})
 
 
+# --- actionables_* -----------------------------------------------------------
+
+
+@case("actionables_list/now_and_round")
+async def _():
+    return await _call(_status_engine(), "actionables_list", {})
+
+
+@case("actionables_list/include_hidden")
+async def _():
+    engine = _status_engine()
+    engine.actionables.mark(
+        "Approval:/tmp/repo-login/a1", "park", until="agent_stopped"
+    )
+    return await _call(engine, "actionables_list", {"include_hidden": True})
+
+
+@case("actionables_get/approval")
+async def _():
+    return await _call(
+        _status_engine(), "actionables_get", {"id": "Approval:/tmp/repo-login/a1"}
+    )
+
+
+@case("actionables_get/error_unknown")
+async def _():
+    return await _call(_status_engine(), "actionables_get", {"id": "Approval:/nope/a9"})
+
+
+@case("actionables_mark/dismiss")
+async def _():
+    return await _call(
+        _status_engine(),
+        "actionables_mark",
+        {"id": "Approval:/tmp/repo-login/a1", "action": "dismiss"},
+    )
+
+
+@case("actionables_mark/park_until_a_time")
+async def _():
+    return await _call(
+        _status_engine(),
+        "actionables_mark",
+        {"id": "Approval:/tmp/repo-login/a1", "action": "park", "until": FIXED_TIME + 3600},
+    )
+
+
+@case("actionables_mark/error_bad_until")
+async def _():
+    return await _call(
+        _status_engine(),
+        "actionables_mark",
+        {"id": "Approval:/tmp/repo-login/a1", "action": "park", "until": "tomorrow"},
+    )
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):

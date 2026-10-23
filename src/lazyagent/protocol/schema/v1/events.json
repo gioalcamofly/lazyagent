@@ -255,6 +255,28 @@
         "row": {"type": "object", "description": "As in status_list (methods.json status_row)."}
       }
     },
+    "actionable.created": {
+      "type": "object",
+      "description": "An inbox item became visible: a new condition, or unparked (feature actionables).",
+      "required": ["item"],
+      "properties": {"item": {"$ref": "methods.json#/$defs/actionable"}}
+    },
+    "actionable.updated": {
+      "type": "object",
+      "description": "A visible inbox item changed (its detail, state or label).",
+      "required": ["item"],
+      "properties": {"item": {"$ref": "methods.json#/$defs/actionable"}}
+    },
+    "actionable.resolved": {
+      "type": "object",
+      "description": "An inbox item left the visible queue.",
+      "required": ["id", "occurrence", "reason"],
+      "properties": {
+        "id": {"type": "string"},
+        "occurrence": {"type": "string"},
+        "reason": {"type": "string", "x-known-values": ["cleared", "dismissed", "parked"], "description": "cleared: its condition no longer holds."}
+      }
+    },
     "status.removed": {
       "type": "object",
       "description": "A work item left the list (its worktree is gone).",

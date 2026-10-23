@@ -1,0 +1,16 @@
+{
+  "case": "actionables_mark/error_bad_until",
+  "method": "actionables_mark",
+  "params": {
+    "action": "park",
+    "id": "Approval:/tmp/repo-login/a1",
+    "until": "tomorrow"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "until must be a future Unix time or one of ci_done, agent_stopped, human_review"
+    },
+    "id": "req-1"
+  }
+}

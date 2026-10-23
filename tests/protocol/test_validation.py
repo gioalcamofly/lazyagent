@@ -8,6 +8,14 @@ from lazyagent.protocol import EVENTS, validation
 from lazyagent.protocol.validation import SchemaValidationError, validate
 
 # One representative payload per §4e event.
+ACTIONABLE = {
+    "id": "Approval:/r/a1", "occurrence": "Approval:/r/a1@1.0", "kind": "approval",
+    "level": "now", "title": "Needs approval", "label": "Agent a1", "detail": "Bash",
+    "state": "approve: Bash", "work_item": "r:feat", "worktree_path": "/r", "agent_id": "a1",
+    "pr": None, "job_id": None, "exit_code": None, "blocks_agent": True, "priority": "medium",
+    "since": 1.0, "park": None,
+}
+
 EVENT_SAMPLES = {
     "agent.status": {
         "seq": 3, "time": 1700000000.5, "worktree_path": "/r", "agent_id": "a1",
@@ -94,6 +102,11 @@ EVENT_SAMPLES = {
         },
     },
     "status.removed": {"key": "r:feat"},
+    "actionable.created": {"item": ACTIONABLE},
+    "actionable.updated": {"item": {**ACTIONABLE, "detail": "Edit"}},
+    "actionable.resolved": {
+        "id": "Approval:/r/a1", "occurrence": "Approval:/r/a1@1.0", "reason": "dismissed",
+    },
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

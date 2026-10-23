@@ -802,7 +802,15 @@
         "state": {"type": "string", "description": "A fact in at most five words, e.g. 'review requested, CI green'."},
         "rule": {"type": "integer", "description": "The derivation rule that matched (inbox-plan.md §3)."},
         "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
-        "needs_you": {"type": ["object", "null"], "description": "The work item's inbox items; null until the engine keeps an inbox queue."},
+        "needs_you": {
+          "type": ["object", "null"],
+          "description": "The work item's open inbox items (actionables_list); null when it has none.",
+          "required": ["count", "top"],
+          "properties": {
+            "count": {"type": "integer", "minimum": 1},
+            "top": {"type": "string", "description": "The first item's id, in the queue's order."}
+          }
+        },
         "agents": {
           "type": "array",
           "items": {
@@ -870,6 +878,100 @@
         },
         "generated_at": {"type": "number"}
       }
+    },
+    "actionable": {
+      "type": "object",
+      "description": "An inbox item (proposal 0013): it lives while its condition holds and resolves itself when it clears.",
+      "required": ["id", "occurrence", "kind", "level", "title", "label", "detail", "state", "work_item", "worktree_path", "agent_id", "pr", "job_id", "exit_code", "blocks_agent", "priority", "since", "park"],
+      "properties": {
+        "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>."},
+        "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "review", "conflict", "done", "job"], "description": "Open set."},
+        "level": {"enum": ["now", "round"], "description": "Fixed per kind. now: an agent is blocked on the user."},
+        "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
+        "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>' or the job's title."},
+        "detail": {"type": "string"},
+        "state": {"type": "string", "description": "Its work item row's state while it is the row's top item (at most five words)."},
+        "work_item": {"type": ["string", "null"], "description": "The status row's key; null for the orchestrator and jobs."},
+        "worktree_path": {"type": ["string", "null"], "description": "The worktree, __orchestrator__, or null (a job)."},
+        "agent_id": {"type": ["string", "null"]},
+        "pr": {
+          "type": ["object", "null"],
+          "required": ["number", "title", "url"],
+          "properties": {"number": {"type": "integer"}, "title": {"type": "string"}, "url": {"type": "string"}}
+        },
+        "job_id": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "blocks_agent": {"type": "boolean", "description": "An agent waits on the answer: first in its level."},
+        "priority": {"enum": ["high", "medium", "low"], "description": "Its work item's; medium until a feeder sets one."},
+        "since": {"type": "number", "description": "When the condition was first seen (Unix time)."},
+        "park": {
+          "type": ["object", "null"],
+          "description": "Set while parked (include_hidden, actionables_get, actionables_mark).",
+          "required": ["until", "at", "by"],
+          "properties": {
+            "until": {"$ref": "#/$defs/actionable_until"},
+            "at": {"type": "number"},
+            "by": {"type": "string", "x-known-values": ["user", "orchestrator"]}
+          }
+        }
+      }
+    },
+    "actionable_until": {
+      "description": "A Unix time, or an event: ci_done (CI ran and finished), agent_stopped (an agent ran and none runs now, or one there at park time is gone), human_review (the PR's review decision changed).",
+      "anyOf": [
+        {"type": "number"},
+        {"type": "string", "x-known-values": ["ci_done", "agent_stopped", "human_review"]}
+      ]
+    },
+    "actionables_list.params": {
+      "type": "object",
+      "properties": {
+        "repo": {"type": ["string", "null"], "description": "Only items of this repo's work items (the repo root's directory name)."},
+        "include_hidden": {"type": "boolean", "default": false, "description": "Also the parked items (with park set)."}
+      }
+    },
+    "actionables_list.result": {
+      "type": "object",
+      "required": ["items", "counts", "generated_at"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/actionable"}, "description": "Level (now, round), then blocks an agent, priority, oldest first."},
+        "counts": {
+          "type": "object",
+          "required": ["now", "round", "parked"],
+          "properties": {
+            "now": {"type": "integer"},
+            "round": {"type": "integer"},
+            "parked": {"type": "integer"}
+          }
+        },
+        "generated_at": {"type": "number"}
+      }
+    },
+    "actionables_get.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {"id": {"type": "string"}}
+    },
+    "actionables_get.result": {
+      "type": "object",
+      "required": ["item"],
+      "properties": {"item": {"$ref": "#/$defs/actionable"}}
+    },
+    "actionables_mark.params": {
+      "type": "object",
+      "required": ["id", "action"],
+      "properties": {
+        "id": {"type": "string"},
+        "action": {"enum": ["dismiss", "park", "unpark"], "description": "dismiss hides this occurrence for every client; park hides the item until 'until'; unpark shows it again."},
+        "until": {"$ref": "#/$defs/actionable_until", "description": "park only: required."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token, or none (the user); a worker's token is refused."}
+      }
+    },
+    "actionables_mark.result": {
+      "type": "object",
+      "required": ["item"],
+      "properties": {"item": {"$ref": "#/$defs/actionable"}}
     },
 
     "ui.get_view.params": {"type": "object", "properties": {}},
