@@ -325,7 +325,7 @@ max_calls_per_min = 30
 "Reopened"  = { ball = "you", level = "round", state = "returned" }
 ```
 
-- Both adapters are complete in the core (Q-B18). Jira: REST API v3 `search/jql` with `nextPageToken` pagination, issue status plus changelog/transitions read to detect entries into a mapped status, `Retry-After` honoured on 429; tested only against recorded fixtures until checked on a real instance, so it ships flagged experimental. Other trackers come as third-party packages.
+- Both adapters are complete in the core (Q-B18). Jira: REST API v3 `search/jql` with `nextPageToken` pagination, issue status (as landed, no changelog/transitions read: the hub's first-seen edge detects entries into a mapped status, §8 I8b), `Retry-After` honoured on 429; tested only against recorded fixtures until checked on a real instance, so it ships flagged experimental. Other trackers come as third-party packages.
 - A fetch error keeps the last good value and marks it stale; it never removes the row or the item.
 - Adapters run in the engine's poll loop, not as agents; each call has a timeout.
 - The engine's own facts (PR merged, agent waiting) win over a tracker status on ball; the tracker text shows next to them ("in QA · CI green").
@@ -397,6 +397,19 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
   - The tracker's own rule 3 (its level with no queue) remains only for `derive` without a queue.
 - Read-only: no adapter writes to its tracker.
 - Tests use fake `gh` output and one `gh` shim on `PATH`, with no network. `XDG_CONFIG_HOME` is isolated for every test. With no adapter configured, `status_list` is byte-identical (tested). Schema: `status_row.tracker`, the `tracker_status` kind. Desktop: untouched.
+
+**I8b** (`inbox-i8b-jira`):
+
+- `engine/trackers/jira.py`: the built-in `jira` adapter, Jira Cloud REST API v3, read-only, with stdlib `urllib` only (no new dependency). It is **experimental**: the class carries `experimental = True` and the hub logs it when it loads; the README's tracker table says so. It stays experimental until checked against a real instance.
+- Search: `GET /rest/api/3/search/jql` (the enhanced search), following `nextPageToken` until `isLast`, 100 per page, at most 10 pages. The old `/rest/api/3/search` with `startAt` is deprecated on Jira Cloud, so it is not used. Only `summary,status,assignee,updated` are asked for.
+  - `fetch(keys)`: `key in ("SHOP-1", …)`, 50 keys per query. Jira refuses the whole query with a 400 when one key does not exist or is not visible; the keys its error names are dropped and the query is sent once more. A 400 that names no key is an error.
+  - `assigned_to_me`: `jql_assigned` (default `assignee = currentUser() AND statusCategory != Done`). Jira search has no ETag, so it is a plain call every `poll_s`.
+- Key: the generic `ABC-123` pattern; `projects = ["SHOP"]` narrows both the pattern and the keys asked for (so `UTF-8-x` is not a key).
+- Status: `fields.status.name`. When that name is not mapped but its category's name (`To Do`, `In Progress`, `Done`) is, the category's name is used.
+- **No changelog or transitions read.** I8a's first-seen edge already makes a status change seen between two polls an entry (one Round item, cleared on leaving). The cost is that leaving and coming back within one `poll_s` counts as one stay. Reading `expand=changelog` on every poll would cost a heavier call per batch for that case only.
+- Auth: basic, `email` (or `email_env`) plus `token_env` / `keyring` through `credential()`, read on every call. No credential: an error, no request. `base_url` must be `https://` (plain `http` only on loopback); a bad one skips the adapter with a warning. Redirects are not followed, so the token never leaves `base_url`. Error texts carry the HTTP status and Jira's `errorMessages`, never the request or the token.
+- Rate limits: 429, and 503 with `Retry-After`, raise `RateLimited` with `Retry-After` (seconds or an HTTP date); the hub waits it out and keeps the last good value, marked stale. Timeouts: 20 s per request in the transport, under the hub's 30 s per call.
+- Tests (`tests/engine/trackers/test_jira.py`, no network): recorded responses in Atlassian's documented shapes under `fixtures/jira/` (two search pages with `nextPageToken`, an issue going In Review → Reopened → In Progress, assigned pages, 429 with `Retry-After`, 401, 400 for an unknown key and for bad JQL), replayed by `fake_jira.py`; the default transport against a loopback HTTP server (redirect refused). With `[jira]` present but off, `status_list` is byte-identical. Desktop and `status.py`/`actionables.py`: untouched.
 
 ---
 
