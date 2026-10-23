@@ -1,6 +1,6 @@
 # 0013. Inbox and status: one home screen for the team lead
 
-- **Status:** Proposed (2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); open doubts Q-B1-Q-B43 at the end of the plan
+- **Status:** Accepted (2026-10-23; doubts Q-B1-Q-B43 answered by the owner, proposed 2026-10-22). **Supersedes [0012](0012-actionables.md)** in scope and phasing; 0012 stays as the reference for the actionable model, the GitHub Actions detection and the (now optional) auto-triage. Plan in [inbox-plan.md](../design/inbox-plan.md); its doubts Q-B1-Q-B43 and the owner's answers at the end of the plan
 - **Design refs:** [0012-actionables.md](0012-actionables.md), [actionables-plan.md](../design/actionables-plan.md); [engine-split.md](../design/engine-split.md) §4d, §4e, §4g; [ui-plan.md](../design/ui-plan.md) §3b; [desktop-app.md](../design/desktop-app.md) D4; [0011](0011-session-notes.md) (notes, agent token)
 
 The desktop opens on **Home**: one list of the user's **work items** (a branch, with its PR, agents and CI). The ones that need the user come first, as an **inbox** in two levels, **Now** and **Round**. Everything else is the **in-flight** list below, one row per item with who has the ball, a fact-based state and its age. That list is the third level, **Ambient**, made readable. Each work item shows **once**. The engine owns the list, derives every state, and the UIs only display it. Nothing on Home is a kanban to maintain.
@@ -66,7 +66,7 @@ Expanded row (Enter on an in-flight row):
 │   [o] open terminal  [n] notes  [p] PR  [k] park until…  [x] close  [u] unlabel │
 ```
 
-### Wireframe: the 1-week test (CLI / MCP, before any UI)
+### Wireframe: the CLI / MCP table (I1, before any UI)
 
 ```
 $ lazyagent status
@@ -81,7 +81,7 @@ round  billing-hook #15     you      decide: CI red, 2 tries        30m
 ...
 ```
 
-The orchestrator calls the MCP tool `status_list` and prints this table instead of building one by hand.
+The orchestrator calls the MCP tool `status_list` and prints this table instead of building one by hand. There is no gate after I1 (Q-B1): status questions to the orchestrator and hand corrections per day are still counted, as a success metric that blocks nothing.
 
 ### Decisions that need context
 
@@ -93,6 +93,7 @@ Some items take a minute from the row (approve a command, merge a green PR). Oth
 | **Decision brief** | The agent that is already working writes it over MCP (`request_decision`): one concrete question, 2-4 options with a recommendation, what it has tried, linked evidence (diff hunks, log lines, files and line ranges, notes sections, URLs), reversibility, and the impact if the choice is wrong. Fixed template, validated by the engine: a brief with no options or no evidence is downgraded to a Quick item "the agent asks something" with a link to its terminal |
 | **Since you looked** | A deterministic timeline per work item since the user's last look at **that item**: commits, CI runs, ball and state changes, notes edits (section names), answers given, reviews. A per-item "seen" mark; "mark all seen" on Home |
 | **Decision view** | Opening a Deep item shows the brief on one side and the evidence on the other (diff hunk, notes, log excerpt, file at lines). The answer (option + comment) goes to the agent through the same queue as review replies and `send_agent_input`: delivered when the agent is idle, never in the middle of a turn |
+| **Request a new brief** | In the decision view, on the user's click: asks for a fresh brief that replaces the open one, through the same chain as Explain this (owner agent, explicit restore, orchestrator). Useful when the brief is outdated or unclear (Q-B32) |
 | **Explain this** | A button, on demand only. It asks for a short explanation (≤ 10 lines), or an answer to one question the user types; the reply comes over MCP and shows in the view. Who answers, first match: (1) the **owner agent** if it is alive; (2) if it is not alive but its session is restorable, an explicit **Restore agent and explain** option (never automatic: it starts a process and costs more), which restores it with its notes before it answers; (3) otherwise, if the orchestrator is running, the **orchestrator** answers from the notes, diff, CI and timeline, marked "explained by orchestrator" (less context); (4) otherwise the button is disabled, with **Open terminal** and **Pass to orchestrator** beside it. Nothing is asked automatically, and there is no fallback to a bare model call |
 | **Decision log** | Every answer is appended by the engine to the agent's notes, section **Decisions** (`- 2026-10-22 · <question> → B (user): <comment>`), and kept on the work item for 30 days. The agent sees it after a compaction (0011 re-injection) and a successor inherits it in a handoff, so the same thing is not decided twice |
 
@@ -144,11 +145,11 @@ Class per kind (fixed):
 | **c. Hook nudge** | If a Claude turn ends with a question longer than 2 lines and no brief, the next `UserPromptSubmit` reminds the agent to use `request_decision` (same mechanism as the "notes updated" notice) | Claude agents lazyagent spawns |
 | **d. Engine backstop** | A brief with no options or no evidence becomes a Quick item (see above) | Every caller |
 
-A plugin or skill for Claude sessions that lazyagent did not spawn is a later option. Phasing: a, b and d in I4; c after (Q-B34).
+A plugin or skill for Claude sessions that lazyagent did not spawn is a later option. Phasing: a, b and d in I4; c after (Q-B34). The owner's own agent skills will also be updated to use these tools (outside this repo).
 
 ### Opt-in auto-delegation of stalled items
 
-Today a stalled row (conflict with no live agent, dead agent, CI red with no agent) only offers a one-key **Delegate** in Round. An opt-in rule per kind can do that key press for the user: `[inbox] auto_delegate = ["conflict_with_base", "ci_red"]` in `.lazyagent.toml`, empty by default. It is a fixed rule; no model decides. It always delegates to the branch's **owner agent** (restore it with its notes; spawn one with the brief only if there is none), respects the concurrency limits, and makes at most 2 attempts per item per fingerprint. After 2 failures the item goes to **To sit down with** with a brief. I4 or later; `ci_red` needs I7's detection (Q-B33, which widens Q-B16). The target can also be the orchestrator (`auto_delegate_target = "owner" | "orchestrator"`), which then chooses: restore the owner agent, spawn one, or escalate.
+Today a stalled row (conflict with no live agent, dead agent, CI red with no agent) only offers a one-key **Delegate** in Round. An opt-in rule per kind can do that key press for the user: `[inbox] auto_delegate = ["conflict_with_base", "ci_red"]` in `.lazyagent.toml`, empty by default. It is a fixed rule; no model decides. It always delegates to the branch's **owner agent** (restore it with its notes; spawn one with the brief only if there is none), respects the concurrency limits, and makes at most 2 attempts per item per fingerprint. After 2 failures the item goes to **To sit down with** with a brief. I4 or later; `ci_red` needs I7's detection (Q-B33, which widens Q-B16). The same setting can be changed from the desktop's settings menu, not only in the file. The target can also be the orchestrator (`auto_delegate_target = "owner" | "orchestrator"`), which then chooses: restore the owner agent, spawn one, or escalate.
 
 ### The orchestrator: first responder, not owner of state
 
@@ -217,7 +218,7 @@ Every inbox item belongs to a work item (a branch) and inherits its priority. Th
 | Notes (0011) | When there is no report, the expanded row shows the first bullet of Doubts, else Pending | Read-only use of the notes store |
 | The planner and other feeders | `work_items_upsert {url, title, ball?, state?, needs_user?, branch?, priority?, expires_at}` / `work_items_close {url}` over MCP; dedupe by URL; cap per source | Brings items with no branch (the "N not started" counter, peer reviews). The engine never writes back to the tracker |
 | GitHub Actions on branches with no PR | 0012 A2 detection (REST + ETag) | After the MVP |
-| Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, and fixed-rule inbox items. See below | After the MVP (I8) |
+| Issue-tracker adapters (optional) | The task's state at its source ("in QA", "code review", "returned by QA") on the row, fixed-rule inbox items, and tasks assigned to the user. See below | In the MVP: I8a GitHub Issues (with I2), I8b Jira (with I3) |
 
 ### Optional issue-tracker sources
 
@@ -233,7 +234,7 @@ The user may switch on adapters for an issue tracker. With none configured, noth
 | Credentials | From the environment or the OS keyring (`keyring` service `lazyagent/<adapter>`), named in config by reference (`token_env = "JIRA_TOKEN"`). Never in the repo, never in the state dir, never sent anywhere but the tracker's own API |
 | Config | Global `~/.config/lazyagent/trackers.toml`, overridable per repo by `<repo>/.lazyagent/trackers.toml` (mapping only; credentials only global) |
 | Read-only | The engine and its adapters never write to the tracker in this proposal (no automatic writes such as moving a card on merge). This does not restrict agents: workers and the orchestrator keep writing to the tracker and to GitHub as their own skills say, and lazyagent neither mediates nor blocks those calls (Q-B21) |
-| In the public core | **GitHub Issues** as the reference adapter (uses `gh`, no new credential). Jira and other trackers as example adapters (generic, with placeholder mappings) or third-party packages via an entry point `lazyagent.trackers`. No employer-specific mapping ships in the repo |
+| In the public core | Two complete adapters (Q-B18). **GitHub Issues** (uses `gh`, no new credential). **Jira**, built against the Jira Cloud REST API v3 (JQL search with pagination, issue status and transitions, read-only), tested with recorded fixtures (transitions, JQL search, pagination, 429), and marked **experimental** until validated against a real instance. Other trackers only as third-party packages via an entry point `lazyagent.trackers`. No employer-specific mapping ships in the repo |
 
 ### Where new tasks come from
 
@@ -244,11 +245,11 @@ The engine never invents tasks. It discovers them only from deterministic source
 | Local state | Worktrees, branches, agents | I1 |
 | GitHub, deterministic | Review requests to the user, PRs and CI of the user's branches | I1 (PRs), I7 (Actions on branches with no PR) |
 | An external planner as a feeder | Tracker cards assigned to the user, project tasks, via `work_items_upsert` | I6 |
-| Optional tracker adapters | Tasks assigned to the user, read-only (`assigned_to_me`) | I8 |
+| Optional tracker adapters | Tasks assigned to the user, read-only (`assigned_to_me`) | I8a GitHub Issues, I8b Jira (MVP) |
 
 Discovered tasks with no branch show as the **"N not started"** counter; they become rows only when they need the user (a peer review, `needs_user`). Starting one is the user's call, or the orchestrator's under a project's continue policy and its mandate; never the engine's.
 
-Gap: once the external planner moves from a fixed-interval tick to engine events (Q-B42), a new card in the tracker arrives only on the planner's next run. Two ways to close it: **(a)** the planner keeps a light deterministic discovery poll (API calls, no LLM); **(b)** a tracker adapter (I8) polls the tracker itself: generic, one adapter per tracker, its config private to the user. Recommended: (b), with (a) in the meantime (Q-B43).
+Gap: once the external planner moves from a fixed-interval tick to engine events (Q-B42), a new card in the tracker arrives only on the planner's next run. Two ways to close it: **(a)** the planner keeps a light deterministic discovery poll (API calls, no LLM); **(b)** a tracker adapter (I8a/I8b) polls the tracker itself: generic, one adapter per tracker, its config private to the user. Decided: (b), and since the adapters are in the MVP (Q-B17), `assigned_to_me` discovery ships with I8a/I8b; (a) stays only as the external planner's interim (Q-B43).
 
 ### Where the board went
 
@@ -276,7 +277,7 @@ Gap: once the external planner moves from a fixed-interval tick to engine events
 
 | Value | Effort |
 |---|---|
-| ★★★ (the most measured need of the only user) | MVP I1-I3: M (~20 h of agents, ~5 h of the owner). Full plan I1-I8: L |
+| ★★★ (the most measured need of the only user) | MVP I1, I2 + I8a, I3 + I8b: M-L (~30 h of agents, ~8 h of the owner). Full plan: L |
 
 ## Risks
 
@@ -286,7 +287,8 @@ Gap: once the external planner moves from a fixed-interval tick to engine events
 | The status view becomes a board through the back door | No lanes, no drag, no due dates in the core; three gestures only, each visible and counted |
 | Two places to check (inbox and status) | One list; an item is in exactly one zone; the inbox groups by work item |
 | A calm screen turns into a wall of green dots | Ambient rows have no red, no animation, minute-level ages; the list folds |
-| The measured need is n = 1 and personal | The 1-week CLI/MCP test (I1) decides whether a screen is worth it; tracker lanes stay in the planner |
+| The measured need is n = 1 and personal | Status questions and hand corrections per day stay counted from I1 on as a non-blocking metric; tracker lanes stay in the planner; the adapters are generic, with mappings in the user's config |
+| The Jira adapter breaks against a real instance | Recorded fixtures for transitions, JQL search, pagination and 429; marked experimental until validated against a real instance; failures keep the last good value |
 | The planner and the engine disagree on state | The engine's facts win over a feeder's `state`; a feeder's `ball` is shown as a label |
 | Auto-delegation loops or spends agents behind the user's back | Opt-in per kind, off by default; owner agent only; concurrency limits; 2 attempts per fingerprint, then a Deep item |
 | The orchestrator decides wrongly while the user is away | Only reversible actions; caps (3 per item, 20 per day), then To sit down with; every decision on the row with its reason and a Revert |
@@ -295,11 +297,11 @@ Gap: once the external planner moves from a fixed-interval tick to engine events
 | Uncapped spawns from an orchestrator or an external planner | Spawn and concurrency caps and an authenticated orchestrator role in the engine, at I1 |
 | Agents never call the new tools | Tool descriptions + worker preamble + engine backstop (Q-B34); rows never depend on reports |
 | Agents flood "To sit down with" with briefs | At most 2 open briefs per agent; `deep_max` visible; a brief without options or evidence becomes a Quick item |
-| A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" |
+| A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" and "Request a new brief" |
 | An answer is lost if the agent dies before reading it | It is in the agent's notes (Decisions) and on the work item; a restored or successor agent gets it |
 | "Explain this" costs tokens | Only on the user's click, capped at a short answer; a restore is a separate, explicit choice; no bare model call |
 | An orchestrator explanation misses context the owner had | Marked "explained by orchestrator"; it reads notes, diff, CI and timeline; the user can still restore the owner or open the terminal |
 
 ## Open questions
 
-In the plan, §9 (Q-B1-Q-B43).
+In the plan, §9 (Q-B1-Q-B43), all answered by the owner on 2026-10-23: the recommendation stands except Q-B1 (no gate), Q-B17 (adapters in the MVP), Q-B18 (GitHub Issues and Jira as complete adapters) and Q-B32 (also request a new brief), with notes on Q-B33 (configurable from the desktop) and Q-B34 (the owner's skills).

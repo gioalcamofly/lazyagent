@@ -15,4 +15,4 @@ Improvement ideas for lazyagent, one file each. Ranked and motivated in [engine-
 | 0009 | Restore after reboot | Proposed | ★ | PR 9 | [0009](0009-restore-after-reboot.md) |
 | 0011 | Session notes per agent | Accepted | ★★ (★★★ orchestrator) | PR 9; desktop D2/D3 | [0011](0011-session-notes.md) |
 | 0012 | Actionables (auto-triage + prioritised human queue) | Superseded by 0013 | ★★★ | PR 3, PR 6, 0011 N2 | [0012](0012-actionables.md) |
-| 0013 | Inbox and status: one home screen (inbox + in-flight list) | Proposed | ★★★ | PR 3, PR 6, 0011 N2 | [0013](0013-inbox-and-status.md) |
+| 0013 | Inbox and status: one home screen (inbox + in-flight list) | Accepted | ★★★ | PR 3, PR 6, 0011 N2 | [0013](0013-inbox-and-status.md) |
