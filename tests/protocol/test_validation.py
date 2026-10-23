@@ -83,6 +83,17 @@ EVENT_SAMPLES = {
         "reply_id": "r0a1b2c3d4e5", "comment_id": "c1a2b3", "worktree_path": "/r",
         "agent_id": "a1", "text": "Renamed it.", "at": 1700000000.0,
     },
+    "status.updated": {
+        "row": {
+            "key": "r:feat", "repo": "r", "branch": "feat", "worktree_path": "/r-feat",
+            "title": "feat", "urls": [], "zone": "in_flight", "level": None, "ball": "agent",
+            "priority": "medium", "state": "working", "rule": 9, "blocks_agent": False,
+            "needs_you": None, "agents": [{"id": "a1", "status": "running", "since": 1.0}],
+            "pr": None, "note": None, "gesture": None, "stale": False, "changed_at": 1.0,
+            "fingerprint": "0123456789ab",
+        },
+    },
+    "status.removed": {"key": "r:feat"},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

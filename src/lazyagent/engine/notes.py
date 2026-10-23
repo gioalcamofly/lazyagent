@@ -381,6 +381,24 @@ class NotesStore:
         ]
         return sorted(metas, key=_ended, reverse=True)
 
+    def section_bullets(self, notes_id: str, name: str) -> list[str]:
+        """The list items of section ``name`` (case insensitive), without
+        their ``- ``; continuation lines are dropped. Empty when the notes
+        or the section are missing."""
+        text = self._texts.get(notes_id)
+        if text is None:
+            return []
+        lines = text.splitlines()
+        bounds = _section_bounds(lines, name)
+        if bounds is None:
+            return []
+        start, end = bounds
+        return [
+            line[2:].strip()
+            for line in lines[start + 1 : end]
+            if line.startswith("- ") and line[2:].strip()
+        ]
+
     def is_empty(self, text: str) -> bool:
         return is_empty(text)
 

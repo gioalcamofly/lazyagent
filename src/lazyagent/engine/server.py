@@ -105,6 +105,8 @@ FEATURES: tuple[str, ...] = (
     "stream.input",
     "stream.closed",
     "size.latest",
+    # status_list and status.updated / status.removed (proposal 0013).
+    "status",
 )
 
 STREAM_RESIZED = "stream.resized"

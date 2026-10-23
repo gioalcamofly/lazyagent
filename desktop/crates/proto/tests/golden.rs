@@ -85,6 +85,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             // Its result is not read (the app only needs it to succeed);
             // review_reply is the agents' (MCP).
             "review_register" | "review_reply" => continue,
+            // Not read yet: the desktop Home (proposal 0013, I3) will.
+            "status_list" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -134,7 +136,13 @@ const METHODS_USED: &[&str] = &[
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
-const IGNORED_EVENTS: &[&str] = &["ui.command", "ui.view_changed"];
+const IGNORED_EVENTS: &[&str] = &[
+    "ui.command",
+    "ui.view_changed",
+    // Until the desktop Home (proposal 0013, I3).
+    "status.updated",
+    "status.removed",
+];
 
 #[test]
 fn methods_we_call_are_in_the_schema() {

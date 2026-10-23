@@ -258,3 +258,31 @@ sections = ["Goal", ""]
             assert load_config(tmp_path).notes.max_bytes == expected, value
         (tmp_path / ".lazyagent.toml").write_text('notes = "on"\n')
         assert load_config(tmp_path).notes == Config().notes
+
+
+class TestOrchestratorAndStatusConfig:
+    def test_defaults(self, tmp_path: Path):
+        config = load_config(tmp_path)
+        assert config.orchestrator.max_spawns_per_day == 30
+        assert config.orchestrator.max_concurrent_agents == 8
+        assert (config.status.stale_days, config.status.stalled_hours) == (14, 24)
+
+    def test_reads_the_caps_and_the_status_ages(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            "[orchestrator]\nmax_spawns_per_day = 3\nmax_concurrent_agents = 0\n"
+            "[status]\nstale_days = 7\nstalled_hours = 2\n"
+        )
+        config = load_config(tmp_path)
+        assert config.orchestrator.max_spawns_per_day == 3
+        assert config.orchestrator.max_concurrent_agents == 0
+        assert (config.status.stale_days, config.status.stalled_hours) == (7, 2)
+
+    def test_invalid_values_keep_the_defaults(self, tmp_path: Path):
+        (tmp_path / ".lazyagent.toml").write_text(
+            "[orchestrator]\nmax_spawns_per_day = -1\nmax_concurrent_agents = \"many\"\n"
+            "[status]\nstale_days = 0\nstalled_hours = true\n"
+        )
+        config = load_config(tmp_path)
+        assert config.orchestrator.max_spawns_per_day == 30
+        assert config.orchestrator.max_concurrent_agents == 8
+        assert (config.status.stale_days, config.status.stalled_hours) == (14, 24)

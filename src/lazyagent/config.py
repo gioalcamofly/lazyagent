@@ -51,6 +51,20 @@ class OrchestratorConfig:
 
     prompt_file: str | None = None
     agent_instruction_template: str | None = None
+    # Caps on spawn_agent calls made with an agent token (the orchestrator's
+    # included); 0 turns a cap off.
+    max_spawns_per_day: int = 30
+    max_concurrent_agents: int = 8
+
+
+@dataclass
+class StatusConfig:
+    """The work-item projection (``lazyagent status``, proposal 0013)."""
+
+    # A row with nothing but a branch older than this collapses into "stale".
+    stale_days: int = 14
+    # No agent and no change for this long: "stalled".
+    stalled_hours: int = 24
 
 
 @dataclass
@@ -88,6 +102,7 @@ class Config:
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     notes: NotesConfig = field(default_factory=NotesConfig)
+    status: StatusConfig = field(default_factory=StatusConfig)
     default_branch: str = DEFAULT_BRANCH
 
     @property
@@ -129,6 +144,10 @@ def load_config(repo_root: str | Path) -> Config:
         prompt_file=orch_data.get("prompt_file"),
         agent_instruction_template=orch_data.get("agent_instruction_template"),
     )
+    for name in ("max_spawns_per_day", "max_concurrent_agents"):
+        value = orch_data.get(name)
+        if type(value) is int and value >= 0:
+            setattr(orchestrator_config, name, value)
     engine_data = data.get("engine", {})
     engine_config = EngineConfig(
         restore_on_start=engine_data.get("restore_on_start") is True
@@ -142,8 +161,21 @@ def load_config(repo_root: str | Path) -> Config:
         orchestrator=orchestrator_config,
         engine=engine_config,
         notes=_notes_config(data.get("notes", {})),
+        status=_status_config(data.get("status", {})),
         default_branch=default_branch,
     )
+
+
+def _status_config(data: object) -> StatusConfig:
+    """``[status]``; a missing or invalid value keeps its default."""
+    config = StatusConfig()
+    if not isinstance(data, dict):
+        return config
+    for name in ("stale_days", "stalled_hours"):
+        value = data.get(name)
+        if type(value) is int and value > 0:
+            setattr(config, name, value)
+    return config
 
 
 def _notes_config(data: object) -> NotesConfig:

@@ -69,6 +69,7 @@ from lazyagent.engine.manifest import (
     clip_instruction,
     manifest_path,
 )
+from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
     ADOPTED,
     DELETED,
@@ -83,6 +84,8 @@ from lazyagent.engine.notes import (
 )
 from lazyagent.engine.reviews import ReviewStore, reviews_path
 from lazyagent.engine.scheduler import Scheduler
+from lazyagent.engine.status import TICK as STATUS_TICK
+from lazyagent.engine.status import StatusProjection
 from lazyagent.engine.session import (
     AgentSession,
     SessionEvent,
@@ -256,6 +259,10 @@ class Engine:
             find_root=find_root or (lambda: find_repo_root()),
         )
         self.worktree_service.subscribe(self._on_worktree_event)
+        # Work items (proposal 0013): kept current from the events above.
+        self.status = StatusProjection(self)
+        # The caps on spawns asked for by agents (engine/methods.py).
+        self.spawn_caps = SpawnCaps()
 
         self.socket_path: str | None = None
         self._ipc_server: IpcServer | None = None
@@ -322,10 +329,15 @@ class Engine:
         self._scheduler.every(
             NOTES_GC_INTERVAL, diag.wrap_timer("timer.notes_gc", self._notes_gc)
         )
+        self._scheduler.every(
+            STATUS_TICK, diag.wrap_timer("timer.status", self.status.tick)
+        )
         self._scheduler.start()
         # Git status and PR info are polled by the service, once a minute and
-        # only for the clients' interest sets.
+        # only for the clients' interest sets (PR info also for every work
+        # item: the status projection's own interest).
         self.worktree_service.start()
+        self.status.start()
         if (
             self.manifest is not None
             and self.manifest.restorable
@@ -344,6 +356,7 @@ class Engine:
             self.events.emit(ENGINE_SHUTDOWN, {"reason": reason})
         self._started = False
         self._scheduler.stop()
+        self.status.stop()
         self.worktree_service.stop()
         for task in list(self._tasks):
             task.cancel()
