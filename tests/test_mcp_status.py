@@ -9,6 +9,7 @@ import pytest
 from lazyagent import mcp_server
 from lazyagent.agent_providers import AGENT_TOKEN_ENV
 from lazyagent.config import Config, OrchestratorConfig
+from lazyagent.models import AgentState, AgentStatus
 from tests.test_mcp_notes import _as_agent, engine  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -32,6 +33,24 @@ async def test_status_list_answers_with_rows_and_a_ready_table(engine, monkeypat
 
     monkeypatch.delenv(AGENT_TOKEN_ENV)  # a session lazyagent did not spawn
     assert [r["key"] for r in (await mcp_server.status_list())["rows"]] == [row["key"]]
+
+
+async def test_actionables_list_shows_the_inbox_with_a_table(engine, monkeypatch):
+    feat = engine.feat
+    orchestrator = await engine.spawn_agent("", kind="orchestrator")
+    _as_agent(engine, orchestrator, monkeypatch)
+    engine.registry.states.setdefault(feat, {})["a9"] = AgentState(
+        status=AgentStatus.WAITING_FOR_APPROVAL, agent_id="a9", detail="Bash"
+    )
+
+    result = await mcp_server.actionables_list()
+
+    [item] = [i for i in result["items"] if i["agent_id"] == "a9"]
+    assert (item["kind"], item["level"], item["work_item"]) == ("approval", "now", "repo:feat")
+    assert result["table"].splitlines()[0].startswith("NOW 1")
+    assert "Needs approval: feat · Agent a9 · Bash" in result["table"]
+    [row] = (await mcp_server.status_list())["rows"]
+    assert row["needs_you"]["top"] == item["id"]
 
 
 async def test_spawns_by_an_agent_are_capped_and_the_user_is_not(engine, monkeypatch):

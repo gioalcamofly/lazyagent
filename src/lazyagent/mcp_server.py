@@ -351,6 +351,36 @@ async def status_list(include_done: bool = False) -> dict:
 
 
 @mcp.tool()
+async def actionables_list(include_hidden: bool = False) -> dict:
+    """The user's inbox: what needs the user now, as the engine derives it
+    (an agent waiting for approval or an answer, a failed / hung / exited
+    agent, an agent done with its turn, a red or conflicting PR with no
+    agent at work, changes requested, a failed job). Level ``now`` (an
+    agent is blocked) comes first, then ``round``. Items the user dismissed
+    or parked are left out.
+
+    Use it to see what is waiting on the user; ``status_list`` gives the
+    same per work item (``needs_you``), with everything else in flight.
+
+    Args:
+        include_hidden: Also the parked items (with ``park`` set).
+
+    Returns:
+        Object with ``table`` (plain text, ready to show), ``items`` (id,
+        kind, level, title, label, detail, state, work_item, worktree_path,
+        agent_id, pr, since, ...), ``counts`` (now, round, parked) and
+        ``generated_at``.
+    """
+    from lazyagent.engine.actionables import format_items
+
+    result = await _get_client().call(
+        "actionables_list", {"include_hidden": include_hidden}
+    )
+    result["table"] = format_items(result, result.get("generated_at"))
+    return result
+
+
+@mcp.tool()
 async def list_agents(worktree_path: str) -> dict:
     """List the agents running in a worktree.
 
