@@ -76,7 +76,7 @@ Steps:
 1. `git merge --ff-only @{u}` (after the fetch of `check`). If git refuses (local changes or untracked files in the way), its list of files is reported and nothing else runs. Never `stash`, `reset`, `checkout`, `clean`, `rebase`, `pull --rebase`.
 2. `uv sync` in the checkout only when `changes.lock` (else the env is already right; `uv run` would sync it anyway). Missing `uv` → the step is skipped with a note when `lock` is false, an error when true.
 3. The app build, only when `changes.desktop` or "app behind" (Q-U8), matching how the running binary was installed: binary under `<checkout>/desktop/target/release/` → `cargo build --release --manifest-path desktop/Cargo.toml`; otherwise (`~/.cargo/bin`, the user's case) → `cargo install --locked --path desktop/crates/app`. Missing `cargo` → skipped with the command to run. Output tail kept in the jobs drawer; the app keeps working while it builds.
-4. Done → the restart dialog opens preset: **app** always; **engine** checked when `changes.python` or "engine behind"; **restore** checked (Q-U7).
+4. Done → the restart dialog opens preset (only when the app's build, if one ran, succeeded: see §10 "Stale app binary"): **app** always; **engine** checked when `changes.python` or "engine behind"; **restore** checked (Q-U7).
 
 ### 3b. Published mode
 
@@ -212,6 +212,16 @@ As planned, with these differences:
 - **"Resumes last" flag (§4):** not shown: the sidebar state has no conversation ids for live agents.
 - **Published mode:** `changes.desktop` is true for any newer release: the platform wheel carries the app (U0), so the upgrade replaces it too; a pure-wheel install still rebuilds it by hand.
 - **Tests:** `tests/test_update.py` (15), `tests/test_engine_cli.py` (+2, isolated engines), the hello contract test; desktop: relaunch command, report toast, menu + busy agents, exits dropped, and a real detached engine restarted from the menu (the agent is back before the relaunch, the old app let go of the engine first). Screenshots in `desktop-screenshots/u3-*.png`.
+
+### Stale app binary (2026-10-23, `fix-desktop-stale-binary`)
+
+Seen in use: a checkout pulled by hand (not through the dialog) while the app ran. The check then said "up to date" and "this app was built from older code", the dialog offered only *Restart…*, and the restart relaunched the same `desktop/target/release/` binary: the new UI never showed until a manual `cargo build --release`. Fixed in three places:
+
+- **`update apply` rebuilds without a pull.** Nothing to pull but `app_behind` → the apply is the build alone (`steps: ["build"]`). The dialog shows *Rebuild* instead of *Restart…* for that case, its progress like any step ("Building the app (cargo)…", the last output line), and then the restart sheet.
+- **No restart into the old binary.** The build is the last step; `restart.app` is true only when it succeeded (or none was needed). A failed build (or no `cargo`) keeps the update dialog open with the reason; the pull itself stays.
+- **`lazyagent desktop` checks the checkout's build** (`desktop.is_stale`): when any of `desktop/Cargo.toml`, `Cargo.lock`, `crates/*/{Cargo.toml,build.rs,src/**}` is newer than `desktop/target/release/lazyagent-desktop`, it runs `cargo build --release --locked` in the terminal first; without `cargo`, or when the build fails, it warns with the command and runs the previous build. Only that path is checked: `LAZYAGENT_DESKTOP_BIN`, the wheel's binary and one on PATH are run as they are. The relaunch after a restart goes through `lazyagent desktop` too, so it gets the same check.
+
+Why modification times and not the commit the binary was built from: the launcher would need git (and a way to read the commit out of the binary) on every start, and a commit misses uncommitted edits; times cost a directory walk of a few hundred files, catch a pull (git writes the files it changes) and an edit alike, and are what cargo itself compares. When a newer file changes nothing cargo rebuilds (a touched file, a crate's `tests/`), a successful build that leaves the binary older marks it with the current time (`desktop.mark_built`), so it is not built again on every launch. In the dialog the commit test (`app_commit`) stays and times are a second opinion for a binary in the checkout.
 
 ## 11. Open questions (decided as recommended unless the user says otherwise)
 
