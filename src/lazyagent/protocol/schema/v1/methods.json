@@ -793,7 +793,7 @@
         "repo": {"type": "string", "description": "The repo root's directory name."},
         "branch": {"type": ["string", "null"]},
         "worktree_path": {"type": ["string", "null"]},
-        "title": {"type": "string", "description": "The PR title, else the branch."},
+        "title": {"type": "string", "description": "The PR title, else the linked tracker task's title, else the branch."},
         "urls": {"type": "array", "items": {"type": "string"}},
         "zone": {"enum": ["inbox", "in_flight"], "description": "inbox: the ball is the user's."},
         "level": {"enum": ["now", "round", null], "description": "Inbox rows only. now: an agent is blocked on the user."},
@@ -838,6 +838,20 @@
           }
         },
         "gesture": {"type": ["object", "null"], "description": "A user's label or park; null for now."},
+        "tracker": {
+          "type": "object",
+          "description": "The issue-tracker task linked by the branch name (optional adapters, [trackers]); absent when none is linked. Read-only: the engine never writes to a tracker.",
+          "required": ["adapter", "key", "url", "status", "state", "at", "stale"],
+          "properties": {
+            "adapter": {"type": "string", "description": "e.g. github_issues."},
+            "key": {"type": "string", "description": "The task key read from the branch name."},
+            "url": {"type": "string"},
+            "status": {"type": "string", "description": "The tracker's raw status (empty: none)."},
+            "state": {"type": "string", "description": "The mapped state text, else the raw status: shown beside the engine's state."},
+            "at": {"type": "number", "description": "When it was last read (Unix time)."},
+            "stale": {"type": "boolean", "description": "The tracker failed since: the value is the last good one."}
+          }
+        },
         "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
         "changed_at": {"type": "number", "description": "When its facts last changed (Unix time): the row's age."},
         "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."}
@@ -865,7 +879,7 @@
             "in_flight": {"type": "integer"},
             "done": {"type": "integer"},
             "stale": {"type": "integer"},
-            "not_started": {"type": "integer"}
+            "not_started": {"type": "integer", "description": "Tasks assigned to the user (tracker adapters) that no local branch links to."}
           }
         },
         "generated_at": {"type": "number"}

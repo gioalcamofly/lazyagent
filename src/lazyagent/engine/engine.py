@@ -86,6 +86,7 @@ from lazyagent.engine.reviews import ReviewStore, reviews_path
 from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.status import TICK as STATUS_TICK
 from lazyagent.engine.status import StatusProjection
+from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
 from lazyagent.engine.session import (
     AgentSession,
     SessionEvent,
@@ -197,6 +198,7 @@ class Engine:
         manager_factory: Callable[[str], WorktreeManager] | None = None,
         find_root: Callable[[], Any] | None = None,
         config_loader: Callable[[str], Config] | None = None,
+        tracker_loader: Callable[[str], list[TrackerConfig]] | None = None,
         provider_lookup: Callable[[str | None], AgentProvider] | None = None,
         id_store: AgentIdStore | None = None,
         persist_ids: bool = True,
@@ -210,8 +212,11 @@ class Engine:
         # module attributes.
         self._manager = manager_factory or (lambda root: WorktreeManager(root))
         self._config_loader = config_loader or (lambda root: load_config(root))
+        self._tracker_loader = tracker_loader or (lambda root: load_trackers(root))
         self._provider = provider_lookup or (lambda name: get_agent_provider(name))
         self.config = Config()
+        # Optional issue trackers (proposal 0013): none until the config loads.
+        self.trackers = TrackerHub()
 
         self.events = EventBus()
         # persist_ids=False keeps agent ids in memory (tests, throwaway engines).
@@ -449,6 +454,9 @@ class Engine:
     def load_config(self) -> None:
         root = self.repo_root
         self.config = self._config_loader(root) if root else Config()
+        self.trackers = TrackerHub.from_configs(
+            self._tracker_loader(root) if root else [], root
+        )
 
     def get_config(self) -> ConfigView:
         config = self.config

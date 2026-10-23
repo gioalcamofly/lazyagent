@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.engine.trackers import TrackerFact
 from lazyagent.models import AgentStatus, PrInfo
 
 if TYPE_CHECKING:
@@ -112,6 +113,7 @@ class Facts:
     commit_time: float | None = None
     restorable: int = 0
     note: dict[str, Any] | None = None
+    tracker: TrackerFact | None = None
 
 
 @dataclass(frozen=True)
@@ -160,8 +162,10 @@ def _with(prefix: str, detail: str) -> str:
 
 def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float) -> Derived:
     """The ball, state and level of one work item (plan §3, first match
-    wins). Rules 3, 7 and 8 (agent reports, park and label gestures) and
-    open actionables (rule 2) come with later phases."""
+    wins). Rules 7 and 8 (park and label gestures), agent reports (rule 3)
+    and open actionables (rule 2) come with later phases. A linked tracker
+    task decides only where the engine's own facts do not (Q-B20): after
+    rule 9, before rule 10."""
     pr = facts.pr
     ci = ci_state(pr)
     agents = facts.agents
@@ -204,6 +208,17 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
     if open_pr and ci == "running":
         return Derived(9, "agent", "CI running")
 
+    tracker = facts.tracker
+    if tracker is not None and tracker.ball is not None:
+        state = clip_words(tracker.state)
+        if tracker.ball == "you":
+            # The level only while its inbox item is open (entered, not seen
+            # here since); else the ball, with no level, is just a fact.
+            if tracker.level is not None:
+                return Derived(3, "you", state, tracker.level)
+        else:
+            return Derived(10 if tracker.ball == "others" else 12, tracker.ball, state)
+
     if open_pr and pr.review_decision in ("REVIEW_REQUIRED", ""):
         state = "review requested" if pr.review_decision else "PR open"
         if ci == "green":
@@ -234,6 +249,8 @@ def fingerprint(facts: Facts, derived: Derived) -> str:
         else [pr.state, pr.review_decision, pr.mergeable, ci_state(pr)],
         sorted((a.agent_id, a.status) for a in facts.agents),
     ]
+    if facts.tracker is not None:
+        data.append([facts.tracker.status, facts.tracker.level])
     raw = json.dumps(data, sort_keys=True).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
 
@@ -279,6 +296,21 @@ def build_row(
         "changed_at": changed_at,
         "fingerprint": fp,
     }
+    tracker = facts.tracker
+    if tracker is not None:
+        if tracker.url and tracker.url not in row["urls"]:
+            row["urls"].append(tracker.url)
+        if row["title"] in (facts.branch, facts.key) and tracker.title:
+            row["title"] = tracker.title
+        row["tracker"] = {
+            "adapter": tracker.adapter,
+            "key": tracker.key,
+            "url": tracker.url,
+            "status": tracker.status,
+            "state": clip_words(tracker.state),
+            "at": tracker.at,
+            "stale": tracker.stale,
+        }
     return row
 
 
@@ -302,7 +334,9 @@ def visible(row: dict[str, Any], include_done: bool) -> bool:
     return include_done or not (row["ball"] == "done" or row["stale"])
 
 
-def summarize(rows: Iterable[dict[str, Any]], *, include_done: bool = False) -> dict[str, Any]:
+def summarize(
+    rows: Iterable[dict[str, Any]], *, include_done: bool = False, not_started: int = 0
+) -> dict[str, Any]:
     """``status_list``'s answer for ``rows`` (sorted, with counts)."""
     rows = list(rows)
     shown = sorted((r for r in rows if visible(r, include_done)), key=sort_key)
@@ -315,7 +349,7 @@ def summarize(rows: Iterable[dict[str, Any]], *, include_done: bool = False) -> 
         ),
         "done": sum(r["ball"] == "done" for r in rows),
         "stale": sum(r["stale"] and r["ball"] != "done" for r in rows),
-        "not_started": 0,
+        "not_started": not_started,
     }
     return {"rows": shown, "counts": counts}
 
@@ -360,6 +394,7 @@ class StatusProjection:
         self._ticks += 1
         if self._ticks % COMMIT_TIMES_EVERY == 0:
             self._refresh_commit_times()
+        self._poll_trackers()
         self.flush()
 
     def _on_event(self, event: EngineEvent) -> None:
@@ -382,6 +417,21 @@ class StatusProjection:
         paths = [wt.path for wt in self._members()]
         self._engine.worktree_service.set_pr_interest(paths, ENGINE_CLIENT)
         self._refresh_commit_times()
+        self._poll_trackers()
+
+    def _poll_trackers(self) -> None:
+        """Poll the tracker adapters that are due (a new branch's key at
+        once); a change shows within :data:`COALESCE`."""
+        hub = self._engine.trackers
+        if not hub.enabled:
+            return
+        branches = [wt.branch for wt in self._members() if wt.branch]
+
+        async def poll() -> None:
+            if await hub.poll(branches):
+                self.mark_dirty()
+
+        self._spawn(poll())
 
     def _refresh_commit_times(self) -> None:
         repo_root = self._engine.repo_root
@@ -431,7 +481,7 @@ class StatusProjection:
         rows = self.flush().values()
         if repo is not None:
             rows = [r for r in rows if r["repo"] == repo]
-        result = summarize(rows, include_done=include_done)
+        result = summarize(rows, include_done=include_done, not_started=self.not_started())
         result["generated_at"] = self.clock()
         return result
 
@@ -462,6 +512,15 @@ class StatusProjection:
         for slot in [s for s in self._since if s not in live_agents]:
             del self._since[slot]
         return rows
+
+    def not_started(self) -> int:
+        """Tasks assigned to the user that no local branch links to."""
+        hub = self._engine.trackers
+        if not hub.enabled:
+            return 0
+        branches = set(self._commit_times)
+        branches.update(wt.branch for wt in self._members() if wt.branch)
+        return hub.not_started(branches)
 
     def _seed(self, facts: Facts, now: float) -> float:
         """When a row first seen last changed: its branch's last commit, or
@@ -504,6 +563,7 @@ class StatusProjection:
                     commit_time=self._commit_times.get(branch) if branch else None,
                     restorable=restorable.get(wt.path, 0),
                     note=self._note(wt.path, agents),
+                    tracker=engine.trackers.fact(branch),
                 )
             )
         return out
@@ -581,6 +641,21 @@ def item_name(row: dict[str, Any]) -> str:
     return name
 
 
+def state_text(row: dict[str, Any], now: float) -> str:
+    """The state, with the tracker's text beside it when it says more (and
+    its age when the tracker could not be read since)."""
+    state = row["state"]
+    tracker = row.get("tracker")
+    if not tracker or not tracker["state"]:
+        return state
+    text = tracker["state"]
+    if tracker["stale"]:
+        text += f" ({format_age(now - tracker['at'])} ago)"
+    elif text == state:
+        return state
+    return f"{state} · {text}" if state else text
+
+
 @dataclass
 class _Column:
     title: str
@@ -597,6 +672,8 @@ def format_table(result: dict[str, Any], now: float | None = None) -> str:
         f"NOW {counts['now']}   ROUND {counts['round']}   "
         f"IN FLIGHT {counts['in_flight']}"
     )
+    if counts.get("not_started"):
+        head += f"   NOT STARTED {counts['not_started']}"
     hidden = [
         f"{counts[k]} {k}" for k in ("done", "stale") if counts.get(k)
     ]
@@ -611,7 +688,7 @@ def format_table(result: dict[str, Any], now: float | None = None) -> str:
             row["level"] or "-",
             item_name(row),
             row["ball"],
-            row["state"],
+            state_text(row, now),
             format_age(now - row["changed_at"]),
         )
         for column, value in zip(columns, values):
