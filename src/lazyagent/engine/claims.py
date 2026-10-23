@@ -15,8 +15,24 @@ the item comes back to the user's Round as ``delegation lapsed`` (a
 ``delegation`` actionable, dismissed like any other). A release with
 ``outcome: "returned"`` does the same with the orchestrator's note.
 
-Claims live in the engine's memory only: an engine restart ends them, and
-the rows fall back to their own derivation.
+A **hold** is the orchestrator's own claim (``orchestrator_hold {key, note,
+ttl_s}``, its token only; default :data:`HOLD_TTL`, at most
+:data:`MAX_HOLD_TTL`): it verifies the item or waits on a merge. The row
+reads ``orchestrator · <note>`` in flight and never reaches Round, but a
+hold widens no mandate: questions and briefs still follow the first
+responder's routing. The engine holds on its own, for the orchestrator, the
+``done`` and ``review`` items of agents it spawned (``[orchestrator]
+hold_spawned_ttl_min``, 60; 0 turns it off); a hold that expires comes back
+to the user as "orchestrator did not respond". ``orchestrator_release``
+ends a pass or a hold; its note stays on the row (``orchestrator: <note>``)
+and on the timeline.
+
+While a pass or a hold lasts, only what is still the user's stays in the
+user's inbox: tool approvals, and questions and briefs the routing left to
+the user (an automatic hold hides only the items it holds).
+
+Claims and holds live in the engine's memory only: an engine restart ends
+them, and the rows fall back to their own derivation.
 """
 
 from __future__ import annotations
@@ -40,10 +56,20 @@ log = logging.getLogger(__name__)
 CLAIM_CREATED = "orchestrator.claim"
 CLAIM_RELEASED = "orchestrator.released"
 CLAIM_LAPSED = "orchestrator.lapsed"
+HOLD_CREATED = "orchestrator.hold"
 
 HOLDER = "orchestrator"
 MAX_TTL = 86400.0
 MIN_TTL = 60.0
+HOLD_TTL = 7200.0
+MAX_HOLD_TTL = 8 * 3600.0
+HOLD_NOTE_CHARS = 60
+# What a pass or a hold leaves in the user's inbox: what the orchestrator
+# may not answer (approvals) or was not routed (questions, briefs).
+USERS_KINDS = frozenset({"approval", "question", "decision"})
+# The finished work of the orchestrator's own workers it holds first.
+AUTO_HOLD_KINDS = frozenset({"done", "review"})
+NO_RESPONSE = "orchestrator did not respond"
 # orchestrator_release: done (nothing for the user), returned (back to the
 # user's Round with the note).
 OUTCOMES = ("done", "returned")
@@ -65,8 +91,27 @@ class Claim:
     by: str = "user"
     holder: str = HOLDER
     allowed: tuple[str, ...] = ALLOWED
+    # pass (the user's) · hold (the orchestrator's own)
+    kind: str = "pass"
+    note: str = ""
+    # An automatic hold hides only these items (their ids).
+    items: tuple[str, ...] = ()
+
+    @property
+    def auto(self) -> bool:
+        return bool(self.items)
 
     def to_dict(self) -> dict[str, Any]:
+        if self.kind == "hold":
+            return {
+                "key": self.key,
+                "holder": self.holder,
+                "at": self.at,
+                "until": self.until,
+                "by": self.by,
+                "note": self.note,
+                "auto": self.auto,
+            }
         return {
             "key": self.key,
             "holder": self.holder,
@@ -90,11 +135,15 @@ class Returned:
     @property
     def state(self) -> str:
         if self.reason == "returned":
-            return clip_words(f"returned: {self.note}" if self.note else "returned by orchestrator")
+            return clip_words(self.note) if self.note else "returned by orchestrator"
+        if self.claim.kind == "hold" and self.reason == "expired":
+            return NO_RESPONSE
         return "delegation lapsed"
 
     @property
     def detail(self) -> str:
+        if self.reason == "expired" and self.claim.kind == "hold":
+            return f"{NO_RESPONSE}: its hold ({self.claim.note}) expired"
         if self.reason == "expired":
             return "the claim expired before the orchestrator released it"
         if self.reason == "orchestrator_gone":
@@ -107,6 +156,15 @@ class _Wake:
     key: str
     text: str
     at: float = field(default_factory=time.time)
+
+
+def hold_wake_text(claim: Claim, what: str) -> str:
+    until = time.strftime("%H:%M", time.localtime(claim.until))
+    return (
+        f"Item {claim.key}: {what}; held for you until {until}. Verify it, then call "
+        "orchestrator_release (done, or returned with a note for the user); "
+        f"at {until} it goes to the user."
+    )
 
 
 def wake_text(claim: Claim) -> str:
@@ -124,7 +182,10 @@ class Claims:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
         self.active: dict[str, Claim] = {}
+        self.holds: dict[str, Claim] = {}
         self.returned: dict[str, Returned] = {}
+        # Item occurrences already held once on their own (not again).
+        self._auto_seen: set[str] = set()
         self._wakes: list[_Wake] = []
         self._waking = False
         engine.actionables.add_detector(self.items)
@@ -140,6 +201,22 @@ class Claims:
     def get(self, key: str) -> dict[str, Any] | None:
         claim = self.active.get(key)
         return claim.to_dict() if claim is not None else None
+
+    def get_hold(self, key: str) -> dict[str, Any] | None:
+        hold = self.holds.get(key)
+        return hold.to_dict() if hold is not None else None
+
+    def filter(self, key: str, items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+        """``key``'s inbox items left to the user while a pass or a hold
+        lasts (all of them otherwise)."""
+        # What the orchestrator handed back is the freshest word on the item.
+        items = sorted(items, key=lambda i: i["kind"] != DELEGATION.name)
+        hold = self.holds.get(key)
+        if hold is not None and hold.auto and key not in self.active:
+            return [i for i in items if i["id"] not in hold.items]
+        if key in self.active or hold is not None:
+            return [i for i in items if i["kind"] in USERS_KINDS]
+        return items
 
     # --- Gestures ---
 
@@ -167,14 +244,100 @@ class Claims:
         self.active[key] = claim
         self.returned.pop(key, None)
         self._engine.events.emit(CLAIM_CREATED, {"claim": claim.to_dict()})
+        actor = "user" if by == "user" else "engine"
+        self._engine.overlay.add(key, "delegate", actor, "passed to the orchestrator until "
+                                 + time.strftime("%H:%M", time.localtime(claim.until)))
         self._wakes = [w for w in self._wakes if w.key != key]
         self._wakes.append(_Wake(key, wake_text(claim), now))
         self._changed()
         return claim
 
+    def hold(
+        self, key: str, note: Any, *, ttl_s: Any = None, by: str = "orchestrator",
+        items: tuple[str, ...] = (), wake: str | None = None,
+        row: dict[str, Any] | None = None,
+    ) -> Claim:
+        """The orchestrator holds ``key`` itself for ``ttl_s`` seconds
+        (:data:`HOLD_TTL` by default, at most :data:`MAX_HOLD_TTL`) while it
+        verifies or waits; a second hold renews it."""
+        if not self.orchestrator_alive():
+            raise ValueError("No orchestrator is running")
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("note is required: what you are doing (shown on the row)")
+        if row is None:
+            row = self._engine.status.row(key)
+        if row is None:
+            raise ValueError(f"No work item {key!r}")
+        if row["ball"] == "done":
+            raise ValueError(f"{key} is done: nothing to hold")
+        if key in self._engine.overlay.kept:
+            raise ValueError(f"{key} is kept for the user: not yours to hold")
+        if ttl_s is None:
+            ttl_s = HOLD_TTL
+        if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
+            raise ValueError("ttl_s must be a number of seconds")
+        if not MIN_TTL <= ttl_s <= MAX_HOLD_TTL:
+            raise ValueError(f"ttl_s must be between {MIN_TTL:g} and {MAX_HOLD_TTL:g}")
+        now = self.clock()
+        note = " ".join(note.split())[:HOLD_NOTE_CHARS]
+        hold = Claim(key, row["worktree_path"], now, now + float(ttl_s), by,
+                     kind="hold", note=note, items=items)
+        self.holds[key] = hold
+        self.returned.pop(key, None)
+        self._engine.events.emit(HOLD_CREATED, {"hold": hold.to_dict()})
+        until = time.strftime("%H:%M", time.localtime(hold.until))
+        self._engine.overlay.add(key, "delegate", "orchestrator" if by == "orchestrator" else "engine",
+                                 f"held by the orchestrator until {until}: {note}")
+        if wake is not None:
+            self._wakes = [w for w in self._wakes if w.key != key]
+            self._wakes.append(_Wake(key, hold_wake_text(hold, wake), now))
+        self._changed()
+        return hold
+
+    def auto_hold(self, items: Iterable[dict[str, Any]], now: float) -> None:
+        """Hold for the orchestrator the finished work of the agents it
+        spawned (``done``, ``review``), once per occurrence."""
+        ttl = self._engine.config.orchestrator.hold_spawned_ttl_min * 60
+        if ttl <= 0:
+            return
+        overlay = self._engine.overlay
+        alive: bool | None = None
+        for item in items:
+            key = item["work_item"]
+            if item["kind"] not in AUTO_HOLD_KINDS or key is None:
+                continue
+            if item["occurrence"] in self._auto_seen:
+                continue
+            spawned = overlay.spawned_by(key)
+            workers = [a for a, by in spawned.items() if by == "orchestrator"]
+            agent = item.get("agent_id")
+            if not workers or (agent is not None and agent not in workers):
+                continue
+            if key in self.active or key in self.holds or key in overlay.kept:
+                continue
+            if alive is None:
+                alive = self.orchestrator_alive()
+            if not alive:
+                return
+            self._auto_seen.add(item["occurrence"])
+            who = agent or workers[-1]
+            what = "agent finished" if item["kind"] == "done" else "changes requested"
+            try:
+                self.hold(
+                    key, f"checking agent {who}'s work", ttl_s=max(MIN_TTL, min(ttl, MAX_HOLD_TTL)),
+                    by="engine", items=(item["id"],),
+                    row={"worktree_path": item["worktree_path"], "ball": "you"},
+                    wake=f"agent {who} (spawned by you) — {what}: {item['state']}",
+                )
+            except ValueError as e:
+                log.info("not holding %s for the orchestrator: %s", key, e)
+
     def clear(self, key: str) -> Claim:
-        """The user takes the item back: the claim ends, nothing is raised."""
+        """The user takes the item back: the pass or the hold ends, nothing
+        is raised."""
         claim = self.active.pop(key, None)
+        if claim is None:
+            claim = self.holds.pop(key, None)
         if claim is None:
             raise ValueError(f"{key} is not with the orchestrator")
         self._wakes = [w for w in self._wakes if w.key != key]
@@ -186,17 +349,34 @@ class Claims:
         return claim
 
     def release(self, key: str, outcome: str, note: str = "") -> Claim:
-        """The orchestrator ends its claim: ``done``, or ``returned`` to the
-        user's Round with ``note``."""
+        """The orchestrator ends its pass or hold: ``done``, or ``returned``
+        to the user's Round with ``note``. The note shows on the row and on
+        the timeline either way."""
         if outcome not in OUTCOMES:
             raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
         claim = self.active.pop(key, None)
         if claim is None:
-            raise ValueError(f"{key} is not with the orchestrator (no claim, or it lapsed)")
+            claim = self.holds.pop(key, None)
+        if claim is None:
+            raise ValueError(f"{key} is not with the orchestrator (no pass or hold, or it lapsed)")
         note = " ".join(note.split())[:NOTE_CHARS]
+        now = self.clock()
         self._wakes = [w for w in self._wakes if w.key != key]
+        overlay = self._engine.overlay
         if outcome == "returned":
-            self.returned[key] = Returned(claim, "returned", self.clock(), note)
+            self.returned[key] = Returned(claim, "returned", now, note)
+        elif claim.auto:
+            # Verified: what it held is not the user's any more.
+            for item_id in claim.items:
+                try:
+                    self._engine.actionables.mark(item_id, "dismiss", by=HOLDER)
+                except ValueError:
+                    pass
+        overlay.release(key, outcome, note, now)
+        what = "handed back" if outcome == "returned" else "done"
+        overlay.add(key, "delegate", "orchestrator", f"orchestrator {what}: {note}" if note
+                    else f"orchestrator {what}")
+        self._engine.status.by(key, "orchestrator")
         self._engine.events.emit(
             CLAIM_RELEASED,
             {"key": key, "outcome": outcome, "note": note, "claim": claim.to_dict()},
@@ -212,26 +392,30 @@ class Claims:
     def check(self, now: float) -> None:
         """Lapse what expired or lost its orchestrator; wake the orchestrator
         if it is idle and something waits for it."""
-        if not self.active:
+        if not self.active and not self.holds:
             self._wakes.clear()
             return
         alive = self.orchestrator_alive()
         keys = set(self._engine.status.live_keys())
-        for key, claim in list(self.active.items()):
-            if not alive:
-                self._lapse(key, "orchestrator_gone", now)
-            elif now >= claim.until:
-                self._lapse(key, "expired", now)
-            elif keys and key not in keys:
-                # The work item is gone (worktree removed): nothing to return.
-                del self.active[key]
+        for table in (self.active, self.holds):
+            for key, claim in list(table.items()):
+                if not alive:
+                    self._lapse(key, "orchestrator_gone", now, table)
+                elif now >= claim.until:
+                    self._lapse(key, "expired", now, table)
+                elif keys and key not in keys:
+                    # The work item is gone (worktree removed): nothing to return.
+                    del table[key]
         if alive and self._wakes:
             self._wake()
 
-    def _lapse(self, key: str, reason: str, now: float) -> None:
-        claim = self.active.pop(key)
+    def _lapse(self, key: str, reason: str, now: float,
+               table: dict[str, Claim] | None = None) -> None:
+        claim = (self.active if table is None else table).pop(key)
         self._wakes = [w for w in self._wakes if w.key != key]
         self.returned[key] = Returned(claim, reason, now)
+        back = self.returned[key]
+        self._engine.overlay.add(key, "delegate", "engine", f"back to you: {back.state}")
         self._engine.events.emit(
             CLAIM_LAPSED, {"key": key, "reason": reason, "claim": claim.to_dict()}
         )

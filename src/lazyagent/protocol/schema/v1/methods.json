@@ -796,7 +796,7 @@
         "worktree_path": {"type": ["string", "null"]},
         "title": {"type": "string", "description": "The PR title, else the linked tracker task's title, else the branch."},
         "urls": {"type": "array", "items": {"type": "string"}},
-        "zone": {"enum": ["inbox", "in_flight"], "description": "inbox: the ball is the user's."},
+        "zone": {"enum": ["inbox", "in_flight", "parked"], "description": "inbox: the ball is the user's; parked: the user parked the whole work item (its inbox items wait with it, feature parked)."},
         "level": {"enum": ["now", "round", "deep", null], "description": "Inbox rows only. now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "ball": {"enum": ["you", "agent", "others", "stalled", "done"]},
         "priority": {"enum": ["high", "medium", "low"]},
@@ -820,7 +820,8 @@
             "properties": {
               "id": {"type": "string"},
               "status": {"type": "string", "description": "An agent status, or starting."},
-              "since": {"type": "number", "description": "When it took this status (Unix time)."}
+              "since": {"type": "number", "description": "When it took this status (Unix time)."},
+              "spawned_by": {"type": "string", "description": "orchestrator for the orchestrator's workers (its token at spawn_agent); absent when not recorded."}
             }
           }
         },
@@ -848,6 +849,9 @@
         },
         "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}], "description": "The user's label, park or close while it holds (feature gestures)."},
         "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}], "description": "The orchestrator holds the item (Pass to orchestrator, feature claims); null otherwise."},
+        "hold": {"oneOf": [{"$ref": "#/$defs/hold"}, {"type": "null"}], "description": "The orchestrator's own hold (orchestrator_hold, or the engine's for its workers' finished work; feature holds): state 'orchestrator · <note>', in flight."},
+        "delegation": {"oneOf": [{"$ref": "#/$defs/delegation"}, {"type": "null"}], "description": "An inbox item the user delegated to the branch's agent (feature delegation)."},
+        "suggestion": {"type": ["string", "null"], "description": "A hint for the user, never done for them, e.g. 'close PR #12: its head is in develop'."},
         "tracker": {
           "type": "object",
           "description": "The issue-tracker task linked by the branch name (optional adapters, [trackers]); absent when none is linked. Read-only: the engine never writes to a tracker.",
@@ -880,8 +884,8 @@
         "at": {"type": "number"},
         "by": {"type": "string"},
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label: the ball it puts on the row (rule 8); the state stays a fact."},
-        "text": {"type": "string", "description": "label: at most 40 characters, e.g. 'QA'."},
-        "until": {"$ref": "#/$defs/actionable_until", "description": "park: the row is in flight, 'parked until ...' (rule 7)."},
+        "text": {"type": "string", "description": "label: at most 40 characters, e.g. 'QA'; park: the reason (optional)."},
+        "until": {"$ref": "#/$defs/actionable_until", "description": "park: the whole work item waits in Parked, 'parked until ...' (rule 7)."},
         "how": {"enum": ["done", "dropped"], "description": "close: the row is done (rule 1)."}
       }
     },
@@ -910,6 +914,8 @@
             "done": {"type": "integer"},
             "stale": {"type": "integer"},
             "not_started": {"type": "integer", "description": "Tasks assigned to the user (tracker adapters) that no local branch links to."},
+            "parked": {"type": "integer", "description": "Parked work items (feature parked)."},
+            "parked_needs_you": {"type": "integer", "description": "Of those, the ones with inbox items still the user's (not routed to the orchestrator)."},
             "auto_actions": {"type": "integer", "description": "The orchestrator's own decisions and actions today (feature first_responder)."},
             "auto_reverted": {"type": "integer", "description": "Of those, reverted by the user today."}
           }
@@ -959,10 +965,10 @@
       }
     },
     "actionable_until": {
-      "description": "A Unix time, or an event: ci_done (CI ran and finished), agent_stopped (an agent ran and none runs now, or one there at park time is gone), human_review (the PR's review decision changed).",
+      "description": "A Unix time, tomorrow (08:00 local, kept as that time), or an event: ci_done (CI ran and finished), agent_stopped (an agent ran and none runs now, or one there at park time is gone), human_review (the PR's review decision changed), change (CI, the review, the head commit or an agent's status moved), indefinite (until unparked).",
       "anyOf": [
         {"type": "number"},
-        {"type": "string", "x-known-values": ["ci_done", "agent_stopped", "human_review"]}
+        {"type": "string", "x-known-values": ["tomorrow", "ci_done", "agent_stopped", "human_review", "change", "indefinite"]}
       ]
     },
     "actionables_list.params": {
@@ -1029,6 +1035,53 @@
         "allowed": {"type": "array", "items": {"type": "string"}, "description": "The actions the claim allows (the away mandate's)."}
       }
     },
+    "hold": {
+      "type": "object",
+      "description": "The orchestrator's own hold on a work item (feature holds).",
+      "required": ["key", "holder", "at", "until", "by", "note", "auto"],
+      "properties": {
+        "key": {"type": "string"},
+        "holder": {"enum": ["orchestrator"]},
+        "at": {"type": "number"},
+        "until": {"type": "number", "description": "Past it the item goes to the user: 'orchestrator did not respond'."},
+        "by": {"type": "string", "description": "orchestrator (orchestrator_hold) or engine (its workers' finished work)."},
+        "note": {"type": "string", "description": "What it is doing, at most 60 characters."},
+        "auto": {"type": "boolean", "description": "The engine's hold on its worker's done or review item."}
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "description": "An inbox item handed to the branch's agent (status_gesture delegate to: agent).",
+      "required": ["agent", "item", "occurrence", "fact", "at", "by", "phase"],
+      "properties": {
+        "agent": {"type": "string"},
+        "item": {"type": "string", "description": "The item's id."},
+        "occurrence": {"type": "string"},
+        "kind": {"type": "string"},
+        "fact": {"type": "string", "description": "The item's state when delegated."},
+        "at": {"type": "number"},
+        "by": {"type": "string"},
+        "phase": {"enum": ["on_it", "returned"], "description": "on_it: the agent has it (the item is out of the inbox); returned: the agent finished and the fact still holds."},
+        "sent_at": {"type": ["number", "null"], "description": "When the line reached the agent."},
+        "ran": {"type": "boolean"},
+        "state": {"type": "string", "description": "returned: 'agent a1 finished; still CI red …'."}
+      }
+    },
+    "orchestrator_hold.params": {
+      "type": "object",
+      "required": ["key", "note"],
+      "properties": {
+        "key": {"type": "string"},
+        "note": {"type": "string", "description": "What the orchestrator is doing (verifying, waiting on a merge): shown on the row."},
+        "ttl_s": {"type": "number", "minimum": 60, "default": 7200, "description": "At most 28800 (8 h)."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token (required)."}
+      }
+    },
+    "orchestrator_hold.result": {
+      "type": "object",
+      "required": ["key", "hold"],
+      "properties": {"key": {"type": "string"}, "hold": {"$ref": "#/$defs/hold"}}
+    },
     "status_gesture.params": {
       "type": "object",
       "required": ["key", "kind"],
@@ -1036,10 +1089,12 @@
         "key": {"type": "string", "description": "A work item key (status_list rows)."},
         "kind": {"enum": ["label", "park", "close", "delegate", "keep_for_me", "clear"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); keep_for_me: the orchestrator's mandate there is none (nothing is routed to it); clear: drop the gesture, the keep and take back a pass."},
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label only (required)."},
-        "text": {"type": "string", "description": "label only: at most 40 characters."},
+        "text": {"type": "string", "description": "label: at most 40 characters; park: the reason (optional); delegate to agent: the line the agent gets (default: the item's fact)."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park only (required)."},
         "how": {"enum": ["done", "dropped"], "default": "done", "description": "close only."},
-        "to": {"enum": ["orchestrator"], "description": "delegate only."},
+        "to": {"enum": ["orchestrator", "agent"], "description": "delegate only: the orchestrator (a claim), or the branch's agent (one inbox item, feature delegation)."},
+        "item": {"type": "string", "description": "delegate to agent: the inbox item's id (default: the row's top item)."},
+        "agent_id": {"type": "string", "description": "delegate to agent: a live agent on the branch (default: the first)."},
         "ttl_s": {"type": "number", "minimum": 60, "description": "delegate only: how long the claim lasts, at most 86400; default [orchestrator] claim_ttl_s (7200)."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "None: gestures are the user's."}
       }
@@ -1052,6 +1107,7 @@
         "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}]},
         "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}]},
         "kept": {"type": "boolean", "description": "keep_for_me holds on the item."},
+        "delegation": {"$ref": "#/$defs/delegation", "description": "delegate to agent: the delegation made."},
         "row": {"oneOf": [{"$ref": "#/$defs/status_row"}, {"type": "null"}]}
       }
     },
@@ -1071,7 +1127,8 @@
       "properties": {
         "key": {"type": "string"},
         "outcome": {"type": "string"},
-        "claim": {"$ref": "#/$defs/claim"}
+        "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}], "description": "The pass that ended; null when it was a hold."},
+        "hold": {"$ref": "#/$defs/hold", "description": "The hold that ended."}
       }
     },
 

@@ -61,6 +61,8 @@ LEGACY_METHODS: tuple[str, ...] = (
     # Pass to orchestrator (claims, proposal 0013 I3).
     "status_gesture",
     "orchestrator_release",
+    # The orchestrator's own hold on a work item (proposal 0013 I4d).
+    "orchestrator_hold",
     # Agents' reports, the timeline and seen marks, decision briefs
     # (proposal 0013 I4).
     "status_report",
@@ -146,6 +148,7 @@ EVENTS: tuple[str, ...] = (
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
+    "orchestrator.hold",
     "status.timeline",
     "decision.created",
     "decision.answered",

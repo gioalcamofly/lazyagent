@@ -48,9 +48,23 @@ work item ("Pass to orchestrator"): you get one line "Item <key>: passed to \
 you by the user until HH:MM", and its `status_list` row has `claim` set. Deal \
 with it within your limits (relay to its agent, restore its agent, re-run CI, \
 rebase through its agent; never merge, publish or delete), then call \
-`orchestrator_release(key, "done")`, or `orchestrator_release(key, "returned", \
-note)` to hand it back with what the user must decide. An unreleased claim \
-lapses at its time and goes back to the user.
+`orchestrator_release(key, "done", note)`, or `orchestrator_release(key, \
+"returned", note)` to hand it back with what the user must decide. Always \
+give a note saying what you did: it shows on the user's row either way. An \
+unreleased claim lapses at its time and goes back to the user.
+- **`orchestrator_hold(key, note, ttl_s=7200)`** — Hold a work item yourself \
+**while you verify it or wait on a merge**: call it before you check a \
+worker's finished branch, or while the user's merge of a PR you prepared is \
+pending, so the row reads "orchestrator · <note>" instead of landing in the \
+user's Round. The engine already holds, for you, the finished work (agent \
+done, changes requested) of the workers you spawned and wakes you with one \
+line "Item <key>: agent <id> (spawned by you) — …; held for you until HH:MM". \
+Verify, then `orchestrator_release(key, "done", note)` or `"returned"` with \
+what the user must do; unanswered, it goes to the user as "orchestrator did \
+not respond". A hold widens nothing: your mandate still applies.
+- **PRs already merged.** A row "already merged into <branch>" is an open PR \
+whose head is in develop/main: suggest closing it to the user; closing or \
+reopening a PR is never yours to do alone.
 - **Briefs.** Workers ask the user for choices that need reading with \
 `request_decision` (a brief: question, options, recommendation, evidence; \
 their preamble says how). When a worker brings you such a question, tell it to \

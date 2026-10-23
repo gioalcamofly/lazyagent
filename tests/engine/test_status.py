@@ -4,6 +4,7 @@ engine's projection (membership, ages, PR interest, coalesced events)."""
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -34,10 +35,12 @@ RED = [CiCheck("lint", "COMPLETED", "SUCCESS"), CiCheck("tests", "COMPLETED", "F
 RUNNING_CI = [CiCheck("tests", "IN_PROGRESS", "")]
 
 
-def pr(state="OPEN", checks=GREEN, review="", mergeable="MERGEABLE") -> PrInfo:
+def pr(state="OPEN", checks=GREEN, review="", mergeable="MERGEABLE", *,
+       requests=None, reviews=None) -> PrInfo:
     return PrInfo(
         12, "A title", state, list(checks), "https://example.com/pull/12",
         review_decision=review, mergeable=mergeable,
+        review_requests=requests, reviews=reviews,
     )
 
 
@@ -136,6 +139,99 @@ DERIVATION = {
 }
 
 
+# --- PR ball (I4d) -----------------------------------------------------------
+
+def merged(f: Facts, into: str = "develop") -> Facts:
+    return replace(f, merged_into=into)
+
+
+DERIVATION.update({
+    "already_merged_into_develop": (
+        merged(facts(agent("waiting"), pr_info=pr(review="REVIEW_REQUIRED", requests=1))),
+        (1, "done", None, "already merged into develop"),
+    ),
+    "already_merged_beats_an_approval_and_red_ci": (
+        merged(facts(pr_info=pr(checks=RED, review="APPROVED")), "main"),
+        (1, "done", None, "already merged into main"),
+    ),
+    "a_merged_pr_is_merged_not_already_merged": (
+        merged(facts(pr_info=pr("MERGED"))),
+        (1, "done", None, "merged"),
+    ),
+    "pr_with_no_reviewer_is_yours": (
+        facts(pr_info=pr(requests=0, reviews=0)),
+        (10, "you", "round", "PR has no reviewer"),
+    ),
+    "pr_review_required_but_nobody_asked": (
+        facts(agent("waiting"), pr_info=pr(review="REVIEW_REQUIRED", requests=0, reviews=0)),
+        (10, "you", "round", "PR has no reviewer"),
+    ),
+    "pr_with_a_requested_reviewer_is_others": (
+        facts(pr_info=pr(review="REVIEW_REQUIRED", requests=1, reviews=0)),
+        (10, "others", None, "review requested, CI green"),
+    ),
+    "pr_reviewed_but_no_decision_is_others": (
+        facts(pr_info=pr(requests=0, reviews=1)),
+        (10, "others", None, "PR open, CI green"),
+    ),
+    "pr_reviewers_unknown_keeps_others": (
+        facts(pr_info=pr()),
+        (10, "others", None, "PR open, CI green"),
+    ),
+    "no_reviewer_while_an_agent_works_is_the_agents": (
+        facts(agent("running", "Edit"), pr_info=pr(requests=0, reviews=0)),
+        (9, "agent", None, "Edit"),
+    ),
+})
+
+
+def test_already_merged_suggests_closing_the_pr_and_is_never_alone():
+    from lazyagent.engine.orchestrator import NEVER_ALONE
+
+    f = merged(facts(pr_info=pr()))
+    d = derive(f, NOW, NOW, stalled_hours=24)
+    assert d.suggestion == "close PR #12: its head is in develop"
+    row = build_row(f, d, NOW, fingerprint(f, d), stale=False)
+    assert (row["ball"], row["state"], row["suggestion"]) == (
+        "done", "already merged into develop", "close PR #12: its head is in develop",
+    )
+    assert "close_reopen_pr" in NEVER_ALONE
+
+
+def test_a_label_still_puts_the_ball_on_a_pr_with_no_reviewer():
+    f = replace(facts(pr_info=pr(requests=0, reviews=0)),
+                gesture={"kind": "label", "ball": "others", "at": NOW, "text": "QA"})
+    assert run(f) == (8, "others", None, "PR has no reviewer")
+
+
+def test_merged_into_reads_git(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    repo = tmp_path / "repo"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    repo.mkdir()
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    git("checkout", "-q", "-b", "feat")
+    git("commit", "-q", "--allow-empty", "-m", "work")
+    head = git("rev-parse", "HEAD")
+    targets = ("develop", "main")
+    assert status_mod.merged_into(str(repo), head, targets) is None
+    git("checkout", "-q", "-b", "develop", "main")
+    git("merge", "-q", "--no-ff", "-m", "merge feat", "feat")
+    assert status_mod.merged_into(str(repo), head, targets) == "develop"
+    assert status_mod.merged_into(str(repo), "0" * 40, targets) is None
+    assert status_mod.merged_into(str(tmp_path / "nope"), head, targets) is None
+
+
 @pytest.mark.parametrize("case", sorted(DERIVATION))
 def test_derivation_table(case):
     f, expected = DERIVATION[case]
@@ -206,7 +302,7 @@ def test_inbox_first_then_in_flight_in_their_orders():
     ]
     assert result["counts"] == {
         "now": 2, "round": 2, "deep": 0, "in_flight": 4, "done": 1, "stale": 1,
-        "not_started": 0, "deep_max": 5,
+        "not_started": 0, "deep_max": 5, "parked": 0, "parked_needs_you": 0,
     }
     every = summarize(rows, include_done=True)["rows"]
     assert [r["key"] for r in every][-2:] == ["old-branch", "merged"]

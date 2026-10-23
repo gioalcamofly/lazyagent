@@ -28,6 +28,12 @@ The rows themselves stay a projection (status.py); this store keeps only:
   mandate there is none (engine/orchestrator.py).
 - **orchestrator**, today's counts of its own decisions and actions (the
   caps on autonomy, ``auto_actions`` / ``auto_reverted``).
+- **released**, the orchestrator's last release of a pass or a hold on each
+  item (``{outcome, note, at}``): the row's note for :data:`RELEASED_FOR`.
+- **spawned**, who spawned each agent of an item (the orchestrator's
+  workers, whose finished work it holds first: claims.py).
+- **delegations**, inbox items the user delegated to the branch's agent
+  (delegation.py).
 
 Kept in ``$XDG_STATE_HOME/lazyagent/status/<repo hash>.json`` (0600, atomic)
 by the engine that owns the repo, written at most once per :data:`SAVE_EVERY`.
@@ -62,6 +68,8 @@ KEEP = 7 * 86400.0
 TOMBSTONE = 86400.0
 # Closed briefs are kept this long.
 KEEP_DECISIONS = 30 * 86400.0
+# The orchestrator's release note stays on its row this long.
+RELEASED_FOR = 86400.0
 
 GESTURE_KINDS = ("label", "park", "close")
 LABEL_BALLS = ("agent", "others", "stalled")
@@ -129,6 +137,19 @@ def basis_holds(stored: dict[str, Any], now: dict[str, Any]) -> bool:
     return True
 
 
+def _place(facts: Any) -> Any:
+    """A work item's facts as a park measures them (actionables.Place)."""
+    from lazyagent.engine.actionables import AgentSeen, Place
+
+    return Place(
+        facts.worktree_path or "",
+        facts.key,
+        tuple(AgentSeen(a.agent_id, a.status) for a in facts.agents),
+        facts.pr,
+        getattr(facts, "head", None),
+    )
+
+
 def overlay_path(repo_root: str) -> Path:
     return state_dir() / "status" / f"{repo_digest(repo_root)}.json"
 
@@ -149,6 +170,9 @@ class Overlay:
         self.next_decision = 1
         self.kept: dict[str, dict[str, Any]] = {}
         self.orchestrator: dict[str, Any] = {}
+        self.released: dict[str, dict[str, Any]] = {}
+        self.spawned: dict[str, dict[str, Any]] = {}
+        self.delegations: dict[str, dict[str, Any]] = {}
         self._saved: str | None = None
         self._handle: asyncio.TimerHandle | None = None
 
@@ -198,6 +222,14 @@ class Overlay:
             }
         self.decisions = table("decisions")
         self.kept = table("kept")
+        self.released = {
+            k: r for k, r in table("released").items() if isinstance(r.get("at"), (int, float))
+        }
+        self.spawned = table("spawned")
+        self.delegations = {
+            k: d for k, d in table("delegations").items()
+            if isinstance(d.get("agent"), str) and isinstance(d.get("item"), str)
+        }
         orchestrator = data.get("orchestrator")
         if isinstance(orchestrator, dict):
             self.orchestrator = orchestrator
@@ -220,6 +252,9 @@ class Overlay:
                 "next_decision": self.next_decision,
                 "kept": self.kept,
                 "orchestrator": self.orchestrator,
+                "released": self.released,
+                "spawned": self.spawned,
+                "delegations": self.delegations,
             },
             indent=1,
             sort_keys=True,
@@ -337,11 +372,37 @@ class Overlay:
 
     def forget(self, key: str) -> None:
         """A tombstone ran out: drop what was kept for the item."""
-        for table in (self.gestures, self.reports, self.closed, self.timeline, self.kept):
+        for table in (self.gestures, self.reports, self.closed, self.timeline, self.kept,
+                      self.released, self.spawned, self.delegations):
             table.pop(key, None)
         for marks in self.seen.values():
             marks.pop(key, None)
         self.changed()
+
+    # --- The orchestrator's ---
+
+    def release(self, key: str, outcome: str, note: str, now: float) -> None:
+        self.released[key] = {"outcome": outcome, "note": note, "at": now}
+        self.changed()
+
+    def released_note(self, key: str, now: float) -> dict[str, Any] | None:
+        r = self.released.get(key)
+        if r is None:
+            return None
+        if now - r["at"] >= RELEASED_FOR:
+            del self.released[key]
+            self.changed()
+            return None
+        return r
+
+    def set_spawned(self, key: str, agent_id: str, by: str, now: float) -> None:
+        self.spawned.setdefault(key, {})[agent_id] = {"by": by, "at": now}
+        self.changed()
+
+    def spawned_by(self, key: str) -> dict[str, str]:
+        """agent id → who spawned it (only what was recorded)."""
+        return {a: r["by"] for a, r in self.spawned.get(key, {}).items()
+                if isinstance(r, dict) and isinstance(r.get("by"), str)}
 
     def prune(self, now: float) -> None:
         for key, ring in list(self.timeline.items()):
@@ -360,7 +421,7 @@ class Overlay:
         is dropped. A label or a close ends when :func:`basis` moves; a
         close also when a new agent starts there (work resumed); a park as
         an inbox park does (a time, or its event)."""
-        from lazyagent.engine.actionables import AgentSeen, Place, park_holds
+        from lazyagent.engine.actionables import park_holds
 
         key = facts.key
         g = self.gestures.get(key)
@@ -378,13 +439,7 @@ class Overlay:
                     a.status in _RUNNING and a.agent_id not in before for a in facts.agents
                 )
         elif kind == "park":
-            place = Place(
-                facts.worktree_path or "",
-                key,
-                tuple(AgentSeen(a.agent_id, a.status) for a in facts.agents),
-                facts.pr,
-            )
-            holds = park_holds(g["park"], place, now)
+            holds = park_holds(g["park"], _place(facts), now)
         if not holds:
             del self.gestures[key]
             self.changed()
@@ -405,7 +460,7 @@ class Overlay:
     ) -> dict[str, Any]:
         """Put a label, a park or a close on ``facts.key`` (replacing its
         gesture). Raises ValueError on a bad argument."""
-        from lazyagent.engine.actionables import AgentSeen, Place, check_until, new_park
+        from lazyagent.engine.actionables import check_until, new_park
 
         g: dict[str, Any] = {"kind": kind, "at": now, "by": by}
         if kind == "label":
@@ -416,13 +471,12 @@ class Overlay:
             g.update(ball=ball, text=one_line(text or "", LABEL_CHARS), basis=basis(facts))
         elif kind == "park":
             until = check_until(until, now)
-            place = Place(
-                facts.worktree_path or "",
-                facts.key,
-                tuple(AgentSeen(a.agent_id, a.status) for a in facts.agents),
-                facts.pr,
-            )
+            if text is not None and not isinstance(text, str):
+                raise ValueError("text must be a string")
+            place = _place(facts)
             g.update(until=until, park=new_park(until, place, now, by))
+            if text and text.strip():
+                g["text"] = one_line(text, LABEL_CHARS)
         elif kind == "close":
             how = how or "done"
             if how not in CLOSE_HOW:

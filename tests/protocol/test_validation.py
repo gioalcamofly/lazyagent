@@ -132,6 +132,10 @@ EVENT_SAMPLES = {
         "key": "r:feat", "outcome": "done", "note": "rebased", "claim": CLAIM,
     },
     "orchestrator.lapsed": {"key": "r:feat", "reason": "expired", "claim": CLAIM},
+    "orchestrator.hold": {"hold": {
+        "key": "r:feat", "holder": "orchestrator", "at": 1.0, "until": 7201.0,
+        "by": "orchestrator", "note": "waiting on the merge", "auto": False,
+    }},
     "status.timeline": {
         "key": "r:feat",
         "entry": {"at": 1.0, "kind": "commit", "actor": "engine", "text": "commit abc123", "ref": "abc123"},

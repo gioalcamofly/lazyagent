@@ -34,6 +34,7 @@
         "changed_at": 1700000000.0,
         "claim": null,
         "class": null,
+        "delegation": null,
         "fingerprint": "9f60e6ccd4a9",
         "gesture": {
           "at": 1700000000.0,
@@ -42,6 +43,7 @@
           "kind": "label",
           "text": "QA"
         },
+        "hold": null,
         "holder": null,
         "key": "repo:export-csv",
         "last_event_at": 1700000000.0,
@@ -55,6 +57,7 @@
         "seen_at": null,
         "stale": false,
         "state": "Edit",
+        "suggestion": null,
         "title": "export-csv",
         "urls": [],
         "worktree_path": "/tmp/repo-export",

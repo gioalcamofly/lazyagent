@@ -1,0 +1,15 @@
+{
+  "case": "orchestrator_hold/error_not_the_orchestrator",
+  "method": "orchestrator_hold",
+  "params": {
+    "key": "repo:docs-index",
+    "note": "mine"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Only the orchestrator holds items (its token)"
+    },
+    "id": "req-1"
+  }
+}

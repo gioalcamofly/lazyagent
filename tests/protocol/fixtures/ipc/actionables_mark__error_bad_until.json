@@ -4,12 +4,12 @@
   "params": {
     "action": "park",
     "id": "Approval:/tmp/repo-login/a1",
-    "until": "tomorrow"
+    "until": "someday"
   },
   "response": {
     "error": {
       "code": "VALIDATION_ERROR",
-      "message": "until must be a future Unix time or one of ci_done, agent_stopped, human_review"
+      "message": "until must be a future Unix time, tomorrow, or one of ci_done, agent_stopped, human_review, change, indefinite"
     },
     "id": "req-1"
   }

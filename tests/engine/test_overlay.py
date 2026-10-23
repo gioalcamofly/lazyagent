@@ -163,11 +163,11 @@ async def test_gestures_are_the_users_only():
 # --- Park and close ------------------------------------------------------------
 
 
-async def test_a_park_dims_the_row_until_its_time():
+async def test_a_park_moves_the_row_to_parked_until_its_time():
     engine, clock = _engine()
     await _gesture(engine, kind="park", until=NOW + 600)
     row = _row(engine)
-    assert (row["rule"], row["ball"], row["zone"]) == (7, "stalled", "in_flight")
+    assert (row["rule"], row["ball"], row["zone"]) == (7, "stalled", "parked")
     assert row["state"].startswith("parked until ")
     assert row["gesture"]["until"] == NOW + 600
     clock.now += 600
@@ -182,7 +182,7 @@ async def test_a_park_until_ci_ends_and_a_bad_until():
     engine.worktree_service._pr_infos[FEAT] = _pr(GREEN)
     assert _row(engine)["gesture"] is None
     with pytest.raises(ValueError, match="until must be"):
-        await _gesture(engine, kind="park", until="tomorrow")
+        await _gesture(engine, kind="park", until="someday")
 
 
 async def test_close_makes_it_done_until_work_starts_again():

@@ -93,7 +93,7 @@ async def test_a_pass_takes_the_item_out_of_the_inbox_but_not_its_approvals():
     assert "merge_default_branch" not in claim["allowed"]
     row = _row(engine)
     assert (row["zone"], row["ball"], row["state"], row["claim"]) == (
-        "in_flight", "agent", "with orchestrator", claim,
+        "in_flight", "agent", "orchestrator · looking", claim,
     )
     assert result["row"] == row
     assert seen == [(CLAIM_CREATED, {"claim": claim})]
@@ -160,7 +160,11 @@ async def test_the_orchestrator_releases_done_or_returned():
          "caller": "tok-orch"}
     )
     row = _row(engine, "repo:fix")
-    assert (row["level"], row["state"]) == ("round", "returned: needs a product call")
+    assert (row["level"], row["state"]) == ("round", "needs a product call")
+    # Both releases leave the note on the row and the timeline.
+    assert row["note"]["text"] == "orchestrator: needs a product call"
+    assert [e["text"] for e in engine.overlay.entries("repo:fix") if e["kind"] == "delegate"][-1] \
+        == "orchestrator handed back: needs a product call"
     assert [(d["key"], d["outcome"], d["note"]) for _, d in seen] == [
         (KEY, "done", ""), ("repo:fix", "returned", "needs a product call"),
     ]

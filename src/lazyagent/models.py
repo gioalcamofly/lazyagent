@@ -163,6 +163,10 @@ class PrInfo:
     review_decision: str = ""   # "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""
     mergeable: str = ""         # "MERGEABLE", "CONFLICTING", "UNKNOWN", ""
     base_ref: str = ""          # the branch it merges into (baseRefName)
+    head_sha: str = ""          # the PR's head commit (headRefOid)
+    # Requested reviewers and reviews given; None when not fetched.
+    review_requests: int | None = None
+    reviews: int | None = None
 
     @property
     def checks_summary(self) -> str:

@@ -193,6 +193,7 @@ class EngineMethods:
             "actionables_mark": self.actionables_mark,
             "status_gesture": self.status_gesture,
             "orchestrator_release": self.orchestrator_release,
+            "orchestrator_hold": self.orchestrator_hold,
             "status_report": self.status_report,
             "status_seen": self.status_seen,
             "status_timeline": self.status_timeline,
@@ -403,6 +404,13 @@ class EngineMethods:
             raise
         if caps is not None:
             caps.done()
+        if role == ORCHESTRATOR_BY and kind == AGENT_KIND:
+            # Its workers' finished work is held for it first (claims.py).
+            key = self._engine.status.key_of(worktree_path)
+            if key is not None:
+                self._engine.overlay.set_spawned(
+                    key, info.agent_id, ORCHESTRATOR_BY, self._engine.status.clock()
+                )
         if held_key is not None:
             responder.record_action(
                 held_key, "spawn_worker", mandate=mandate,
@@ -978,12 +986,16 @@ class EngineMethods:
         - ``label``: ``ball`` (agent, others, stalled) and an optional short
           ``text``; it holds until the item's facts cross a rule (the PR
           opens, merges or closes, its review changes, CI turns red anew);
-        - ``park``: ``until`` a future Unix time or an event (ci_done,
-          agent_stopped, human_review);
+        - ``park``: the whole work item, its inbox items too, ``until`` a
+          future Unix time, ``tomorrow`` (08:00 local) or an event (ci_done,
+          agent_stopped, human_review, change, indefinite), with an optional
+          reason (``text``);
         - ``close``: ``how`` (done, dropped), for what the engine cannot see;
         - ``delegate``: pass it to the orchestrator (``to: "orchestrator"``,
-          optional ``ttl_s``);
-        - ``clear``: drop the gesture and take back a pass.
+          optional ``ttl_s``), or hand one inbox item to the branch's agent
+          (``to: "agent"``, optional ``item``, ``agent_id``, ``text``);
+        - ``clear``: drop the gesture, take back a pass or a hold, and end a
+          delegation.
 
         The user's only (no token)."""
         role, _ = self._caller(params)
@@ -995,10 +1007,16 @@ class EngineMethods:
         claims = engine.claims
         status = engine.status
         claim = None
-        if kind == "delegate":
+        delegation = None
+        if kind == "delegate" and params.get("to") == "agent":
+            delegation = engine.delegations.delegate(
+                key, item_id=params.get("item"), agent_id=params.get("agent_id"),
+                text=params.get("text"), by=role,
+            )
+        elif kind == "delegate":
             to = params.get("to", "orchestrator")
             if to != "orchestrator":
-                raise ValueError("to must be 'orchestrator'")
+                raise ValueError("to must be 'orchestrator' or 'agent'")
             claim = claims.claim(key, ttl_s=params.get("ttl_s"), by=role)
             # Passing it is the opposite of keeping it.
             if engine.overlay.kept.pop(key, None) is not None:
@@ -1016,9 +1034,10 @@ class EngineMethods:
             kept = engine.overlay.kept.pop(key, None)
             if kept is not None:
                 engine.overlay.changed()
-            if claims.get(key) is not None:
+            delegated = engine.delegations.clear(key)
+            if claims.get(key) is not None or claims.get_hold(key) is not None:
                 claims.clear(key)
-            elif gesture is None and kept is None:
+            elif gesture is None and kept is None and not delegated:
                 raise ValueError(f"{key} has no gesture and is not with the orchestrator")
             status.by(key, role)
         elif kind in ("label", "park", "close"):
@@ -1047,13 +1066,16 @@ class EngineMethods:
             )
         status.flush()
         row = status.row(key)
-        return {
+        result = {
             "key": key,
             "claim": claim.to_dict() if claim is not None else claims.get(key),
             "gesture": row["gesture"] if row is not None else None,
             "kept": key in engine.overlay.kept,
             "row": row,
         }
+        if delegation is not None:
+            result["delegation"] = delegation
+        return result
 
     def _worker(self, params: dict, what: str) -> tuple[str, str, str]:
         """``(worktree_path, agent_id, work item key)`` of a call that must
@@ -1209,9 +1231,10 @@ class EngineMethods:
         return {"decisions": self._engine.decisions.list(key=key, state=state)}
 
     async def orchestrator_release(self, params: dict) -> Any:
-        """The orchestrator ends its claim on a work item. Params: key,
-        outcome (``done``, or ``returned``: back to the user's Round with the
-        note), note, caller (the orchestrator's token)."""
+        """The orchestrator ends its pass or hold on a work item. Params:
+        key, outcome (``done``, or ``returned``: back to the user's Round with
+        the note), note (shown on the row either way), caller (the
+        orchestrator's token)."""
         role, _ = self._caller(params)
         if role != ORCHESTRATOR_BY:
             raise ValueError("Only the orchestrator releases its claims (its token)")
@@ -1223,7 +1246,24 @@ class EngineMethods:
         if not isinstance(note, str):
             raise ValueError("note must be a string")
         claim = self._engine.claims.release(key, outcome, note)
+        self._engine.status.flush()
+        if claim.kind == "hold":
+            return {"key": key, "outcome": outcome, "claim": None, "hold": claim.to_dict()}
         return {"key": key, "outcome": outcome, "claim": claim.to_dict()}
+
+    async def orchestrator_hold(self, params: dict) -> Any:
+        """The orchestrator holds a work item itself while it verifies it or
+        waits on a merge: the row reads "orchestrator · <note>" in flight
+        and never reaches Round. Params: key, note, ttl_s (default 7200, at
+        most 28800), caller (the orchestrator's token). End it with
+        orchestrator_release; past ttl_s it goes to the user."""
+        role, _ = self._caller(params)
+        if role != ORCHESTRATOR_BY:
+            raise ValueError("Only the orchestrator holds items (its token)")
+        key = self._key(params)
+        hold = self._engine.claims.hold(key, params.get("note"), ttl_s=params.get("ttl_s"))
+        self._engine.status.flush()
+        return {"key": key, "hold": hold.to_dict()}
 
     async def decision_answer(self, params: dict) -> Any:
         """Answer a brief. Params: id, choice (an option's key; with no

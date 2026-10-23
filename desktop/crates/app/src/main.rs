@@ -12,6 +12,7 @@ mod diff_view;
 mod fonts;
 mod gpu;
 mod home;
+mod home_help;
 mod home_view;
 mod install;
 mod lifecycle;

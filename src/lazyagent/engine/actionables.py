@@ -79,7 +79,9 @@ CARRY_GRACE = 300.0
 # Agent exits and failed jobs kept, newest last.
 MAX_EVENTS = 50
 
-PARK_EVENTS = ("ci_done", "agent_stopped", "human_review")
+PARK_EVENTS = ("ci_done", "agent_stopped", "human_review", "change", "indefinite")
+# A park ``until: "tomorrow"`` ends at this local hour the next day.
+TOMORROW_HOUR = 8
 MARK_ACTIONS = ("dismiss", "park", "unpark")
 
 
@@ -223,6 +225,8 @@ class Place:
     work_item: str | None
     agents: tuple[AgentSeen, ...] = ()
     pr: PrInfo | None = None
+    # The worktree's head commit (a park "until something changes").
+    head: str | None = None
 
     @property
     def running(self) -> bool:
@@ -429,15 +433,36 @@ def derive(
 # ----------------------------------------------------------------------
 
 
+def tomorrow_at(now: float, hour: int = TOMORROW_HOUR) -> float:
+    """The next day's ``hour`` o'clock, local time (the engine's clock)."""
+    t = time.localtime(now)
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday + 1, hour, 0, 0, 0, 0, -1))
+
+
 def check_until(until: Any, now: float) -> float | str:
-    """A park's ``until``: a future Unix time or one of :data:`PARK_EVENTS`."""
+    """A park's ``until``: a future Unix time, ``tomorrow`` (08:00 local,
+    kept as that time) or one of :data:`PARK_EVENTS`."""
+    if until == "tomorrow":
+        return tomorrow_at(now)
     if isinstance(until, str) and until in PARK_EVENTS:
         return until
     if isinstance(until, (int, float)) and not isinstance(until, bool) and until > now:
         return float(until)
     raise ValueError(
-        f"until must be a future Unix time or one of {', '.join(PARK_EVENTS)}"
+        "until must be a future Unix time, tomorrow, or one of " + ", ".join(PARK_EVENTS)
     )
+
+
+def _change_basis(place: Place | None) -> dict[str, Any]:
+    """What "until something changes" watches: CI, the review, the head
+    commit and the agents' statuses."""
+    pr = place.pr if place is not None else None
+    return {
+        "ci": ci_state(pr),
+        "review": (pr.review_decision or "") if pr is not None else "",
+        "head": place.head if place is not None else None,
+        "agents": sorted([a.agent_id, a.status] for a in place.agents) if place else [],
+    }
 
 
 def new_park(until: float | str, place: Place | None, now: float, by: str) -> dict[str, Any]:
@@ -450,6 +475,8 @@ def new_park(until: float | str, place: Place | None, now: float, by: str) -> di
         park["agents"] = sorted(a.agent_id for a in place.agents) if place else []
     elif until == "human_review":
         park["review"] = (place.pr.review_decision or "") if place and place.pr else ""
+    elif until == "change":
+        park["basis"] = _change_basis(place)
     return park
 
 
@@ -459,10 +486,16 @@ def park_holds(park: dict[str, Any], place: Place | None, now: float) -> bool:
     ``ci_done``: CI ran (at park time or since) and is no longer running.
     ``agent_stopped``: an agent ran and none runs now, or one of the agents
     there at park time is gone. ``human_review``: the PR's review decision
-    changed."""
+    changed. ``change``: CI, the review, the head commit or an agent's
+    status moved. ``indefinite``: until unparked."""
     until = park["until"]
     if not isinstance(until, str):
         return now < until
+    if until == "indefinite":
+        return True
+    if until == "change":
+        basis = park.setdefault("basis", _change_basis(place))
+        return basis == _change_basis(place)
     if until == "ci_done":
         running = place is not None and ci_state(place.pr) == "running"
         park["seen"] = park.get("seen", False) or running
@@ -646,6 +679,7 @@ class ActionableQueue:
                     work_item_key(repo, wt),
                     self._agents(wt.path),
                     engine.get_pr_info(wt.path),
+                    getattr(wt, "head", None),
                 )
             )
         # An exit is answered once an agent runs in its slot again.
@@ -773,6 +807,11 @@ class ActionableQueue:
             },
             "generated_at": now,
         }
+
+    def found(self, item_id: str) -> Item | None:
+        """The item as the last pass found it (its condition holds), shown,
+        parked or dismissed."""
+        return self._items.get(item_id)
 
     def get(self, item_id: str) -> dict[str, Any]:
         self._refresh(self.clock())

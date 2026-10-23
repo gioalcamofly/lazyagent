@@ -122,6 +122,7 @@ _PR_NODES_PER_BRANCH = 30
 _PR_FIELDS = """
 fragment pr on PullRequest {
   number title state url reviewDecision mergeable isCrossRepository baseRefName
+  headRefOid reviewRequests { totalCount } reviews { totalCount }
   commits(last: 1) {
     nodes {
       commit {
@@ -139,6 +140,16 @@ fragment pr on PullRequest {
   }
 }
 """
+
+def _count(value: object) -> int | None:
+    """A GraphQL ``{totalCount}`` or a ``gh --json`` list, as a count; None
+    when the field was not fetched."""
+    if isinstance(value, dict) and isinstance(value.get("totalCount"), int):
+        return value["totalCount"]
+    if isinstance(value, list):
+        return len(value)
+    return None
+
 
 _REMOTE_OWNER_RE = re.compile(r"[:/]([^/:]+)/[^/]+?/?$")
 
@@ -603,6 +614,9 @@ class WorktreeManager:
             review_decision=data.get("reviewDecision") or "",
             mergeable=data.get("mergeable") or "",
             base_ref=data.get("baseRefName") or "",
+            head_sha=data.get("headRefOid") or "",
+            review_requests=_count(data.get("reviewRequests")),
+            reviews=_count(data.get("latestReviews", data.get("reviews"))),
         )
 
     @staticmethod
@@ -636,6 +650,9 @@ class WorktreeManager:
             "reviewDecision": node.get("reviewDecision") or "",
             "mergeable": node.get("mergeable") or "",
             "baseRefName": node.get("baseRefName") or "",
+            "headRefOid": node.get("headRefOid") or "",
+            "reviewRequests": node.get("reviewRequests"),
+            "reviews": node.get("reviews"),
         }
 
     @staticmethod
@@ -821,7 +838,8 @@ class WorktreeManager:
                 [
                     "gh", "pr", "view",
                     "--json",
-                    "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName",
+                    "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName,"
+                    "headRefOid,reviewRequests,latestReviews",
                 ],
                 capture_output=True,
                 text=True,

@@ -60,16 +60,36 @@ async def test_the_orchestrator_releases_an_item_passed_to_it(engine, monkeypatc
     engine.claims.claim("repo:feat")
     _as_agent(engine, orchestrator, monkeypatch)
     [row] = (await mcp_server.status_list())["rows"]
-    assert (row["state"], row["claim"]["holder"]) == ("with orchestrator", "orchestrator")
+    assert (row["state"], row["claim"]["holder"]) == ("orchestrator · looking", "orchestrator")
 
     result = await mcp_server.orchestrator_release("repo:feat", "returned", "pick a db")
 
     assert (result["outcome"], result["claim"]["key"]) == ("returned", "repo:feat")
     [row] = (await mcp_server.status_list())["rows"]
-    assert (row["level"], row["state"], row["claim"]) == ("round", "returned: pick a db", None)
+    assert (row["level"], row["state"], row["claim"]) == ("round", "pick a db", None)
     monkeypatch.delenv(AGENT_TOKEN_ENV)
     with pytest.raises(Exception, match="Only the orchestrator"):
         await mcp_server.orchestrator_release("repo:feat", "done")
+
+
+async def test_the_orchestrator_holds_an_item_while_it_verifies_it(engine, monkeypatch):
+    feat = engine.feat
+    orchestrator = await engine.spawn_agent("", kind="orchestrator")
+    await engine.spawn_agent(feat)
+    _as_agent(engine, orchestrator, monkeypatch)
+
+    result = await mcp_server.orchestrator_hold("repo:feat", "verifying tests", 600)
+
+    assert (result["hold"]["note"], result["hold"]["by"]) == ("verifying tests", "orchestrator")
+    [row] = (await mcp_server.status_list())["rows"]
+    assert (row["zone"], row["state"]) == ("in_flight", "orchestrator · verifying tests")
+    result = await mcp_server.orchestrator_release("repo:feat", "done", "tests pass")
+    assert (result["claim"], result["hold"]["key"]) == (None, "repo:feat")
+    [row] = (await mcp_server.status_list())["rows"]
+    assert (row["hold"], row["note"]["text"]) == (None, "orchestrator: tests pass")
+    monkeypatch.delenv(AGENT_TOKEN_ENV)
+    with pytest.raises(Exception, match="Only the orchestrator holds"):
+        await mcp_server.orchestrator_hold("repo:feat", "mine")
 
 
 async def test_spawns_by_an_agent_are_capped_and_the_user_is_not(engine, monkeypatch):

@@ -26,6 +26,7 @@
         "changed_at": 1700000000.0,
         "claim": null,
         "class": null,
+        "delegation": null,
         "fingerprint": "c082bef340c2",
         "gesture": {
           "at": 1700000000.0,
@@ -33,6 +34,7 @@
           "how": "dropped",
           "kind": "close"
         },
+        "hold": null,
         "holder": null,
         "key": "repo:docs-index",
         "last_event_at": 1700000000.0,
@@ -52,6 +54,7 @@
         "seen_at": null,
         "stale": false,
         "state": "dropped by you",
+        "suggestion": null,
         "title": "Index the docs",
         "urls": [
           "https://example.com/pull/14"

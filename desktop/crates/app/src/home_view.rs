@@ -11,6 +11,12 @@
 //! looking", the orchestrator's decisions with Revert (`Shift+U`), its
 //! counts, and the auto-delegation settings. Without those features none of
 //! it shows.
+//!
+//! I4d: `z` opens a small park menu (1 h, tomorrow 08:00, 1 week, until
+//! something changes, indefinitely; keys 1-5, `w` for the whole work item);
+//! a folded **Parked (N)** group (`Shift+Z`); `d` delegates the line's item
+//! to the branch's agent; the orchestrator's holds and release notes on the
+//! row; middle-ellipsis names with the full one on hover; `?` the Home guide.
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
@@ -30,7 +36,18 @@ pub enum Park {
     Event(&'static str),
 }
 
+/// The park menu (feature `parked`), keys 1-5. "tomorrow" is 08:00 local,
+/// worked out by the engine.
 pub const PARKS: &[(&str, Park)] = &[
+    ("1 hour", Park::For(3600.0)),
+    ("tomorrow 08:00", Park::Event("tomorrow")),
+    ("1 week", Park::For(7.0 * 86400.0)),
+    ("something changes", Park::Event("change")),
+    ("indefinitely", Park::Event("indefinite")),
+];
+
+/// The park choices of engines without `parked`.
+pub const LEGACY_PARKS: &[(&str, Park)] = &[
     ("1 hour", Park::For(3600.0)),
     ("4 hours", Park::For(4.0 * 3600.0)),
     ("24 hours", Park::For(86400.0)),
@@ -38,6 +55,11 @@ pub const PARKS: &[(&str, Park)] = &[
     ("the agent stops", Park::Event("agent_stopped")),
     ("a human reviews", Park::Event("human_review")),
 ];
+
+/// The name column: a share of the line's width, within these bounds.
+pub const NAME_SHARE: f32 = 0.3;
+pub const NAME_MIN: f32 = 150.0;
+pub const NAME_MAX: f32 = 420.0;
 
 /// User input is reported to the engine at most this often (seconds).
 pub const PRESENCE_EVERY: f64 = 60.0;
@@ -57,7 +79,10 @@ enum Act {
     Pr(String),
     Dismiss(Line),
     ParkMenu(String),
-    Park(Line, Park),
+    ParkWhole(bool),
+    Park(Line, Park, bool),
+    ParkedFold,
+    Delegate(Line),
     Pass(Line),
     TakeBack(Line),
     SendCi(Line),
@@ -135,6 +160,36 @@ impl State {
     /// Home's single-letter keys; true when one was taken.
     pub fn home_key(&mut self, take: &impl Fn(Modifiers, Key) -> bool) -> bool {
         let folded = self.saved.home_fold;
+        if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
+            self.open_dialog(crate::dialogs::Kind::HomeHelp);
+            return true;
+        }
+        if let Some(key) = self.home.parking.clone()
+            && let Some(line) = self.home.lines.get(&key).cloned()
+        {
+            // The park menu has the keys while it is open.
+            let parks = self.parks();
+            const DIGITS: [Key; 6] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6];
+            if let Some(i) = DIGITS.iter().take(parks.len()).position(|k| take(Modifiers::NONE, *k)) {
+                let whole = self.home.park_whole || line.top.is_none();
+                self.park_line(&line, parks[i].1, whole);
+                return true;
+            }
+            if take(Modifiers::NONE, Key::W) {
+                if self.can_gesture(&line) && line.top.is_some() {
+                    self.home.park_whole = !self.home.park_whole;
+                }
+                return true;
+            }
+            if take(Modifiers::NONE, Key::Escape) || take(Modifiers::NONE, Key::Z) {
+                self.home.parking = None;
+                return true;
+            }
+        }
+        if take(Modifiers::SHIFT, Key::Z) {
+            self.home.parked_open = !self.home.parked_open;
+            return true;
+        }
         if take(Modifiers::NONE, Key::J) || take(Modifiers::NONE, Key::ArrowDown) {
             self.home.select_next(1, folded);
             return true;
@@ -182,7 +237,10 @@ impl State {
             } else {
                 self.home.expanded = Some(line.key.clone());
                 self.home.parking = Some(line.key.clone());
+                self.home.park_whole = line.top.is_none();
             }
+        } else if take(Modifiers::NONE, Key::D) {
+            self.delegate_line(&line);
         } else if take(Modifiers::NONE, Key::L) {
             self.open_label(&line);
         } else if take(Modifiers::SHIFT, Key::U) {
@@ -310,15 +368,22 @@ impl State {
         }
     }
 
-    /// Parks the line's top inbox item; a line with none parks the work
-    /// item itself (a row gesture, rule 7).
-    pub fn park_line(&mut self, line: &Line, park: Park) {
+    /// The park menu's choices for this engine.
+    pub fn parks(&self) -> &'static [(&'static str, Park)] {
+        if self.has("parked") { PARKS } else { LEGACY_PARKS }
+    }
+
+    /// Parks the line's top inbox item, or with `whole` (or a line with no
+    /// item) the work item itself and its items (a row gesture, rule 7).
+    pub fn park_line(&mut self, line: &Line, park: Park, whole: bool) {
         self.home.parking = None;
+        self.home.park_whole = false;
         let until = match park {
             Park::For(secs) => json!(unix_now() + secs),
             Park::Event(e) => json!(e),
         };
-        let Some(top) = &line.top else {
+        let top = if whole { None } else { line.top.as_ref() };
+        let Some(top) = top else {
             if self.can_gesture(line) {
                 let params = json!({"key": line.key, "kind": "park", "until": until});
                 self.gesture(&line.key, params, "Not parked");
@@ -415,6 +480,31 @@ impl State {
         self.home.closing = None;
         let params = json!({"key": line.key, "kind": "close", "how": how});
         self.gesture(&line.key, params, "Not closed");
+    }
+
+    /// `d`: the line's inbox item to the branch's agent (`status_gesture
+    /// delegate to: agent`); the engine keeps the delegation and the row.
+    pub fn delegate_line(&mut self, line: &Line) {
+        if !self.engine_inbox() || !self.has("delegation") {
+            self.toast(Severity::Info, "Delegating needs a newer engine: restart it (File → Restart…)");
+            return;
+        }
+        let Some(top) = line.top.clone() else {
+            self.toast(Severity::Info, "Nothing to delegate: this line has no inbox item.");
+            return;
+        };
+        if matches!(top.kind.as_str(), "approval" | "question" | "decision" | "delegation") {
+            self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
+            return;
+        }
+        let mut params = json!({"key": line.key, "kind": "delegate", "to": "agent", "item": top.id});
+        if top.kind == "ci"
+            && let Some(place) = &line.place
+            && let Some(pr) = self.store.pr_info.get(place).cloned().flatten()
+        {
+            params["text"] = json!(crate::attention::ci_failure_prompt(&pr));
+        }
+        self.gesture(&line.key, params, "Not delegated");
     }
 
     /// Pass to orchestrator: a claim with a timeout (the engine's).
@@ -537,8 +627,13 @@ impl State {
         });
     }
 
-    /// A red PR: its failed checks to the worktree's agent.
+    /// A red PR: its failed checks to the worktree's agent (a delegation the
+    /// engine follows, when it can).
     fn send_ci(&mut self, line: &Line) {
+        if self.engine_inbox() && self.has("delegation") {
+            self.delegate_line(line);
+            return;
+        }
         let Some(place) = line.place.clone() else { return };
         let pr = self.store.pr_info.get(&place).cloned().flatten();
         let agent = self.store.agents(&place).first().map(|a| a.agent_id.clone());
@@ -599,6 +694,35 @@ fn cell(ui: &mut Ui, width: f32, text: RichText) {
     });
 }
 
+/// The longest middle-ellipsis form of `name` that fits `width` points.
+pub fn fit_name(ui: &Ui, name: &str, width: f32) -> String {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let fits = |text: &str| {
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x) <= width
+    };
+    if fits(name) {
+        return name.to_string();
+    }
+    let (mut lo, mut hi) = (1, name.chars().count());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(&home::middle_ellipsis(name, mid)) { lo = mid } else { hi = mid - 1 }
+    }
+    home::middle_ellipsis(name, lo)
+}
+
+/// The name cell: start and end of the branch kept, the full name on hover.
+fn name_cell(ui: &mut Ui, width: f32, name: &str) {
+    ui.allocate_ui_with_layout(Vec2::new(width, 18.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_width(width);
+        let shown = fit_name(ui, name, width - 2.0);
+        let label = ui.add(egui::Label::new(RichText::new(&shown).strong()).sense(Sense::hover()));
+        if shown != name {
+            label.on_hover_text(name);
+        }
+    });
+}
+
 fn section(ui: &mut Ui, title: &str, color: Color32, extra: impl FnOnce(&mut Ui)) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -618,6 +742,7 @@ impl App {
         let forms = Forms {
             expanded: home.expanded.clone(),
             parking: home.parking.clone(),
+            park_whole: home.park_whole,
             closing: home.closing.clone(),
             labeling: home.labeling.clone(),
             reverting: home.reverting.clone(),
@@ -626,6 +751,7 @@ impl App {
         let lines: Vec<Vec<Line>> =
             home::ZONES.iter().map(|z| home.shown_in(*z).into_iter().cloned().collect()).collect();
         let (waiting, resolved, round_at) = (home.waiting(), home.resolved, home.round_at);
+        let parked_open = home.parked_open;
         let deep_count = home.count(Zone::Deep);
         let s = &self.state;
         let counts = s.status_counts;
@@ -637,6 +763,8 @@ impl App {
             engine: s.engine_inbox(),
             gestures: s.gestures(),
             first_responder: s.first_responder(),
+            delegation: s.engine_inbox() && s.has("delegation"),
+            parks: s.parks(),
             selected: selected.as_deref(),
             timelines: &s.timelines,
         };
@@ -736,13 +864,40 @@ impl App {
                 }
                 zone(ui, Zone::Flight, &mut acts);
             }
+            let parked = &lines[Zone::Parked as usize];
+            if !parked.is_empty() {
+                ui.add_space(4.0);
+                let need = parked.iter().filter(|l| l.parked_needs_you()).count();
+                let mut title = format!("PARKED ({})", parked.len());
+                if need > 0 {
+                    title.push_str(&format!(" · {need} need you"));
+                }
+                let color = if need > 0 { t.yellow } else { t.muted };
+                section(ui, &title, color, |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let text = if parked_open { "hide (Z)" } else { "show (Z)" };
+                        if ui.button(RichText::new(text).small()).clicked() {
+                            acts.push(Act::ParkedFold);
+                        }
+                    });
+                });
+                if parked_open {
+                    zone(ui, Zone::Parked, &mut acts);
+                }
+            }
             ui.add_space(8.0);
             let mut keys = String::from(
                 "• changed since your last look · Enter open/expand · o terminal · n notes · p PR · x dismiss · \
-                 z park · O pass to orchestrator · u take back · f fold",
+                 z park · O pass to orchestrator · u take back · f fold · ? Home guide",
             );
             if ctx.gestures {
                 keys.push_str(" · l label · X close · m seen · M all seen");
+            }
+            if ctx.delegation {
+                keys.push_str(" · d delegate to its agent");
+            }
+            if !parked.is_empty() {
+                keys.push_str(" · Z show parked");
             }
             if ctx.first_responder {
                 keys.push_str(" · U revert");
@@ -777,9 +932,13 @@ impl App {
                 Act::Dismiss(l) => s.dismiss_line(&l),
                 Act::ParkMenu(k) => {
                     let open = s.home.parking.as_deref() == Some(k.as_str());
+                    s.home.park_whole = s.home.lines.get(&k).is_some_and(|l| l.top.is_none());
                     s.home.parking = (!open).then_some(k);
                 }
-                Act::Park(l, p) => s.park_line(&l, p),
+                Act::Park(l, p, whole) => s.park_line(&l, p, whole),
+                Act::ParkWhole(on) => s.home.park_whole = on,
+                Act::ParkedFold => s.home.parked_open = !s.home.parked_open,
+                Act::Delegate(l) => s.delegate_line(&l),
                 Act::Pass(l) => s.pass_line(&l),
                 Act::TakeBack(l) => s.take_back(&l),
                 Act::SendCi(l) => s.send_ci(&l),
@@ -818,6 +977,7 @@ impl App {
 struct Forms {
     expanded: Option<String>,
     parking: Option<String>,
+    park_whole: bool,
     closing: Option<String>,
     labeling: Option<Label>,
     reverting: Option<(String, String)>,
@@ -832,6 +992,8 @@ struct LineCtx<'a> {
     engine: bool,
     gestures: bool,
     first_responder: bool,
+    delegation: bool,
+    parks: &'static [(&'static str, Park)],
     selected: Option<&'a str>,
     timelines: &'a std::collections::HashMap<String, StatusTimeline>,
 }
@@ -889,20 +1051,34 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
             }
             let head = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if shown == Zone::Flight {
+                let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
+                if matches!(shown, Zone::Flight | Zone::Parked) {
                     let dot = if l.unseen(c.look) { "•" } else { " " };
                     cell(ui, 10.0, RichText::new(dot).strong().color(t.accent));
-                    cell(ui, 220.0, RichText::new(&l.name).strong());
-                    let (ball, state) = match &l.claim {
-                        Some(claim) => {
-                            ("orchestrator".to_string(), format!("{} · {} left", l.state, left(claim.until - c.now)))
+                    name_cell(ui, name_w, &l.name);
+                    let (ball, state) = match (&l.claim, l.hold()) {
+                        (Some(claim), _) => {
+                            ("orchestrator".to_string(), format!("looking · {} left", left(claim.until - c.now)))
                         }
-                        None if l.looking() && c.first_responder => ("orchestrator".to_string(), "looking".into()),
+                        (None, Some(hold)) => {
+                            ("orchestrator".to_string(), format!("{} · {} left", hold.note, left(hold.until - c.now)))
+                        }
+                        _ if shown == Zone::Parked && l.parked_needs_you() => {
+                            ("needs you".to_string(), l.state.clone())
+                        }
+                        _ if shown == Zone::Parked => ("parked".to_string(), l.state.clone()),
+                        _ if l.looking() && c.first_responder => ("orchestrator".to_string(), "looking".into()),
                         // In the inbox, but held for the next round.
-                        None if l.zone == Zone::Round => ("you · next round".to_string(), l.state.clone()),
-                        None => (l.ball.clone(), l.state.clone()),
+                        _ if l.zone == Zone::Round => ("you · next round".to_string(), l.state.clone()),
+                        _ => (l.ball.clone(), l.state.clone()),
                     };
-                    let color = if l.claim.is_some() || l.looking() { t.cyan } else { ball_color(t, &l.ball) };
+                    let color = if l.claim.is_some() || l.hold().is_some() || l.looking() {
+                        t.cyan
+                    } else if shown == Zone::Parked {
+                        if l.parked_needs_you() { t.yellow } else { t.muted }
+                    } else {
+                        ball_color(t, &l.ball)
+                    };
                     cell(ui, 110.0, RichText::new(ball).small().color(color));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
@@ -919,7 +1095,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
                     let dot = if c.gestures && l.unseen(c.look) { "•" } else { " " };
                     cell(ui, 10.0, RichText::new(if selected { "▸" } else { dot }).color(color));
                     cell(ui, 74.0, RichText::new(l.verb()).strong().color(color));
-                    cell(ui, 220.0, RichText::new(&l.name).strong());
+                    name_cell(ui, name_w, &l.name);
                     // "approve: npm test" after "Approve": the fact alone.
                     let text = if l.looking() && c.first_responder {
                         "orchestrator · looking".to_string()
@@ -946,6 +1122,26 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
                 ui.horizontal(|ui| {
                     ui.add_space(102.0);
                     ui.add(egui::Label::new(RichText::new(brief_summary(d)).small().color(t.muted)).truncate());
+                });
+            }
+            // What the orchestrator said when it released a pass or a hold.
+            if let Some(note) = l.released_note() {
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.add(egui::Label::new(RichText::new(note).small().color(t.cyan)).truncate());
+                });
+            }
+            if let Some(hint) = l.row.as_ref().and_then(|r| r.suggestion.as_deref()) {
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("suggestion: {hint} (p opens the PR; closing it is yours)"))
+                                .small()
+                                .color(t.yellow),
+                        )
+                        .truncate(),
+                    );
                 });
             }
             if c.first_responder
@@ -987,16 +1183,27 @@ fn gesture_text(g: &Value, now: f64) -> String {
         Some("label") => {
             format!("labelled \"{}\" ({})", g["text"].as_str().unwrap_or(""), g["ball"].as_str().unwrap_or(""))
         }
-        Some("park") => match &g["until"] {
-            Value::Number(n) => format!("parked for {}", left(n.as_f64().unwrap_or(now) - now)),
-            Value::String(e) => format!("parked until {}", e.replace('_', " ")),
-            _ => "parked".into(),
-        },
+        Some("park") => park_until_text(g, now),
         Some("close") => format!("closed as {}", g["how"].as_str().unwrap_or("done")),
         Some(k) => k.to_string(),
         None => String::new(),
     };
     format!("{what}, by {by} {age} ago")
+}
+
+/// A park, as words: "parked for 1h 40m (after the release)".
+fn park_until_text(g: &Value, now: f64) -> String {
+    let mut text = match &g["until"] {
+        Value::Number(n) => format!("parked for {}", left(n.as_f64().unwrap_or(now) - now)),
+        Value::String(e) if e == "indefinite" => "parked indefinitely".into(),
+        Value::String(e) if e == "change" => "parked until something changes (CI, review, commit, agent)".into(),
+        Value::String(e) => format!("parked until {}", e.replace('_', " ")),
+        _ => "parked".into(),
+    };
+    if let Some(reason) = g["text"].as_str().filter(|r| !r.is_empty()) {
+        text.push_str(&format!(" ({reason})"));
+    }
+    text
 }
 
 fn timeline_line(e: &TimelineEntry, now: f64) -> String {
@@ -1045,6 +1252,8 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
     let focus = std::mem::take(&mut forms.focus);
     ui.add_space(2.0);
     ui.indent(("home-details", &l.key), |ui| {
+        // The full name: the line may show it cut in the middle.
+        ui.label(RichText::new(&l.name).small().strong().color(t.text));
         let is_brief = l.top.as_ref().is_some_and(|t| t.kind == "decision");
         match (&l.top, &l.brief) {
             (Some(_), Some(d)) if is_brief => brief_ui(ui, t, d),
@@ -1097,6 +1306,30 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             if let Some(g) = &row.gesture {
                 ui.label(RichText::new(gesture_text(g, c.now)).small().color(t.purple));
             }
+        }
+        if let Some(hold) = l.hold() {
+            let who = if hold.auto { "held for the orchestrator (its worker's work)" } else { "the orchestrator holds it" };
+            ui.label(
+                RichText::new(format!("{who}: {} · {} more", hold.note, left(hold.until - c.now)))
+                    .small()
+                    .color(t.cyan),
+            );
+        }
+        if let Some(d) = l.row.as_ref().and_then(|r| r.delegation.as_ref()) {
+            let text = match d.phase.as_str() {
+                "on_it" => format!("delegated to agent {} {} ago: {}", d.agent, home::age(c.now - d.at), d.fact),
+                _ => d.state.clone(),
+            };
+            ui.label(RichText::new(text).small().color(t.cyan));
+        }
+        if l.zone == Zone::Parked
+            && let Some(g) = l.gesture()
+        {
+            let mut text = park_until_text(g, c.now);
+            if l.parked_needs_you() {
+                text.push_str(" · needs you: its items are not routed to the orchestrator");
+            }
+            ui.label(RichText::new(text).small().color(if l.parked_needs_you() { t.yellow } else { t.muted }));
         }
         if let Some(claim) = &l.claim {
             ui.label(
@@ -1175,8 +1408,22 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             {
                 acts.push(Act::Pr(url.clone()));
             }
-            if l.top.as_ref().is_some_and(|t| t.kind == "ci") && ui.button("Send the failures to its agent").clicked() {
-                acts.push(Act::SendCi(l.clone()));
+            let ci = l.top.as_ref().is_some_and(|t| t.kind == "ci");
+            let delegable = c.delegation
+                && l.top.as_ref().is_some_and(|t| {
+                    !matches!(t.kind.as_str(), "approval" | "question" | "decision" | "delegation")
+                })
+                && l.row.as_ref().is_some_and(|r| !r.agents.is_empty());
+            if ci {
+                // With the engine's delegation, the same thing, followed.
+                let text = if delegable { "Send the failures to its agent  (d)" } else { "Send the failures to its agent" };
+                if ui.button(text).clicked() {
+                    acts.push(Act::SendCi(l.clone()));
+                }
+            } else if delegable
+                && ui.button("Delegate to its agent  (d)").on_hover_text("It comes back if the fact still holds").clicked()
+            {
+                acts.push(Act::Delegate(l.clone()));
             }
             let row_gestures = c.gestures && l.row.is_some() && !l.done();
             if l.top.is_some()
@@ -1195,10 +1442,11 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
                     acts.push(Act::CloseMenu(l.key.clone()));
                 }
             }
-            if c.gestures && l.claim.is_none() && l.gesture().is_some() && ui.button("Clear  (u)").clicked() {
+            let unpark = if l.zone == Zone::Parked { "Unpark  (u)" } else { "Clear  (u)" };
+            if c.gestures && l.claim.is_none() && l.gesture().is_some() && ui.button(unpark).clicked() {
                 acts.push(Act::TakeBack(l.clone()));
             }
-            if l.claim.is_some() {
+            if l.claim.is_some() || l.hold().is_some() {
                 if ui.button("Take back  (u)").clicked() {
                     acts.push(Act::TakeBack(l.clone()));
                 }
@@ -1217,15 +1465,30 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             }
         });
         if forms.parking.as_deref() == Some(&l.key) {
-            ui.horizontal_wrapped(|ui| {
-                let what = if l.top.is_some() { "Park the item until" } else { "Park the work item until" };
-                ui.label(RichText::new(what).small().color(t.muted));
-                for (label, park) in PARKS {
-                    let ok = c.engine || matches!(park, Park::For(_));
-                    if ui.add_enabled(ok, egui::Button::new(RichText::new(*label).small())).clicked() {
-                        acts.push(Act::Park(l.clone(), *park));
+            let whole = forms.park_whole || l.top.is_none();
+            egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let what = if whole { "Park the whole work item until" } else { "Park this item until" };
+                    ui.label(RichText::new(what).small().color(t.muted));
+                    for (i, (label, park)) in c.parks.iter().enumerate() {
+                        let ok = c.engine || matches!(park, Park::For(_));
+                        let text = RichText::new(format!("{}  {label}", i + 1)).small();
+                        if ui.add_enabled(ok, egui::Button::new(text)).clicked() {
+                            acts.push(Act::Park(l.clone(), *park, whole));
+                        }
+                    }
+                });
+                if l.top.is_some() && c.gestures && !l.done() {
+                    let mut all = whole;
+                    if ui
+                        .checkbox(&mut all, RichText::new("the whole work item and all its items  (w)").small())
+                        .on_hover_text("It leaves Now, Round and In flight for Parked; its questions go to the orchestrator if it may answer them")
+                        .changed()
+                    {
+                        acts.push(Act::ParkWhole(all));
                     }
                 }
+                ui.label(RichText::new("1-5 choose · w whole work item · Esc close").small().color(t.muted));
             });
         }
         if forms.closing.as_deref() == Some(&l.key) {

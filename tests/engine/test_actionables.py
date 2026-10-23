@@ -323,7 +323,7 @@ def test_marks_are_validated():
     with pytest.raises(ValueError, match="action"):
         queue.mark(item["id"], "snooze")
     with pytest.raises(ValueError, match="until"):
-        queue.mark(item["id"], "park", until="tomorrow")
+        queue.mark(item["id"], "park", until="someday")
     with pytest.raises(ValueError, match="until"):
         queue.mark(item["id"], "park", until=NOW - 1)
     with pytest.raises(ValueError, match="until"):

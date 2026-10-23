@@ -72,6 +72,7 @@ from lazyagent.engine.manifest import (
 from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
 from lazyagent.engine.autodelegate import AutoDelegate
 from lazyagent.engine.claims import Claims
+from lazyagent.engine.delegation import Delegations
 from lazyagent.engine.decisions import Decisions
 from lazyagent.engine.orchestrator import FirstResponder
 from lazyagent.engine.overlay import Overlay, overlay_path
@@ -283,6 +284,8 @@ class Engine:
         # Pass to orchestrator (claims on work items): rows and queue read it.
         self.claims = Claims(self)
         self.decisions = Decisions(self)
+        # Inbox items the user delegated to the branch's agent.
+        self.delegations = Delegations(self)
         # The orchestrator as first responder: routing, presence, mandate,
         # caps, revert (engine/orchestrator.py); opt-in auto-delegation.
         self.first_responder = FirstResponder(self)

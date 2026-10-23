@@ -36,7 +36,10 @@
         "url": {"type": "string"},
         "review_decision": {"type": "string"},
         "mergeable": {"type": "string"},
-        "base_ref": {"type": "string", "description": "The branch the PR merges into (baseRefName); empty when unknown."}
+        "base_ref": {"type": "string", "description": "The branch the PR merges into (baseRefName); empty when unknown."},
+        "head_sha": {"type": "string", "description": "The PR's head commit (headRefOid); empty when unknown."},
+        "review_requests": {"type": ["integer", "null"], "description": "Reviewers requested and not yet reviewing; null when not fetched."},
+        "reviews": {"type": ["integer", "null"], "description": "Reviews given (latest per reviewer); null when not fetched."}
       }
     },
     "stream_geometry": {
@@ -292,7 +295,7 @@
         "key": {"type": "string"},
         "outcome": {"type": "string", "x-known-values": ["done", "returned", "taken_back"]},
         "note": {"type": "string"},
-        "claim": {"$ref": "methods.json#/$defs/claim"}
+        "claim": {"anyOf": [{"$ref": "methods.json#/$defs/claim"}, {"$ref": "methods.json#/$defs/hold"}], "description": "The pass, or the orchestrator's hold, that ended."}
       }
     },
     "orchestrator.lapsed": {
@@ -302,7 +305,15 @@
       "properties": {
         "key": {"type": "string"},
         "reason": {"type": "string", "x-known-values": ["expired", "orchestrator_gone"]},
-        "claim": {"$ref": "methods.json#/$defs/claim"}
+        "claim": {"anyOf": [{"$ref": "methods.json#/$defs/claim"}, {"$ref": "methods.json#/$defs/hold"}], "description": "A pass, or a hold (it expired: 'orchestrator did not respond')."}
+      }
+    },
+    "orchestrator.hold": {
+      "type": "object",
+      "description": "The orchestrator holds a work item itself (orchestrator_hold, or the engine for its worker's finished work; feature holds).",
+      "required": ["hold"],
+      "properties": {
+        "hold": {"$ref": "methods.json#/$defs/hold"}
       }
     },
     "status.removed": {

@@ -547,6 +547,21 @@ class TestParsePrInfo:
         assert pr is not None
         assert pr.review_decision == ""
         assert pr.mergeable == ""
+        assert (pr.head_sha, pr.review_requests, pr.reviews) == ("", None, None)
+
+    def test_head_and_reviewer_counts(self):
+        raw = json.dumps({
+            "number": 53, "title": "t", "state": "OPEN", "statusCheckRollup": [],
+            "headRefOid": "abc123", "reviewRequests": [], "latestReviews": [{"state": "COMMENTED"}],
+        })
+        pr = WorktreeManager._parse_pr_info(raw)
+        assert (pr.head_sha, pr.review_requests, pr.reviews) == ("abc123", 0, 1)
+        view = WorktreeManager._graphql_pr_to_view({
+            "number": 53, "headRefOid": "abc123",
+            "reviewRequests": {"totalCount": 2}, "reviews": {"totalCount": 0},
+        })
+        pr = WorktreeManager._parse_pr_info(json.dumps(view))
+        assert (pr.head_sha, pr.review_requests, pr.reviews) == ("abc123", 2, 0)
 
 
 class TestGetPrInfo:
@@ -560,7 +575,8 @@ class TestGetPrInfo:
             WorktreeManager.get_pr_info("/path/to/worktree")
 
         mock_run.assert_called_once_with(
-            ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName"],
+            ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName,"
+             "headRefOid,reviewRequests,latestReviews"],
             capture_output=True,
             text=True,
             cwd="/path/to/worktree",
