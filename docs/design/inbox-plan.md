@@ -371,6 +371,33 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - `actionables_list {repo?, include_hidden?}` → `{items, counts {now, round, parked}, generated_at}`, `actionables_get {id}`, `actionables_mark {id, action, until?, caller?}`; all three are also on the legacy socket. Feature `actionables`. Schemas: `actionable`, `actionable_until`, `actionable.*`; golden fixtures. MCP `actionables_list` is read-only and adds a ready `table`; MCP has no mark. The orchestrator prompt names it.
 - Not in I2: the engine notifying with no UI attached (Q-B10), and importing the desktop's marks (I3). Desktop: only `proto/tests/golden.rs` (the `actionables_*` fixtures and `actionable.*` events are skipped until I3).
 
+**I8a** (`inbox-i8a-github-issues`):
+
+- `engine/trackers/__init__.py`: the `TrackerAdapter` protocol (`key_pattern`, `fetch(keys)`, optional `assigned_to_me`), `TrackerTask`, and the registry: built-ins plus the `lazyagent.trackers` entry point (a package cannot replace a built-in; one that fails to load is skipped). Config: `$XDG_CONFIG_HOME/lazyagent/trackers.toml` holds one table per adapter, and only `enabled = true` ones load. A repo's `.lazyagent/trackers.toml` merges into `[<adapter>.status]` and nothing else: it can neither enable an adapter nor name a credential. Shared keys: `poll_s` (300), `max_calls_per_min` (30), `assigned_to_me` (true) and `key_pattern`; the rest go to the adapter. Credentials come through `credential()`: `<name>_env`, or the `keyring` service (user `<name>`) when the `keyring` package is installed.
+- Status mapping is `{ball?, state (or state_text)?, level?}`. A `level` implies ball `you`, and ball `you` with no level means `round`. A bad entry is skipped. Lookup is exact first, then ignoring case. An unmapped status shows its raw text and leaves the ball alone.
+- `TrackerHub` is the engine's, rebuilt with the config. The status projection polls it on its 60 s tick and on `worktrees.changed`, one pass at a time.
+  - Only keys linked from a work item's branch are fetched, batched. A new key is fetched at once, the rest every `poll_s`, and `assigned_to_me` runs every `poll_s`.
+  - Each adapter has a cap on calls per rolling minute. A 429 makes it wait `Retry-After`, or else twice the last wait starting at 60 s and capped at 1 h.
+  - Each call times out after 30 s. On an error the last good value stays, with `stale: true` and its `at`. The table shows it as "in QA (10m ago)".
+  - A key no live row links to any more is forgotten.
+- GitHub Issues (`engine/trackers/github_issues.py`) goes through `gh`, so it needs no credential of its own. The repo is whatever `gh` resolves in the repo root (`{owner}`/`{repo}`).
+  - The key is the issue number in the branch name: `fix-123-…`, `123-x`, `feature/#45`, `issue_7`. `v2-x` and `release2026` don't match.
+  - `fetch` uses `gh api graphql`, 50 `issueOrPullRequest` lookups per call. A pull request number or a missing issue is left out.
+  - `assigned_to_me` reads `gh api user` once for the login. It then uses `gh api -i repos/{owner}/{repo}/issues?assignee=<login>&state=open&per_page=100` with `If-None-Match`, so a 304 returns the cached list. Pull requests are dropped, and only the first 100 issues are read.
+  - `status_from = "labels"` (default) picks a mapped label, preferring one mapped with a `level`, then the mapping's order. With no mapped label the status is `closed` for a closed issue, else empty, so a plain open issue adds no text. `status_from = "state"` gives `open` / `closed`.
+- Rows: `row.tracker {adapter, key, url, status, state, at, stale}` appears only when a task is linked. Its URL is appended to `urls`, and its title is used when there is no PR title.
+  - Q-B20: the tracker decides the ball only after rule 9 and before rule 10. A mapped `others` gives rule 10; `agent`, `stalled` or `done` gives rule 12. Engine facts (merged, a dialog, merge-ready, red or conflicting with no agent, agent running, CI running) win.
+  - The table shows the tracker text beside the engine state ("Bash · in QA").
+  - The fingerprint includes the tracker status, so a status change moves the row's age.
+  - `counts.not_started` counts assigned tasks that no local branch links to: worktree branches plus every `for-each-ref` branch. The table header shows `NOT STARTED N` only when N > 0.
+- Inbox (`tracker_status` kind, Round by default): the hub keeps one open item per linked task while the task is in a status mapped with a `level`. The id is `tracker:<adapter>:<key>:<status>`. Leaving the status, or the branch going away, resolves it.
+  - A detector turns these items into queue items on the work item: label is the task title, detail is its URL, and the level comes from the mapping (`Item.level` overrides the kind's).
+  - The queue's first-seen time makes this an edge. The id holds while the task stays, so a dismissal holds, and entering again is a new occurrence. A task seen already in such a status when the engine starts counts as entering, and the queue's 5 min carry keeps an earlier dismissal.
+  - Rule 2 applies, so an open tracker item puts the row in the inbox even while an agent works. That keeps one item on one row. Dismissed, the row keeps the tracker text and falls through to the engine's rules.
+  - The tracker's own rule 3 (its level with no queue) remains only for `derive` without a queue.
+- Read-only: no adapter writes to its tracker.
+- Tests use fake `gh` output and one `gh` shim on `PATH`, with no network. `XDG_CONFIG_HOME` is isolated for every test. With no adapter configured, `status_list` is byte-identical (tested). Schema: `status_row.tracker`, the `tracker_status` kind. Desktop: untouched.
+
 ---
 
 ## 9. Open questions (answered 2026-10-23)
