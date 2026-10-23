@@ -2927,3 +2927,73 @@ fn tracker_rows_and_items_show_on_home() {
     h.run_steps(2);
     h.get_by_label("github issues 41: returned by QA (10m ago)");
 }
+
+#[test]
+fn a_restart_is_offered_only_when_the_app_could_be_rebuilt() {
+    use crate::lifecycle::{ApplyResult, RestartWanted, Sheet, restart_after};
+    let result = |steps: &[&str], app: bool, engine: bool| ApplyResult {
+        ok: app,
+        steps: steps.iter().map(|s| s.to_string()).collect(),
+        restart: Some(RestartWanted { app, engine }),
+        ..Default::default()
+    };
+    let after = |engine| Some(Sheet::Restart { engine, restore: true, after_update: true });
+    assert_eq!(restart_after(&result(&["merge", "uv-sync", "build"], true, true)), after(true));
+    assert_eq!(restart_after(&result(&["build"], true, false)), after(false));
+    assert_eq!(restart_after(&result(&["upgrade"], true, true)), after(true));
+    // Pulled, but the build failed: the app would come back as it is.
+    assert_eq!(restart_after(&result(&["merge"], false, true)), None);
+    assert_eq!(restart_after(&result(&[], false, false)), None);
+    assert_eq!(restart_after(&ApplyResult { ok: true, ..Default::default() }), None, "already up to date");
+}
+
+#[test]
+fn an_app_behind_the_checkout_is_rebuilt_before_its_restart() {
+    use crate::lifecycle::{Phase, Sheet, UpdateInfo};
+    // `lazyagent update apply` is a script that prints what `out` holds.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    let fake = dir.path().join("python");
+    std::fs::write(&fake, format!("#!/bin/sh\ncat '{}'\n", out.display())).unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let env = Env::process()
+        .with("XDG_STATE_HOME", Some(dir.path().to_str().unwrap()))
+        .with("LAZYAGENT_PYTHON", Some(fake.to_str().unwrap()));
+    let conn = Conn::new("/r/repo".into(), env, tx, egui::Context::default());
+    let mut h = harness(App::new(State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark)), rx, None));
+    h.state_mut().state.life.info = Some(UpdateInfo {
+        mode: "development".into(),
+        upstream: Some("origin/develop".into()),
+        app_behind: Some(true),
+        ..Default::default()
+    });
+    h.state_mut().state.life.sheet = Some(Sheet::Update);
+    h.run_steps(3);
+    assert!(h.query_by_label("Restart…").is_none(), "a restart now would run this same binary");
+
+    std::fs::write(
+        &out,
+        r#"{"step": "build", "state": "failed", "code": 101}
+{"result": {"ok": false, "reason": "failed: app build", "steps": [], "restart": {"app": false, "engine": false}}}
+"#,
+    )
+    .unwrap();
+    h.get_by_label("Rebuild").click();
+    step_until(&mut h, "the failed build", |a| a.state.life.phase == Phase::Idle && a.state.life.applied.is_some());
+    h.run_steps(2);
+    assert_eq!(h.state().state.life.sheet, Some(Sheet::Update), "no restart offered");
+    assert!(h.query_by_label("failed: app build").is_some());
+
+    std::fs::write(
+        &out,
+        r#"{"step": "build", "state": "done", "code": 0}
+{"result": {"ok": true, "steps": ["build"], "restart": {"app": true, "engine": false}}}
+"#,
+    )
+    .unwrap();
+    h.get_by_label("Rebuild").click();
+    step_until(&mut h, "the rebuild", |a| matches!(a.state.life.sheet, Some(Sheet::Restart { .. })));
+    assert_eq!(h.state().state.life.sheet, Some(Sheet::Restart { engine: false, restore: true, after_update: true }));
+    assert_eq!(h.state().state.life.info.as_ref().unwrap().app_behind, Some(false));
+}

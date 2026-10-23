@@ -10,9 +10,13 @@ Two modes:
   or a desktop binary under the checkout's ``desktop/target/``). The
   checkout's branch is compared with its upstream, and an update is a
   fast-forward (``git merge --ff-only``), then ``uv sync`` when the lock
-  changed and the app's build when ``desktop/`` changed. Uncommitted changes
-  stay as they are; when git would overwrite some (or untracked files), the
-  update is refused with their list and nothing changes. Never a stash,
+  changed and the app's build when ``desktop/`` changed or the app was
+  built from older code (also with nothing to pull: a rebuild, for a
+  checkout pulled by hand). The result offers the app's restart only when
+  that build succeeded, so the app never restarts into the old binary.
+  Uncommitted changes stay as they are; when git would overwrite some (or
+  untracked files), the update is refused with their list and nothing
+  changes. Never a stash,
   reset, checkout, clean or rebase.
 
 ``check --json`` prints one object; ``apply --json`` prints one JSON object
@@ -38,7 +42,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from lazyagent import __version__
+from lazyagent import __version__, desktop
 
 # src/lazyagent/update.py -> the source tree's root (as desktop.py's).
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -180,9 +184,16 @@ def _in_progress(root: Path) -> str | None:
     return None
 
 
-def _app_behind(root: Path, app_commit: str | None) -> bool | None:
+def _app_behind(
+    root: Path, app_commit: str | None, app_binary: str | None = None
+) -> bool | None:
     """Whether the app binary was built before the checkout's last change
-    under ``desktop/`` (None: unknown)."""
+    under ``desktop/`` (None: unknown). Without a known commit, a build in
+    the checkout's ``desktop/target/`` is compared with its sources' times."""
+    if app_binary and _checkout_of(app_binary) == root.resolve():
+        stale = desktop.is_stale(Path(app_binary), root)
+        if stale or not app_commit:
+            return stale
     if not app_commit:
         return None
     built = app_commit.split("+", 1)[0]
@@ -202,6 +213,7 @@ def check_development(
     fetch: bool = True,
     engine_commit: str | None = None,
     app_commit: str | None = None,
+    app_binary: str | None = None,
 ) -> dict[str, Any]:
     info: dict[str, Any] = {
         "mode": "development",
@@ -233,7 +245,7 @@ def check_development(
         return info
     info["head"] = head
     info["engine_behind"] = bool(engine_commit) and engine_commit != head
-    info["app_behind"] = _app_behind(root, app_commit)
+    info["app_behind"] = _app_behind(root, app_commit, app_binary)
     branch = _out(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     info["branch"] = branch
     if branch is None:
@@ -350,7 +362,7 @@ def _stream(step: str, command: list[str], cwd: Path, emit: Emit) -> int:
 def _build_command(root: Path, app_binary: str | None) -> list[str]:
     """Rebuild the app the way the running one was installed."""
     if _checkout_of(app_binary) == root:
-        return ["build", "--release", "--locked", "--manifest-path", "desktop/Cargo.toml"]
+        return list(desktop.RELEASE_BUILD)
     return ["install", "--locked", "--path", "desktop/crates/app"]
 
 
@@ -365,15 +377,22 @@ def apply_development(
 ) -> dict[str, Any]:
     emit({"step": "check", "state": "running"})
     info = check_development(
-        root, fetch=fetch, engine_commit=engine_commit, app_commit=app_commit
+        root,
+        fetch=fetch,
+        engine_commit=engine_commit,
+        app_commit=app_commit,
+        app_binary=app_binary,
     )
     result: dict[str, Any] = {"ok": False, "check": info, "steps": [], "files": []}
     if info["fetch_error"]:
         result["reason"] = f"could not fetch: {info['fetch_error']}"
         return result
     if not info["update_available"]:
-        result.update(ok=True, reason="already up to date")
-        return result
+        if not info["app_behind"]:
+            result.update(ok=True, reason="already up to date")
+            return result
+        # Nothing to pull, but the app predates the checkout (pulled by hand).
+        return _build_app(root, emit, result, info, app_binary)
     if not info["can_apply"]:
         result.update(reason=info["reason"], files=info["collisions"])
         return result
@@ -401,21 +420,51 @@ def apply_development(
             failed.append("uv sync")
         else:
             result["steps"].append("uv-sync")
-    if info["changes"]["desktop"] or info["app_behind"]:
-        cargo = _tool("cargo")
-        args = _build_command(root, app_binary)
-        if cargo is None:
-            failed.append(f"app build (cargo not found: run `cargo {' '.join(args)}`)")
-        elif _stream("build", [cargo, *args], root, emit) != 0:
-            failed.append("app build")
-        else:
-            result["steps"].append("build")
-    result["ok"] = not failed
     if failed:
         result["reason"] = "updated, but these steps failed: " + "; ".join(failed)
+    if info["changes"]["desktop"] or info["app_behind"]:
+        return _build_app(root, emit, result, info, app_binary)
+    result["ok"] = not failed
     result["restart"] = {
         "app": True,
         "engine": info["changes"]["python"] or bool(info["engine_behind"]),
+    }
+    return result
+
+
+def _build_app(
+    root: Path,
+    emit: Emit,
+    result: dict[str, Any],
+    info: dict[str, Any],
+    app_binary: str | None,
+) -> dict[str, Any]:
+    """The app's build, last: a restart of the app is offered only when it
+    succeeded (else the app would restart into the binary it runs)."""
+    cargo = _tool("cargo")
+    args = _build_command(root, app_binary)
+    failed = None
+    if cargo is None:
+        failed = f"app build (cargo not found: run `cargo {' '.join(args)}` in {root})"
+    elif _stream("build", [cargo, *args], root, emit) != 0:
+        failed = "app build"
+    else:
+        result["steps"].append("build")
+        if app_binary:
+            desktop.mark_built(Path(app_binary), root)
+    merged = "merge" in result["steps"]
+    if failed:
+        earlier = result.get("reason")
+        if earlier:
+            result["reason"] = f"{earlier}; {failed}"
+        elif merged:
+            result["reason"] = f"updated, but these steps failed: {failed}"
+        else:
+            result["reason"] = f"failed: {failed}"
+    result["ok"] = not result.get("reason")
+    result["restart"] = {
+        "app": failed is None,
+        "engine": (merged and info["changes"]["python"]) or bool(info["engine_behind"]),
     }
     return result
 
@@ -558,7 +607,11 @@ def check(
     mode, root = detect(source, app_binary)
     if mode == "development" and root is not None:
         return check_development(
-            root, fetch=fetch, engine_commit=engine_commit, app_commit=app_commit
+            root,
+            fetch=fetch,
+            engine_commit=engine_commit,
+            app_commit=app_commit,
+            app_binary=app_binary,
         )
     return check_published(engine_commit=engine_commit)
 
@@ -629,7 +682,9 @@ def _describe(info: dict[str, Any]) -> list[str]:
     if info.get("engine_behind"):
         lines.append("the engine runs older code than the checkout: restart it")
     if info.get("app_behind"):
-        lines.append("the desktop app was built from older code: rebuild it")
+        lines.append(
+            "the desktop app was built from older code: `lazyagent update apply` rebuilds it"
+        )
     return lines
 
 

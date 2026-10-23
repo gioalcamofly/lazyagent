@@ -112,7 +112,7 @@ Same rules as the remote TUI (engine-split §4f, §6d):
 
 | Way | What it does |
 |---|---|
-| `lazyagent desktop [repo]` | New Python subcommand (no Textual import): resolves the repo root, finds the binary (`LAZYAGENT_DESKTOP_BIN`, then `lazyagent-desktop` on PATH, then `desktop/target/release/lazyagent-desktop` next to a source checkout) and `exec`s it with `LAZYAGENT_PYTHON=sys.executable`. Without a binary it prints how to build one |
+| `lazyagent desktop [repo]` | New Python subcommand (no Textual import): resolves the repo root, finds the binary (`LAZYAGENT_DESKTOP_BIN`, then `lazyagent-desktop` on PATH, then `desktop/target/release/lazyagent-desktop` next to a source checkout, rebuilt first when its sources are newer: desktop-update-restart-plan.md §10) and `exec`s it with `LAZYAGENT_PYTHON=sys.executable`. Without a binary it prints how to build one |
 | `lazyagent-desktop [repo]` | The binary itself (inside the Linux x86_64/aarch64 wheel as `lazyagent/bin/lazyagent-desktop`; elsewhere `cargo install --path desktop/crates/app`, or the release build) |
 | `.desktop` file | `lazyagent desktop --install-desktop-entry` writes `~/.local/share/applications/lazyagent-desktop.desktop` (D6) |
 
