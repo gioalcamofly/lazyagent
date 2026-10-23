@@ -165,6 +165,8 @@ pub struct State {
     pub actionables: BTreeMap<String, Actionable>,
     /// Bumped when the rows or items change.
     pub inbox_gen: u64,
+    /// `status_list`'s counts as last fetched (for "N not started").
+    pub status_counts: lazyagent_proto::types::StatusCounts,
     /// `status_list` (1) and `actionables_list` (2) answered: Home's first
     /// complete lines are a cut point.
     pub inbox_loaded: u8,
@@ -255,6 +257,7 @@ impl State {
             status_rows: BTreeMap::new(),
             actionables: BTreeMap::new(),
             inbox_gen: 0,
+            status_counts: Default::default(),
             inbox_loaded: 0,
             home_key: (false, u64::MAX, u64::MAX),
             home_changed: HashMap::new(),
@@ -560,6 +563,7 @@ impl State {
             if let Ok(list) = reply.and_then(|v| {
                 serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
             }) {
+                s.status_counts = list.counts;
                 s.status_rows = list.rows.into_iter().map(|r| (r.key.clone(), r)).collect();
                 s.inbox_gen += 1;
                 s.inbox_loaded |= 1;
@@ -636,7 +640,23 @@ impl State {
         if self.view != View::Home {
             self.view = View::Home;
             self.home.cut(unix_now());
+            self.fetch_counts();
         }
+    }
+
+    /// "N not started" is a count, not a row: asked for again on the way
+    /// back to Home.
+    fn fetch_counts(&mut self) {
+        if !self.engine_inbox() {
+            return;
+        }
+        self.conn.request("status_list", json!({}), |s, reply| {
+            if let Ok(list) = reply.and_then(|v| {
+                serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+            }) {
+                s.status_counts = list.counts;
+            }
+        });
     }
 
     /// Leaves Home for a worktree's terminals: what was there is seen.

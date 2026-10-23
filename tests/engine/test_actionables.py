@@ -193,6 +193,8 @@ def test_every_kind_has_its_fixed_level():
         "approval": "now", "question": "now", "hanged": "round", "failed": "round",
         "exited": "round", "ci": "round", "review": "round", "conflict": "round",
         "done": "round", "job": "round", "delegation": "round",
+        # Its default: an item carries the tracker mapping's level.
+        "tracker_status": "round",
     }
     assert {k for k, v in KINDS.items() if v.blocks_agent} == {"approval", "question"}
 

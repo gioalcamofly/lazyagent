@@ -248,6 +248,41 @@ remove = "git worktree remove ../{name}"
 # restore_on_start = true
 ```
 
+### Issue trackers (optional)
+
+The engine can read the status of the issue linked from a branch name and the
+issues assigned to you, read-only, and show them in `lazyagent status` (and the
+inbox). Nothing changes until an adapter is enabled in
+`~/.config/lazyagent/trackers.toml` (`$XDG_CONFIG_HOME`). A repo's
+`.lazyagent/trackers.toml` may override only the `[<adapter>.status]` tables.
+
+| Adapter | Branch key | Credentials | Status |
+|---|---|---|---|
+| `github_issues` | the issue number (`fix-123-login`) | `gh`'s own login | stable |
+| `jira` (Jira Cloud) | the issue key (`SHOP-123-login`) | email + API token, by reference | **experimental** (tested against recorded responses only) |
+
+```toml
+[jira]
+enabled = true
+base_url = "https://example.atlassian.net"   # https only
+email_env = "JIRA_EMAIL"                     # or email = "you@example.com"
+token_env = "JIRA_TOKEN"                     # or keyring = "lazyagent/jira" (user "token")
+# projects = ["SHOP"]                        # only these keys in branch names
+# jql_assigned = "assignee = currentUser() AND statusCategory != Done"
+# poll_s = 300
+# max_calls_per_min = 30
+
+[jira.status]   # Jira status name (or its category: "To Do", "In Progress", "Done")
+"In Review" = { ball = "others", state = "code review" }
+"QA"        = { ball = "others", state = "in QA" }
+"Reopened"  = { ball = "you", level = "round", state = "returned" }
+```
+
+A status mapped with a `level` opens an inbox item when the issue enters it
+and clears it when the issue leaves. The token (an
+[Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens))
+is never written by lazyagent and is sent only to `base_url`.
+
 ### Environment variables
 
 | Variable | Effect |

@@ -15,6 +15,8 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     """Keep the persisted agent id counters (and any log) out of the real
     ``~/.local/state``."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Nor read the user's global config (trackers.toml).
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
 
 @pytest.fixture(autouse=True)

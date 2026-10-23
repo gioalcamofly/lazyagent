@@ -1,0 +1,69 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "issues": [
+      {
+        "expand": "",
+        "id": "10001",
+        "self": "https://example.atlassian.net/rest/api/3/issue/10001",
+        "key": "SHOP-1",
+        "fields": {
+          "summary": "Checkout total rounds wrong",
+          "status": {
+            "self": "https://example.atlassian.net/rest/api/3/status/3",
+            "description": "",
+            "iconUrl": "https://example.atlassian.net/images/icons/statuses/generic.png",
+            "name": "In Progress",
+            "id": "3",
+            "statusCategory": {
+              "self": "https://example.atlassian.net/rest/api/3/statuscategory/4",
+              "id": 4,
+              "key": "indeterminate",
+              "colorName": "yellow",
+              "name": "In Progress"
+            }
+          },
+          "assignee": {
+            "self": "https://example.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+            "accountId": "5b10ac8d82e05b22cc7d4ef5",
+            "displayName": "Alex Doe",
+            "active": true,
+            "timeZone": "UTC",
+            "accountType": "atlassian"
+          },
+          "updated": "2026-10-20T10:00:00.000+0000"
+        }
+      },
+      {
+        "expand": "",
+        "id": "10002",
+        "self": "https://example.atlassian.net/rest/api/3/issue/10002",
+        "key": "SHOP-2",
+        "fields": {
+          "summary": "Cart badge stays at zero",
+          "status": {
+            "self": "https://example.atlassian.net/rest/api/3/status/10003",
+            "description": "",
+            "iconUrl": "https://example.atlassian.net/images/icons/statuses/generic.png",
+            "name": "QA",
+            "id": "10003",
+            "statusCategory": {
+              "self": "https://example.atlassian.net/rest/api/3/statuscategory/4",
+              "id": 4,
+              "key": "indeterminate",
+              "colorName": "yellow",
+              "name": "In Progress"
+            }
+          },
+          "assignee": null,
+          "updated": "2026-10-20T10:00:00.000+0000"
+        }
+      }
+    ],
+    "isLast": false,
+    "nextPageToken": "CAEaAggD"
+  }
+}

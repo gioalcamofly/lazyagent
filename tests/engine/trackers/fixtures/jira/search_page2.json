@@ -1,0 +1,43 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "issues": [
+      {
+        "expand": "",
+        "id": "10003",
+        "self": "https://example.atlassian.net/rest/api/3/issue/10003",
+        "key": "SHOP-3",
+        "fields": {
+          "summary": "Coupon field accepts spaces",
+          "status": {
+            "self": "https://example.atlassian.net/rest/api/3/status/10001",
+            "description": "",
+            "iconUrl": "https://example.atlassian.net/images/icons/statuses/generic.png",
+            "name": "Done",
+            "id": "10001",
+            "statusCategory": {
+              "self": "https://example.atlassian.net/rest/api/3/statuscategory/3",
+              "id": 3,
+              "key": "done",
+              "colorName": "green",
+              "name": "Done"
+            }
+          },
+          "assignee": {
+            "self": "https://example.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+            "accountId": "5b10ac8d82e05b22cc7d4ef5",
+            "displayName": "Alex Doe",
+            "active": true,
+            "timeZone": "UTC",
+            "accountType": "atlassian"
+          },
+          "updated": "2026-10-19T08:30:00.000+0000"
+        }
+      }
+    ],
+    "isLast": true
+  }
+}

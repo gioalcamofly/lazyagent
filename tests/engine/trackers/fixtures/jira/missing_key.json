@@ -1,0 +1,12 @@
+{
+  "status": 400,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "errorMessages": [
+      "An issue with key 'SHOP-999' does not exist for field 'key'."
+    ],
+    "warningMessages": []
+  }
+}

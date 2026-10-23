@@ -2825,6 +2825,9 @@ fn home_screenshots() {
     let mut export = row("order-export", "in_flight", None, "agent", "with orchestrator", 300.0, None);
     export["claim"] = json!({"key": "shop:order-export", "holder": "orchestrator", "at": now - 300.0,
                              "until": now + 6900.0, "by": "user", "allowed": ["relay", "restore_owner", "ci_rerun"]});
+    let mut shipping = row("shipping-rates", "in_flight", None, "others", "in QA", 86400.0 * 2.0, Some(11));
+    shipping["tracker"] = json!({"adapter": "github_issues", "key": "41", "url": "https://example.com/shop/issues/41",
+                                 "status": "qa", "state": "in QA", "at": now - 300.0, "stale": false});
     let events = vec![
         event(
             "actionable.created",
@@ -2852,10 +2855,7 @@ fn home_screenshots() {
             "status.updated",
             json!({"row": row("stock-sync", "in_flight", None, "stalled", "no agent", 7200.0, Some(16))}),
         ),
-        event(
-            "status.updated",
-            json!({"row": row("shipping-rates", "in_flight", None, "others", "review requested", 86400.0 * 2.0, Some(11))}),
-        ),
+        event("status.updated", json!({"row": shipping})),
     ];
     let mut h = Harness::builder()
         .with_size([1400.0, 880.0])
@@ -2869,6 +2869,7 @@ fn home_screenshots() {
     // status_list and actionables_list answered: the first Round is delivered.
     h.state_mut().state.inbox_loaded = 3;
     h.state_mut().state.inbox_gen += 1;
+    h.state_mut().state.status_counts.not_started = 3;
     h.run_steps(2);
     // One more for the next round, after this one was delivered.
     let mut wish = row("wishlist", "inbox", Some("round"), "you", "agent may hang", 60.0, None);
@@ -2895,4 +2896,34 @@ fn home_screenshots() {
     h.state_mut().state.toggle_theme(&ctx);
     h.run_steps(4);
     shot(&mut h, "i3-home-light");
+}
+
+#[test]
+fn tracker_rows_and_items_show_on_home() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(&["status", "actionables"]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    let mut r = status_row("fix-41", "inbox", Some("round"), "you", "returned by QA", 60.0);
+    r["needs_you"] = json!({"count": 1, "top": "Tracker:github_issues:41"});
+    r["tracker"] = json!({"adapter": "github_issues", "key": "41", "url": "https://example.com/issues/41",
+                          "status": "qa-returned", "state": "returned by QA", "at": crate::app::unix_now() - 600.0,
+                          "stale": true});
+    let item = json!({"id": "Tracker:github_issues:41", "occurrence": "t@1", "kind": "tracker_status", "level": "round",
+                      "title": "Tracker", "label": "Fix the cart total", "detail": "https://example.com/issues/41",
+                      "state": "returned by QA", "work_item": "repo:fix-41", "worktree_path": "/r/repo-fix-41",
+                      "agent_id": null, "pr": null, "job_id": null, "exit_code": null, "blocks_agent": false,
+                      "priority": "medium", "since": crate::app::unix_now() - 60.0, "park": null});
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    h.state_mut().state.status_counts.not_started = 2;
+    h.run_steps(2);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    let line = h.state().state.home.shown_in(Zone::Round)[0].clone();
+    assert_eq!((line.verb(), line.url.as_deref()), ("Tracker", Some("https://example.com/issues/41")));
+    h.get_by_label("IN FLIGHT (0) · 2 not started");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label("github issues 41: returned by QA (10m ago)");
 }

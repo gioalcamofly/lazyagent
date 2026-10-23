@@ -587,9 +587,25 @@ pub struct StatusRow {
     /// Older engines (before Pass to orchestrator) do not send it.
     #[serde(default)]
     pub claim: Option<Claim>,
+    /// The issue-tracker task the branch links to (optional adapters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<RowTracker>,
     pub stale: bool,
     pub changed_at: f64,
     pub fingerprint: String,
+}
+
+/// A row's tracker task: read-only, the last good value when `stale`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowTracker {
+    pub adapter: String,
+    pub key: String,
+    pub url: String,
+    pub status: String,
+    /// The mapped text, else the raw status.
+    pub state: String,
+    pub at: f64,
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

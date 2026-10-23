@@ -325,7 +325,7 @@ max_calls_per_min = 30
 "Reopened"  = { ball = "you", level = "round", state = "returned" }
 ```
 
-- Both adapters are complete in the core (Q-B18). Jira: REST API v3 `search/jql` with `nextPageToken` pagination, issue status plus changelog/transitions read to detect entries into a mapped status, `Retry-After` honoured on 429; tested only against recorded fixtures until checked on a real instance, so it ships flagged experimental. Other trackers come as third-party packages.
+- Both adapters are complete in the core (Q-B18). Jira: REST API v3 `search/jql` with `nextPageToken` pagination, issue status (as landed, no changelog/transitions read: the hub's first-seen edge detects entries into a mapped status, §8 I8b), `Retry-After` honoured on 429; tested only against recorded fixtures until checked on a real instance, so it ships flagged experimental. Other trackers come as third-party packages.
 - A fetch error keeps the last good value and marks it stale; it never removes the row or the item.
 - Adapters run in the engine's poll loop, not as agents; each call has a timeout.
 - The engine's own facts (PR merged, agent waiting) win over a tracker status on ball; the tracker text shows next to them ("in QA · CI green").
@@ -371,6 +371,46 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - `actionables_list {repo?, include_hidden?}` → `{items, counts {now, round, parked}, generated_at}`, `actionables_get {id}`, `actionables_mark {id, action, until?, caller?}`; all three are also on the legacy socket. Feature `actionables`. Schemas: `actionable`, `actionable_until`, `actionable.*`; golden fixtures. MCP `actionables_list` is read-only and adds a ready `table`; MCP has no mark. The orchestrator prompt names it.
 - Not in I2: the engine notifying with no UI attached (Q-B10), and importing the desktop's marks (I3). Desktop: only `proto/tests/golden.rs` (the `actionables_*` fixtures and `actionable.*` events are skipped until I3).
 
+**I8a** (`inbox-i8a-github-issues`):
+
+- `engine/trackers/__init__.py`: the `TrackerAdapter` protocol (`key_pattern`, `fetch(keys)`, optional `assigned_to_me`), `TrackerTask`, and the registry: built-ins plus the `lazyagent.trackers` entry point (a package cannot replace a built-in; one that fails to load is skipped). Config: `$XDG_CONFIG_HOME/lazyagent/trackers.toml` holds one table per adapter, and only `enabled = true` ones load. A repo's `.lazyagent/trackers.toml` merges into `[<adapter>.status]` and nothing else: it can neither enable an adapter nor name a credential. Shared keys: `poll_s` (300), `max_calls_per_min` (30), `assigned_to_me` (true) and `key_pattern`; the rest go to the adapter. Credentials come through `credential()`: `<name>_env`, or the `keyring` service (user `<name>`) when the `keyring` package is installed.
+- Status mapping is `{ball?, state (or state_text)?, level?}`. A `level` implies ball `you`, and ball `you` with no level means `round`. A bad entry is skipped. Lookup is exact first, then ignoring case. An unmapped status shows its raw text and leaves the ball alone.
+- `TrackerHub` is the engine's, rebuilt with the config. The status projection polls it on its 60 s tick and on `worktrees.changed`, one pass at a time.
+  - Only keys linked from a work item's branch are fetched, batched. A new key is fetched at once, the rest every `poll_s`, and `assigned_to_me` runs every `poll_s`.
+  - Each adapter has a cap on calls per rolling minute. A 429 makes it wait `Retry-After`, or else twice the last wait starting at 60 s and capped at 1 h.
+  - Each call times out after 30 s. On an error the last good value stays, with `stale: true` and its `at`. The table shows it as "in QA (10m ago)".
+  - A key no live row links to any more is forgotten.
+- GitHub Issues (`engine/trackers/github_issues.py`) goes through `gh`, so it needs no credential of its own. The repo is whatever `gh` resolves in the repo root (`{owner}`/`{repo}`).
+  - The key is the issue number in the branch name: `fix-123-…`, `123-x`, `feature/#45`, `issue_7`. `v2-x` and `release2026` don't match.
+  - `fetch` uses `gh api graphql`, 50 `issueOrPullRequest` lookups per call. A pull request number or a missing issue is left out.
+  - `assigned_to_me` reads `gh api user` once for the login. It then uses `gh api -i repos/{owner}/{repo}/issues?assignee=<login>&state=open&per_page=100` with `If-None-Match`, so a 304 returns the cached list. Pull requests are dropped, and only the first 100 issues are read.
+  - `status_from = "labels"` (default) picks a mapped label, preferring one mapped with a `level`, then the mapping's order. With no mapped label the status is `closed` for a closed issue, else empty, so a plain open issue adds no text. `status_from = "state"` gives `open` / `closed`.
+- Rows: `row.tracker {adapter, key, url, status, state, at, stale}` appears only when a task is linked. Its URL is appended to `urls`, and its title is used when there is no PR title.
+  - Q-B20: the tracker decides the ball only after rule 9 and before rule 10. A mapped `others` gives rule 10; `agent`, `stalled` or `done` gives rule 12. Engine facts (merged, a dialog, merge-ready, red or conflicting with no agent, agent running, CI running) win.
+  - The table shows the tracker text beside the engine state ("Bash · in QA").
+  - The fingerprint includes the tracker status, so a status change moves the row's age.
+  - `counts.not_started` counts assigned tasks that no local branch links to: worktree branches plus every `for-each-ref` branch. The table header shows `NOT STARTED N` only when N > 0.
+- Inbox (`tracker_status` kind, Round by default): the hub keeps one open item per linked task while the task is in a status mapped with a `level`. The id is `tracker:<adapter>:<key>:<status>`. Leaving the status, or the branch going away, resolves it.
+  - A detector turns these items into queue items on the work item: label is the task title, detail is its URL, and the level comes from the mapping (`Item.level` overrides the kind's).
+  - The queue's first-seen time makes this an edge. The id holds while the task stays, so a dismissal holds, and entering again is a new occurrence. A task seen already in such a status when the engine starts counts as entering, and the queue's 5 min carry keeps an earlier dismissal.
+  - Rule 2 applies, so an open tracker item puts the row in the inbox even while an agent works. That keeps one item on one row. Dismissed, the row keeps the tracker text and falls through to the engine's rules.
+  - The tracker's own rule 3 (its level with no queue) remains only for `derive` without a queue.
+- Read-only: no adapter writes to its tracker.
+- Tests use fake `gh` output and one `gh` shim on `PATH`, with no network. `XDG_CONFIG_HOME` is isolated for every test. With no adapter configured, `status_list` is byte-identical (tested). Schema: `status_row.tracker`, the `tracker_status` kind. Desktop: untouched.
+
+**I8b** (`inbox-i8b-jira`):
+
+- `engine/trackers/jira.py`: the built-in `jira` adapter, Jira Cloud REST API v3, read-only, with stdlib `urllib` only (no new dependency). It is **experimental**: the class carries `experimental = True` and the hub logs it when it loads; the README's tracker table says so. It stays experimental until checked against a real instance.
+- Search: `GET /rest/api/3/search/jql` (the enhanced search), following `nextPageToken` until `isLast`, 100 per page, at most 10 pages. The old `/rest/api/3/search` with `startAt` is deprecated on Jira Cloud, so it is not used. Only `summary,status,assignee,updated` are asked for.
+  - `fetch(keys)`: `key in ("SHOP-1", …)`, 50 keys per query. Jira refuses the whole query with a 400 when one key does not exist or is not visible; the keys its error names are dropped and the query is sent once more. A 400 that names no key is an error.
+  - `assigned_to_me`: `jql_assigned` (default `assignee = currentUser() AND statusCategory != Done`). Jira search has no ETag, so it is a plain call every `poll_s`.
+- Key: the generic `ABC-123` pattern; `projects = ["SHOP"]` narrows both the pattern and the keys asked for (so `UTF-8-x` is not a key).
+- Status: `fields.status.name`. When that name is not mapped but its category's name (`To Do`, `In Progress`, `Done`) is, the category's name is used.
+- **No changelog or transitions read.** I8a's first-seen edge already makes a status change seen between two polls an entry (one Round item, cleared on leaving). The cost is that leaving and coming back within one `poll_s` counts as one stay. Reading `expand=changelog` on every poll would cost a heavier call per batch for that case only.
+- Auth: basic, `email` (or `email_env`) plus `token_env` / `keyring` through `credential()`, read on every call. No credential: an error, no request. `base_url` must be `https://` (plain `http` only on loopback); a bad one skips the adapter with a warning. Redirects are not followed, so the token never leaves `base_url`. Error texts carry the HTTP status and Jira's `errorMessages`, never the request or the token.
+- Rate limits: 429, and 503 with `Retry-After`, raise `RateLimited` with `Retry-After` (seconds or an HTTP date); the hub waits it out and keeps the last good value, marked stale. Timeouts: 20 s per request in the transport, under the hub's 30 s per call.
+- Tests (`tests/engine/trackers/test_jira.py`, no network): recorded responses in Atlassian's documented shapes under `fixtures/jira/` (two search pages with `nextPageToken`, an issue going In Review → Reopened → In Progress, assigned pages, 429 with `Retry-After`, 401, 400 for an unknown key and for bad JQL), replayed by `fake_jira.py`; the default transport against a loopback HTTP server (redirect refused). With `[jira]` present but off, `status_list` is byte-identical. Desktop and `status.py`/`actionables.py`: untouched.
+
 **I3** (`inbox-i3-desktop-home`):
 
 - Engine, `engine/claims.py` (Pass to orchestrator): `status_gesture {key, kind: "delegate", to: "orchestrator", ttl_s?}` (user only, no token) creates `claim {key, holder, at, until, by, allowed}`; refused with no orchestrator running, for an unknown or done item, or a `ttl_s` outside 60 s-24 h. Default TTL `[orchestrator] claim_ttl_s` (7200). A second pass renews it. `kind: "clear"` is the user taking it back. The other §4 gesture kinds (label, park, close) wait for I4 and are refused.
@@ -391,6 +431,7 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - **Keys:** `Enter` answers a Now line (opens the agent's terminal) and expands any other line (agents, PR, the agent's note with its age, the claim). Also `o` terminal, `n` notes, `p` PR, `x` dismiss, `z` park until (1 h / 4 h / 24 h / CI ends / the agent stops / a human reviews), `Shift+O` pass to orchestrator, `u` take back, `f` fold.
 - Key deviations from §5: `z` instead of `k` (j/k move), `f` instead of `s` (s spawns), `Shift+O` for the pass. No close / label / delegate keys yet (I4 / I7). A CI line keeps "Send the failures to its agent".
 - Pass to orchestrator is disabled, with the reason shown, when the engine lacks `claims` or no orchestrator runs.
+- Trackers (I8a/I8b) on Home: `tracker_status` items are lines like any other (verb "Tracker", `p` opens the task). An expanded row shows `<adapter> <key>: <state>`, with its age when stale. The In flight header shows "· N not started" from `status_list` counts, fetched again on each return to Home.
 - The desktop's own marks are imported once (`marks_imported`). A dismissal becomes `dismiss` when the engine has seen the item since before the dismissal. A snooze becomes a park until its time.
 - **Noise cut:** the engine pill shows only when the link is not connected, and the engine version is gone from the top bar. No shell until Ctrl+L or "Shell ▸". Ages are minute-level (`<1m`, never `0s`). There is no Stop next to Open: the attention view is gone, and Stop stays in the worktree header. No info toasts that repeat the screen (worktree created / removed, job done, agents restored).
 - **Badges:** "Home · ● N now · M round" in the top bar, and `(N now · M)` in the window title.

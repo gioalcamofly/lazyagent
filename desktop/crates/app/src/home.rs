@@ -83,6 +83,7 @@ impl Line {
             "failed" | "exited" => "Relaunch",
             "job" => "Job",
             "delegation" => "Decide",
+            "tracker_status" => "Tracker",
             _ => "Look",
         }
     }
@@ -111,7 +112,10 @@ fn top_of(item: &Actionable) -> Top {
         agent_id: item.agent_id.clone(),
         label: item.label.clone(),
         detail: item.detail.clone(),
-        pr_url: item.pr.as_ref().and_then(|p| p.url.clone()),
+        // A tracker item's detail is the task's URL.
+        pr_url: item.pr.as_ref().and_then(|p| p.url.clone()).or_else(|| {
+            (item.kind == "tracker_status" && item.detail.starts_with("http")).then(|| item.detail.clone())
+        }),
         since: item.since,
     }
 }

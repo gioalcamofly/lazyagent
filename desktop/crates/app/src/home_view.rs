@@ -280,6 +280,7 @@ impl App {
         let look = self.state.look_from;
         let pass = self.state.can_pass();
         let engine = self.state.engine_inbox();
+        let not_started = self.state.status_counts.not_started;
         let mut acts: Vec<Act> = vec![];
         let ctx = LineCtx { t: &t, now, look, pass, engine, selected: selected.as_deref() };
         egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
@@ -332,7 +333,11 @@ impl App {
             }
             ui.add_space(6.0);
             ui.separator();
-            section(ui, &t, &format!("IN FLIGHT ({})", lines[2].len()), t.muted, |ui| {
+            let flight = match not_started {
+                0 => format!("IN FLIGHT ({})", lines[2].len()),
+                n => format!("IN FLIGHT ({}) · {n} not started", lines[2].len()),
+            };
+            section(ui, &t, &flight, t.muted, |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button(RichText::new(if folded { "unfold (f)" } else { "fold (f)" }).small()).clicked() {
                         acts.push(Act::Fold);
@@ -504,6 +509,14 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, parking: bool, acts: &mut Vec<Act
                     .filter(|x| !x.is_empty())
                     .collect();
                 ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
+            }
+            if let Some(tr) = &row.tracker {
+                let stale = if tr.stale { format!(" ({} ago)", home::age(c.now - tr.at)) } else { String::new() };
+                ui.label(
+                    RichText::new(format!("{} {}: {}{stale}", tr.adapter.replace('_', " "), tr.key, tr.state))
+                        .small()
+                        .color(t.muted),
+                );
             }
             if let Some(note) = &row.note {
                 ui.label(
