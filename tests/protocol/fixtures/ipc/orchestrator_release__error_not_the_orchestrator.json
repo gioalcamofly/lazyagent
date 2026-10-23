@@ -1,0 +1,15 @@
+{
+  "case": "orchestrator_release/error_not_the_orchestrator",
+  "method": "orchestrator_release",
+  "params": {
+    "key": "repo:export-csv",
+    "outcome": "done"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Only the orchestrator releases its claims (its token)"
+    },
+    "id": "req-1"
+  }
+}

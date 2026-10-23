@@ -70,6 +70,7 @@ from lazyagent.engine.manifest import (
     manifest_path,
 )
 from lazyagent.engine.actionables import ActionableQueue, actionables_path
+from lazyagent.engine.claims import Claims
 from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
     ADOPTED,
@@ -264,6 +265,8 @@ class Engine:
         # with the inbox queue they read.
         self.actionables = ActionableQueue(self)
         self.status = StatusProjection(self)
+        # Pass to orchestrator (claims on work items): rows and queue read it.
+        self.claims = Claims(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()
 

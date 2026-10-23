@@ -787,7 +787,7 @@
     "status_row": {
       "type": "object",
       "description": "One work item (proposal 0013): a branch with its worktree, agents and PR, projected by the engine; nothing in it is stored.",
-      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "stale", "changed_at", "fingerprint"],
+      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint"],
       "properties": {
         "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached)."},
         "repo": {"type": "string", "description": "The repo root's directory name."},
@@ -846,6 +846,7 @@
           }
         },
         "gesture": {"type": ["object", "null"], "description": "A user's label or park; null for now."},
+        "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}], "description": "The orchestrator holds the item (Pass to orchestrator, feature claims); null otherwise."},
         "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
         "changed_at": {"type": "number", "description": "When its facts last changed (Unix time): the row's age."},
         "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."}
@@ -972,6 +973,58 @@
       "type": "object",
       "required": ["item"],
       "properties": {"item": {"$ref": "#/$defs/actionable"}}
+    },
+    "claim": {
+      "type": "object",
+      "description": "A work item passed to the orchestrator until a time (proposal 0013 §5c, feature claims).",
+      "required": ["key", "holder", "at", "until", "by", "allowed"],
+      "properties": {
+        "key": {"type": "string"},
+        "holder": {"enum": ["orchestrator"]},
+        "at": {"type": "number"},
+        "until": {"type": "number", "description": "Unix time; past it the claim lapses and the item returns to the user's Round."},
+        "by": {"type": "string", "description": "Who passed it (user)."},
+        "allowed": {"type": "array", "items": {"type": "string"}, "description": "The actions the claim allows (the away mandate's)."}
+      }
+    },
+    "status_gesture.params": {
+      "type": "object",
+      "required": ["key", "kind"],
+      "properties": {
+        "key": {"type": "string", "description": "A work item key (status_list rows)."},
+        "kind": {"enum": ["delegate", "clear"], "description": "delegate: pass the item to the orchestrator (a claim); clear: take it back. Label, park and close come later."},
+        "to": {"enum": ["orchestrator"], "description": "delegate only."},
+        "ttl_s": {"type": "number", "minimum": 60, "description": "delegate only: how long the claim lasts, at most 86400; default [orchestrator] claim_ttl_s (7200)."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: gestures are the user's."}
+      }
+    },
+    "status_gesture.result": {
+      "type": "object",
+      "required": ["key", "claim", "row"],
+      "properties": {
+        "key": {"type": "string"},
+        "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}]},
+        "row": {"oneOf": [{"$ref": "#/$defs/status_row"}, {"type": "null"}]}
+      }
+    },
+    "orchestrator_release.params": {
+      "type": "object",
+      "required": ["key", "outcome"],
+      "properties": {
+        "key": {"type": "string"},
+        "outcome": {"enum": ["done", "returned"], "description": "done: nothing for the user; returned: back to the user's Round with the note."},
+        "note": {"type": "string", "description": "At most 200 characters, shown on the returned item."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token (required)."}
+      }
+    },
+    "orchestrator_release.result": {
+      "type": "object",
+      "required": ["key", "outcome", "claim"],
+      "properties": {
+        "key": {"type": "string"},
+        "outcome": {"type": "string"},
+        "claim": {"$ref": "#/$defs/claim"}
+      }
     },
 
     "ui.get_view.params": {"type": "object", "properties": {}},

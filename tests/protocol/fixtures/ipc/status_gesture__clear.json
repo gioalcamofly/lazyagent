@@ -1,0 +1,45 @@
+{
+  "case": "status_gesture/clear",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "clear"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "key": "repo:export-csv",
+      "row": {
+        "agents": [
+          {
+            "id": "a2",
+            "since": 1700000000.0,
+            "status": "running"
+          }
+        ],
+        "ball": "agent",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "fingerprint": "d95513a0e536",
+        "gesture": null,
+        "key": "repo:export-csv",
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 9,
+        "stale": false,
+        "state": "Edit",
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      }
+    }
+  }
+}

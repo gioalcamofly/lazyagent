@@ -192,7 +192,7 @@ def test_every_kind_has_its_fixed_level():
     assert {k: v.level for k, v in KINDS.items()} == {
         "approval": "now", "question": "now", "hanged": "round", "failed": "round",
         "exited": "round", "ci": "round", "review": "round", "conflict": "round",
-        "done": "round", "job": "round",
+        "done": "round", "job": "round", "delegation": "round",
     }
     assert {k for k, v in KINDS.items() if v.blocks_agent} == {"approval", "question"}
 

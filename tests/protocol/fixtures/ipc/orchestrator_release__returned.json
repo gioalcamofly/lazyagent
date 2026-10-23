@@ -1,0 +1,33 @@
+{
+  "case": "orchestrator_release/returned",
+  "method": "orchestrator_release",
+  "params": {
+    "caller": "tok-orch",
+    "key": "repo:export-csv",
+    "note": "needs a product call",
+    "outcome": "returned"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": {
+        "allowed": [
+          "answer_reversible",
+          "relay",
+          "restore_owner",
+          "ci_rerun",
+          "rebase_via_owner",
+          "spawn_worker",
+          "mark"
+        ],
+        "at": 1700000000.0,
+        "by": "user",
+        "holder": "orchestrator",
+        "key": "repo:export-csv",
+        "until": 1700007200.0
+      },
+      "key": "repo:export-csv",
+      "outcome": "returned"
+    }
+  }
+}

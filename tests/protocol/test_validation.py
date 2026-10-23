@@ -16,6 +16,11 @@ ACTIONABLE = {
     "since": 1.0, "park": None,
 }
 
+CLAIM = {
+    "key": "r:feat", "holder": "orchestrator", "at": 1.0, "until": 7201.0, "by": "user",
+    "allowed": ["relay", "mark"],
+}
+
 EVENT_SAMPLES = {
     "agent.status": {
         "seq": 3, "time": 1700000000.5, "worktree_path": "/r", "agent_id": "a1",
@@ -97,7 +102,8 @@ EVENT_SAMPLES = {
             "title": "feat", "urls": [], "zone": "in_flight", "level": None, "ball": "agent",
             "priority": "medium", "state": "working", "rule": 9, "blocks_agent": False,
             "needs_you": None, "agents": [{"id": "a1", "status": "running", "since": 1.0}],
-            "pr": None, "note": None, "gesture": None, "stale": False, "changed_at": 1.0,
+            "pr": None, "note": None, "gesture": None, "claim": None, "stale": False,
+            "changed_at": 1.0,
             "fingerprint": "0123456789ab",
         },
     },
@@ -107,6 +113,11 @@ EVENT_SAMPLES = {
     "actionable.resolved": {
         "id": "Approval:/r/a1", "occurrence": "Approval:/r/a1@1.0", "reason": "dismissed",
     },
+    "orchestrator.claim": {"claim": CLAIM},
+    "orchestrator.released": {
+        "key": "r:feat", "outcome": "done", "note": "rebased", "claim": CLAIM,
+    },
+    "orchestrator.lapsed": {"key": "r:feat", "reason": "expired", "claim": CLAIM},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

@@ -381,6 +381,30 @@ async def actionables_list(include_hidden: bool = False) -> dict:
 
 
 @mcp.tool()
+async def orchestrator_release(key: str, outcome: str, note: str = "") -> dict:
+    """End your claim on a work item the user passed to you ("Pass to
+    orchestrator"; its status_list row has ``claim`` set and reads "with
+    orchestrator"). Orchestrator only.
+
+    Call it once you have dealt with the item (``outcome="done"``), or to
+    hand it back to the user (``outcome="returned"`` with a short ``note``
+    saying what they need to decide; it shows in their Round). A claim you
+    never release lapses at its ``until`` and goes back to the user marked
+    "delegation lapsed". Tool approvals of the item stay with the user.
+
+    Args:
+        key: The work item's key (``status_list`` rows, e.g. ``repo:branch``).
+        outcome: ``done`` or ``returned``.
+        note: For ``returned``: what the user needs to know (≤ 200 chars).
+
+    Returns:
+        Object with key, outcome and the ended ``claim``.
+    """
+    params = _add_caller({"key": key, "outcome": outcome, "note": note})
+    return await _get_client().call("orchestrator_release", params)
+
+
+@mcp.tool()
 async def list_agents(worktree_path: str) -> dict:
     """List the agents running in a worktree.
 

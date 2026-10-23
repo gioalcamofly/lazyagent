@@ -1,0 +1,15 @@
+{
+  "case": "status_gesture/error_no_orchestrator",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "delegate"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "No orchestrator is running: start one, then pass the item to it"
+    },
+    "id": "req-1"
+  }
+}

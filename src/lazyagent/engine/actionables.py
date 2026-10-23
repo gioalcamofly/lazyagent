@@ -466,6 +466,8 @@ class ActionableQueue:
         self._visible: dict[str, dict[str, Any]] = {}
         self._saved: str | None = None
         self._unsubscribe: Callable[[], None] | None = None
+        # Called with an item the user (or the orchestrator) dismissed.
+        self.on_dismiss: list[Callable[[Item], None]] = []
 
     @property
     def clock(self) -> Callable[[], float]:
@@ -732,6 +734,8 @@ class ActionableQueue:
             # Nothing else clears these: forget them.
             self._exits = [e for e in self._exits if _exit_id(e) != item_id]
             self._jobs = [j for j in self._jobs if _id(JOB, j.job_id) != item_id]
+            for hook in self.on_dismiss:
+                hook(item)
         elif action == "park":
             until = check_until(until, now)
             place = self.snapshot().place(item.worktree_path)

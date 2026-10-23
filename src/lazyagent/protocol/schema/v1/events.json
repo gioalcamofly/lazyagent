@@ -277,6 +277,33 @@
         "reason": {"type": "string", "x-known-values": ["cleared", "dismissed", "parked"], "description": "cleared: its condition no longer holds."}
       }
     },
+    "orchestrator.claim": {
+      "type": "object",
+      "description": "The user passed a work item to the orchestrator (feature claims).",
+      "required": ["claim"],
+      "properties": {"claim": {"$ref": "methods.json#/$defs/claim"}}
+    },
+    "orchestrator.released": {
+      "type": "object",
+      "description": "A claim ended by the orchestrator, or taken back by the user.",
+      "required": ["key", "outcome", "note", "claim"],
+      "properties": {
+        "key": {"type": "string"},
+        "outcome": {"type": "string", "x-known-values": ["done", "returned", "taken_back"]},
+        "note": {"type": "string"},
+        "claim": {"$ref": "methods.json#/$defs/claim"}
+      }
+    },
+    "orchestrator.lapsed": {
+      "type": "object",
+      "description": "A claim expired, or its orchestrator exited: the item is back in the user's Round.",
+      "required": ["key", "reason", "claim"],
+      "properties": {
+        "key": {"type": "string"},
+        "reason": {"type": "string", "x-known-values": ["expired", "orchestrator_gone"]},
+        "claim": {"$ref": "methods.json#/$defs/claim"}
+      }
+    },
     "status.removed": {
       "type": "object",
       "description": "A work item left the list (its worktree is gone).",
