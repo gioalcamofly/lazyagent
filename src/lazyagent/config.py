@@ -55,6 +55,8 @@ class OrchestratorConfig:
     # included); 0 turns a cap off.
     max_spawns_per_day: int = 30
     max_concurrent_agents: int = 8
+    # Pass to orchestrator: how long a claim lasts (seconds).
+    claim_ttl_s: int = 7200
 
 
 @dataclass
@@ -148,6 +150,9 @@ def load_config(repo_root: str | Path) -> Config:
         value = orch_data.get(name)
         if type(value) is int and value >= 0:
             setattr(orchestrator_config, name, value)
+    claim_ttl_s = orch_data.get("claim_ttl_s")
+    if type(claim_ttl_s) is int and 60 <= claim_ttl_s <= 86400:
+        orchestrator_config.claim_ttl_s = claim_ttl_s
     engine_data = data.get("engine", {})
     engine_config = EngineConfig(
         restore_on_start=engine_data.get("restore_on_start") is True

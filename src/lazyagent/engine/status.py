@@ -90,6 +90,9 @@ _NEEDS_YOU = (
 )
 
 STATE_WORDS = 5
+# Not a §3 row: the user passed the item to the orchestrator (claims.py).
+CLAIM_RULE = 13
+CLAIM_STATE = "with orchestrator"
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,8 @@ class Facts:
     # The work item's open inbox items (engine/actionables.py), top first;
     # None derives rule 2 from the agents' statuses as before the queue.
     actionables: tuple[dict[str, Any], ...] | None = None
+    # The orchestrator's claim on the work item (claims.py), if any.
+    claim: dict[str, Any] | None = None
     tracker: TrackerFact | None = None
 
 
@@ -194,6 +199,12 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         return Derived(1, "done", "PR closed")
 
     queue = facts.actionables
+    if facts.claim is not None:
+        # The orchestrator's now; a tool approval still waits on the user.
+        approvals = [i for i in queue or () if i["kind"] == "approval"]
+        if approvals:
+            return Derived(2, "you", approvals[0]["state"], "now", True)
+        return Derived(CLAIM_RULE, "agent", CLAIM_STATE)
     if queue:
         top = queue[0]
         blocks = any(i["blocks_agent"] for i in queue)
@@ -274,6 +285,8 @@ def fingerprint(facts: Facts, derived: Derived) -> str:
         else [pr.state, pr.review_decision, pr.mergeable, ci_state(pr)],
         sorted((a.agent_id, a.status) for a in facts.agents),
     ]
+    if facts.claim is not None:
+        data.append(["claim", facts.claim["at"]])
     if facts.tracker is not None:
         data.append([facts.tracker.status, facts.tracker.level])
     raw = json.dumps(data, sort_keys=True).encode()
@@ -319,6 +332,7 @@ def build_row(
         },
         "note": facts.note,
         "gesture": None,
+        "claim": facts.claim,
         "stale": stale,
         "changed_at": changed_at,
         "fingerprint": fp,
@@ -512,9 +526,20 @@ class StatusProjection:
         result["generated_at"] = self.clock()
         return result
 
+    def row(self, key: str) -> dict[str, Any] | None:
+        """The last computed row of ``key`` (after a pass, see :meth:`flush`)."""
+        if key not in self._rows:
+            self.flush()
+        return self._rows.get(key)
+
+    def keys(self) -> list[str]:
+        return list(self._rows)
+
     def compute(self) -> dict[str, dict[str, Any]]:
         now = self.clock()
         config = self._engine.config.status
+        claims = self._engine.claims
+        claims.check(now)
         rows: dict[str, dict[str, Any]] = {}
         live_agents: set[tuple[str, str]] = set()
         queue: dict[str, list[dict[str, Any]]] = {}
@@ -522,7 +547,11 @@ class StatusProjection:
             if item["work_item"] is not None:
                 queue.setdefault(item["work_item"], []).append(item)
         for facts in self._facts(now):
-            facts = replace(facts, actionables=tuple(queue.get(facts.key, ())))
+            items = tuple(queue.get(facts.key, ()))
+            claim = claims.get(facts.key)
+            if claim is not None:
+                items = tuple(i for i in items if i["kind"] == "approval")
+            facts = replace(facts, actionables=items, claim=claim)
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)

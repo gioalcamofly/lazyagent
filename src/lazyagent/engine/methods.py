@@ -183,6 +183,8 @@ class EngineMethods:
             "actionables_list": self.actionables_list,
             "actionables_get": self.actionables_get,
             "actionables_mark": self.actionables_mark,
+            "status_gesture": self.status_gesture,
+            "orchestrator_release": self.orchestrator_release,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -921,6 +923,58 @@ class EngineMethods:
             _item_id(params), action, until=params.get("until"), by=role
         )
         return {"item": item}
+
+    @staticmethod
+    def _key(params: dict) -> str:
+        key = params.get("key")
+        if not isinstance(key, str) or not key:
+            raise ValueError("key is required: a work item key (status_list rows)")
+        return key
+
+    async def status_gesture(self, params: dict) -> Any:
+        """The user's gesture on a work item. Params: key, kind (``delegate``:
+        pass it to the orchestrator, with ``to: "orchestrator"`` and an
+        optional ``ttl_s``; ``clear``: take it back). The user's only (no
+        token). Label, park and close come later (I4)."""
+        role, _ = self._caller(params)
+        if role != USER_BY:
+            raise ValueError("Only the user makes gestures on work items")
+        key = self._key(params)
+        kind = params.get("kind")
+        claims = self._engine.claims
+        if kind == "delegate":
+            to = params.get("to", "orchestrator")
+            if to != "orchestrator":
+                raise ValueError("to must be 'orchestrator'")
+            claim = claims.claim(key, ttl_s=params.get("ttl_s"), by=role)
+        elif kind == "clear":
+            claims.clear(key)
+            claim = None
+        else:
+            raise ValueError("kind must be one of delegate, clear")
+        self._engine.status.flush()
+        return {
+            "key": key,
+            "claim": claim.to_dict() if claim is not None else None,
+            "row": self._engine.status.row(key),
+        }
+
+    async def orchestrator_release(self, params: dict) -> Any:
+        """The orchestrator ends its claim on a work item. Params: key,
+        outcome (``done``, or ``returned``: back to the user's Round with the
+        note), note, caller (the orchestrator's token)."""
+        role, _ = self._caller(params)
+        if role != ORCHESTRATOR_BY:
+            raise ValueError("Only the orchestrator releases its claims (its token)")
+        key = self._key(params)
+        outcome = params.get("outcome")
+        if not isinstance(outcome, str):
+            raise ValueError("outcome must be a string")
+        note = params.get("note", "")
+        if not isinstance(note, str):
+            raise ValueError("note must be a string")
+        claim = self._engine.claims.release(key, outcome, note)
+        return {"key": key, "outcome": outcome, "claim": claim.to_dict()}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

@@ -109,6 +109,9 @@ FEATURES: tuple[str, ...] = (
     "status",
     # actionables_* and actionable.* (proposal 0013, I2): the engine's inbox.
     "actionables",
+    # status_gesture delegate / clear, orchestrator_release and
+    # orchestrator.* (proposal 0013, I3): Pass to orchestrator.
+    "claims",
 )
 
 STREAM_RESIZED = "stream.resized"

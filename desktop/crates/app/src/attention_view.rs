@@ -1,35 +1,16 @@
-//! The attention view (ui-plan §3b) and the PR/CI panel (§3a), drawn by the
-//! app. The queue is derived in `attention.rs`; here are its list, the
-//! picked item (the agent's live terminal and a reply box, or the PR and
-//! its checks, an exit, a job) and the panel of the selected worktree's PR.
+//! The PR/CI panel (ui-plan §3a) and the PR details Home's lines show; the
+//! attention list itself became Home (home.rs, home_view.rs).
 
-use eframe::egui::{self, Align, Color32, CornerRadius, Layout, RichText, Sense, Stroke, TextEdit, Ui, Vec2};
+use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 use lazyagent_proto::types::{PrInfo, PrInfoResult, SendInputResult};
-use serde_json::json;
 
-use crate::app::{App, Focus, Severity, View};
-use crate::attention::{self, Item, Kind};
-use crate::panes::PaneKind;
-use crate::store::{self, ORCHESTRATOR_KEY};
+use crate::app::App;
+use crate::store::ORCHESTRATOR_KEY;
 use crate::theme::Theme;
 
-fn kind_color(t: &Theme, kind: Kind) -> Color32 {
-    match kind.rank() {
-        1 | 2 => t.yellow,
-        3 | 4 => t.red,
-        5 => t.purple,
-        6 => t.cyan,
-        _ => t.muted,
-    }
-}
-
+/// Minute-level, never "0s" (home.rs `age`).
 pub(crate) fn age(since: f64, now: f64) -> String {
-    let s = (now - since).max(0.0) as u64;
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m", s / 60),
-        _ => format!("{}h", s / 3600),
-    }
+    crate::home::age(now - since)
 }
 
 /// A check's mark and colour.
@@ -112,178 +93,6 @@ pub fn pr_details(ui: &mut Ui, t: &Theme, pr: &PrInfo) {
 }
 
 impl App {
-    /// The queue on the left, the picked item on the right.
-    pub(crate) fn attention_view(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let t = self.state.theme;
-        let now = crate::app::unix_now();
-        let items = self.state.attention.clone();
-        if !self.state.att_selected.as_ref().is_some_and(|id| items.iter().any(|i| &i.id == id)) {
-            self.state.att_selected = items.first().map(|i| i.id.clone());
-        }
-        let body = ui.available_rect_before_wrap();
-        let list_w = 340.0f32.min(body.width() * 0.4);
-        let list = egui::Rect::from_min_size(body.min, Vec2::new(list_w, body.height()));
-        let detail = egui::Rect::from_min_max(egui::pos2(list.max.x + 8.0, body.min.y), body.max);
-        let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list).id_salt("attention-list"));
-        list_ui.label(RichText::new(format!("Needs you ({})", items.len())).strong());
-        list_ui.add_space(4.0);
-        if items.is_empty() {
-            list_ui.label(RichText::new("Nothing needs you right now.").color(t.muted));
-        }
-        egui::ScrollArea::vertical().id_salt("attention-scroll").show(&mut list_ui, |ui| {
-            for item in &items {
-                let selected = self.state.att_selected.as_deref() == Some(item.id.as_str());
-                let fill = if selected { t.current_bg } else { t.surface };
-                let resp = egui::Frame::new()
-                    .fill(fill)
-                    .stroke(Stroke::new(1.0, if selected { t.accent } else { t.border }))
-                    .corner_radius(CornerRadius::same(4))
-                    .inner_margin(egui::Margin::symmetric(8, 5))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(item.kind.title()).small().strong().color(kind_color(&t, item.kind)),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(age(item.since, now)).small().color(t.muted));
-                            });
-                        });
-                        let place =
-                            if item.key.is_empty() { "job".to_string() } else { self.state.place_name(&item.key) };
-                        ui.add(egui::Label::new(RichText::new(format!("{} · {place}", item.label))).truncate());
-                        ui.add(egui::Label::new(RichText::new(&item.detail).small().color(t.muted)).truncate());
-                    })
-                    .response
-                    .interact(Sense::click());
-                if resp.clicked() {
-                    self.state.att_selected = Some(item.id.clone());
-                }
-                ui.add_space(4.0);
-            }
-        });
-        let Some(item) = self.state.att_selected.clone().and_then(|id| items.into_iter().find(|i| i.id == id)) else {
-            return;
-        };
-        let mut d = ui.new_child(egui::UiBuilder::new().max_rect(detail).id_salt(("attention-detail", &item.id)));
-        self.attention_detail(&mut d, ctx, &item);
-    }
-
-    fn attention_detail(&mut self, ui: &mut Ui, ctx: &egui::Context, item: &Item) {
-        let t = self.state.theme;
-        let place = if item.key.is_empty() { "job".to_string() } else { self.state.place_name(&item.key) };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(item.kind.title()).strong().color(kind_color(&t, item.kind)));
-            ui.label(RichText::new(format!("{} · {place}", item.label)).strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Dismiss").on_hover_text("Hide until it happens again").clicked() {
-                    self.state.dismiss(item);
-                }
-                if ui.button("Snooze 1h").clicked() {
-                    self.state.snooze(item, 3600.0);
-                }
-                if item.agent_id.is_some() && item.kind != Kind::Exited {
-                    if ui.button("Stop").clicked() {
-                        self.state.selected = Some(item.key.clone());
-                        self.state.tabs.insert(item.key.clone(), item.agent_id.clone().unwrap());
-                        self.state.open_dialog(crate::dialogs::Kind::Stop);
-                    }
-                    if ui.button("Open").on_hover_text("In the worktree view").clicked() {
-                        self.state.selected = Some(item.key.clone());
-                        self.state.tabs.insert(item.key.clone(), item.agent_id.clone().unwrap());
-                        self.state.view = View::Worktrees;
-                        self.state.focus_request = Some(Focus::Agent);
-                    }
-                }
-            });
-        });
-        ui.label(RichText::new(&item.detail).color(t.muted));
-        ui.add_space(4.0);
-        match item.kind {
-            Kind::Ci | Kind::Review | Kind::Conflict => {
-                let pr = item.pr.clone().unwrap();
-                pr_details(ui, &t, &pr);
-                ui.add_space(6.0);
-                let target = self.state.store.agents(&item.key).first().cloned();
-                match (item.kind, target) {
-                    (Kind::Ci, Some(agent)) => {
-                        if ui.button(format!("Send the failures to {}", store::agent_label(&agent))).clicked() {
-                            let text = attention::ci_failure_prompt(&pr);
-                            self.state.send_reply(&item.key, &agent.agent_id, text);
-                        }
-                    }
-                    (Kind::Ci, None) => {
-                        ui.label(RichText::new("No agent in this worktree to send the failures to.").color(t.muted));
-                    }
-                    _ => {}
-                }
-            }
-            Kind::Exited => {
-                if ui.button("Spawn again (resume the last session)").clicked() {
-                    let mut params =
-                        json!({"resume_mode": "last", "skip_permissions": false, "env": self.state.env_json()});
-                    if item.key == ORCHESTRATOR_KEY {
-                        params["kind"] = json!("orchestrator");
-                    } else {
-                        params["worktree_path"] = json!(item.key);
-                    }
-                    let key = item.key.clone();
-                    let exit = item.exit.clone();
-                    self.state.conn.clone().request("spawn_agent", params, move |s, reply| match reply {
-                        Ok(v) => {
-                            s.exits.retain(|e| Some(e) != exit.as_ref());
-                            s.spawned(&key, &v);
-                        }
-                        Err(e) => s.toast(Severity::Error, format!("Could not spawn: {e}")),
-                    });
-                }
-            }
-            Kind::Job => {
-                if let Some(job) = item.job.as_ref().and_then(|id| self.state.jobs.iter().find(|j| &j.id == id)) {
-                    ui.label(RichText::new(format!("$ {}", job.command)).monospace().color(t.muted));
-                    egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                        ui.label(RichText::new(&job.output).monospace());
-                    });
-                }
-            }
-            _ => self.attention_agent(ui, ctx, item),
-        }
-    }
-
-    /// An agent's item: its live terminal and a reply box.
-    fn attention_agent(&mut self, ui: &mut Ui, ctx: &egui::Context, item: &Item) {
-        let t = self.state.theme;
-        let agent_id = item.agent_id.clone().unwrap_or_default();
-        let session = self.state.store.agent(&item.key, &agent_id).and_then(|a| a.session_id.clone());
-        let reply_h = 96.0;
-        let body = ui.available_rect_before_wrap();
-        let term = egui::Rect::from_min_max(body.min, egui::pos2(body.max.x, body.max.y - reply_h));
-        let mut term_ui = ui.new_child(egui::UiBuilder::new().max_rect(term).id_salt("attention-terminal"));
-        match session {
-            Some(s) => self.terminal(&mut term_ui, &s, PaneKind::Agent, Focus::Agent, ctx),
-            None => {
-                term_ui.label(RichText::new("The agent's terminal is not available.").color(t.muted));
-            }
-        }
-        let reply = egui::Rect::from_min_max(egui::pos2(body.min.x, body.max.y - reply_h + 6.0), body.max);
-        let mut reply_ui = ui.new_child(egui::UiBuilder::new().max_rect(reply).id_salt("attention-reply"));
-        reply_ui.horizontal(|ui| {
-            let edit = ui.add(
-                TextEdit::multiline(&mut self.state.reply)
-                    .desired_rows(3)
-                    .desired_width(ui.available_width() - 90.0)
-                    .hint_text(format!("Reply to {} (Ctrl+Enter)", item.label)),
-            );
-            let ctrl_enter =
-                edit.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
-            let send = ui.add_enabled(!self.state.reply.trim().is_empty(), egui::Button::new("Send"));
-            if (send.clicked() || ctrl_enter) && !self.state.reply.trim().is_empty() {
-                let text = std::mem::take(&mut self.state.reply).trim().to_string();
-                self.state.send_reply(&item.key, &agent_id, text);
-            }
-        });
-    }
-
     /// The selected worktree's PR and checks.
     pub(crate) fn pr_panel(&mut self, ui: &mut Ui) {
         let t = self.state.theme;

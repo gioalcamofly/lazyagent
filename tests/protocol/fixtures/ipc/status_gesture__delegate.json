@@ -1,0 +1,77 @@
+{
+  "case": "status_gesture/delegate",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "delegate",
+    "to": "orchestrator",
+    "ttl_s": 3600
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": {
+        "allowed": [
+          "answer_reversible",
+          "relay",
+          "restore_owner",
+          "ci_rerun",
+          "rebase_via_owner",
+          "spawn_worker",
+          "mark"
+        ],
+        "at": 1700000000.0,
+        "by": "user",
+        "holder": "orchestrator",
+        "key": "repo:export-csv",
+        "until": 1700003600.0
+      },
+      "key": "repo:export-csv",
+      "row": {
+        "agents": [
+          {
+            "id": "a2",
+            "since": 1700000000.0,
+            "status": "running"
+          }
+        ],
+        "ball": "agent",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": {
+          "allowed": [
+            "answer_reversible",
+            "relay",
+            "restore_owner",
+            "ci_rerun",
+            "rebase_via_owner",
+            "spawn_worker",
+            "mark"
+          ],
+          "at": 1700000000.0,
+          "by": "user",
+          "holder": "orchestrator",
+          "key": "repo:export-csv",
+          "until": 1700003600.0
+        },
+        "fingerprint": "e23cd2ec5450",
+        "gesture": null,
+        "key": "repo:export-csv",
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 13,
+        "stale": false,
+        "state": "with orchestrator",
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      }
+    }
+  }
+}

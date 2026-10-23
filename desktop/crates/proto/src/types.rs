@@ -559,6 +559,194 @@ pub struct ReviewReplies {
     pub replies: Vec<ReviewReplied>,
 }
 
+/// A work item (proposal 0013): `status_list` rows and `status.updated`.
+/// Open sets (zone, level, ball, priority) stay strings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusRow {
+    pub key: String,
+    pub repo: String,
+    pub branch: Option<String>,
+    pub worktree_path: Option<String>,
+    pub title: String,
+    pub urls: Vec<String>,
+    /// `inbox` · `in_flight`.
+    pub zone: String,
+    /// `now` · `round` (inbox rows only).
+    pub level: Option<String>,
+    /// `you` · `agent` · `others` · `stalled` · `done`.
+    pub ball: String,
+    pub priority: String,
+    pub state: String,
+    pub rule: i64,
+    pub blocks_agent: bool,
+    pub needs_you: Option<NeedsYou>,
+    pub agents: Vec<RowAgent>,
+    pub pr: Option<RowPr>,
+    pub note: Option<RowNote>,
+    pub gesture: Option<Value>,
+    /// Older engines (before Pass to orchestrator) do not send it.
+    #[serde(default)]
+    pub claim: Option<Claim>,
+    /// The issue-tracker task the branch links to (optional adapters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<RowTracker>,
+    pub stale: bool,
+    pub changed_at: f64,
+    pub fingerprint: String,
+}
+
+/// A row's tracker task: read-only, the last good value when `stale`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowTracker {
+    pub adapter: String,
+    pub key: String,
+    pub url: String,
+    pub status: String,
+    /// The mapped text, else the raw status.
+    pub state: String,
+    pub at: f64,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NeedsYou {
+    pub count: u32,
+    /// The top actionable's id.
+    pub top: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowAgent {
+    pub id: String,
+    pub status: String,
+    pub since: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowPr {
+    pub number: u64,
+    pub state: String,
+    pub review: String,
+    /// `green` · `red` · `running` · `none`.
+    pub ci: String,
+    pub mergeable: String,
+}
+
+/// The agent's own word on the row: a notes bullet, later a report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowNote {
+    pub text: String,
+    pub by: String,
+    pub at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+/// A work item passed to the orchestrator until a time (feature `claims`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Claim {
+    pub key: String,
+    pub holder: String,
+    pub at: f64,
+    pub until: f64,
+    pub by: String,
+    pub allowed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusCounts {
+    pub now: u32,
+    pub round: u32,
+    pub in_flight: u32,
+    pub done: u32,
+    pub stale: u32,
+    pub not_started: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusList {
+    pub rows: Vec<StatusRow>,
+    pub counts: StatusCounts,
+    pub generated_at: f64,
+}
+
+/// `status_gesture`: the claim made (none after `clear`) and the row now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusGestureResult {
+    pub key: String,
+    pub claim: Option<Claim>,
+    pub row: Option<StatusRow>,
+}
+
+/// An inbox item (feature `actionables`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Actionable {
+    pub id: String,
+    pub occurrence: String,
+    /// `approval`, `question`, `ci`, … (an open set).
+    pub kind: String,
+    pub level: String,
+    pub title: String,
+    pub label: String,
+    pub detail: String,
+    pub state: String,
+    pub work_item: Option<String>,
+    pub worktree_path: Option<String>,
+    pub agent_id: Option<String>,
+    pub pr: Option<ActionablePr>,
+    pub job_id: Option<String>,
+    pub exit_code: Option<i64>,
+    pub blocks_agent: bool,
+    pub priority: String,
+    pub since: f64,
+    pub park: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionablePr {
+    pub number: u64,
+    pub title: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionableCounts {
+    pub now: u32,
+    pub round: u32,
+    pub parked: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionablesList {
+    pub items: Vec<Actionable>,
+    pub counts: ActionableCounts,
+    pub generated_at: f64,
+}
+
+/// `actionables_get` / `actionables_mark`; `actionable.created` / `.updated`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionableResult {
+    pub item: Actionable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusUpdated {
+    pub row: StatusRow,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusRemoved {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionableResolved {
+    pub id: String,
+    pub occurrence: String,
+    /// `cleared` · `dismissed` · `parked`.
+    pub reason: String,
+}
+
 /// The events the desktop app acts on; everything else is `Other` and
 /// ignored by design (§4c: unknown events are tolerated).
 #[derive(Debug, Clone, PartialEq)]
@@ -585,6 +773,11 @@ pub enum EngineEvent {
     NotesUpdated(NotesUpdated),
     NotesRemoved(NotesRemoved),
     ReviewReplied(ReviewReplied),
+    StatusUpdated(Box<StatusUpdated>),
+    StatusRemoved(StatusRemoved),
+    ActionableCreated(Box<ActionableResult>),
+    ActionableUpdated(Box<ActionableResult>),
+    ActionableResolved(ActionableResolved),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -612,6 +805,11 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "notes.updated",
     "notes.removed",
     "review.replied",
+    "status.updated",
+    "status.removed",
+    "actionable.created",
+    "actionable.updated",
+    "actionable.resolved",
 ];
 
 impl EngineEvent {
@@ -640,6 +838,11 @@ impl EngineEvent {
             "notes.updated" => de(&event).map(EngineEvent::NotesUpdated),
             "notes.removed" => de(&event).map(EngineEvent::NotesRemoved),
             "review.replied" => de(&event).map(EngineEvent::ReviewReplied),
+            "status.updated" => de(&event).map(|u| EngineEvent::StatusUpdated(Box::new(u))),
+            "status.removed" => de(&event).map(EngineEvent::StatusRemoved),
+            "actionable.created" => de(&event).map(|a| EngineEvent::ActionableCreated(Box::new(a))),
+            "actionable.updated" => de(&event).map(|a| EngineEvent::ActionableUpdated(Box::new(a))),
+            "actionable.resolved" => de(&event).map(EngineEvent::ActionableResolved),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

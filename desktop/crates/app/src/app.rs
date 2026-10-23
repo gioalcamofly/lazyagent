@@ -3,7 +3,7 @@
 //! on input, and the reader thread asks for a repaint when a visible
 //! terminal or the store changed).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -14,7 +14,8 @@ use eframe::egui::{
 };
 use lazyagent_proto::EngineEvent;
 use lazyagent_proto::types::{
-    CreateWorktreeResult, OpenShellResult, RestorableAgent, RestorableList, SpawnResult, Worktree,
+    Actionable, ActionablesList, CreateWorktreeResult, OpenShellResult, RestorableAgent, RestorableList, SpawnResult,
+    StatusList, StatusRow, Worktree,
 };
 use serde_json::json;
 
@@ -41,8 +42,9 @@ pub enum Focus {
 /// Which main view is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// The work items (home.rs): what the app opens on.
+    Home,
     Worktrees,
-    Attention,
 }
 
 /// Unix time in seconds.
@@ -73,6 +75,17 @@ pub struct Job {
     pub finished: Option<Option<i32>>,
 }
 
+/// A Now item to notify (once per occurrence).
+struct NowNote {
+    occurrence: String,
+    /// The notification setting it falls under (`approval`, `question`).
+    setting: String,
+    title: String,
+    /// A worktree path or the orchestrator key; empty for a job.
+    place: String,
+    detail: String,
+}
+
 struct PendingLaunch {
     path: String,
     instruction: String,
@@ -100,7 +113,8 @@ pub struct State {
     shell_requested: HashSet<String>,
     /// Shells that failed to open: not retried until the next connection.
     shell_failed: HashSet<String>,
-    pub shell_hidden: HashSet<String>,
+    /// Worktrees whose shell is shown (none by default: Ctrl+L opens it).
+    pub shell_shown: HashSet<String>,
     pub panes: HashMap<String, Arc<Pane>>,
     pub views: HashMap<String, ViewState>,
     shown_at: HashMap<String, Instant>,
@@ -135,16 +149,31 @@ pub struct State {
     pub comments_gen: u64,
     pub saved: crate::persist::Saved,
     saver: crate::persist::Saver,
-    /// The attention queue, re-derived when its inputs change.
+    /// The client's own attention queue (engines without the `status` /
+    /// `actionables` features), re-derived when its inputs change.
     pub attention: Vec<crate::attention::Item>,
     att_since: HashMap<String, f64>,
     att_key: (u64, usize, usize, u64, u64),
+    att_gen: u64,
     marks_gen: u64,
     /// Agents that exited on their own (for the queue).
     pub exits: Vec<crate::attention::Exit>,
-    pub att_selected: Option<String>,
-    pub reply: String,
     notified: HashSet<String>,
+    /// Home and what it is built from: the engine's rows and items.
+    pub home: crate::home::Home,
+    pub status_rows: BTreeMap<String, StatusRow>,
+    pub actionables: BTreeMap<String, Actionable>,
+    /// Bumped when the rows or items change.
+    pub inbox_gen: u64,
+    /// `status_list`'s counts as last fetched (for "N not started").
+    pub status_counts: lazyagent_proto::types::StatusCounts,
+    /// `status_list` (1) and `actionables_list` (2) answered: Home's first
+    /// complete lines are a cut point.
+    pub inbox_loaded: u8,
+    home_key: (bool, u64, u64),
+    home_changed: HashMap<String, (String, f64)>,
+    /// Lines that changed after this carry a dot (the last look).
+    pub look_from: f64,
     pub pr_panel: bool,
     /// Worktree → whether `get_pr_info` could fetch (false: no gh).
     pub pr_fetched: HashMap<String, bool>,
@@ -181,6 +210,8 @@ pub struct State {
     pub earlier: HashMap<String, crate::notes_view::Earlier>,
     /// Text to put on the clipboard at the next frame (stop handoff).
     pub clipboard: Option<String>,
+    /// A link to open in the browser at the next frame (Home's `p`).
+    pub url_to_open: Option<String>,
     /// What the app last put there (tests read it).
     pub last_copied: Option<String>,
     /// Updates and restarts (lifecycle.rs).
@@ -198,10 +229,11 @@ impl State {
         let saved_path = crate::persist::path(&conn.root, &conn.env);
         let mut saved = crate::persist::load(&saved_path);
         saved.marks.prune(unix_now());
+        let look_from = saved.home_seen.unwrap_or_else(unix_now);
         let theme =
             theme.unwrap_or(if saved.theme.as_deref() == Some("light") { ThemeKind::Light } else { ThemeKind::Dark });
         State {
-            view: View::Worktrees,
+            view: View::Home,
             diff_open: false,
             diff: None,
             comment_edit: None,
@@ -217,11 +249,19 @@ impl State {
             attention: vec![],
             att_since: HashMap::new(),
             att_key: (u64::MAX, 0, 0, 0, 0),
+            att_gen: 0,
             marks_gen: 0,
             exits: vec![],
-            att_selected: None,
-            reply: String::new(),
             notified: HashSet::new(),
+            home: Default::default(),
+            status_rows: BTreeMap::new(),
+            actionables: BTreeMap::new(),
+            inbox_gen: 0,
+            status_counts: Default::default(),
+            inbox_loaded: 0,
+            home_key: (false, u64::MAX, u64::MAX),
+            home_changed: HashMap::new(),
+            look_from,
             pr_panel: false,
             pr_fetched: HashMap::new(),
             pending_g: None,
@@ -235,7 +275,7 @@ impl State {
             shells: HashMap::new(),
             shell_requested: HashSet::new(),
             shell_failed: HashSet::new(),
-            shell_hidden: HashSet::new(),
+            shell_shown: HashSet::new(),
             panes: HashMap::new(),
             views: HashMap::new(),
             shown_at: HashMap::new(),
@@ -268,6 +308,7 @@ impl State {
             notes: HashMap::new(),
             earlier: HashMap::new(),
             clipboard: None,
+            url_to_open: None,
             last_copied: None,
             life: Default::default(),
             engine_detached: None,
@@ -377,10 +418,9 @@ impl State {
         {
             self.toast(Severity::Warning, w.clone());
         }
+        // The new worktree gets selected: no toast to say so.
         if r.job_id.is_some() {
             self.jobs_open = true;
-        } else {
-            self.toast(Severity::Info, format!("Created worktree {}", store::basename(&r.path)));
         }
         self.pending_select = Some(r.path.clone());
         if let Some((instruction, skip)) = launch {
@@ -392,8 +432,6 @@ impl State {
     pub fn after_remove(&mut self, path: &str, job: Option<String>) {
         if job.is_some() {
             self.jobs_open = true;
-        } else {
-            self.toast(Severity::Info, format!("Removed worktree {}", store::basename(path)));
         }
         if self.selected.as_deref() == Some(path) {
             self.selected = self.store.worktrees.iter().find(|w| w.is_main).map(|w| w.path.clone());
@@ -450,6 +488,7 @@ impl State {
             return;
         }
         self.att_key = key;
+        self.att_gen += 1;
         let jobs: Vec<crate::attention::JobEnd> = self
             .jobs
             .iter()
@@ -463,37 +502,179 @@ impl State {
             .collect();
         self.attention =
             crate::attention::items(&self.store, &self.exits, &jobs, &mut self.att_since, &self.saved.marks, now);
-        let current: HashSet<String> = self.attention.iter().map(|i| i.occurrence.clone()).collect();
-        for item in &self.attention {
-            if self.notified.contains(&item.occurrence) {
+        if self.engine_inbox() {
+            return;
+        }
+        // Only what blocks an agent is worth a notification (Q-B10).
+        let items: Vec<NowNote> = self
+            .attention
+            .iter()
+            .filter(|i| i.kind.rank() <= 2)
+            .map(|i| NowNote {
+                occurrence: i.occurrence.clone(),
+                setting: i.kind.setting().to_string(),
+                title: format!("{}: {}", i.kind.title(), i.label),
+                place: i.key.clone(),
+                detail: i.detail.clone(),
+            })
+            .collect();
+        self.notify_now(items, window_focused);
+    }
+
+    /// Notifies each Now occurrence once, while the window is in the background.
+    fn notify_now(&mut self, items: Vec<NowNote>, window_focused: bool) {
+        let current: HashSet<String> = items.iter().map(|i| i.occurrence.clone()).collect();
+        for item in items {
+            if !self.notified.insert(item.occurrence) {
                 continue;
             }
-            self.notified.insert(item.occurrence.clone());
-            if !window_focused && self.saved.notify_on(item.kind.setting()) {
-                let place = if item.key.is_empty() { "a job".to_string() } else { self.place_name(&item.key) };
-                let urgent = item.kind.rank() <= 2;
-                crate::notify::send(
-                    &format!("{}: {}", item.kind.title(), item.label),
-                    &format!("{place} — {}", item.detail),
-                    urgent,
-                );
+            if !window_focused && self.saved.notify_on(&item.setting) {
+                let place = if item.place.is_empty() { "a job".to_string() } else { self.place_name(&item.place) };
+                crate::notify::send(&item.title, &format!("{place} — {}", item.detail), true);
             }
         }
         self.notified.retain(|o| current.contains(o));
     }
 
-    pub fn touch_saved(&mut self) {
+    /// The engine keeps the inbox (`status` and `actionables`): Home reads
+    /// its rows; otherwise it is derived here, from the sidebar state.
+    pub fn engine_inbox(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|c| c.iter().any(|x| x == "status") && c.iter().any(|x| x == "actionables"))
+    }
+
+    /// Pass to orchestrator: the engine has claims, and an orchestrator runs.
+    pub fn can_pass(&self) -> Result<(), &'static str> {
+        if !self.engine_inbox() || !self.capabilities.as_ref().is_some_and(|c| c.iter().any(|x| x == "claims")) {
+            return Err("This engine is too old to pass items to the orchestrator: restart it (File → Restart…)");
+        }
+        if self.store.orchestrator.is_empty() {
+            return Err("No orchestrator is running: start one (the ◆ Orchestrator row), then pass the item");
+        }
+        Ok(())
+    }
+
+    fn fetch_inbox(&mut self) {
+        if !self.engine_inbox() {
+            return;
+        }
+        self.conn.request("status_list", json!({}), |s, reply| {
+            if let Ok(list) = reply.and_then(|v| {
+                serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+            }) {
+                s.status_counts = list.counts;
+                s.status_rows = list.rows.into_iter().map(|r| (r.key.clone(), r)).collect();
+                s.inbox_gen += 1;
+                s.inbox_loaded |= 1;
+            }
+        });
+        self.conn.request("actionables_list", json!({}), |s, reply| {
+            if let Ok(list) = reply.and_then(|v| {
+                serde_json::from_value::<ActionablesList>(v)
+                    .map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+            }) {
+                s.actionables = list.items.into_iter().map(|i| (i.id.clone(), i)).collect();
+                s.inbox_gen += 1;
+                s.inbox_loaded |= 2;
+                s.import_marks();
+            }
+        });
+    }
+
+    /// Once per repo: the dismissals and snoozes this app kept itself go to
+    /// the engine, which keeps them for every client from now on.
+    fn import_marks(&mut self) {
+        if self.saved.marks_imported {
+            return;
+        }
+        let items: Vec<&Actionable> = self.actionables.values().collect();
+        for (id, action, until) in self.saved.marks_to_import(&items, unix_now()) {
+            let mut params = json!({"id": id, "action": action});
+            if let Some(u) = until {
+                params["until"] = json!(u);
+            }
+            self.conn.notify("actionables_mark", params);
+        }
+        self.saved.marks_imported = true;
         self.saver.touch();
     }
 
-    pub fn move_attention(&mut self, delta: i32) {
-        if self.attention.is_empty() {
+    /// Rebuilds Home's lines when what they come from changed; delivers the
+    /// Round when its time has come; notifies Now items.
+    pub fn refresh_home(&mut self, window_focused: bool) {
+        let now = unix_now();
+        let engine = self.engine_inbox();
+        let key = if engine { (true, self.inbox_gen, 0) } else { (false, self.att_gen, self.store.version) };
+        if key != self.home_key && (self.seeded || engine) {
+            self.home_key = key;
+            let lines = if engine {
+                crate::home::engine_lines(&self.status_rows, &self.actionables)
+            } else {
+                crate::home::fallback_lines(&self.store, &self.attention, &mut self.home_changed, now)
+            };
+            self.home.update(lines, now);
+            self.home.ready = if engine { self.inbox_loaded == 3 } else { self.seeded };
+            if engine {
+                let items: Vec<NowNote> = self
+                    .actionables
+                    .values()
+                    .filter(|i| i.level == "now")
+                    .map(|i| NowNote {
+                        occurrence: i.occurrence.clone(),
+                        setting: i.kind.clone(),
+                        title: format!("{}: {}", i.title, i.label),
+                        place: i.worktree_path.clone().unwrap_or_default(),
+                        detail: i.detail.clone(),
+                    })
+                    .collect();
+                self.notify_now(items, window_focused);
+            }
+        }
+        self.home.tick(now);
+    }
+
+    /// Shows Home; back from a terminal is a cut point (the Round waiting
+    /// is delivered).
+    pub fn go_home(&mut self) {
+        if self.view != View::Home {
+            self.view = View::Home;
+            self.home.cut(unix_now());
+            self.fetch_counts();
+        }
+    }
+
+    /// "N not started" is a count, not a row: asked for again on the way
+    /// back to Home.
+    fn fetch_counts(&mut self) {
+        if !self.engine_inbox() {
             return;
         }
-        let at = self.att_selected.as_ref().and_then(|id| self.attention.iter().position(|i| &i.id == id)).unwrap_or(0)
-            as i32;
-        let next = (at + delta).clamp(0, self.attention.len() as i32 - 1) as usize;
-        self.att_selected = Some(self.attention[next].id.clone());
+        self.conn.request("status_list", json!({}), |s, reply| {
+            if let Ok(list) = reply.and_then(|v| {
+                serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+            }) {
+                s.status_counts = list.counts;
+            }
+        });
+    }
+
+    /// Leaves Home for a worktree's terminals: what was there is seen.
+    pub fn leave_home(&mut self) {
+        if self.view == View::Home {
+            self.mark_seen();
+            self.view = View::Worktrees;
+        }
+    }
+
+    pub fn mark_seen(&mut self) {
+        self.look_from = unix_now();
+        self.saved.home_seen = Some(self.look_from);
+        self.saver.touch();
+    }
+
+    pub fn touch_saved(&mut self) {
+        self.saver.touch();
     }
 
     pub fn dismiss(&mut self, item: &crate::attention::Item) {
@@ -622,6 +803,7 @@ impl State {
                 }
                 self.notes_reconnected(engine_changed);
                 self.capabilities = Some(hello.capabilities);
+                self.fetch_inbox();
                 self.engine_version = Some(hello.engine_version);
                 self.engine_detached = hello.detached;
                 self.engine_commit = hello.source_commit;
@@ -765,8 +947,9 @@ impl State {
                 if let Some(j) = self.jobs.iter_mut().find(|j| j.id == f.job_id) {
                     j.finished = Some(f.exit_code);
                     let title = j.title.clone();
+                    // A job that worked shows it in its drawer; only failures toast.
                     match f.exit_code {
-                        Some(0) => self.toast(Severity::Info, format!("{title}: done")),
+                        Some(0) => {}
                         Some(c) => {
                             self.toast(Severity::Error, format!("{title}: failed (exit code {c}); see the job log"))
                         }
@@ -775,9 +958,7 @@ impl State {
                 }
             }
             EngineEvent::EngineRestored(r) => {
-                if !r.restored.is_empty() {
-                    self.toast(Severity::Info, format!("Restored {} agent(s)", r.restored.len()));
-                }
+                // Restored agents show up in the list; only failures toast.
                 for f in &r.failed {
                     self.toast(Severity::Error, format!("Could not restore {}: {}", f.id, f.reason));
                 }
@@ -792,6 +973,22 @@ impl State {
             EngineEvent::NotesUpdated(u) => self.on_notes_updated(&u),
             EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
             EngineEvent::ReviewReplied(r) => self.on_review_replied(&r, true),
+            EngineEvent::StatusUpdated(u) => {
+                self.status_rows.insert(u.row.key.clone(), u.row);
+                self.inbox_gen += 1;
+            }
+            EngineEvent::StatusRemoved(r) => {
+                self.status_rows.remove(&r.key);
+                self.inbox_gen += 1;
+            }
+            EngineEvent::ActionableCreated(a) | EngineEvent::ActionableUpdated(a) => {
+                self.actionables.insert(a.item.id.clone(), a.item);
+                self.inbox_gen += 1;
+            }
+            EngineEvent::ActionableResolved(r) => {
+                self.actionables.remove(&r.id);
+                self.inbox_gen += 1;
+            }
             _ => {}
         }
     }
@@ -911,23 +1108,26 @@ impl App {
         if take(Modifiers::CTRL | Modifiers::SHIFT, Key::D)
             || (!s.terminal_focused && !ctx.text_edit_focused() && take(Modifiers::CTRL, Key::D))
         {
-            s.view = View::Worktrees;
+            s.leave_home();
             s.toggle_diff();
         }
         if take(Modifiers::CTRL, Key::Period) {
             s.pr_panel = !s.pr_panel;
         }
         if take(Modifiers::CTRL, Key::K) {
+            s.leave_home();
             s.focus_request = Some(Focus::Sidebar);
         }
         // Ctrl+J / Ctrl+L go to the terminal when it already has the keyboard
         // (newline in Claude Code, clear in a shell).
-        if s.focus != Focus::Agent && take(Modifiers::CTRL, Key::J) {
+        if (s.focus != Focus::Agent || s.view == View::Home) && take(Modifiers::CTRL, Key::J) {
+            s.leave_home();
             s.focus_request = Some(Focus::Agent);
         }
-        if s.focus != Focus::Shell && take(Modifiers::CTRL, Key::L) {
-            if let Some(p) = s.selected.clone() {
-                s.shell_hidden.remove(&p);
+        if (s.focus != Focus::Shell || s.view == View::Home) && take(Modifiers::CTRL, Key::L) {
+            s.leave_home();
+            if let Some(p) = s.selected.clone().filter(|p| p != ORCHESTRATOR_KEY) {
+                s.shell_shown.insert(p);
             }
             s.focus_request = Some(Focus::Shell);
         }
@@ -964,39 +1164,34 @@ impl App {
         let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         if outside {
             use crate::dialogs::Kind;
-            if take(Modifiers::NONE, Key::S) {
+            let home = s.view == View::Home;
+            if home && s.home_key(&take) {
+                // Home's own keys (home_view.rs).
+            } else if take(Modifiers::NONE, Key::S) {
                 s.open_dialog(Kind::Spawn);
-            } else if take(Modifiers::NONE, Key::X) {
+            } else if !home && take(Modifiers::NONE, Key::X) {
                 s.open_dialog(Kind::Stop);
             } else if take(Modifiers::NONE, Key::C) {
                 s.open_dialog(Kind::Create);
-            } else if take(Modifiers::NONE, Key::D) {
+            } else if !home && take(Modifiers::NONE, Key::D) {
                 s.open_dialog(Kind::Remove);
             } else if take(Modifiers::SHIFT, Key::R) {
                 s.restore(true);
-            } else if g_recent && take(Modifiers::NONE, Key::A) {
-                (s.view, s.pending_g) = (View::Attention, None);
+            } else if g_recent && (take(Modifiers::NONE, Key::H) || take(Modifiers::NONE, Key::A)) {
+                s.pending_g = None;
+                s.go_home();
             } else if g_recent && take(Modifiers::NONE, Key::W) {
-                (s.view, s.pending_g) = (View::Worktrees, None);
+                s.pending_g = None;
+                s.leave_home();
             } else if take(Modifiers::NONE, Key::G) {
                 // Its second key may arrive in the same frame.
-                if take(Modifiers::NONE, Key::A) {
-                    s.view = View::Attention;
+                if take(Modifiers::NONE, Key::H) || take(Modifiers::NONE, Key::A) {
+                    s.go_home();
                 } else if take(Modifiers::NONE, Key::W) {
-                    s.view = View::Worktrees;
+                    s.leave_home();
                 } else {
                     s.pending_g = Some(Instant::now());
                 }
-            } else if s.view == View::Attention
-                && (take(Modifiers::NONE, Key::J) || take(Modifiers::NONE, Key::ArrowDown))
-            {
-                s.move_attention(1);
-            } else if s.view == View::Attention
-                && (take(Modifiers::NONE, Key::K) || take(Modifiers::NONE, Key::ArrowUp))
-            {
-                s.move_attention(-1);
-            } else if s.view == View::Attention && take(Modifiers::NONE, Key::Enter) {
-                s.focus_request = Some(Focus::Agent);
             } else if take(Modifiers::NONE, Key::R) {
                 s.conn.notify("refresh_worktrees", json!({}));
             } else if s.view == View::Worktrees && take(Modifiers::NONE, Key::N) {
@@ -1040,11 +1235,11 @@ impl App {
                 }
             });
             ui.menu_button("View", |ui| {
-                if ui.selectable_label(s.view == View::Worktrees, "Worktrees  (g w)").clicked() {
-                    s.view = View::Worktrees;
+                if ui.selectable_label(s.view == View::Home, "Home  (g h)").clicked() {
+                    s.go_home();
                 }
-                if ui.selectable_label(s.view == View::Attention, "Attention  (g a)").clicked() {
-                    s.view = View::Attention;
+                if ui.selectable_label(s.view == View::Worktrees, "Worktrees  (g w)").clicked() {
+                    s.leave_home();
                 }
                 ui.separator();
                 let worktree = s.selected.as_deref().is_some_and(|p| p != ORCHESTRATOR_KEY);
@@ -1055,7 +1250,7 @@ impl App {
                     s.pr_panel = !s.pr_panel;
                 }
                 if ui.add_enabled(worktree, egui::Button::selectable(s.diff_open, "Diff  (Ctrl+D)")).clicked() {
-                    s.view = View::Worktrees;
+                    s.leave_home();
                     s.toggle_diff();
                 }
                 ui.separator();
@@ -1113,19 +1308,22 @@ impl App {
                 if !home.is_empty() && root.starts_with(&home) { format!("~{}", &root[home.len()..]) } else { root };
             // The repo's name; the path on hover (a long one pushed the engine pill away).
             ui.label(RichText::new(store::basename(&s.conn.root)).color(t.text).monospace()).on_hover_text(full);
-            let (text, color) = match &s.link {
-                Link::Connected => ("connected".to_string(), t.green),
-                Link::Connecting(m) | Link::Reconnecting(m) => (m.clone(), t.yellow),
-                Link::Stopped => ("stopped".to_string(), t.red),
-                Link::Failed(_) => ("no engine".to_string(), t.red),
+            // The engine only when something is wrong with it.
+            let trouble = match &s.link {
+                Link::Connected => None,
+                Link::Connecting(m) | Link::Reconnecting(m) => Some((m.clone(), t.yellow)),
+                Link::Stopped => Some(("stopped".to_string(), t.red)),
+                Link::Failed(_) => Some(("no engine".to_string(), t.red)),
             };
-            egui::Frame::new()
-                .stroke(Stroke::new(1.0, color))
-                .corner_radius(CornerRadius::same(9))
-                .inner_margin(egui::Margin::symmetric(8, 1))
-                .show(ui, |ui| {
-                    ui.label(RichText::new(format!("engine ● {text}")).small().color(color));
-                });
+            if let Some((text, color)) = trouble {
+                egui::Frame::new()
+                    .stroke(Stroke::new(1.0, color))
+                    .corner_radius(CornerRadius::same(9))
+                    .inner_margin(egui::Margin::symmetric(8, 1))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(format!("engine ● {text}")).small().color(color));
+                    });
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = "◐";
                 if ui.button(icon).on_hover_text("Light / dark theme").clicked() {
@@ -1133,7 +1331,10 @@ impl App {
                 }
                 ui.menu_button("Notifications ▾", |ui| {
                     ui.label(RichText::new("Notify me (while the window is in the background) when an agent…").small());
-                    for (key, label) in crate::attention::SETTINGS {
+                    // Only Now items notify (Q-B10).
+                    for (key, label) in
+                        crate::attention::SETTINGS.iter().filter(|(k, _)| matches!(*k, "approval" | "question"))
+                    {
                         let mut on = s.saved.notify_on(key);
                         if ui.checkbox(&mut on, *label).changed() {
                             s.saved.notify.insert(key.to_string(), on);
@@ -1141,24 +1342,24 @@ impl App {
                         }
                     }
                 });
-                if let Some(v) = &s.engine_version {
-                    ui.label(RichText::new(format!("engine {v}")).small().color(t.muted));
-                }
                 ui.add_space(12.0);
-                let n = s.attention.len();
-                let att = if n > 0 { format!("Attention ({n})") } else { "Attention".to_string() };
+                if ui.selectable_label(s.view == View::Worktrees, "Worktrees").on_hover_text("g w").clicked() {
+                    s.leave_home();
+                }
+                let (now, round) = s.home.counts();
+                let home = match (now, round) {
+                    (0, 0) => "Home".to_string(),
+                    (0, r) => format!("Home · {r} round"),
+                    (n, 0) => format!("Home · ● {n} now"),
+                    (n, r) => format!("Home · ● {n} now · {r} round"),
+                };
+                let color = if now > 0 { t.yellow } else { t.text };
                 if ui
-                    .selectable_label(
-                        s.view == View::Attention,
-                        RichText::new(att).color(if n > 0 { t.yellow } else { t.text }),
-                    )
-                    .on_hover_text("g a")
+                    .selectable_label(s.view == View::Home, RichText::new(home).color(color))
+                    .on_hover_text("g h")
                     .clicked()
                 {
-                    s.view = View::Attention;
-                }
-                if ui.selectable_label(s.view == View::Worktrees, "Worktrees").on_hover_text("g w").clicked() {
-                    s.view = View::Worktrees;
+                    s.go_home();
                 }
             });
         });
@@ -1268,6 +1469,7 @@ impl App {
             }
         });
         if let Some((path, agent)) = clicked {
+            s.leave_home();
             s.selected = Some(path.clone());
             match agent {
                 Some(a) => {
@@ -1311,16 +1513,16 @@ impl App {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if !orchestrator {
-                    let hidden = self.state.shell_hidden.contains(&selected);
+                    let shown = self.state.shell_shown.contains(&selected);
                     if ui
-                        .button(if hidden { "Shell ▸" } else { "Shell ▾" })
+                        .button(if shown { "Shell ▾" } else { "Shell ▸" })
                         .on_hover_text("Show or hide the shell (Ctrl+L)")
                         .clicked()
                     {
-                        if hidden {
-                            self.state.shell_hidden.remove(&selected);
+                        if shown {
+                            self.state.shell_shown.remove(&selected);
                         } else {
-                            self.state.shell_hidden.insert(selected.clone());
+                            self.state.shell_shown.insert(selected.clone());
                         }
                     }
                 }
@@ -1422,7 +1624,7 @@ impl App {
         ui.add_space(2.0);
 
         let body = ui.available_rect_before_wrap();
-        let show_shell = !orchestrator && !self.state.shell_hidden.contains(&selected);
+        let show_shell = !orchestrator && self.state.shell_shown.contains(&selected);
         let split = if show_shell { (body.height() * (1.0 - self.state.shell_split)).round() } else { body.height() };
         let top = egui::Rect::from_min_size(body.min, Vec2::new(body.width(), split));
         let agent_session = active.and_then(|a| agents.iter().find(|x| x.0 == a).and_then(|x| x.3.clone()));
@@ -1771,6 +1973,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        if self.state.view == View::Home {
+            self.state.mark_seen();
+        }
         self.state.saver.flush(&self.state.saved);
         self.state.conn.shutdown();
     }
@@ -1799,17 +2004,26 @@ impl App {
             p.visible.store(false, Ordering::Relaxed);
         }
         self.global_keys(&ctx);
+        if let Some(url) = self.state.url_to_open.take() {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
         if let Some(text) = self.state.clipboard.take() {
             ctx.copy_text(text.clone());
             self.state.last_copied = Some(text);
         }
         // A viewport command asks for a repaint: send the title only on change.
-        self.state.refresh_attention(ctx.input(|i| i.viewport().focused.unwrap_or(true)));
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        self.state.refresh_attention(focused);
+        self.state.refresh_home(focused);
         if let Some(wait) = self.state.saver.tick(&self.state.saved) {
             ctx.request_repaint_after(wait);
         }
-        let n = self.state.attention.len();
-        let badge = if n > 0 { format!("({n}) ") } else { String::new() };
+        let badge = match self.state.home.counts() {
+            (0, 0) => String::new(),
+            (n, 0) => format!("({n} now) "),
+            (0, r) => format!("({r}) "),
+            (n, r) => format!("({n} now · {r}) "),
+        };
         let title = format!("{badge}lazyagent — {}", store::basename(&self.state.conn.root));
         if self.title != title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -1863,11 +2077,14 @@ impl App {
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(8, 0)))
             .show(ui, |ui| match self.state.view {
                 View::Worktrees => self.center(ui, &ctx),
-                View::Attention if !self.state.seeded => self.link_overlay(ui),
-                View::Attention => {
+                View::Home if !self.state.seeded => self.link_overlay(ui),
+                View::Home => {
                     self.link_banner(ui);
+                    self.restore_banner(ui);
                     ui.add_space(4.0);
-                    self.attention_view(ui, &ctx);
+                    self.home_view(ui);
+                    // Ages move on by the minute.
+                    ctx.request_repaint_after(Duration::from_secs(30));
                 }
             });
         crate::dialogs::show(&ctx, &mut self.state);

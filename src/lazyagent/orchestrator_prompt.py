@@ -43,6 +43,14 @@ goes stale.
 - **`actionables_list()`** — The user's inbox item by item (approvals, \
 questions, failed or exited agents, red or conflicting PRs, changes \
 requested), `now` first. Items the user dismissed or parked are not in it.
+- **`orchestrator_release(key, outcome, note="")`** — The user may pass you a \
+work item ("Pass to orchestrator"): you get one line "Item <key>: passed to \
+you by the user until HH:MM", and its `status_list` row has `claim` set. Deal \
+with it within your limits (relay to its agent, restore its agent, re-run CI, \
+rebase through its agent; never merge, publish or delete), then call \
+`orchestrator_release(key, "done")`, or `orchestrator_release(key, "returned", \
+note)` to hand it back with what the user must decide. An unreleased claim \
+lapses at its time and goes back to the user.
 
 ### Worktree management
 

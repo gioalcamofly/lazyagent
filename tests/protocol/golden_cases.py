@@ -732,6 +732,63 @@ async def _():
     )
 
 
+# --- status_gesture / orchestrator_release (Pass to orchestrator) -------------
+
+
+def _claims_engine():
+    """The status engine with an orchestrator running (token ``tok-orch``)."""
+    from lazyagent.engine.registry import ORCHESTRATOR_KEY
+
+    engine = _status_engine()
+    add_session(engine, _session_in(ORCHESTRATOR_KEY, ""), kind="orchestrator")
+    engine._tokens["tok-orch"] = (ORCHESTRATOR_KEY, "")
+    return engine
+
+
+@case("status_gesture/delegate")
+async def _():
+    return await _call(
+        _claims_engine(),
+        "status_gesture",
+        {"key": "repo:export-csv", "kind": "delegate", "to": "orchestrator", "ttl_s": 3600},
+    )
+
+
+@case("status_gesture/clear")
+async def _():
+    engine = _claims_engine()
+    engine.claims.claim("repo:export-csv")
+    return await _call(engine, "status_gesture", {"key": "repo:export-csv", "kind": "clear"})
+
+
+@case("status_gesture/error_no_orchestrator")
+async def _():
+    return await _call(
+        _status_engine(), "status_gesture", {"key": "repo:export-csv", "kind": "delegate"}
+    )
+
+
+@case("orchestrator_release/returned")
+async def _():
+    engine = _claims_engine()
+    engine.claims.claim("repo:export-csv")
+    return await _call(
+        engine,
+        "orchestrator_release",
+        {"key": "repo:export-csv", "outcome": "returned", "note": "needs a product call",
+         "caller": "tok-orch"},
+    )
+
+
+@case("orchestrator_release/error_not_the_orchestrator")
+async def _():
+    engine = _claims_engine()
+    engine.claims.claim("repo:export-csv")
+    return await _call(
+        engine, "orchestrator_release", {"key": "repo:export-csv", "outcome": "done"}
+    )
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):

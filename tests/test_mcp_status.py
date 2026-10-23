@@ -53,6 +53,25 @@ async def test_actionables_list_shows_the_inbox_with_a_table(engine, monkeypatch
     assert row["needs_you"]["top"] == item["id"]
 
 
+async def test_the_orchestrator_releases_an_item_passed_to_it(engine, monkeypatch):
+    feat = engine.feat
+    orchestrator = await engine.spawn_agent("", kind="orchestrator")
+    await engine.spawn_agent(feat)
+    engine.claims.claim("repo:feat")
+    _as_agent(engine, orchestrator, monkeypatch)
+    [row] = (await mcp_server.status_list())["rows"]
+    assert (row["state"], row["claim"]["holder"]) == ("with orchestrator", "orchestrator")
+
+    result = await mcp_server.orchestrator_release("repo:feat", "returned", "pick a db")
+
+    assert (result["outcome"], result["claim"]["key"]) == ("returned", "repo:feat")
+    [row] = (await mcp_server.status_list())["rows"]
+    assert (row["level"], row["state"], row["claim"]) == ("round", "returned: pick a db", None)
+    monkeypatch.delenv(AGENT_TOKEN_ENV)
+    with pytest.raises(Exception, match="Only the orchestrator"):
+        await mcp_server.orchestrator_release("repo:feat", "done")
+
+
 async def test_spawns_by_an_agent_are_capped_and_the_user_is_not(engine, monkeypatch):
     engine.config = Config(orchestrator=OrchestratorConfig(max_concurrent_agents=1))
     feat = engine.feat

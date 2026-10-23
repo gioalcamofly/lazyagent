@@ -85,13 +85,17 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             // Its result is not read (the app only needs it to succeed);
             // review_reply is the agents' (MCP).
             "review_register" | "review_reply" => continue,
-            // Not read yet: the desktop Home (proposal 0013, I3) will.
-            "status_list" | "actionables_list" | "actionables_get" | "actionables_mark" => continue,
+            "status_list" => round_trip::<StatusList>(case, result),
+            "actionables_list" => round_trip::<ActionablesList>(case, result),
+            "actionables_get" | "actionables_mark" => round_trip::<ActionableResult>(case, result),
+            "status_gesture" => round_trip::<StatusGestureResult>(case, result),
+            // The orchestrator's (MCP).
+            "orchestrator_release" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
     }
-    assert!(checked >= 26, "only {checked} fixtures checked");
+    assert!(checked >= 34, "only {checked} fixtures checked");
 }
 
 #[test]
@@ -133,18 +137,20 @@ const METHODS_USED: &[&str] = &[
     "notes_put",
     "review_register",
     "review_replies",
+    "status_list",
+    "actionables_list",
+    "actionables_mark",
+    "status_gesture",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
 const IGNORED_EVENTS: &[&str] = &[
     "ui.command",
     "ui.view_changed",
-    // Until the desktop Home (proposal 0013, I3).
-    "status.updated",
-    "status.removed",
-    "actionable.created",
-    "actionable.updated",
-    "actionable.resolved",
+    // The rows carry the claim (status.updated); the desktop needs no more.
+    "orchestrator.claim",
+    "orchestrator.released",
+    "orchestrator.lapsed",
 ];
 
 #[test]
