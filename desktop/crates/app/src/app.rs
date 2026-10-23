@@ -14,8 +14,8 @@ use eframe::egui::{
 };
 use lazyagent_proto::EngineEvent;
 use lazyagent_proto::types::{
-    Actionable, ActionablesList, CreateWorktreeResult, OpenShellResult, RestorableAgent, RestorableList, SpawnResult,
-    StatusList, StatusRow, Worktree,
+    Actionable, ActionablesList, CreateWorktreeResult, Decision, DecisionsList, InboxConfig, OpenShellResult, Presence,
+    RestorableAgent, RestorableList, SpawnResult, StatusList, StatusRow, StatusTimeline, Worktree,
 };
 use serde_json::json;
 
@@ -167,6 +167,16 @@ pub struct State {
     pub inbox_gen: u64,
     /// `status_list`'s counts as last fetched (for "N not started").
     pub status_counts: lazyagent_proto::types::StatusCounts,
+    /// The briefs the engine holds (feature `decisions`), open and closed.
+    pub decisions: BTreeMap<String, Decision>,
+    /// "Since you looked" of the expanded lines (`status_timeline`).
+    pub timelines: HashMap<String, StatusTimeline>,
+    /// Whether the user counts as present (feature `first_responder`).
+    pub presence: Option<Presence>,
+    /// When user input was last reported (`presence_report`, throttled).
+    pub presence_reported: f64,
+    /// The repo's auto-delegation, as the settings menu last read it.
+    pub inbox_config: Option<InboxConfig>,
     /// `status_list` (1) and `actionables_list` (2) answered: Home's first
     /// complete lines are a cut point.
     pub inbox_loaded: u8,
@@ -258,6 +268,11 @@ impl State {
             actionables: BTreeMap::new(),
             inbox_gen: 0,
             status_counts: Default::default(),
+            decisions: BTreeMap::new(),
+            timelines: HashMap::new(),
+            presence: None,
+            presence_reported: f64::NEG_INFINITY,
+            inbox_config: None,
             inbox_loaded: 0,
             home_key: (false, u64::MAX, u64::MAX),
             home_changed: HashMap::new(),
@@ -544,6 +559,22 @@ impl State {
             .is_some_and(|c| c.iter().any(|x| x == "status") && c.iter().any(|x| x == "actionables"))
     }
 
+    /// The engine announced `feature` in its hello.
+    pub fn has(&self, feature: &str) -> bool {
+        self.capabilities.as_ref().is_some_and(|c| c.iter().any(|x| x == feature))
+    }
+
+    /// Row gestures, per-item seen marks and timelines, the deep level (I4).
+    pub fn gestures(&self) -> bool {
+        self.engine_inbox() && self.has("gestures")
+    }
+
+    /// The orchestrator as first responder (I4b): presence, routed items,
+    /// Revert, auto-delegation. Hidden entirely without it.
+    pub fn first_responder(&self) -> bool {
+        self.engine_inbox() && self.has("first_responder")
+    }
+
     /// Pass to orchestrator: the engine has claims, and an orchestrator runs.
     pub fn can_pass(&self) -> Result<(), &'static str> {
         if !self.engine_inbox() || !self.capabilities.as_ref().is_some_and(|c| c.iter().any(|x| x == "claims")) {
@@ -555,15 +586,22 @@ impl State {
         Ok(())
     }
 
+    /// `status_list`'s parameters: with gestures, the done rows too (the
+    /// tombstones Home shows dimmed for a day).
+    fn status_params(&self) -> serde_json::Value {
+        if self.gestures() { json!({"include_done": true}) } else { json!({}) }
+    }
+
     fn fetch_inbox(&mut self) {
         if !self.engine_inbox() {
             return;
         }
-        self.conn.request("status_list", json!({}), |s, reply| {
+        self.conn.request("status_list", self.status_params(), |s, reply| {
             if let Ok(list) = reply.and_then(|v| {
                 serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
             }) {
                 s.status_counts = list.counts;
+                s.presence = list.presence;
                 s.status_rows = list.rows.into_iter().map(|r| (r.key.clone(), r)).collect();
                 s.inbox_gen += 1;
                 s.inbox_loaded |= 1;
@@ -580,6 +618,17 @@ impl State {
                 s.import_marks();
             }
         });
+        if self.has("decisions") {
+            self.conn.request("decisions_list", json!({}), |s, reply| {
+                if let Ok(list) = reply.and_then(|v| {
+                    serde_json::from_value::<DecisionsList>(v)
+                        .map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+                }) {
+                    s.decisions = list.decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
+                    s.inbox_gen += 1;
+                }
+            });
+        }
     }
 
     /// Once per repo: the dismissals and snoozes this app kept itself go to
@@ -609,7 +658,7 @@ impl State {
         if key != self.home_key && (self.seeded || engine) {
             self.home_key = key;
             let lines = if engine {
-                crate::home::engine_lines(&self.status_rows, &self.actionables)
+                crate::home::engine_lines(&self.status_rows, &self.actionables, &self.decisions, now)
             } else {
                 crate::home::fallback_lines(&self.store, &self.attention, &mut self.home_changed, now)
             };
@@ -646,15 +695,16 @@ impl State {
 
     /// "N not started" is a count, not a row: asked for again on the way
     /// back to Home.
-    fn fetch_counts(&mut self) {
+    pub fn fetch_counts(&mut self) {
         if !self.engine_inbox() {
             return;
         }
-        self.conn.request("status_list", json!({}), |s, reply| {
+        self.conn.request("status_list", self.status_params(), |s, reply| {
             if let Ok(list) = reply.and_then(|v| {
                 serde_json::from_value::<StatusList>(v).map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
             }) {
                 s.status_counts = list.counts;
+                s.presence = list.presence;
             }
         });
     }
@@ -987,6 +1037,15 @@ impl State {
             }
             EngineEvent::ActionableResolved(r) => {
                 self.actionables.remove(&r.id);
+                self.inbox_gen += 1;
+            }
+            EngineEvent::StatusTimeline(t) => {
+                if let Some(open) = self.timelines.get_mut(&t.key) {
+                    open.entries.push(t.entry);
+                }
+            }
+            EngineEvent::DecisionCreated(d) | EngineEvent::DecisionResolved(d) => {
+                self.decisions.insert(d.decision.id.clone(), d.decision);
                 self.inbox_gen += 1;
             }
             _ => {}
@@ -1342,6 +1401,19 @@ impl App {
                         }
                     }
                 });
+                if s.first_responder() {
+                    // Stays open while ticking boxes; read again each time it
+                    // opens (the file may have changed).
+                    let config = egui::containers::menu::MenuConfig::new()
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                    let (button, _) = egui::containers::menu::MenuButton::new("Auto-delegation ▾")
+                        .config(config)
+                        .ui(ui, |ui| crate::home_view::auto_delegation_menu(ui, s));
+                    if button.clicked() {
+                        s.inbox_config = None;
+                        s.fetch_inbox_config();
+                    }
+                }
                 ui.add_space(12.0);
                 if ui.selectable_label(s.view == View::Worktrees, "Worktrees").on_hover_text("g w").clicked() {
                     s.leave_home();
@@ -2002,6 +2074,10 @@ impl App {
         }
         for p in self.state.panes.values() {
             p.visible.store(false, Ordering::Relaxed);
+        }
+        // Before the keys are taken: any input is the user being here.
+        if ctx.input(|i| i.events.iter().any(crate::home_view::is_user_input)) {
+            self.state.user_input(unix_now());
         }
         self.global_keys(&ctx);
         if let Some(url) = self.state.url_to_open.take() {

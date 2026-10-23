@@ -45,6 +45,11 @@ pub enum Link {
 
 pub type Apply = Box<dyn FnOnce(&mut State) + Send>;
 
+/// Tests: answers requests in place of an engine (`None`: not connected),
+/// and sees every request and notification.
+#[cfg(test)]
+pub type Fake = Box<dyn FnMut(&str, &Value) -> Option<Reply> + Send>;
+
 pub enum Msg {
     Link(Link),
     Connected {
@@ -66,6 +71,8 @@ pub struct Conn {
     ctx: egui::Context,
     start_requested: AtomicBool,
     quit: AtomicBool,
+    #[cfg(test)]
+    pub fake: Mutex<Option<Fake>>,
 }
 
 impl Conn {
@@ -78,6 +85,8 @@ impl Conn {
             ctx,
             start_requested: AtomicBool::new(false),
             quit: AtomicBool::new(false),
+            #[cfg(test)]
+            fake: Mutex::new(None),
         })
     }
 
@@ -114,6 +123,13 @@ impl Conn {
         params: Value,
         done: impl FnOnce(&mut State, Reply) + Send + 'static,
     ) {
+        #[cfg(test)]
+        if let Some(fake) = self.fake.lock().unwrap().as_mut() {
+            let reply =
+                fake(method, &params).unwrap_or_else(|| Err(ClientError::Closed("not connected to the engine".into())));
+            self.send(Msg::Apply(Box::new(move |s| done(s, reply))));
+            return;
+        }
         match self.client() {
             Some(c) => {
                 let me = self.clone();
@@ -128,6 +144,11 @@ impl Conn {
 
     /// Fire and forget.
     pub fn notify(&self, method: &str, params: Value) {
+        #[cfg(test)]
+        if let Some(fake) = self.fake.lock().unwrap().as_mut() {
+            fake(method, &params);
+            return;
+        }
         if let Some(c) = self.client() {
             c.request_async(method, params, |_| {});
         }
