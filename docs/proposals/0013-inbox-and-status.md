@@ -93,7 +93,7 @@ Some items take a minute from the row (approve a command, merge a green PR). Oth
 | **Decision brief** | The agent that is already working writes it over MCP (`request_decision`): one concrete question, 2-4 options with a recommendation, what it has tried, linked evidence (diff hunks, log lines, files and line ranges, notes sections, URLs), reversibility, and the impact if the choice is wrong. Fixed template, validated by the engine: a brief with no options or no evidence is downgraded to a Quick item "the agent asks something" with a link to its terminal |
 | **Since you looked** | A deterministic timeline per work item since the user's last look at **that item**: commits, CI runs, ball and state changes, notes edits (section names), answers given, reviews. A per-item "seen" mark; "mark all seen" on Home |
 | **Decision view** | Opening a Deep item shows the brief on one side and the evidence on the other (diff hunk, notes, log excerpt, file at lines). The answer (option + comment) goes to the agent through the same queue as review replies and `send_agent_input`: delivered when the agent is idle, never in the middle of a turn |
-| **Explain this** | A button, on demand only: it asks the **owner agent** for a short explanation, or to answer one question the user types. The agent replies over MCP and the reply shows in the view. Disabled when the work item has no live agent. Nothing is asked automatically |
+| **Explain this** | A button, on demand only. It asks for a short explanation (≤ 10 lines), or an answer to one question the user types; the reply comes over MCP and shows in the view. Who answers, first match: (1) the **owner agent** if it is alive; (2) if it is not alive but its session is restorable, an explicit **Restore agent and explain** option (never automatic: it starts a process and costs more), which restores it with its notes before it answers; (3) otherwise, if the orchestrator is running, the **orchestrator** answers from the notes, diff, CI and timeline, marked "explained by orchestrator" (less context); (4) otherwise the button is disabled, with **Open terminal** and **Pass to orchestrator** beside it. Nothing is asked automatically, and there is no fallback to a bare model call |
 | **Decision log** | Every answer is appended by the engine to the agent's notes, section **Decisions** (`- 2026-10-22 · <question> → B (user): <comment>`), and kept on the work item for 30 days. The agent sees it after a compaction (0011 re-injection) and a successor inherits it in a handoff, so the same thing is not decided twice |
 
 Class per kind (fixed):
@@ -297,7 +297,8 @@ Gap: once the external planner moves from a fixed-interval tick to engine events
 | Agents flood "To sit down with" with briefs | At most 2 open briefs per agent; `deep_max` visible; a brief without options or evidence becomes a Quick item |
 | A brief goes stale while it waits (the branch moved) | Evidence is pinned to a commit; the view marks it "outdated" when the branch head changed and offers "Explain this" |
 | An answer is lost if the agent dies before reading it | It is in the agent's notes (Decisions) and on the work item; a restored or successor agent gets it |
-| "Explain this" costs tokens | Only on the user's click, only the owner agent, capped at a short answer |
+| "Explain this" costs tokens | Only on the user's click, capped at a short answer; a restore is a separate, explicit choice; no bare model call |
+| An orchestrator explanation misses context the owner had | Marked "explained by orchestrator"; it reads notes, diff, CI and timeline; the user can still restore the owner or open the terminal |
 
 ## Open questions
 
