@@ -70,8 +70,10 @@ from lazyagent.engine.manifest import (
     manifest_path,
 )
 from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
+from lazyagent.engine.autodelegate import AutoDelegate
 from lazyagent.engine.claims import Claims
 from lazyagent.engine.decisions import Decisions
+from lazyagent.engine.orchestrator import FirstResponder
 from lazyagent.engine.overlay import Overlay, overlay_path
 from lazyagent.engine.methods import SpawnCaps
 from lazyagent.engine.notes import (
@@ -281,6 +283,10 @@ class Engine:
         # Pass to orchestrator (claims on work items): rows and queue read it.
         self.claims = Claims(self)
         self.decisions = Decisions(self)
+        # The orchestrator as first responder: routing, presence, mandate,
+        # caps, revert (engine/orchestrator.py); opt-in auto-delegation.
+        self.first_responder = FirstResponder(self)
+        self.autodelegate = AutoDelegate(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()
 
@@ -528,6 +534,12 @@ class Engine:
     @property
     def ui_attached(self) -> bool:
         return self._ui_hosts > 0
+
+    def ui_connected(self) -> bool:
+        """Whether a UI is connected: a hosted one, or a protocol v1 client
+        (the desktop). Presence counts the user away without one."""
+        v1 = self._v1_server
+        return self.ui_attached or (v1 is not None and v1.connections > 0)
 
     def ui_command(self, command: str, **args: Any) -> EngineEvent:
         """Ask the hosted UI to change what it shows."""

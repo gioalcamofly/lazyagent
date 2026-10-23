@@ -1,0 +1,20 @@
+{
+  "case": "inbox_config_set/written",
+  "method": "inbox_config_set",
+  "params": {
+    "auto_delegate": [
+      "conflict_with_base"
+    ],
+    "auto_delegate_target": "owner"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "auto_delegate": [
+        "conflict_with_base"
+      ],
+      "auto_delegate_target": "owner",
+      "repo": "repo"
+    }
+  }
+}

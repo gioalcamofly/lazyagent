@@ -328,6 +328,12 @@
       "required": ["decision"],
       "properties": {"decision": {"$ref": "methods.json#/$defs/decision"}}
     },
+    "decision.answered": {
+      "type": "object",
+      "description": "An answer was recorded: by the user, by the orchestrator (answered_by, revertible), or a revert of it (reverted) (feature first_responder).",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "methods.json#/$defs/decision"}}
+    },
     "decision.resolved": {
       "type": "object",
       "description": "A brief closed: withdrawn, superseded or expired (its state says which).",

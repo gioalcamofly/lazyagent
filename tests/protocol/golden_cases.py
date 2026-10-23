@@ -927,6 +927,134 @@ async def _():
     return await _call(engine, "decisions_list", {"key": "repo:export-csv"})
 
 
+# --- The orchestrator as first responder (proposal 0013 I4b) -----------------
+
+
+def _first_responder_engine(presence: str = "away"):
+    """The worker engine with an orchestrator (``tok-orch``), a UI
+    connected and the user's presence set."""
+    from unittest.mock import AsyncMock
+
+    from lazyagent.engine.registry import ORCHESTRATOR_KEY
+
+    engine = _worker_engine()
+    add_session(engine, _session_in(ORCHESTRATOR_KEY, ""), kind="orchestrator")
+    engine._tokens["tok-orch"] = (ORCHESTRATOR_KEY, "")
+    engine.first_responder.presence.connected = lambda: True
+    engine.first_responder.presence.set(presence)
+    engine.head_sha = AsyncMock(return_value="abc123")
+    return engine
+
+
+async def _answered(engine):
+    from lazyagent.engine.methods import EngineMethods
+
+    await _brief(engine)
+    await EngineMethods(engine).decision_answer(
+        {"id": "d1", "choice": "A", "reason": "3/30 runs time out with fixed",
+         "caller": "tok-orch"}
+    )
+    return engine
+
+
+@case("decision_answer/by_the_orchestrator")
+async def _():
+    engine = _first_responder_engine()
+    await _brief(engine)
+    return await _call(
+        engine, "decision_answer",
+        {"id": "d1", "choice": "A", "reason": "3/30 runs time out with fixed",
+         "caller": "tok-orch"},
+    )
+
+
+@case("decision_answer/by_the_user")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(engine, "decision_answer", {"id": "d1", "choice": "B", "comment": "simpler"})
+
+
+@case("decision_answer/error_outside_the_mandate")
+async def _():
+    engine = _first_responder_engine("present")
+    await _brief(engine)
+    return await _call(
+        engine, "decision_answer",
+        {"id": "d1", "choice": "A", "reason": "r", "caller": "tok-orch"},
+    )
+
+
+@case("decision_escalate/with_a_suggestion")
+async def _():
+    engine = _first_responder_engine("present")
+    await _brief(engine)
+    return await _call(
+        engine, "decision_escalate",
+        {"id": "d1", "note": "a product call", "suggestion": "B", "caller": "tok-orch"},
+    )
+
+
+@case("decision_revert/overridden")
+async def _():
+    engine = await _answered(_first_responder_engine())
+    return await _call(
+        engine, "decision_revert", {"id": "d1", "choice": "B", "comment": "keep it simple"}
+    )
+
+
+@case("presence_report/present")
+async def _():
+    engine = _status_engine()
+    engine.first_responder.presence.connected = lambda: True
+    engine.status.clock = lambda: FIXED_TIME
+    return await _call(engine, "presence_report", {"input_at": FIXED_TIME - 60})
+
+
+@case("presence_set/away")
+async def _():
+    engine = _status_engine()
+    engine.first_responder.presence.connected = lambda: True
+    engine.status.clock = lambda: FIXED_TIME
+    return await _call(engine, "presence_set", {"mode": "away"})
+
+
+def _inbox_engine():
+    """The status engine whose repo root is a fresh directory (the same
+    name every run) holding a commented .lazyagent.toml."""
+    import shutil
+    import tempfile as _tempfile
+
+    root = Path(_tempfile.gettempdir()) / "golden-inbox" / "repo"
+    shutil.rmtree(root.parent, ignore_errors=True)
+    root.mkdir(parents=True)
+    (root / ".lazyagent.toml").write_text(
+        "# repo settings\n[inbox]\ndeep_max = 5  # shown on the zone\n"
+    )
+    engine = _status_engine()
+    engine.worktree_service.repo_root = str(root)
+    return engine, root.parent
+
+
+@case("inbox_config_get/defaults")
+async def _():
+    return await _call(_status_engine(), "inbox_config_get", {})
+
+
+@case("inbox_config_set/written")
+async def _():
+    engine, root = _inbox_engine()
+    try:
+        return await _call(
+            engine, "inbox_config_set",
+            {"auto_delegate": ["conflict_with_base"], "auto_delegate_target": "owner"},
+        )
+    finally:
+        import shutil
+
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):

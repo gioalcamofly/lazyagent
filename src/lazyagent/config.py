@@ -60,6 +60,23 @@ class OrchestratorConfig:
     max_concurrent_agents: int = 8
     # Pass to orchestrator: how long a claim lasts (seconds).
     claim_ttl_s: int = 7200
+    # First responder (engine/orchestrator.py): a routed item the
+    # orchestrator neither answered nor escalated goes to the user after
+    # this long; the user counts as present while a client reported input
+    # this recently.
+    escalate_after_min: int = 10
+    away_after_min: int = 15
+    # Caps on the orchestrator's own answers; past one, items go to the
+    # user (To sit down with) for the rest of the day.
+    max_decisions_per_item_day: int = 3
+    max_decisions_day: int = 20
+    # Only shorten the mandate (never-alone actions are fixed in code):
+    # the actions allowed while the user is away (None: every one) and the
+    # outward kinds the orchestrator may do as its instructions say.
+    away_allow: list[str] | None = None
+    allow_outward: list[str] = field(
+        default_factory=lambda: ["tracker", "github_comment", "pr_create"]
+    )
 
 
 @dataclass
@@ -81,6 +98,12 @@ class InboxConfig:
     deep_max: int = 5
     # Open decision briefs per agent; a third is refused (0: no limit).
     max_briefs_per_agent: int = 2
+    # Opt-in auto-delegation of stalled items (engine/autodelegate.py): the
+    # kinds it acts on, to whom (owner or orchestrator), and how many
+    # delegations a day.
+    auto_delegate: list[str] = field(default_factory=list)
+    auto_delegate_target: str = "owner"
+    auto_delegate_max_per_day: int = 10
 
 
 @dataclass
@@ -175,6 +198,7 @@ def load_config(repo_root: str | Path) -> Config:
     claim_ttl_s = orch_data.get("claim_ttl_s")
     if type(claim_ttl_s) is int and 60 <= claim_ttl_s <= 86400:
         orchestrator_config.claim_ttl_s = claim_ttl_s
+    _first_responder_config(orchestrator_config, orch_data)
     engine_data = data.get("engine", {})
     engine_config = EngineConfig(
         restore_on_start=engine_data.get("restore_on_start") is True
@@ -196,6 +220,30 @@ def load_config(repo_root: str | Path) -> Config:
     )
 
 
+def _first_responder_config(config: OrchestratorConfig, data: object) -> None:
+    """``[orchestrator]``'s first-responder keys; a missing or invalid value
+    keeps its default. The lists can only name known actions / kinds
+    (engine/orchestrator.py): unknown names are dropped."""
+    from lazyagent.engine.orchestrator import AWAY_ACTIONS, OUTWARD_KINDS
+
+    if not isinstance(data, dict):
+        return
+    for name in ("escalate_after_min", "away_after_min"):
+        value = data.get(name)
+        if type(value) is int and value > 0:
+            setattr(config, name, value)
+    for name in ("max_decisions_per_item_day", "max_decisions_day"):
+        value = data.get(name)
+        if type(value) is int and value >= 0:
+            setattr(config, name, value)
+    away_allow = data.get("away_allow")
+    if isinstance(away_allow, list):
+        config.away_allow = [a for a in away_allow if a in AWAY_ACTIONS]
+    allow_outward = data.get("allow_outward")
+    if isinstance(allow_outward, list):
+        config.allow_outward = [k for k in allow_outward if k in OUTWARD_KINDS]
+
+
 def _inbox_config(data: object) -> InboxConfig:
     """``[inbox]``; a missing or invalid value keeps its default."""
     config = InboxConfig()
@@ -207,6 +255,18 @@ def _inbox_config(data: object) -> InboxConfig:
     briefs = data.get("max_briefs_per_agent")
     if type(briefs) is int and briefs >= 0:
         config.max_briefs_per_agent = briefs
+    from lazyagent.engine.autodelegate import KINDS as AUTO_KINDS
+    from lazyagent.engine.autodelegate import TARGETS
+
+    auto = data.get("auto_delegate")
+    if isinstance(auto, list):
+        config.auto_delegate = [k for k in auto if k in AUTO_KINDS]
+    target = data.get("auto_delegate_target")
+    if target in TARGETS:
+        config.auto_delegate_target = target
+    per_day = data.get("auto_delegate_max_per_day")
+    if type(per_day) is int and per_day >= 0:
+        config.auto_delegate_max_per_day = per_day
     return config
 
 
@@ -290,3 +350,89 @@ def format_command(
         force=force,
         extra=extra,
     ).strip()
+
+
+_TABLE = __import__("re").compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+
+
+def _toml_value(value: object) -> str:
+    import json
+
+    if isinstance(value, list):
+        return "[" + ", ".join(json.dumps(v) for v in value) + "]"
+    return json.dumps(value)
+
+
+def set_table_keys(text: str, table: str, values: dict[str, object]) -> str:
+    """``text`` (a TOML file) with ``values`` set in ``[table]``: each key's
+    line is replaced in place (a multi-line array too), a missing key goes
+    after the table's last key, a missing table at the end. Every other
+    line, comments included, stays as it was. Raises ValueError when the
+    table is defined some other way (dotted keys, an inline table)."""
+    lines = text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines)
+         if (m := _TABLE.match(line)) and m.group(1) == table and not line.lstrip().startswith("[[")),
+        None,
+    )
+    if start is None:
+        if tomllib is not None and table in tomllib.loads(text):
+            raise ValueError(
+                f"[{table}] is not a plain table in {CONFIG_FILENAME}: edit it by hand"
+            )
+        block = ["", f"[{table}]"] if text.strip() else [f"[{table}]"]
+        block += [f"{k} = {_toml_value(v)}" for k, v in values.items()]
+        return "\n".join(lines + block) + "\n"
+    end = next((i for i in range(start + 1, len(lines)) if _TABLE.match(lines[i])), len(lines))
+    pending = dict(values)
+    i = start + 1
+    last_key = start
+    while i < end:
+        stripped = lines[i].strip()
+        name = stripped.split("=", 1)[0].strip() if "=" in stripped else None
+        if name and not stripped.startswith("#"):
+            span = 1
+            rest = stripped.split("=", 1)[1]
+            if rest.strip().startswith("[") and rest.count("[") > rest.count("]"):
+                depth = rest.count("[") - rest.count("]")
+                while depth > 0 and i + span < end:
+                    depth += lines[i + span].count("[") - lines[i + span].count("]")
+                    span += 1
+            if name in pending:
+                comment = ""
+                if span == 1 and "#" in rest and not rest.strip().startswith(("\"", "'", "[")):
+                    comment = "  #" + rest.split("#", 1)[1]
+                lines[i : i + span] = [f"{name} = {_toml_value(pending.pop(name))}{comment}"]
+                end -= span - 1
+                span = 1
+            last_key = i + span - 1
+            i += span
+            continue
+        i += 1
+    if pending:
+        lines[last_key + 1 : last_key + 1] = [f"{k} = {_toml_value(v)}" for k, v in pending.items()]
+    return "\n".join(lines) + "\n"
+
+
+def write_inbox_config(
+    repo_root: str | Path, auto_delegate: list[str], auto_delegate_target: str
+) -> None:
+    """Write ``[inbox] auto_delegate`` / ``auto_delegate_target`` in the
+    repo's ``.lazyagent.toml`` (created when missing), keeping the rest of
+    the file. The result is parsed back before it replaces the file."""
+    from lazyagent.engine.notes import _atomic_write
+
+    path = Path(repo_root) / CONFIG_FILENAME
+    text = path.read_text() if path.exists() else ""
+    new = set_table_keys(
+        text,
+        "inbox",
+        {"auto_delegate": list(auto_delegate), "auto_delegate_target": auto_delegate_target},
+    )
+    if tomllib is not None:
+        data = tomllib.loads(new)
+        inbox = data.get("inbox", {})
+        if inbox.get("auto_delegate") != list(auto_delegate) or \
+                inbox.get("auto_delegate_target") != auto_delegate_target:
+            raise ValueError(f"could not write [inbox] in {CONFIG_FILENAME} safely")
+    _atomic_write(path, new.encode())

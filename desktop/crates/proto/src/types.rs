@@ -604,9 +604,9 @@ pub struct StatusRow {
     /// Its latest timeline entry (`status_timeline`).
     #[serde(default)]
     pub last_event_at: Option<f64>,
-    /// `orchestrator` while a routed question waits on it (feature
-    /// `first_responder`); absent otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `orchestrator` while a routed question waits on it, `user` for inbox
+    /// rows, else null (feature `first_responder`; older engines: absent).
+    #[serde(default)]
     pub holder: Option<String>,
 }
 
@@ -706,6 +706,15 @@ pub struct Presence {
     #[serde(default)]
     pub mode: Option<String>,
     pub effective: String,
+    /// When `effective` last changed.
+    #[serde(default)]
+    pub since: Option<f64>,
+}
+
+/// `presence_report` / `presence_set`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresenceResult {
+    pub presence: Presence,
 }
 
 /// A fact on a work item's timeline (`status_timeline`, `status.timeline`).
@@ -790,6 +799,25 @@ pub struct Decision {
     pub answered_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revertible: Option<bool>,
+    /// `question` (a routed plain question) · `auto_delegate` (the
+    /// engine's); absent for a brief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `{at, mandate}`: when it went to the orchestrator first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<Value>,
+    /// `{by, note, suggestion, at}`: handed to the user ("orchestrator
+    /// suggests B", "orchestrator did not answer").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capped: Option<String>,
+    /// What Revert runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inverse: Option<Value>,
+    /// `{at, choice, comment, results}` once the user reverted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverted: Option<Value>,
 }
 
 impl Decision {
@@ -836,6 +864,9 @@ pub struct StatusGestureResult {
     /// The row's gesture now (feature `gestures`).
     #[serde(default)]
     pub gesture: Option<Value>,
+    /// `keep_for_me` holds (feature `first_responder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<bool>,
     pub row: Option<StatusRow>,
 }
 
@@ -987,6 +1018,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "status.timeline",
     "decision.created",
     "decision.resolved",
+    "decision.answered",
 ];
 
 impl EngineEvent {

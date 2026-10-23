@@ -96,7 +96,8 @@
         "worktree_path": {"$ref": "#/$defs/worktree_path"},
         "force": {"type": "boolean", "default": false},
         "custom": {"type": "boolean", "default": false, "description": "Run the configured custom remove command as an engine job instead of git worktree remove, as the TUI does."},
-        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment of a custom command this call runs (the client's, D5); the engine's own when omitted."}
+        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment of a custom command this call runs (the client's, D5); the engine's own when omitted."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "An agent's token: the orchestrator may not remove a worktree with unpushed work (never alone)."}
       }
     },
     "remove_worktree.result": {
@@ -866,7 +867,8 @@
         "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."},
         "class": {"enum": ["quick", "deep", null], "description": "Inbox rows only: deep when its level is deep (needs reading), else quick."},
         "seen_at": {"type": ["number", "null"], "description": "The user's last look at it (status_seen: this item's mark or 'all seen', the later); null: never."},
-        "last_event_at": {"type": ["number", "null"], "description": "Its latest timeline entry (status_timeline); later than seen_at: changed since the user looked."}
+        "last_event_at": {"type": ["number", "null"], "description": "Its latest timeline entry (status_timeline); later than seen_at: changed since the user looked."},
+        "holder": {"enum": ["user", "orchestrator", null], "description": "Who answers what the item asks: orchestrator while it holds a routed brief or question (state 'orchestrator · looking'), user while the row is in the inbox, else null (feature first_responder)."}
       }
     },
     "gesture": {
@@ -907,9 +909,12 @@
             "in_flight": {"type": "integer"},
             "done": {"type": "integer"},
             "stale": {"type": "integer"},
-            "not_started": {"type": "integer", "description": "Tasks assigned to the user (tracker adapters) that no local branch links to."}
+            "not_started": {"type": "integer", "description": "Tasks assigned to the user (tracker adapters) that no local branch links to."},
+            "auto_actions": {"type": "integer", "description": "The orchestrator's own decisions and actions today (feature first_responder)."},
+            "auto_reverted": {"type": "integer", "description": "Of those, reverted by the user today."}
           }
         },
+        "presence": {"$ref": "#/$defs/presence"},
         "generated_at": {"type": "number"}
       }
     },
@@ -1029,7 +1034,7 @@
       "required": ["key", "kind"],
       "properties": {
         "key": {"type": "string", "description": "A work item key (status_list rows)."},
-        "kind": {"enum": ["label", "park", "close", "delegate", "clear"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); clear: drop the gesture and take back a pass."},
+        "kind": {"enum": ["label", "park", "close", "delegate", "keep_for_me", "clear"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); keep_for_me: the orchestrator's mandate there is none (nothing is routed to it); clear: drop the gesture, the keep and take back a pass."},
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label only (required)."},
         "text": {"type": "string", "description": "label only: at most 40 characters."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park only (required)."},
@@ -1046,6 +1051,7 @@
         "key": {"type": "string"},
         "claim": {"oneOf": [{"$ref": "#/$defs/claim"}, {"type": "null"}]},
         "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}]},
+        "kept": {"type": "boolean", "description": "keep_for_me holds on the item."},
         "row": {"oneOf": [{"$ref": "#/$defs/status_row"}, {"type": "null"}]}
       }
     },
@@ -1075,10 +1081,14 @@
       "required": ["at", "kind", "actor", "text"],
       "properties": {
         "at": {"type": "number", "description": "When it happened (a commit: its commit time)."},
-        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward"]},
+        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward", "action", "delegate"]},
         "actor": {"type": "string", "description": "user, agent:<id>, orchestrator or engine (what the engine saw)."},
         "text": {"type": "string", "description": "At most 200 characters."},
-        "ref": {"type": "string", "description": "A commit sha, a decision id, a notes id, or an outward action's ref."}
+        "ref": {"type": "string", "description": "A commit sha, a decision id, a notes id, or an outward action's ref."},
+        "mandate": {"type": "string", "description": "The orchestrator's: present, away or claim."},
+        "action": {"type": "string", "description": "The orchestrator's (or a revert's): answer_quick, answer_reversible, answer_partly, spawn_worker, escalate, revert, ..."},
+        "reason": {"type": "string"},
+        "inverse": {"description": "What Revert runs: a list of, or one, {kind: git_reset | stop_agent, ...}."}
       }
     },
     "status_report.params": {
@@ -1189,7 +1199,15 @@
         "key": {"type": "string", "description": "Its work item."},
         "worktree_path": {"type": "string"},
         "agent": {"type": "string", "description": "The asking agent's id."},
-        "holder": {"enum": ["user", "orchestrator"], "description": "Who is to answer it (user until the orchestrator's routing)."},
+        "holder": {"enum": ["user", "orchestrator"], "description": "Who is to answer it: orchestrator while it holds it as first responder (no inbox item), else user."},
+        "source": {"enum": ["question", "auto_delegate"], "description": "question: an agent's plain question routed to the orchestrator; auto_delegate: written by the engine. Absent for a brief."},
+        "routed": {"type": "object", "properties": {"at": {"type": "number"}, "mandate": {"type": "string"}}, "description": "When it went to the orchestrator first."},
+        "escalation": {"type": "object", "required": ["by", "note", "suggestion", "at"], "properties": {"by": {"enum": ["orchestrator", "engine"]}, "note": {"type": "string", "description": "e.g. 'orchestrator did not answer'."}, "suggestion": {"type": ["string", "null"], "description": "The orchestrator's suggested choice, preselected."}, "at": {"type": "number"}}},
+        "capped": {"type": "string", "description": "Why it went to the user: the orchestrator's caps for the day."},
+        "answered_by": {"enum": ["user", "orchestrator"]},
+        "revertible": {"type": "boolean", "description": "An orchestrator answer the user may still revert (decision_revert)."},
+        "inverse": {"type": "array", "items": {"type": "object"}, "description": "What Revert runs: {kind: git_reset, sha, branch} / {kind: stop_agent, worktree_path, agent_id}."},
+        "reverted": {"type": "object", "properties": {"at": {"type": "number"}, "choice": {"type": ["string", "null"]}, "comment": {"type": "string"}, "results": {"type": "array", "items": {"type": "string"}}}},
         "replaces": {"type": ["string", "null"], "description": "The brief this one superseded."},
         "superseded_by": {"type": "string"},
         "state": {"enum": ["open", "answered", "resolved", "withdrawn", "superseded", "expired"]},
@@ -1214,7 +1232,21 @@
         "sha": {"type": ["string", "null"], "description": "The branch head when it was asked."},
         "created_at": {"type": "number"},
         "closed_at": {"type": ["number", "null"]},
-        "answer": {"type": ["object", "null"], "description": "The user's answer (later phases)."}
+        "answer": {
+          "type": ["object", "null"],
+          "description": "The answer, once given (state answered).",
+          "required": ["choice", "at"],
+          "properties": {
+            "choice": {"type": "string", "description": "An option's key, or the answer itself when there are no options."},
+            "label": {"type": "string"},
+            "comment": {"type": "string"},
+            "reason": {"type": "string", "description": "The orchestrator's."},
+            "presence": {"type": "string", "description": "The orchestrator's mandate when it answered: present, away or claim."},
+            "at": {"type": "number"},
+            "delivered_at": {"type": "number", "description": "When the line reached the agent."},
+            "delivery": {"type": "string", "description": "e.g. 'agent gone' (the notes keep it)."}
+          }
+        }
       }
     },
     "request_decision.params": {
@@ -1277,6 +1309,115 @@
       "required": ["decisions"],
       "properties": {"decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}, "description": "Newest first."}}
     },
+
+    "presence": {
+      "type": "object",
+      "description": "Whether the user is around (feature first_responder): mode is the override (auto follows input reports); no UI connected is away.",
+      "required": ["mode", "effective"],
+      "properties": {
+        "mode": {"enum": ["auto", "present", "away"]},
+        "effective": {"enum": ["present", "away"]},
+        "since": {"type": ["number", "null"], "description": "When effective last changed."}
+      }
+    },
+    "decision_answer.params": {
+      "type": "object",
+      "required": ["id", "choice"],
+      "properties": {
+        "id": {"type": "string"},
+        "choice": {"type": "string", "description": "An option's key; with no options (a plain question), the answer."},
+        "comment": {"type": "string", "description": "At most 500 characters, sent with the choice."},
+        "reason": {"type": "string", "description": "The orchestrator's (required with its token): shown to the user, at most 300 characters."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token, or none (the user)."}
+      }
+    },
+    "decision_answer.result": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "#/$defs/decision"}}
+    },
+    "decision_escalate.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string"},
+        "note": {"type": "string", "description": "At most 200 characters."},
+        "suggestion": {"type": "string", "description": "An option's key, preselected for the user."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token (required)."}
+      }
+    },
+    "decision_escalate.result": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "#/$defs/decision"}}
+    },
+    "decision_revert.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string"},
+        "choice": {"type": "string", "description": "The user's choice instead (an option's key)."},
+        "comment": {"type": "string"},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: the user's."}
+      }
+    },
+    "decision_revert.result": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {"decision": {"$ref": "#/$defs/decision"}}
+    },
+    "presence_report.params": {
+      "type": "object",
+      "required": ["input_at"],
+      "properties": {
+        "input_at": {"type": "number", "description": "The user's last input the client saw (Unix seconds)."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "presence_report.result": {
+      "type": "object",
+      "required": ["presence"],
+      "properties": {"presence": {"$ref": "#/$defs/presence"}}
+    },
+    "presence_set.params": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["auto", "present", "away"]},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "presence_set.result": {
+      "type": "object",
+      "required": ["presence"],
+      "properties": {"presence": {"$ref": "#/$defs/presence"}}
+    },
+    "inbox_config_get.params": {
+      "type": "object",
+      "properties": {
+        "repo": {"type": "string", "description": "The repo's name or root (the engine's own)."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "inbox_config_get.result": {
+      "type": "object",
+      "required": ["repo", "auto_delegate", "auto_delegate_target"],
+      "properties": {
+        "repo": {"type": "string"},
+        "auto_delegate": {"type": "array", "items": {"enum": ["conflict_with_base", "agent_dead", "ci_red"]}, "description": "ci_red is accepted but inactive until CI runs are read (I7)."},
+        "auto_delegate_target": {"enum": ["owner", "orchestrator"]}
+      }
+    },
+    "inbox_config_set.params": {
+      "type": "object",
+      "properties": {
+        "repo": {"type": "string"},
+        "auto_delegate": {"type": "array", "items": {"enum": ["conflict_with_base", "agent_dead", "ci_red"]}},
+        "auto_delegate_target": {"enum": ["owner", "orchestrator"]},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: the user's."}
+      }
+    },
+    "inbox_config_set.result": {"$ref": "#/$defs/inbox_config_get.result"},
 
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {

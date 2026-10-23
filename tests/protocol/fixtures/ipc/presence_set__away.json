@@ -1,0 +1,17 @@
+{
+  "case": "presence_set/away",
+  "method": "presence_set",
+  "params": {
+    "mode": "away"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "presence": {
+        "effective": "away",
+        "mode": "away",
+        "since": 1700000000.0
+      }
+    }
+  }
+}

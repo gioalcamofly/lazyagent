@@ -249,6 +249,39 @@ provider = "claude"
 # deep_max = 5
 # Open decision briefs per agent; a third one is refused (0: no limit).
 # max_briefs_per_agent = 2
+# Opt-in auto-delegation of stalled items to the branch's owner agent (a live
+# one gets a fixed brief, a dead one is restored, else one is spawned), or to
+# the orchestrator as a claim. Kinds: "conflict_with_base", "agent_dead", and
+# "ci_red" (accepted, inactive until CI runs are read). At most 2 attempts per
+# item, never on the default branch or a teammate's; after 2 failures the item
+# becomes a brief in To sit down with. The desktop writes these keys too.
+# auto_delegate = []
+# auto_delegate_target = "owner"   # or "orchestrator"
+# auto_delegate_max_per_day = 10
+
+[orchestrator]
+# Caps on spawns made with an agent token (0 turns one off).
+# max_spawns_per_day = 30
+# max_concurrent_agents = 8
+# Pass to orchestrator: how long a claim lasts (seconds).
+# claim_ttl_s = 7200
+# First responder: a worker's brief or question goes to a running orchestrator
+# first; it answers within its mandate or escalates. Unanswered after this many
+# minutes, the item goes to you.
+# escalate_after_min = 10
+# You count as present while a client reported input this recently; with no UI
+# connected you are away. Present: it answers only small reversible things.
+# away_after_min = 15
+# Its own answers per item and per day; past one, items come to you.
+# max_decisions_per_item_day = 3
+# max_decisions_day = 20
+# These can only shorten its mandate (merging to the default branch,
+# publishing, force-pushing, deleting unpushed work and closing PRs are never
+# its to do alone). Actions: answer_quick, answer_reversible, answer_partly,
+# relay, restore_owner, ci_rerun, rebase_via_owner, spawn_worker,
+# next_project_task.
+# away_allow = ["answer_quick", "relay"]
+# allow_outward = ["tracker", "github_comment", "pr_create"]
 
 [worktree]
 # Custom command templates for worktree management. They run in the repo root,

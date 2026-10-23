@@ -483,8 +483,9 @@ impl State {
         self.conn.request("presence_set", json!({"mode": mode}), move |s, reply| match reply {
             Ok(v) => {
                 let got = serde_json::from_value::<Presence>(v.get("presence").cloned().unwrap_or(v)).ok();
-                s.presence = got
-                    .or_else(|| Some(Presence { mode: Some(mode), effective: s.presence.as_ref()?.effective.clone() }));
+                s.presence = got.or_else(|| {
+                    Some(Presence { mode: Some(mode), effective: s.presence.as_ref()?.effective.clone(), since: None })
+                });
                 s.fetch_counts();
             }
             Err(e) => s.toast(Severity::Error, format!("Presence not changed: {e}")),

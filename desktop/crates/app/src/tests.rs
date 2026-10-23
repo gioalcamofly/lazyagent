@@ -3205,7 +3205,7 @@ fn first_responder_is_hidden_without_its_feature() {
     tx.send(event("status.updated", json!({"row": row}))).unwrap();
     h.state_mut().state.status_counts.auto_actions = Some(3);
     h.state_mut().state.presence =
-        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into() });
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into(), since: None });
     h.run_steps(2);
     h.key_press(egui::Key::Enter);
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
@@ -3255,7 +3255,7 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     h.state_mut().state.status_counts.auto_actions = Some(4);
     h.state_mut().state.status_counts.auto_reverted = Some(1);
     h.state_mut().state.presence =
-        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into() });
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into(), since: None });
     h.run_steps(2);
     h.get_by_label("You are");
     h.get_by_label("· counted as away");
@@ -3415,7 +3415,8 @@ fn home_i4c_screenshots() {
             .collect(),
     );
     state.look_from = now - 1800.0;
-    state.presence = Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "present".into() });
+    state.presence =
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "present".into(), since: None });
     let branches = [
         "cart-discount",
         "billing-retries",

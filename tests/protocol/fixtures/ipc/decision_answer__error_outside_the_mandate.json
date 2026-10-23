@@ -1,0 +1,17 @@
+{
+  "case": "decision_answer/error_outside_the_mandate",
+  "method": "decision_answer",
+  "params": {
+    "caller": "tok-orch",
+    "choice": "A",
+    "id": "d1",
+    "reason": "r"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Not within your mandate (the user is present; answer reversible): call decision_escalate(id='d1', note, suggestion) instead."
+    },
+    "id": "req-1"
+  }
+}
