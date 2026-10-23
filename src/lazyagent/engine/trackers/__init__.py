@@ -146,8 +146,9 @@ AdapterFactory = Callable[[TrackerConfig, str], TrackerAdapter]
 
 def builtin_adapters() -> dict[str, AdapterFactory]:
     from lazyagent.engine.trackers.github_issues import GithubIssues
+    from lazyagent.engine.trackers.jira import Jira
 
-    return {GithubIssues.name: GithubIssues}
+    return {GithubIssues.name: GithubIssues, Jira.name: Jira}
 
 
 def adapter_factories() -> dict[str, AdapterFactory]:
@@ -409,9 +410,16 @@ class TrackerHub:
                 log.warning("no tracker adapter named %r", config.name)
                 continue
             try:
-                adapters.append((factory(config, repo_root), config))
+                adapter = factory(config, repo_root)
             except Exception:  # noqa: BLE001 - one bad adapter, not the engine
                 log.warning("tracker adapter %s failed", config.name, exc_info=True)
+                continue
+            if getattr(adapter, "experimental", False):
+                log.warning(
+                    "tracker adapter %s is experimental: not yet checked against "
+                    "a real instance", config.name,
+                )
+            adapters.append((adapter, config))
         return cls(adapters, clock=clock)
 
     @property

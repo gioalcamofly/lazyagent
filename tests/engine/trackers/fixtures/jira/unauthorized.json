@@ -1,0 +1,8 @@
+{
+  "status": 401,
+  "headers": {
+    "Content-Type": "text/plain;charset=UTF-8",
+    "WWW-Authenticate": "Basic realm=\"protected-area\""
+  },
+  "body": "Client must be authenticated to access this resource."
+}

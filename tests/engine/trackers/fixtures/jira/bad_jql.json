@@ -1,0 +1,12 @@
+{
+  "status": 400,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "errorMessages": [
+      "Error in the JQL Query: The character '%' is a reserved JQL character. You must enclose it in a string or use the escape '\\u0025' instead. (line 1, character 12)"
+    ],
+    "warningMessages": []
+  }
+}
