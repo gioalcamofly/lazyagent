@@ -1,0 +1,25 @@
+{
+  "case": "orchestrator_hold/held",
+  "method": "orchestrator_hold",
+  "params": {
+    "caller": "tok-orch",
+    "key": "repo:docs-index",
+    "note": "waiting on the merge",
+    "ttl_s": 3600
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "hold": {
+        "at": 1700000000.0,
+        "auto": false,
+        "by": "orchestrator",
+        "holder": "orchestrator",
+        "key": "repo:docs-index",
+        "note": "waiting on the merge",
+        "until": 1700003600.0
+      },
+      "key": "repo:docs-index"
+    }
+  }
+}

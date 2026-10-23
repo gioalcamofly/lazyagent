@@ -215,7 +215,7 @@ They share the TUI's keys (`s`, `x`, `c`, `d`, `r`, `Shift+R`, `?`, `j`/`k` outs
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Desktop: copy / paste in a terminal (`Ctrl+C` copies a selection, else sends ^C) |
 | `Shift+drag`, `Shift+wheel` | Desktop: select and scroll even when the program uses the mouse |
 
-The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with) and what is in flight. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `f` fold.
+The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `f` fold, `?` the Home guide. **Guide:** [docs/guides/home.md](docs/guides/home.md) (zones, the ball, rounds, what the orchestrator may do, and habits that make Home work).
 
 `?` in either shows the full list.
 
@@ -265,6 +265,10 @@ provider = "claude"
 # max_concurrent_agents = 8
 # Pass to orchestrator: how long a claim lasts (seconds).
 # claim_ttl_s = 7200
+# The finished work (agent done, changes requested) of agents the orchestrator
+# spawned is held for it this long first, then comes to you as "orchestrator
+# did not respond" (minutes; 0 turns it off).
+# hold_spawned_ttl_min = 60
 # First responder: a worker's brief or question goes to a running orchestrator
 # first; it answers within its mandate or escalates. Unanswered after this many
 # minutes, the item goes to you.

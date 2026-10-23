@@ -90,7 +90,7 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "actionables_get" | "actionables_mark" => round_trip::<ActionableResult>(case, result),
             "status_gesture" => round_trip::<StatusGestureResult>(case, result),
             // The orchestrator's (MCP).
-            "orchestrator_release" => continue,
+            "orchestrator_release" | "orchestrator_hold" => continue,
             // Agents' (MCP).
             "status_report" | "request_decision" | "decision_withdraw" => continue,
             "status_seen" => round_trip::<StatusSeen>(case, result),
@@ -171,6 +171,7 @@ const IGNORED_EVENTS: &[&str] = &[
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
+    "orchestrator.hold",
 ];
 
 #[test]

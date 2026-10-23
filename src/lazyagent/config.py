@@ -60,6 +60,9 @@ class OrchestratorConfig:
     max_concurrent_agents: int = 8
     # Pass to orchestrator: how long a claim lasts (seconds).
     claim_ttl_s: int = 7200
+    # The done and review items of agents the orchestrator spawned are held
+    # for it this long first (minutes; 0: off), then go to the user.
+    hold_spawned_ttl_min: int = 60
     # First responder (engine/orchestrator.py): a routed item the
     # orchestrator neither answered nor escalated goes to the user after
     # this long; the user counts as present while a client reported input
@@ -232,7 +235,7 @@ def _first_responder_config(config: OrchestratorConfig, data: object) -> None:
         value = data.get(name)
         if type(value) is int and value > 0:
             setattr(config, name, value)
-    for name in ("max_decisions_per_item_day", "max_decisions_day"):
+    for name in ("max_decisions_per_item_day", "max_decisions_day", "hold_spawned_ttl_min"):
         value = data.get(name)
         if type(value) is int and value >= 0:
             setattr(config, name, value)

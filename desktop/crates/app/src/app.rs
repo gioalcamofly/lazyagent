@@ -369,7 +369,7 @@ impl State {
     pub fn open_dialog(&mut self, kind: crate::dialogs::Kind) {
         use crate::dialogs::{Dialog, Kind};
         let target = self.selected.clone().unwrap_or_default();
-        if kind != Kind::Create && kind != Kind::Help && target.is_empty() {
+        if !matches!(kind, Kind::Create | Kind::Help | Kind::HomeHelp) && target.is_empty() {
             return;
         }
         if kind == Kind::Remove && target == ORCHESTRATOR_KEY {
@@ -665,10 +665,14 @@ impl State {
             self.home.update(lines, now);
             self.home.ready = if engine { self.inbox_loaded == 3 } else { self.seeded };
             if engine {
+                // A parked work item's items wait with it: no notification.
+                let parked = |i: &Actionable| {
+                    i.work_item.as_ref().and_then(|k| self.status_rows.get(k)).is_some_and(|r| r.zone == "parked")
+                };
                 let items: Vec<NowNote> = self
                     .actionables
                     .values()
-                    .filter(|i| i.level == "now")
+                    .filter(|i| i.level == "now" && !parked(i))
                     .map(|i| NowNote {
                         occurrence: i.occurrence.clone(),
                         setting: i.kind.clone(),
@@ -1336,6 +1340,9 @@ impl App {
                     s.saver.touch();
                 }
                 ui.separator();
+                if ui.button("Home guide  (? on Home)").clicked() {
+                    s.open_dialog(Kind::HomeHelp);
+                }
                 if ui.button("Keyboard shortcuts  (?)").clicked() {
                     s.open_dialog(Kind::Help);
                 }

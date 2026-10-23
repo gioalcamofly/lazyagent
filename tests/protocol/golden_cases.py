@@ -728,7 +728,7 @@ async def _():
     return await _call(
         _status_engine(),
         "actionables_mark",
-        {"id": "Approval:/tmp/repo-login/a1", "action": "park", "until": "tomorrow"},
+        {"id": "Approval:/tmp/repo-login/a1", "action": "park", "until": "someday"},
     )
 
 
@@ -786,6 +786,44 @@ async def _():
     engine.claims.claim("repo:export-csv")
     return await _call(
         engine, "orchestrator_release", {"key": "repo:export-csv", "outcome": "done"}
+    )
+
+
+@case("orchestrator_hold/held")
+async def _():
+    return await _call(
+        _claims_engine(),
+        "orchestrator_hold",
+        {"key": "repo:docs-index", "note": "waiting on the merge", "ttl_s": 3600,
+         "caller": "tok-orch"},
+    )
+
+
+@case("orchestrator_hold/error_not_the_orchestrator")
+async def _():
+    return await _call(
+        _claims_engine(), "orchestrator_hold", {"key": "repo:docs-index", "note": "mine"}
+    )
+
+
+@case("orchestrator_release/hold_done")
+async def _():
+    engine = _claims_engine()
+    engine.claims.hold("repo:docs-index", "waiting on the merge")
+    return await _call(
+        engine,
+        "orchestrator_release",
+        {"key": "repo:docs-index", "outcome": "done", "note": "merged by the user",
+         "caller": "tok-orch"},
+    )
+
+
+@case("status_gesture/park_the_work_item_indefinitely")
+async def _():
+    return await _call(
+        _status_engine(),
+        "status_gesture",
+        {"key": "repo:login-ttl", "kind": "park", "until": "indefinite", "text": "after the release"},
     )
 
 

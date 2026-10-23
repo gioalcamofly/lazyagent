@@ -106,6 +106,14 @@ pub struct PrInfo {
     /// The branch it merges into.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
+    /// The PR's head commit, and how many reviewers were asked / reviewed
+    /// (newer engines; `None` when not fetched).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -569,7 +577,7 @@ pub struct StatusRow {
     pub worktree_path: Option<String>,
     pub title: String,
     pub urls: Vec<String>,
-    /// `inbox` · `in_flight`.
+    /// `inbox` · `in_flight` · `parked` (the whole work item, feature `parked`).
     pub zone: String,
     /// `now` · `round` · `deep` (inbox rows only).
     pub level: Option<String>,
@@ -608,6 +616,49 @@ pub struct StatusRow {
     /// rows, else null (feature `first_responder`; older engines: absent).
     #[serde(default)]
     pub holder: Option<String>,
+    /// The orchestrator's own hold (feature `holds`; older engines: absent).
+    #[serde(default)]
+    pub hold: Option<Hold>,
+    /// An inbox item delegated to the branch's agent (feature `delegation`).
+    #[serde(default)]
+    pub delegation: Option<Delegation>,
+    /// A hint for the user, e.g. "close PR #12: its head is in develop".
+    #[serde(default)]
+    pub suggestion: Option<String>,
+}
+
+/// The orchestrator holds a work item itself while it verifies or waits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hold {
+    pub key: String,
+    pub holder: String,
+    pub at: f64,
+    pub until: f64,
+    pub by: String,
+    pub note: String,
+    /// The engine's hold on the orchestrator's worker's finished work.
+    pub auto: bool,
+}
+
+/// One inbox item the user handed to the branch's agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delegation {
+    pub agent: String,
+    pub item: String,
+    pub occurrence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub fact: String,
+    pub at: f64,
+    pub by: String,
+    /// `on_it` · `returned`.
+    pub phase: String,
+    #[serde(default)]
+    pub sent_at: Option<f64>,
+    #[serde(default)]
+    pub ran: bool,
+    #[serde(default)]
+    pub state: String,
 }
 
 /// A row's tracker task: read-only, the last good value when `stale`.
@@ -635,6 +686,9 @@ pub struct RowAgent {
     pub id: String,
     pub status: String,
     pub since: f64,
+    /// `orchestrator` for its workers (newer engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -687,6 +741,12 @@ pub struct StatusCounts {
     pub auto_actions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_reverted: Option<u32>,
+    /// Parked work items, and those whose items still need the user
+    /// (feature `parked`).
+    #[serde(default)]
+    pub parked: u32,
+    #[serde(default)]
+    pub parked_needs_you: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -868,6 +928,9 @@ pub struct StatusGestureResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<bool>,
     pub row: Option<StatusRow>,
+    /// `delegate` to the branch's agent (feature `delegation`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<Delegation>,
 }
 
 /// An inbox item (feature `actionables`).

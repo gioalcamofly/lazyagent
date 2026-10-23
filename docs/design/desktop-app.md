@@ -585,6 +585,22 @@ What landed and why: [inbox-plan.md](inbox-plan.md) §8 "I4c". Home's keys, outs
 - Presence is reported from the frame loop (any key, text, click, pointer move or wheel), before the keys are consumed, at most once a minute.
 - Screenshots: [i4c-home-dark.png](desktop-screenshots/i4c-home-dark.png), [i4c-home-light.png](desktop-screenshots/i4c-home-light.png).
 
+### Home polish: park menu, Parked, holds, delegation, the guide (inbox I4d, 2026-10-23)
+
+What landed and why: [inbox-plan.md](inbox-plan.md) §8 "I4d". The user's guide: [docs/guides/home.md](../guides/home.md) (also `?` on Home). Keys added or changed:
+
+| Key | Action | Needs |
+|---|---|---|
+| `z` | Park menu: `1` 1 h, `2` tomorrow 08:00, `3` 1 week, `4` until something changes, `5` indefinitely; `w` the whole work item; `Esc` closes | `parked` (else I4c's choices) |
+| `Shift+Z` | Show / hide Parked | `parked` |
+| `d` | Delegate the line's item to the branch's agent | `delegation` |
+| `u` | Also takes back the orchestrator's hold, ends a delegation, unparks | `holds` / `delegation` / `gestures` |
+| `?` | The Home guide (on Home; elsewhere the key sheet) | — |
+
+- Names are cut in the middle, measured with the body font against a column of 30 % of the line (150-420 pt), so both a branch's prefix and its distinguishing end show; the full name is the tooltip and the expanded line's first line.
+- A CI line's "Send the failures to its agent" is a delegation the engine follows when it has `delegation`; with an older engine it is a plain `send_agent_input`, as before.
+- Screenshots: [i4d-home-dark.png](desktop-screenshots/i4d-home-dark.png), [i4d-home-light.png](desktop-screenshots/i4d-home-light.png), [i4d-home-guide-light.png](desktop-screenshots/i4d-home-guide-light.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

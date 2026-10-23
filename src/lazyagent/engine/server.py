@@ -124,6 +124,14 @@ FEATURES: tuple[str, ...] = (
     # presence, auto_actions / auto_reverted counts, keep_for_me,
     # inbox_config_get / inbox_config_set.
     "first_responder",
+    # orchestrator_hold, row hold, orchestrator.hold, the release note on
+    # the row, auto-holds of the orchestrator's workers (I4d).
+    "holds",
+    # status_gesture delegate to: "agent", row delegation (I4d).
+    "delegation",
+    # The park gesture parks the whole work item (zone parked, counts
+    # parked / parked_needs_you); until tomorrow, change, indefinite (I4d).
+    "parked",
 )
 
 STREAM_RESIZED = "stream.resized"

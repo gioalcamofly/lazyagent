@@ -19,6 +19,11 @@
 //! that need reading (briefs, changes requested, a finished branch). They
 //! show at once and stay outside the rounds; `deep_max` is shown, never
 //! enforced. Done rows (merged, closed by the user) stay 24 h, dimmed.
+//!
+//! I4d adds **Parked** ([`Zone::Parked`]): a work item the user parked, its
+//! inbox items with it, in a group folded by default under In flight. Its
+//! questions and briefs go to the orchestrator when it may answer them;
+//! otherwise the parked line says it needs you.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -43,9 +48,11 @@ pub enum Zone {
     /// To sit down with (level `deep`).
     Deep,
     Flight,
+    /// The user parked the whole work item (feature `parked`).
+    Parked,
 }
 
-pub const ZONES: [Zone; 4] = [Zone::Now, Zone::Round, Zone::Deep, Zone::Flight];
+pub const ZONES: [Zone; 5] = [Zone::Now, Zone::Round, Zone::Deep, Zone::Flight, Zone::Parked];
 
 /// An inbox item, as a line shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +118,21 @@ impl Line {
         self.row.as_ref().and_then(|r| r.holder.as_deref()) == Some("orchestrator")
     }
 
+    /// The orchestrator's own hold on the item (`orchestrator_hold`).
+    pub fn hold(&self) -> Option<&lazyagent_proto::types::Hold> {
+        self.row.as_ref().and_then(|r| r.hold.as_ref())
+    }
+
+    /// Parked, with inbox items still the user's (not routed).
+    pub fn parked_needs_you(&self) -> bool {
+        self.zone == Zone::Parked && self.row.as_ref().is_some_and(|r| r.needs_you.is_some())
+    }
+
+    /// The orchestrator's note from its last release of a pass or hold.
+    pub fn released_note(&self) -> Option<&str> {
+        self.row.as_ref().and_then(|r| r.note.as_ref()).filter(|n| n.by == "orchestrator").map(|n| n.text.as_str())
+    }
+
     /// Something happened since the last look: the engine's per-item seen
     /// mark when it keeps them, else the client's own last look.
     pub fn unseen(&self, look: f64) -> bool {
@@ -123,7 +145,11 @@ impl Line {
     /// The one-word action an inbox line asks for.
     pub fn verb(&self) -> &'static str {
         let Some(top) = &self.top else {
-            return if self.row.as_ref().is_some_and(|r| r.rule == 4) { "Merge" } else { "Look" };
+            return match self.row.as_ref() {
+                Some(r) if r.rule == 4 => "Merge",
+                Some(r) if r.state == "PR has no reviewer" => "Assign",
+                _ => "Look",
+            };
         };
         match top.kind.as_str() {
             "approval" => "Approve",
@@ -211,7 +237,11 @@ pub fn engine_lines(
         if row.stale || (row.ball == "done" && now - row.changed_at >= DONE_FOR) {
             continue;
         }
-        let zone = if row.zone == "inbox" { level_zone(row.level.as_deref()) } else { Zone::Flight };
+        let zone = match row.zone.as_str() {
+            "inbox" => level_zone(row.level.as_deref()),
+            "parked" => Zone::Parked,
+            _ => Zone::Flight,
+        };
         let top = row.needs_you.as_ref().and_then(|n| items.get(&n.top)).map(top_of);
         let count = row.needs_you.as_ref().map(|n| n.count).unwrap_or(0);
         // A label is the user's word next to the fact: "QA · CI running".
@@ -466,7 +496,7 @@ pub fn cmp(a: &Line, b: &Line) -> std::cmp::Ordering {
 #[derive(Debug, Default)]
 pub struct Home {
     pub lines: HashMap<String, Line>,
-    order: [Vec<String>; 4],
+    order: [Vec<String>; 5],
     /// The Round as delivered at the last cut point.
     delivered: HashSet<String>,
     pub round_at: f64,
@@ -476,6 +506,10 @@ pub struct Home {
     pub expanded: Option<String>,
     /// The park choices are open on this line.
     pub parking: Option<String>,
+    /// The park menu parks the whole work item (not only its top item).
+    pub park_whole: bool,
+    /// The Parked group is unfolded (folded by default).
+    pub parked_open: bool,
     /// The close choices (done / dropped) are open on this line.
     pub closing: Option<String>,
     /// The label form is open on this line.
@@ -533,7 +567,8 @@ impl Home {
             }
             if let Some(b) = before {
                 self.order[b as usize].retain(|k| k != &key);
-                if b == Zone::Round {
+                // Parked by the user is not "resolved on its own".
+                if b == Zone::Round && target != Zone::Parked {
                     self.resolved += 1;
                 }
             }
@@ -586,6 +621,9 @@ impl Home {
         if !folded {
             v.extend(self.shown_in(Zone::Flight));
         }
+        if self.parked_open {
+            v.extend(self.shown_in(Zone::Parked));
+        }
         v
     }
 
@@ -632,6 +670,25 @@ pub struct Label {
 
 pub const LABEL_CHARS: usize = 40;
 pub const LABEL_BALLS: [&str; 3] = ["others", "agent", "stalled"];
+
+/// `text` in at most `max` characters, keeping its start and its end:
+/// `inbox-i4d-…-polish`. Branch names differ at both ends.
+pub fn middle_ellipsis(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    if max <= 1 {
+        return "…".into();
+    }
+    let keep = max - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - tail..]);
+    out
+}
 
 /// `<1m`, `4m`, `2h`, `3d`: never `0s` (the engine's `format_age`).
 pub fn age(seconds: f64) -> String {
@@ -817,6 +874,35 @@ mod tests {
         let l = &engine_lines(&rows, &items, &ds, 7200.0)[0];
         assert_eq!(l.decided.as_ref().map(|d| d.id.as_str()), Some("d2"));
         assert!(engine_lines(&rows, &items, &ds, 3600.0 + DECIDED_FOR)[0].decided.is_none(), "a day later");
+    }
+
+    #[test]
+    fn middle_ellipsis_keeps_both_ends() {
+        let name = "inbox-i4d-home-polish-and-more #42";
+        assert_eq!(middle_ellipsis(name, 100), name);
+        let cut = middle_ellipsis(name, 15);
+        assert_eq!(cut.chars().count(), 15);
+        assert_eq!(cut, "inbox-i…ore #42");
+        assert_eq!(middle_ellipsis("abc", 1), "…");
+        assert_eq!(middle_ellipsis("ñandú-ñandú", 5), "ña…dú");
+    }
+
+    #[test]
+    fn parked_rows_wait_apart_and_are_not_resolved_on_their_own() {
+        let mut h = Home::default();
+        let mut rows = vec![row("a", "inbox", Some("round"), "you", 1.0), row("b", "in_flight", None, "agent", 2.0)];
+        h.update(lines(&rows), 100.0);
+        h.ready = true;
+        assert_eq!(keys(&h, Zone::Round), ["a"]);
+        rows[0] = row("a", "parked", None, "you", 3.0);
+        rows[0].needs_you = Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Ci:/w/shop-a:1".into() });
+        h.update(lines(&rows), 101.0);
+        assert_eq!((keys(&h, Zone::Parked), h.resolved), (vec!["a".to_string()], 0));
+        assert!(h.lines["shop:a"].parked_needs_you());
+        assert_eq!(h.counts(), (0, 0), "parked lines are outside the badges");
+        assert_eq!(h.visible(false).len(), 1, "folded by default");
+        h.parked_open = true;
+        assert_eq!(h.visible(false).len(), 2);
     }
 
     #[test]

@@ -94,11 +94,17 @@ _NEEDS_YOU = (
 STATE_WORDS = 5
 # Not a §3 row: the user passed the item to the orchestrator (claims.py).
 CLAIM_RULE = 13
-CLAIM_STATE = "with orchestrator"
+CLAIM_STATE = "orchestrator · looking"
 # Not a §3 row either: the orchestrator holds a routed brief or question
 # (engine/orchestrator.py) and nothing else is the user's.
 HELD_RULE = 14
 HELD_STATE = "orchestrator · looking"
+# The orchestrator holds the item itself (orchestrator_hold, claims.py).
+HOLD_RULE = 15
+# The user delegated an inbox item to the branch's agent (delegation.py).
+DELEGATED_RULE = 16
+# The park gesture: the whole work item, out of the inbox and in flight.
+PARK_RULE = 7
 # Turn over (or a question to the user): an agent's report holds until it
 # runs again after one of these.
 TURN_OVER = _IDLE | {AgentStatus.WAITING_FOR_USER.value}
@@ -106,7 +112,10 @@ _PARK_TEXT = {
     "ci_done": "CI ends",
     "agent_stopped": "agent stops",
     "human_review": "a review",
+    "change": "something changes",
 }
+# The branches an open PR's head may already be in ("already merged").
+MERGED_INTO = ("develop", "main")
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,18 @@ class Facts:
     report: dict[str, Any] | None = None
     # "orchestrator" while it holds an open routed item here.
     holder: str | None = None
+    # The worktree's head commit.
+    head: str | None = None
+    # The orchestrator's own hold on the item (orchestrator_hold).
+    hold: dict[str, Any] | None = None
+    # An inbox item the user delegated to the branch's agent.
+    delegation: dict[str, Any] | None = None
+    # The branch an open PR's head is already contained in.
+    merged_into: str | None = None
+    # The orchestrator's last release of a pass or hold: {outcome, note, at}.
+    released: dict[str, Any] | None = None
+    # agent id → who spawned it (the orchestrator's workers).
+    spawned_by: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,6 +172,8 @@ class Derived:
     state: str
     level: str | None = None
     blocks_agent: bool = False
+    # A hint for the user (never done for them), e.g. "close the PR".
+    suggestion: str | None = None
 
 
 @dataclass
@@ -198,10 +221,25 @@ def _with(prefix: str, detail: str) -> str:
     return clip_words(f"{prefix}: {detail}" if detail else prefix)
 
 
-def park_text(until: Any) -> str:
+def until_text(until: float, now: float | None = None) -> str:
+    """``08:00`` today, ``Tue 08:00`` within the week, else ``Oct 30``."""
+    now = time.time() if now is None else now
+    at, today = time.localtime(until), time.localtime(now)
+    if (at.tm_year, at.tm_yday) == (today.tm_year, today.tm_yday):
+        return time.strftime("%H:%M", at)
+    if until - now < 6 * 86400:
+        return time.strftime("%a %H:%M", at)
+    return time.strftime("%b %d", at)
+
+
+def park_text(until: Any, reason: str | None = None, now: float | None = None) -> str:
+    if reason:
+        return clip_words(f"parked: {reason}")
+    if until == "indefinite":
+        return "parked"
     if isinstance(until, str):
         return f"parked until {_PARK_TEXT.get(until, until)}"
-    return "parked until " + time.strftime("%H:%M", time.localtime(until))
+    return "parked until " + until_text(until, now)
 
 
 def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float) -> Derived:
@@ -225,23 +263,37 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         return Derived(1, "done", "merged")
     if pr is not None and pr.state == "CLOSED":
         return Derived(1, "done", "PR closed")
+    if open_pr and facts.merged_into:
+        # Closing the PR stays the user's (never alone, engine/orchestrator.py).
+        return Derived(1, "done", f"already merged into {facts.merged_into}",
+                       suggestion=f"close PR #{pr.number}: its head is in {facts.merged_into}")
     if gesture.get("kind") == "close":
         how = "dropped" if gesture.get("how") == "dropped" else "closed"
         return Derived(1, "done", f"{how} by you")
+    if gesture.get("kind") == "park":
+        # The whole work item: its row and its inbox items wait in Parked.
+        before = derive(replace(facts, gesture=None), now, last_change,
+                        stalled_hours=stalled_hours)
+        return Derived(PARK_RULE, before.ball, park_text(gesture.get("until"), gesture.get("text"), now))
 
     queue = facts.actionables
-    if facts.claim is not None:
-        # The orchestrator's now; a tool approval still waits on the user.
-        approvals = [i for i in queue or () if i["kind"] == "approval"]
-        if approvals:
-            return Derived(2, "you", approvals[0]["state"], "now", True)
-        return Derived(CLAIM_RULE, "agent", CLAIM_STATE)
     if queue:
+        # With a pass or a hold, only what is still the user's is left here
+        # (tool approvals, and questions and briefs not routed: claims.py).
         top = queue[0]
         blocks = any(i["blocks_agent"] for i in queue)
         return Derived(2, "you", top["state"], top["level"], blocks)
+    if facts.claim is not None:
+        return Derived(CLAIM_RULE, "agent", CLAIM_STATE)
+    hold = facts.hold
+    if hold is not None:
+        note = hold.get("note") or "holding"
+        return Derived(HOLD_RULE, "agent", clip_words(f"orchestrator · {note}", 8))
     if facts.holder == "orchestrator":
         return Derived(HELD_RULE, "agent", HELD_STATE)
+    delegation = facts.delegation
+    if delegation is not None and delegation.get("phase") == "on_it":
+        return Derived(DELEGATED_RULE, "agent", f"agent {delegation['agent']} · on it")
     for status, level, text, blocks in _NEEDS_YOU if queue is None else ():
         agent = next((a for a in agents if a.status == status), None)
         if agent is not None:
@@ -267,8 +319,6 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         return Derived(6, "you", "review: agent finished", "deep")
 
     tail = _derive_tail(facts, now, last_change, stalled_hours=stalled_hours)
-    if gesture.get("kind") == "park":
-        return Derived(7, tail.ball, park_text(gesture.get("until")))
     if gesture.get("kind") == "label":
         # The ball only: the state stays a fact (the table shows the text).
         return Derived(8, gesture["ball"], tail.state)
@@ -313,6 +363,9 @@ def _derive_tail(
             return Derived(10 if tracker.ball == "others" else 12, tracker.ball, state)
 
     if open_pr and pr.review_decision in ("REVIEW_REQUIRED", ""):
+        if pr.review_requests == 0 and pr.reviews == 0:
+            # Nobody was asked: that is the user's to do, not others' to wait on.
+            return Derived(10, "you", "PR has no reviewer", "round")
         state = "review requested" if pr.review_decision else "PR open"
         if ci == "green":
             state += ", CI green"
@@ -351,6 +404,12 @@ def fingerprint(facts: Facts, derived: Derived) -> str:
         data.append(["claim", facts.claim["at"]])
     if facts.holder is not None:
         data.append(["holder", facts.holder])
+    if facts.hold is not None:
+        data.append(["hold", facts.hold["at"]])
+    if facts.delegation is not None:
+        data.append(["delegation", facts.delegation["at"], facts.delegation.get("phase")])
+    if facts.merged_into is not None:
+        data.append(["merged_into", facts.merged_into])
     if facts.tracker is not None:
         data.append([facts.tracker.status, facts.tracker.level])
     if facts.gesture is not None:
@@ -375,18 +434,25 @@ def public_gesture(gesture: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def row_note(facts: Facts) -> dict[str, Any] | None:
-    """The agent's own report when it is the newest note, else the notes'."""
+    """The newest of the orchestrator's release note, the agent's own report
+    and the notes' bullet."""
+    found = []
+    if facts.note is not None:
+        found.append(facts.note)
     report = facts.report
-    note = facts.note
     if report is not None and report.get("note"):
-        if note is None or (note.get("at") or 0) <= report["at"]:
-            return {
-                "text": report["note"],
-                "by": f"agent:{report['agent']}",
-                "at": report["at"],
-                "agent_id": report["agent"],
-            }
-    return note
+        found.append({
+            "text": report["note"],
+            "by": f"agent:{report['agent']}",
+            "at": report["at"],
+            "agent_id": report["agent"],
+        })
+    released = facts.released
+    if released is not None and released.get("note"):
+        found.append({"text": f"orchestrator: {released['note']}", "by": "orchestrator",
+                      "at": released["at"]})
+    # The later one wins; on a tie the report over the notes, as before.
+    return max(reversed(found), key=lambda n: n.get("at") or 0, default=None)
 
 
 def build_row(
@@ -400,7 +466,10 @@ def build_row(
     last_event_at: float | None = None,
 ) -> dict[str, Any]:
     pr = facts.pr
-    zone = "inbox" if derived.ball == "you" else "in_flight"
+    if derived.rule == PARK_RULE:
+        zone = "parked"
+    else:
+        zone = "inbox" if derived.ball == "you" else "in_flight"
     row: dict[str, Any] = {
         "key": facts.key,
         "repo": facts.repo,
@@ -422,6 +491,8 @@ def build_row(
         else None,
         "agents": [
             {"id": a.agent_id, "status": a.status, "since": a.since}
+            | ({"spawned_by": facts.spawned_by[a.agent_id]}
+               if a.agent_id in facts.spawned_by else {})
             for a in facts.agents
         ],
         "pr": None
@@ -436,6 +507,9 @@ def build_row(
         "note": row_note(facts),
         "gesture": public_gesture(facts.gesture),
         "claim": facts.claim,
+        "hold": facts.hold,
+        "delegation": facts.delegation,
+        "suggestion": derived.suggestion,
         "stale": stale,
         "changed_at": changed_at,
         "fingerprint": fp,
@@ -448,6 +522,9 @@ def build_row(
     }
     if zone == "inbox":
         row["class"] = "deep" if derived.level == "deep" else "quick"
+    if zone == "parked" and facts.actionables:
+        # Parked, but what its items ask is still the user's (not routed).
+        row["holder"] = facts.holder or "user"
     tracker = facts.tracker
     if tracker is not None:
         if tracker.url and tracker.url not in row["urls"]:
@@ -511,7 +588,8 @@ def sort_key(row: dict[str, Any]) -> tuple:
             row["changed_at"],
             row["key"],
         )
-    return (1, BALL_ORDER.get(row["ball"], 9), priority, -row["changed_at"], 0, row["key"])
+    zone = 2 if row["zone"] == "parked" else 1
+    return (zone, BALL_ORDER.get(row["ball"], 9), priority, -row["changed_at"], 0, row["key"])
 
 
 def visible(row: dict[str, Any], include_done: bool) -> bool:
@@ -538,6 +616,9 @@ def summarize(
         ),
         "done": sum(r["ball"] == "done" for r in rows),
         "stale": sum(r["stale"] and r["ball"] != "done" for r in rows),
+        "parked": sum(r["zone"] == "parked" for r in rows),
+        # Parked rows whose items still wait on the user (not routed).
+        "parked_needs_you": sum(r["zone"] == "parked" and bool(r["needs_you"]) for r in rows),
         "not_started": not_started,
         "deep_max": deep_max,
     }
@@ -554,6 +635,8 @@ class StatusProjection:
         self._seen: dict[str, _Seen] = {}
         self._since: dict[tuple[str, str], tuple[str, float]] = {}
         self._commit_times: dict[str, float] = {}
+        # (key, head) → the branch that head is already in, or None.
+        self._merged: dict[tuple[str, str], str | None] = {}
         self._facts_by_key: dict[str, Facts] = {}
         # Timeline: what each row looked like at the last pass, and who made
         # the next change (a gesture).
@@ -596,6 +679,9 @@ class StatusProjection:
     def _on_event(self, event: EngineEvent) -> None:
         if event.event == "worktrees.changed":
             self._worktrees_changed()
+        elif event.event == "pr_info.updated":
+            # A new PR head may already be in develop (cached per head).
+            self._spawn(self.refresh_merged())
         elif event.event == "notes.updated":
             self._notes_entry(event.data if isinstance(event.data, dict) else {})
         self.mark_dirty()
@@ -613,6 +699,12 @@ class StatusProjection:
         self._engine.overlay.add(
             key, "notes", actor, "notes: " + ", ".join(sections), ref=data.get("notes_id")
         )
+
+    def path_of(self, key: str) -> str | None:
+        """The worktree path of a live work item key."""
+        repo = repo_name(self._engine)
+        wt = next((w for w in self._members() if work_item_key(repo, w) == key), None)
+        return wt.path if wt is not None else None
 
     def key_of(self, path: str) -> str | None:
         """The work item key of a worktree path."""
@@ -670,8 +762,43 @@ class StatusProjection:
             if times != self._commit_times:
                 self._commit_times = dict(times)
                 self.mark_dirty()
+            await self.refresh_merged()
 
         self._spawn(refresh())
+
+    def merge_targets(self) -> tuple[str, ...]:
+        """develop, main and the configured default branch."""
+        default = self._engine.config.default_branch
+        return tuple(dict.fromkeys((*MERGED_INTO, *([default] if default else []))))
+
+    async def refresh_merged(self) -> None:
+        """Which open PRs' heads are already in a merge target: git, once
+        per head, off the loop."""
+        repo_root = self._engine.repo_root
+        if not repo_root:
+            return
+        repo = repo_name(self._engine)
+        targets = self.merge_targets()
+        known: dict[tuple[str, str], str | None] = {}
+        todo: list[tuple[tuple[str, str], tuple[str, ...]]] = []
+        for wt in self._members():
+            pr = self._engine.get_pr_info(wt.path)
+            head = (pr.head_sha or wt.head) if pr is not None and pr.state == "OPEN" else ""
+            if not head:
+                continue
+            slot = (work_item_key(repo, wt), head)
+            if slot in self._merged:
+                known[slot] = self._merged[slot]
+            else:
+                todo.append((slot, tuple(t for t in targets if t != wt.branch)))
+        if todo:
+            found = await asyncio.to_thread(
+                lambda: {slot: merged_into(repo_root, slot[1], others) for slot, others in todo}
+            )
+            known.update(found)
+        if known != self._merged:
+            self._merged = known
+            self.mark_dirty()
 
     def _spawn(self, coro: Any) -> None:
         try:
@@ -739,6 +866,7 @@ class StatusProjection:
         config = self._engine.config.status
         claims = self._engine.claims
         overlay = self._engine.overlay
+        delegations = self._engine.delegations
         claims.check(now)
         self._engine.first_responder.check(now)
         overlay.expire_reports(now)
@@ -747,21 +875,25 @@ class StatusProjection:
         live_agents: set[tuple[str, str]] = set()
         queue: dict[str, list[dict[str, Any]]] = {}
         visible_items = self._engine.actionables.flush(now)
+        claims.auto_hold(visible_items, now)
+        delegations.check(now)
         for item in visible_items:
             if item["work_item"] is not None:
                 queue.setdefault(item["work_item"], []).append(item)
         for facts in self._facts(now):
-            items = tuple(queue.get(facts.key, ()))
-            claim = claims.get(facts.key)
-            if claim is not None:
-                items = tuple(i for i in items if i["kind"] == "approval")
+            key = facts.key
+            items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
             facts = replace(
                 facts,
-                actionables=items,
-                claim=claim,
+                actionables=tuple(items),
+                claim=claims.get(key),
+                hold=claims.get_hold(key),
+                delegation=delegations.get(key),
                 gesture=overlay.gesture(facts, now),
-                report=overlay.reports.get(facts.key),
-                holder="orchestrator" if self._engine.first_responder.held(facts.key) else None,
+                report=overlay.reports.get(key),
+                holder="orchestrator" if self._engine.first_responder.held(key) else None,
+                released=overlay.released_note(key, now),
+                spawned_by=overlay.spawned_by(key),
             )
             facts_by_key[facts.key] = facts
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
@@ -921,6 +1053,11 @@ class StatusProjection:
             agents = self._agents(wt.path, now)
             branch = wt.branch
             key = work_item_key(repo, wt)
+            pr = engine.get_pr_info(wt.path)
+            head = getattr(wt, "head", None)
+            merged = None
+            if pr is not None and pr.state == "OPEN":
+                merged = self._merged.get((key, pr.head_sha or head or ""))
             out.append(
                 Facts(
                     key=key,
@@ -928,11 +1065,13 @@ class StatusProjection:
                     branch=branch,
                     worktree_path=wt.path,
                     agents=agents,
-                    pr=engine.get_pr_info(wt.path),
+                    pr=pr,
                     commit_time=self._commit_times.get(branch) if branch else None,
                     restorable=restorable.get(wt.path, 0),
                     note=self._note(wt.path, agents),
                     tracker=engine.trackers.fact(branch),
+                    head=head,
+                    merged_into=merged,
                 )
             )
         return out
@@ -983,6 +1122,31 @@ class StatusProjection:
                     "agent_id": agent.agent_id,
                 }
         return None
+
+
+def merged_into(repo_root: str, head: str, targets: Iterable[str]) -> str | None:
+    """The first of ``targets`` (its remote-tracking ref, else the local
+    branch) that already contains ``head``; None when none does or git
+    cannot tell."""
+    import subprocess
+
+    def git(*args: str) -> int:
+        try:
+            return subprocess.run(
+                ["git", "-C", repo_root, *args],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return -1
+
+    for target in targets:
+        for ref in (f"refs/remotes/origin/{target}", f"refs/heads/{target}"):
+            if git("rev-parse", "--verify", "--quiet", ref) != 0:
+                continue
+            if git("merge-base", "--is-ancestor", head, ref) == 0:
+                return target
+            break
+    return None
 
 
 # ----------------------------------------------------------------------
@@ -1044,6 +1208,10 @@ def format_table(result: dict[str, Any], now: float | None = None) -> str:
         f"NOW {counts['now']}   ROUND {counts['round']}   "
         f"IN FLIGHT {counts['in_flight']}"
     )
+    if counts.get("parked"):
+        head += f"   PARKED {counts['parked']}"
+        if counts.get("parked_needs_you"):
+            head += f" ({counts['parked_needs_you']} need you)"
     if counts.get("not_started"):
         head += f"   NOT STARTED {counts['not_started']}"
     hidden = [
@@ -1057,7 +1225,7 @@ def format_table(result: dict[str, Any], now: float | None = None) -> str:
     columns = [_Column(t) for t in ("LEVEL", "ITEM", "BALL", "STATE", "AGE")]
     for row in rows:
         values = (
-            row["level"] or "-",
+            row["level"] or ("parked" if row.get("zone") == "parked" else "-"),
             item_name(row),
             row["ball"],
             state_text(row, now),

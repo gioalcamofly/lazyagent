@@ -383,25 +383,57 @@ async def actionables_list(include_hidden: bool = False) -> dict:
 @mcp.tool()
 async def orchestrator_release(key: str, outcome: str, note: str = "") -> dict:
     """End your claim on a work item the user passed to you ("Pass to
-    orchestrator"; its status_list row has ``claim`` set and reads "with
-    orchestrator"). Orchestrator only.
+    orchestrator"; its status_list row has ``claim`` set and reads
+    "orchestrator · looking"), or your own hold (``orchestrator_hold``, or
+    the engine's hold on a worker you spawned; the row has ``hold`` set).
+    Orchestrator only.
 
     Call it once you have dealt with the item (``outcome="done"``), or to
     hand it back to the user (``outcome="returned"`` with a short ``note``
-    saying what they need to decide; it shows in their Round). A claim you
-    never release lapses at its ``until`` and goes back to the user marked
-    "delegation lapsed". Tool approvals of the item stay with the user.
+    saying what they need to decide; it shows in their Round). Either way
+    the note shows on the row ("orchestrator: <note>") and on its timeline,
+    so always say in a few words what you did. A claim or hold you never
+    release lapses at its ``until`` and goes back to the user. Tool
+    approvals of the item stay with the user.
 
     Args:
         key: The work item's key (``status_list`` rows, e.g. ``repo:branch``).
         outcome: ``done`` or ``returned``.
-        note: For ``returned``: what the user needs to know (≤ 200 chars).
+        note: What you did, or what the user needs to decide (≤ 200 chars).
 
     Returns:
-        Object with key, outcome and the ended ``claim``.
+        Object with key, outcome and the ended ``claim`` (or ``hold``).
     """
     params = _add_caller({"key": key, "outcome": outcome, "note": note})
     return await _get_client().call("orchestrator_release", params)
+
+
+@mcp.tool()
+async def orchestrator_hold(key: str, note: str, ttl_s: int = 7200) -> dict:
+    """Hold a work item yourself while you verify it or wait on something
+    (a merge the user will do, a CI run): its row reads "orchestrator ·
+    <note>" in flight and never reaches the user's Round. Orchestrator
+    only.
+
+    Use it when you take an item on without the user passing it to you,
+    e.g. verifying a worker's finished branch before telling the user it is
+    ready, or waiting for the user's merge before starting the next task.
+    It widens nothing: questions and briefs still follow your mandate, and
+    tool approvals stay with the user. End it with ``orchestrator_release``
+    (done, or returned with a note); past ``ttl_s`` it goes to the user as
+    "orchestrator did not respond". Holding again renews it.
+
+    Args:
+        key: The work item's key (``status_list`` rows).
+        note: What you are doing, in a few words (≤ 60 chars), e.g.
+            "verifying tests", "waiting on the merge".
+        ttl_s: How long (seconds, 60-28800; default 7200).
+
+    Returns:
+        Object with key and the ``hold`` {key, holder, at, until, by, note, auto}.
+    """
+    params = _add_caller({"key": key, "note": note, "ttl_s": ttl_s})
+    return await _get_client().call("orchestrator_hold", params)
 
 
 @mcp.tool()

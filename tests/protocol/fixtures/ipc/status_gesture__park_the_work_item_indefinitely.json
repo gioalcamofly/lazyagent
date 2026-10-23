@@ -1,0 +1,71 @@
+{
+  "case": "status_gesture/park_the_work_item_indefinitely",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:login-ttl",
+    "kind": "park",
+    "text": "after the release",
+    "until": "indefinite"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "by": "user",
+        "kind": "park",
+        "text": "after the release",
+        "until": "indefinite"
+      },
+      "kept": false,
+      "key": "repo:login-ttl",
+      "row": {
+        "agents": [
+          {
+            "id": "a1",
+            "since": 1700000000.0,
+            "status": "waiting_for_approval"
+          }
+        ],
+        "ball": "you",
+        "blocks_agent": false,
+        "branch": "login-ttl",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "delegation": null,
+        "fingerprint": "672e278363f2",
+        "gesture": {
+          "at": 1700000000.0,
+          "by": "user",
+          "kind": "park",
+          "text": "after the release",
+          "until": "indefinite"
+        },
+        "hold": null,
+        "holder": "user",
+        "key": "repo:login-ttl",
+        "last_event_at": 1700000000.0,
+        "level": null,
+        "needs_you": {
+          "count": 1,
+          "top": "Approval:/tmp/repo-login/a1"
+        },
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 7,
+        "seen_at": null,
+        "stale": false,
+        "state": "parked: after the release",
+        "suggestion": null,
+        "title": "login-ttl",
+        "urls": [],
+        "worktree_path": "/tmp/repo-login",
+        "zone": "parked"
+      }
+    }
+  }
+}
