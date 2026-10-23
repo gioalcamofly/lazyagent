@@ -91,10 +91,12 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "status_gesture" => round_trip::<StatusGestureResult>(case, result),
             // The orchestrator's (MCP).
             "orchestrator_release" => continue,
-            // Agents' (MCP), and the I4 engine methods the desktop does not
-            // call yet (gestures, timeline, seen marks, briefs).
+            // Agents' (MCP).
             "status_report" | "request_decision" | "decision_withdraw" => continue,
-            "status_seen" | "status_timeline" | "decision_get" | "decisions_list" => continue,
+            "status_seen" => round_trip::<StatusSeen>(case, result),
+            "status_timeline" => round_trip::<StatusTimeline>(case, result),
+            "decision_get" => round_trip::<DecisionResult>(case, result),
+            "decisions_list" => round_trip::<DecisionsList>(case, result),
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -145,7 +147,20 @@ const METHODS_USED: &[&str] = &[
     "actionables_list",
     "actionables_mark",
     "status_gesture",
+    "status_seen",
+    "status_timeline",
+    "decisions_list",
+    "decision_get",
 ];
+
+/// The orchestrator as first responder (I4b): called only when the engine
+/// has the `first_responder` feature, so they may not be in the schema yet.
+const FIRST_RESPONDER_METHODS: &[&str] =
+    &["presence_report", "presence_set", "decision_revert", "inbox_config_get", "inbox_config_set"];
+
+/// I4b's events, parsed already (`EngineEvent::parse`), that may not be
+/// in the schema yet.
+const FIRST_RESPONDER_EVENTS: &[&str] = &["decision.answered"];
 
 /// Events in events.json that the desktop app deliberately ignores.
 const IGNORED_EVENTS: &[&str] = &[
@@ -155,10 +170,6 @@ const IGNORED_EVENTS: &[&str] = &[
     "orchestrator.claim",
     "orchestrator.released",
     "orchestrator.lapsed",
-    // I4: the desktop shows neither the timeline nor briefs yet.
-    "status.timeline",
-    "decision.created",
-    "decision.resolved",
 ];
 
 #[test]
@@ -169,6 +180,12 @@ fn methods_we_call_are_in_the_schema() {
         assert!(defs.get(format!("{m}.result")).is_some(), "{m} has no result schema");
     }
     assert!(schema("handshake.json")["$defs"].get("hello.params").is_some());
+    // Once I4b's schemas land, they must carry params and a result.
+    for m in FIRST_RESPONDER_METHODS {
+        if defs.get(format!("{m}.params")).is_some() {
+            assert!(defs.get(format!("{m}.result")).is_some(), "{m} has no result schema");
+        }
+    }
 }
 
 #[test]
@@ -178,7 +195,9 @@ fn every_schema_event_is_handled_or_ignored_on_purpose() {
     let events: Vec<&String> = defs.keys().filter(|k| k.contains('.')).collect();
     for e in &events {
         assert!(
-            KNOWN_EVENTS.contains(&e.as_str()) || IGNORED_EVENTS.contains(&e.as_str()),
+            KNOWN_EVENTS.contains(&e.as_str())
+                || IGNORED_EVENTS.contains(&e.as_str())
+                || FIRST_RESPONDER_EVENTS.contains(&e.as_str()),
             "new event {e} in events.json: handle it in EngineEvent or add it to IGNORED_EVENTS"
         );
     }

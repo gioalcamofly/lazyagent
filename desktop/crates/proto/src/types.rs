@@ -604,6 +604,10 @@ pub struct StatusRow {
     /// Its latest timeline entry (`status_timeline`).
     #[serde(default)]
     pub last_event_at: Option<f64>,
+    /// `orchestrator` while a routed question waits on it (feature
+    /// `first_responder`); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<String>,
 }
 
 /// A row's tracker task: read-only, the last good value when `stale`.
@@ -677,6 +681,12 @@ pub struct StatusCounts {
     pub deep: u32,
     #[serde(default)]
     pub deep_max: u32,
+    /// The orchestrator's actions today, and how many the user reverted
+    /// (feature `first_responder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_actions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_reverted: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -684,6 +694,138 @@ pub struct StatusList {
     pub rows: Vec<StatusRow>,
     pub counts: StatusCounts,
     pub generated_at: f64,
+    /// Whether the user counts as present (feature `first_responder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<Presence>,
+}
+
+/// `mode` is the Home toggle (`auto` · `present` · `away`); `effective`
+/// what the engine applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Presence {
+    #[serde(default)]
+    pub mode: Option<String>,
+    pub effective: String,
+}
+
+/// A fact on a work item's timeline (`status_timeline`, `status.timeline`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    pub at: f64,
+    pub kind: String,
+    /// `user`, `agent:<id>`, `orchestrator` or `engine`.
+    pub actor: String,
+    pub text: String,
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusTimeline {
+    pub key: String,
+    pub since: Option<f64>,
+    pub seen_at: Option<f64>,
+    pub entries: Vec<TimelineEntry>,
+}
+
+/// `status.timeline`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineAdded {
+    pub key: String,
+    pub entry: TimelineEntry,
+}
+
+/// `status_seen`: the client's marks, `*` for "all seen".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatusSeen {
+    pub client: String,
+    pub seen: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionOption {
+    pub key: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Brief {
+    pub question: String,
+    pub options: Vec<DecisionOption>,
+    pub recommendation: Option<String>,
+    pub tried: String,
+    /// Open shapes (diff, log, file, notes, url): the decision view's (I5).
+    pub evidence: Vec<Value>,
+    pub reversible: Option<String>,
+    pub impact_if_wrong: String,
+}
+
+/// A decision brief (feature `decisions`); the orchestrator's answer and
+/// whether it can be reverted come with `first_responder`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Decision {
+    pub id: String,
+    pub key: String,
+    pub worktree_path: String,
+    pub agent: String,
+    pub holder: String,
+    pub replaces: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    pub state: String,
+    pub valid: bool,
+    pub class: String,
+    pub blocking: bool,
+    pub brief: Brief,
+    pub invalid: Vec<String>,
+    pub problems: Vec<String>,
+    pub sha: Option<String>,
+    pub created_at: f64,
+    pub closed_at: Option<f64>,
+    /// `{choice, reason?, comment?}` once answered.
+    pub answer: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revertible: Option<bool>,
+}
+
+impl Decision {
+    fn answer_field(&self, name: &str) -> Option<&str> {
+        self.answer.as_ref()?.get(name)?.as_str()
+    }
+
+    pub fn choice(&self) -> Option<&str> {
+        self.answer_field("choice")
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.answer_field("reason")
+    }
+}
+
+/// `decision_get`; `decision.created` / `.answered` / `.resolved`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionResult {
+    pub decision: Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionsList {
+    pub decisions: Vec<Decision>,
+}
+
+/// `inbox_config_get` / `inbox_config_set` (feature `first_responder`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxConfig {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub auto_delegate: Vec<String>,
+    #[serde(default)]
+    pub auto_delegate_target: Option<String>,
 }
 
 /// `status_gesture`: the claim made (none after `clear`) and the row now.
@@ -807,6 +949,9 @@ pub enum EngineEvent {
     ActionableCreated(Box<ActionableResult>),
     ActionableUpdated(Box<ActionableResult>),
     ActionableResolved(ActionableResolved),
+    StatusTimeline(Box<TimelineAdded>),
+    DecisionCreated(Box<DecisionResult>),
+    DecisionResolved(Box<DecisionResult>),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -839,6 +984,9 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "actionable.created",
     "actionable.updated",
     "actionable.resolved",
+    "status.timeline",
+    "decision.created",
+    "decision.resolved",
 ];
 
 impl EngineEvent {
@@ -872,6 +1020,10 @@ impl EngineEvent {
             "actionable.created" => de(&event).map(|a| EngineEvent::ActionableCreated(Box::new(a))),
             "actionable.updated" => de(&event).map(|a| EngineEvent::ActionableUpdated(Box::new(a))),
             "actionable.resolved" => de(&event).map(EngineEvent::ActionableResolved),
+            "status.timeline" => de(&event).map(|t| EngineEvent::StatusTimeline(Box::new(t))),
+            "decision.created" => de(&event).map(|d| EngineEvent::DecisionCreated(Box::new(d))),
+            // The orchestrator's answer (I4b) carries the same shape.
+            "decision.resolved" | "decision.answered" => de(&event).map(|d| EngineEvent::DecisionResolved(Box::new(d))),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

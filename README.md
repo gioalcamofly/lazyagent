@@ -215,6 +215,8 @@ They share the TUI's keys (`s`, `x`, `c`, `d`, `r`, `Shift+R`, `?`, `j`/`k` outs
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Desktop: copy / paste in a terminal (`Ctrl+C` copies a selection, else sends ^C) |
 | `Shift+drag`, `Shift+wheel` | Desktop: select and scroll even when the program uses the mouse |
 
+The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with) and what is in flight. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `f` fold.
+
 `?` in either shows the full list.
 
 ## Configuration

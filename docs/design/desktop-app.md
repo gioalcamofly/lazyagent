@@ -564,6 +564,27 @@ Plan, decisions and doubts: [desktop-update-restart-plan.md](desktop-update-rest
 - **Exits** of a previous engine are dropped when the engine changes: their "Spawn again (resume the last session)" could take another conversation; the restore banner offers those agents instead.
 - Screenshots: [u3-menu-help.png](desktop-screenshots/u3-menu-help.png), [u3-update.png](desktop-screenshots/u3-update.png), [u3-restart.png](desktop-screenshots/u3-restart.png).
 
+### Home: gestures, To sit down with, first responder (inbox I4c, 2026-10-23)
+
+What landed and why: [inbox-plan.md](inbox-plan.md) §8 "I4c". Home's keys, outside a text field (each also in `?` and in Home's footer):
+
+| Key | Action | Needs |
+|---|---|---|
+| `Enter` | Now line or a quick "agent … asks": the agent's terminal; else expand (a brief, "since you looked", and the item counts as seen) | — |
+| `o` `n` `p` | Terminal / notes / PR | — |
+| `x` | Dismiss the line's inbox item | — |
+| `z` | Park until… (the item; a line with no item parks the work item) | events: an engine inbox; the work item: `gestures` |
+| `Shift+O` / `u` | Pass to the orchestrator / take it back (or clear your label, park, close) | `claims` / `gestures` |
+| `l` | Label who has the ball (`others`, `agent`, `stalled`) and a short text (QA) | `gestures` |
+| `Shift+X` | Close the work item as done or dropped | `gestures` |
+| `m` / `Shift+M` | Mark the line seen / everything seen | `gestures` (`Shift+M` also clears the client's dots) |
+| `Shift+U` | Revert the orchestrator's decision on the line (an optional comment) | `first_responder` |
+| `f` | Fold In flight | — |
+
+- The label and revert forms are text fields: while one has the keyboard, the letter keys type. Enter saves or reverts, Esc cancels. Each form takes the keyboard once, when it opens: grabbing it every frame left egui's text focus stuck after the form closed.
+- Presence is reported from the frame loop (any key, text, click, pointer move or wheel), before the keys are consumed, at most once a minute.
+- Screenshots: [i4c-home-dark.png](desktop-screenshots/i4c-home-dark.png), [i4c-home-light.png](desktop-screenshots/i4c-home-light.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |
