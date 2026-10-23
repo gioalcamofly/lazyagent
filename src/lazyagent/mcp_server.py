@@ -287,6 +287,11 @@ async def spawn_agent(
             Default: the repo's ``[notes] mode``. Spawn workers you
             orchestrate with "free", so their notes tell you where they are.
 
+    The engine caps the spawns an agent (you included) asks for: at most
+    ``max_concurrent_agents`` running and ``max_spawns_per_day`` in 24 h
+    (``[orchestrator]`` in .lazyagent.toml; 8 and 30 by default). Over a cap
+    the call fails saying which one: stop an agent, or ask the user.
+
     Returns:
         Object with worktree_path, agent_id, status, and ``cursor`` (event
         cursor taken before the spawn; pass it as ``since`` to list_events
@@ -303,7 +308,46 @@ async def spawn_agent(
         params["label"] = label
     if notes_mode is not None:
         params["notes_mode"] = notes_mode
+    _add_caller(params)
     return await _get_client().call("spawn_agent", params)
+
+
+def _add_caller(params: dict[str, Any]) -> dict[str, Any]:
+    """Who calls: this agent's token, when lazyagent spawned it."""
+    caller = os.environ.get("LAZYAGENT_AGENT_TOKEN")
+    if caller:
+        params["caller"] = caller
+    return params
+
+
+@mcp.tool()
+async def status_list(include_done: bool = False) -> dict:
+    """The status of every work item (a branch with its worktree, agents,
+    PR and CI), as the engine derives it: who has the ball (you, agent,
+    others, stalled, done), a short fact as the state, and its age. Items
+    that need the user come first (level now, then round).
+
+    When the user asks for status ("status table", "where is everything",
+    "what needs me"), call this once and show ``table`` as it is, then add
+    only what it does not say. Do not build your own table from
+    list_worktrees, list_agents or read_agent_output.
+
+    Args:
+        include_done: Also list merged / closed branches and stale ones
+            (nothing but an old branch).
+
+    Returns:
+        Object with ``table`` (plain text, ready to show), ``rows`` (key,
+        branch, worktree_path, title, urls, zone, level, ball, state,
+        agents, pr, note, changed_at, ...), ``counts`` (now, round,
+        in_flight, done, stale) and ``generated_at``.
+    """
+    from lazyagent.engine.status import format_table
+
+    params = _add_caller({"include_done": include_done})
+    result = await _get_client().call("status_list", params)
+    result["table"] = format_table(result, result.get("generated_at"))
+    return result
 
 
 @mcp.tool()

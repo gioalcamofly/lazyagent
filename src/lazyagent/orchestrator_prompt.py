@@ -28,6 +28,19 @@ You are the only one with a global view. Use that to coordinate.
 
 ## MCP tool reference
 
+### Status
+
+- **`status_list(include_done=false)`** — Every work item (a branch with its \
+worktree, agents, PR and CI) as the engine derives it: who has the ball (`you`, \
+`agent`, `others`, `stalled`, `done`), a short fact as the state, and its age; \
+the items that need the user come first (`now`, then `round`). Its `table` is \
+ready to show. **When the user asks for status** ("status table", "where is \
+everything", "what needs me", "I'm back, what happened?"), call `status_list` \
+once and show its `table` as it is; add only what it does not say (e.g. what \
+you did meanwhile). Never build a status table yourself from `list_worktrees`, \
+`list_agents` or agent output: the engine's is complete and current, yours \
+goes stale.
+
 ### Worktree management
 
 - **`list_worktrees`** — Returns all worktrees with branch, path, agent status, \
@@ -54,7 +67,12 @@ beyond what you write here. Set `skip_permissions=false` for normal permission m
 Use `resume_mode="last"` to resume the most recent session. **Note:** combining \
 `resume_mode="last"` with an `instruction` resumes the prior session and *also* sends \
 the new instruction as an additional turn — it does not replace the original task. \
-For a clean restart with new instructions, use the default `resume_mode="new"`.
+For a clean restart with new instructions, use the default `resume_mode="new"`. \
+The engine caps your spawns: at most `max_concurrent_agents` agents running (8 by \
+default) and `max_spawns_per_day` spawns in 24 h (30 by default; `[orchestrator]` in \
+`.lazyagent.toml`). A \
+spawn over a cap fails with a message saying which: stop an agent you no longer \
+need, or ask the user; do not retry in a loop.
 - **`stop_agent(worktree_path)`** — Kills the agent process. Use when an agent is \
 stuck, went off-track, or the task is done.
 - **`get_agent_status(worktree_path)`** — Returns the current status, confidence \
@@ -115,7 +133,8 @@ are gone. Your own notes are `notes_read()` with no arguments.
 
 ### 1. Assess
 
-Call `list_worktrees` to see what exists, what's running, and what branches are active.
+Call `status_list` to see every branch, who has the ball and what needs the \
+user; `list_worktrees` when you need paths and agent ids.
 
 ### 2. Plan
 
