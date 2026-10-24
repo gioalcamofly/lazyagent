@@ -918,7 +918,10 @@ async def status_report(
     status. For a choice that needs reading, use request_decision instead.
 
     Only for your own work item (lazyagent's agent token); the note shows
-    on the row with its age.
+    on the row with its age. The orchestrator: call it with only a ``note``
+    saying what you are doing now (e.g. "verifying feat-x's fix"); the user
+    sees it on Home. ``ball``, ``needs_user`` and ``outward`` are refused
+    for you.
 
     Args:
         note: One line (≤ 200 chars), e.g. "PR up, waiting for QA".
@@ -927,8 +930,8 @@ async def status_report(
         outward: Optional {kind, ref, text} of an action outside the repo.
 
     Returns:
-        Object with key (your work item), report and outward (the timeline
-        entry, if any).
+        Object with key (your work item; null for the orchestrator), report
+        and outward (the timeline entry, if any).
     """
     params: dict[str, Any] = {"note": note, "needs_user": needs_user}
     if ball is not None:

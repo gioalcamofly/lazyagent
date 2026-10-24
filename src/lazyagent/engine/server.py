@@ -144,6 +144,18 @@ FEATURES: tuple[str, ...] = (
     # ci_failed kind, ci_log_summary, the summary on a CI delegation, ci_red
     # auto-delegation, decision_evidence job:/run: logs.
     "actions",
+    # Home UX fixes (I4e): approval_answer (allow or deny a tool approval
+    # whose prompt is on the agent's screen).
+    "approval_answer",
+    # question_answer: the user's free-text answer to an agent's question.
+    "question_answer",
+    # actionables_mark undismiss; status_gesture undo (park, delegate, pass).
+    "undo",
+    # status_gesture close with stop_agents (and its stopped list).
+    "close_stop",
+    # The orchestrator's status_report note, status_list orchestrator
+    # {alive, report, queue}, orchestrator_actions, row last_step.
+    "orchestrator_activity",
 )
 
 STREAM_RESIZED = "stream.resized"

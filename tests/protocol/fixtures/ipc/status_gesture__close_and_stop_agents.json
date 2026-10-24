@@ -1,0 +1,65 @@
+{
+  "case": "status_gesture/close_and_stop_agents",
+  "method": "status_gesture",
+  "params": {
+    "how": "dropped",
+    "key": "repo:export-csv",
+    "kind": "close",
+    "stop_agents": true
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "by": "user",
+        "how": "dropped",
+        "kind": "close"
+      },
+      "kept": false,
+      "key": "repo:export-csv",
+      "row": {
+        "activity_at": 1700000000.0,
+        "agents": [],
+        "ball": "done",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "delegation": null,
+        "fingerprint": "61d9bbfe3092",
+        "gesture": {
+          "at": 1700000000.0,
+          "by": "user",
+          "how": "dropped",
+          "kind": "close"
+        },
+        "hold": null,
+        "holder": null,
+        "key": "repo:export-csv",
+        "last_event_at": 1700000000.0,
+        "last_step": null,
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 1,
+        "seen_at": null,
+        "stale": false,
+        "state": "dropped by you",
+        "suggestion": null,
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      },
+      "stopped": [
+        "a2"
+      ]
+    }
+  }
+}

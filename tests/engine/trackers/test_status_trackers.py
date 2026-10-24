@@ -149,14 +149,14 @@ def test_engine_facts_win_the_ball_and_the_tracker_text_shows_beside():
     )
     poll(engine, clock)
     row = rows(engine)["repo:fix-123-login"]
-    assert (row["ball"], row["state"]) == ("agent", "Bash")
+    assert (row["ball"], row["state"]) == ("agent", "working")
     assert row["title"] == "Fix login"  # the PR title first
     assert row["urls"] == [
         "https://github.com/acme/widgets/pull/9",
         "https://github.com/acme/widgets/issues/123",
     ]
     table = format_table(listing(engine), NOW)
-    assert "Bash · in QA" in table
+    assert "working · in QA" in table
 
     # An inbox item is the queue's: it puts the row in the inbox even while
     # the agent works.

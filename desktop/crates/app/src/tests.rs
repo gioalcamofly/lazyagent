@@ -599,7 +599,7 @@ fn a_failing_pr_is_queued_toasted_and_shown_in_the_panel() {
     h.run_steps(2);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    h.get_by_label("Send the failures to its agent").click();
+    h.get_by_label("Delegate to its agent  (d)").click();
     h.run_steps(2);
     // No engine here: the send fails, and says so.
     assert!(h.state().state.toasts.iter().any(|t| t.text.starts_with("Not sent")));
@@ -2599,7 +2599,8 @@ fn the_app_opens_on_home_not_a_terminal() {
     h.run_steps(4);
     assert_eq!(h.state().state.view, crate::app::View::Home);
     assert!(h.state().state.panes.is_empty(), "no terminal, and no shell, opened on start");
-    h.get_by_label("IN FLIGHT (1)");
+    h.get_by_label("In flight");
+    assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Flight).len(), 1);
     assert!(h.query_all_by_label("feat").count() >= 2, "the sidebar's branch and Home's line");
     // Noise cut: no "engine connected" pill, no version, no "0s".
     assert!(h.query_by_label("engine ● connected").is_none());
@@ -2656,9 +2657,13 @@ fn home_shows_the_engines_rows_once_and_never_reorders_under_the_cursor() {
     h.run_steps(2);
     assert_eq!(home_names(&h, Zone::Now), ["wishlist"]);
     assert!(home_names(&h, Zone::Round).is_empty());
-    assert_eq!(home_names(&h, Zone::Flight), ["cart", "search"], "each work item once");
-    h.get_by_label("next round: 1 ▸");
-    h.get_by_label("+1");
+    assert_eq!(home_names(&h, Zone::Flight), ["search"], "each work item once, never in In flight");
+    let next: Vec<String> = h.state().state.home.next_round().iter().map(|l| l.name.clone()).collect();
+    assert_eq!(next, ["cart"], "dimmed under the Round");
+    h.get_by_label("Round (+1 next)");
+    h.get_by_label("next round");
+    h.get_by_label("deliver now ▸");
+    h.get_by_label("2 items");
     assert!(h.state().title.starts_with("(1 now · 1) "), "{}", h.state().title);
     // Back from a terminal is a cut point: the Round is delivered.
     h.key_press(egui::Key::G);
@@ -2668,7 +2673,8 @@ fn home_shows_the_engines_rows_once_and_never_reorders_under_the_cursor() {
     h.key_press(egui::Key::H);
     h.run_steps(2);
     assert_eq!(home_names(&h, Zone::Round), ["cart"]);
-    assert!(h.query_by_label("next round: 1 ▸").is_none());
+    assert!(h.query_by_label("deliver now ▸").is_none());
+    h.get_by_label("Round");
     // It resolves on its own: out of the Round, counted.
     tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 0.0)})))
         .unwrap();
@@ -2921,8 +2927,9 @@ fn tracker_rows_and_items_show_on_home() {
     h.state_mut().state.home.cut(crate::app::unix_now());
     h.run_steps(2);
     let line = h.state().state.home.shown_in(Zone::Round)[0].clone();
-    assert_eq!((line.verb(), line.url.as_deref()), ("Tracker", Some("https://example.com/issues/41")));
-    h.get_by_label("IN FLIGHT (0) · 2 not started");
+    assert_eq!((line.verb(), line.url.as_deref()), ("Update task", Some("https://example.com/issues/41")));
+    h.get_by_label("In flight");
+    h.get_by_label("· 2 not started");
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     h.get_by_label("github issues 41: returned by QA (10m ago)");
@@ -2997,7 +3004,8 @@ fn to_sit_down_with_shows_deep_items_at_once_with_deep_max() {
     let mut h = harness(app);
     h.state_mut().state.status_counts.deep_max = 2;
     h.run_steps(2);
-    h.get_by_label("TO SIT DOWN WITH (0 of 2)");
+    h.get_by_label("To sit down with");
+    h.get_by_label("· of 2, for a focus block");
     h.get_by_label("Nothing to sit down with.");
     for (id, key) in [("d1", "billing"), ("d2", "export"), ("d3", "search")] {
         tx.send(event("decision.created", json!({"decision": brief(id, key, true)}))).unwrap();
@@ -3008,10 +3016,10 @@ fn to_sit_down_with_shows_deep_items_at_once_with_deep_max() {
     h.run_steps(3);
     // Deep is outside the rounds: no cut point needed, nothing waits.
     assert_eq!(home_names(&h, Zone::Deep), ["billing", "export", "search"]);
-    assert!(h.query_by_label("next round: 1 ▸").is_none());
+    assert!(h.query_by_label("deliver now ▸").is_none());
     // Shown, never enforced: three of two is a line, not a refusal.
-    h.get_by_label("TO SIT DOWN WITH (3 of 2)");
-    h.get_by_label("over your limit of 2");
+    h.get_by_label("3");
+    h.get_by_label("· over your limit of 2");
     assert_eq!(h.query_all_by_label("Decide").count(), 3);
     assert_eq!(h.state().state.home.counts(), (0, 0), "the badges count Now and Round only");
     // Without the engine's gestures (and no deep lines) the zone is not there.
@@ -3112,7 +3120,10 @@ fn row_gestures_label_park_close_and_clear_through_the_engine() {
     // Shift+X: close, as done or dropped.
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
     h.run_steps(2);
-    h.get_by_label("dropped").click();
+    h.get_by_label(
+        "Close this work item: it leaves Home after a day. The worktree, the branch and the PR are not touched.",
+    );
+    h.get_by_label("Close as dropped").click();
     h.run_steps(2);
     assert_eq!(calls_of(&calls, "status_gesture")[2], json!({"key": "repo:cart", "kind": "close", "how": "dropped"}));
     // u clears the user's gesture (the row still says it has one).
@@ -3133,7 +3144,7 @@ fn row_gestures_label_park_close_and_clear_through_the_engine() {
     tx.send(event("status.updated", json!({"row": old}))).unwrap();
     h.run_steps(2);
     assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
-    h.get_by_label("IN FLIGHT (0) · 1 done today");
+    h.get_by_label("· 1 done today");
     // No gestures on a done row.
     h.key_press(egui::Key::L);
     h.run_steps(1);
@@ -3210,11 +3221,11 @@ fn first_responder_is_hidden_without_its_feature() {
     h.key_press(egui::Key::Enter);
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
     h.run_steps(2);
-    for hidden in ["You are", "looking", "Auto-delegation ▾", "Revert…  (U)"] {
+    for hidden in ["Orchestrator", "Presence: auto (away)", "looking", "Auto-delegation ▾", "Revert…  (⇧U)"] {
         assert!(h.query_by_label(hidden).is_none(), "{hidden}");
     }
     assert!(h.query_by_label_contains("decided by orchestrator").is_none());
-    assert!(h.query_by_label_contains("orchestrator today").is_none());
+    assert!(h.query_by_label_contains("Today:").is_none());
     assert!(h.state().state.home.reverting.is_none());
     assert!(!h.state_mut().state.user_input(crate::app::unix_now()));
     let called: Vec<String> = calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect();
@@ -3257,10 +3268,11 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     h.state_mut().state.presence =
         Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "away".into(), since: None });
     h.run_steps(2);
-    h.get_by_label("You are");
-    h.get_by_label("· counted as away");
-    h.get_by_label("orchestrator today: 4 actions · 1 reverted");
-    h.get_by_label("present").click();
+    h.get_by_label("Orchestrator");
+    h.get_by_label("Today: 4 actions · 1 reverted ▸  (t)");
+    h.get_by_label("Presence: auto (away)").click();
+    h.run_steps(2);
+    h.get_by_label("present: it proposes, you decide").click();
     h.run_steps(2);
     assert_eq!(calls_of(&calls, "presence_set"), [json!({"mode": "present"})]);
     assert_eq!(h.state().state.presence.as_ref().unwrap().effective, "present");
@@ -3286,6 +3298,7 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     h.state_mut().state.home.selected = Some("repo:billing".into());
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
     h.run_steps(2);
+    h.get_by_label_contains("Revert the orchestrator's B: agent a2 is told your override");
     h.event(egui::Event::Text("use A, outages matter".into()));
     h.run_steps(1);
     h.get_by_label("Revert").click();
@@ -3293,7 +3306,7 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     assert_eq!(calls_of(&calls, "decision_revert"), [json!({"id": "d1", "comment": "use A, outages matter"})]);
     assert!(h.state().state.toasts.iter().any(|t| t.text == "Reverted: the agent is told."));
     h.get_by_label("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here (final)");
-    assert!(h.query_by_label("Revert…  (U)").is_none(), "reverted once");
+    assert!(h.query_by_label("Revert…  (⇧U)").is_none(), "reverted once");
 }
 
 #[test]
@@ -3710,7 +3723,7 @@ fn a_branch_with_no_pr_gets_a_fix_ci_line_that_a_green_rerun_clears() {
     assert_eq!((line.name.as_str(), line.verb()), ("cart", "Fix CI"));
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    h.get_by_label("Send the failures to its agent  (d)");
+    h.get_by_label("Delegate to its agent  (d)");
     h.get_by_label("unit · Run pytest");
     h.key_press(egui::Key::D);
     h.run_steps(2);
@@ -3803,7 +3816,9 @@ fn parked_work_items_wait_folded_and_say_when_they_need_you() {
         .unwrap();
     h.run_steps(2);
     assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
-    h.get_by_label("PARKED (2) · 1 need you");
+    h.get_by_label("Parked");
+    h.get_by_label("· 1 needs you");
+    h.get_by_label("1 parked needs you ▸");
     assert!(h.query_by_label("parked: after the release").is_none(), "folded by default");
     assert_eq!(h.state().state.home.counts(), (0, 0));
     // Shift+Z shows them: a "needs you" line and a quiet one.
@@ -4053,7 +4068,7 @@ fn home_i4d_screenshots() {
         Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
         Err(_) => false,
     };
-    h.get_by_label("PARKED (1)");
+    h.get_by_label("Parked");
     if !shot(&mut h, "i4d-home-dark") {
         return;
     }
@@ -4161,7 +4176,7 @@ fn a_waiting_item_sits_in_parked_with_its_reason_and_unparks() {
     tx.send(event("status.updated", json!({"row": held}))).unwrap();
     tx.send(event("status.updated", json!({"row": why}))).unwrap();
     h.run_steps(2);
-    h.get_by_label("PARKED (2)");
+    h.get_by_label("Parked");
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Z);
     h.run_steps(2);
     h.get_by_label("waiting (board)");
@@ -4353,7 +4368,7 @@ fn enter_on_a_brief_opens_the_view_with_the_recommendation_preselected() {
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
     assert!(h.state().state.decision.is_none());
-    h.get_by_label_contains("TO SIT DOWN WITH");
+    h.get_by_label("To sit down with");
     // v opens it as well.
     h.key_press(egui::Key::V);
     h.run_steps(2);
@@ -4480,7 +4495,7 @@ fn explain_offers_restore_and_is_disabled_when_nobody_can() {
     h.key_press(egui::Key::Y);
     h.run_steps(2);
     assert!(calls_of(&calls, "decision_explain_request").is_empty(), "y never restores");
-    h.get_by_label("Restore agent and explain  (Y)").click();
+    h.get_by_label("Restore agent and explain  (⇧Y)").click();
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "decision_explain_request"), [json!({"id": "d1", "restore": true})]);
     // An orchestrator, and nothing restorable: it explains.
@@ -4657,4 +4672,685 @@ fn i5_decision_screenshots() {
     h.state_mut().state.toggle_theme(&ctx);
     h.run_steps(4);
     shot(&mut h, "i5-decision-light");
+}
+
+// --- Home, I4e: answers on the line, ages, keys, undo, counts, the
+// orchestrator strip, labels ------------------------------------------------
+
+const I4E: &[&str] = &[
+    "status",
+    "actionables",
+    "claims",
+    "gestures",
+    "decisions",
+    "holds",
+    "delegation",
+    "parked",
+    "first_responder",
+    "decision_view",
+    crate::home_view::F_APPROVAL,
+    crate::home_view::F_QUESTION,
+    crate::home_view::F_UNDO,
+    crate::home_view::F_ORCHESTRATOR,
+    crate::home_view::F_CLOSE_STOP,
+];
+
+/// An inbox item of `kind` on work item `key`, its agent a1.
+fn ask_item(key: &str, kind: &str, level: &str, detail: &str) -> serde_json::Value {
+    let id = format!("{}:/r/repo-{key}/a1", if kind == "approval" { "Approval" } else { "Question" });
+    json!({"id": id, "occurrence": format!("{id}@1"), "kind": kind, "level": level,
+           "title": if kind == "approval" { "Needs approval" } else { "Question" }, "label": "Agent a1",
+           "detail": detail, "state": format!("{}: {detail}", if kind == "approval" { "approve" } else { "answer" }),
+           "work_item": format!("repo:{key}"), "worktree_path": format!("/r/repo-{key}"), "agent_id": "a1",
+           "pr": null, "job_id": null, "exit_code": null, "blocks_agent": true, "priority": "medium",
+           "since": crate::app::unix_now() - 120.0, "park": null})
+}
+
+/// Home with the I4e engine features; `answer` gives the fake engine's
+/// replies (`{}` when None).
+fn i4e_home(
+    answer: impl FnMut(&str, &serde_json::Value) -> Option<serde_json::Value> + Send + 'static,
+) -> (Harness<'static, App>, mpsc::Sender<Msg>, Calls) {
+    let (app, tx) = engine_home(I4E);
+    let h = harness(app);
+    let calls = fake_engine(&h, answer);
+    (h, tx, calls)
+}
+
+fn send_ask(tx: &mpsc::Sender<Msg>, key: &str, kind: &str, detail: &str) {
+    let item = ask_item(key, kind, "now", detail);
+    let mut row = inbox_row(key, "now", item["id"].as_str().unwrap(), item["state"].as_str().unwrap());
+    row["agents"] = json!([{"id": "a1", "status": format!("waiting_for_{}", if kind == "approval" { "approval" } else { "user" }),
+                            "since": crate::app::unix_now() - 120.0}]);
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+}
+
+#[test]
+fn an_approval_is_answered_on_its_line_with_y_and_n() {
+    let (mut h, tx, calls) = i4e_home(|m, _| match m {
+        "status_timeline" => Some(json!({"key": "repo:cart", "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    send_ask(&tx, "cart", "approval", "rm -rf build/ && npm run build -- --prod");
+    h.run_steps(3);
+    // Enter shows the whole command, readable, with Approve and Deny.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(h.state().state.view, crate::app::View::Home, "answered here, not in the terminal");
+    h.get_by_label("rm -rf build/ && npm run build -- --prod");
+    h.get_by_label("Approve  (y)");
+    h.get_by_label("Deny  (n)");
+    assert!(crate::home_view::hint_keys(true, true, true, true, true).contains("y approve · n deny"));
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "approval_answer"), [json!({"id": "Approval:/r/repo-cart/a1", "allow": true})]);
+    assert!(calls_of(&calls, "decision_explain_request").is_empty(), "y approves here, it does not explain");
+    send_ask(&tx, "cart", "approval", "npm publish");
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "approval_answer")[1], json!({"id": "Approval:/r/repo-cart/a1", "allow": false}));
+    assert!(!h.state().state.notes_open, "n denies, it does not open the notes");
+}
+
+#[test]
+fn an_approval_whose_prompt_is_gone_says_so() {
+    let (app, tx) = engine_home(I4E);
+    let mut h = harness(app);
+    *h.state().state.conn.fake.lock().unwrap() = Some(Box::new(|method, _| {
+        Some(match method {
+            "approval_answer" => Err(lazyagent_proto::ClientError::Rpc(lazyagent_proto::RpcError {
+                code: "VALIDATION_ERROR".into(),
+                message: "The permission prompt is not on agent a1's screen: open its terminal (o)".into(),
+                data: None,
+            })),
+            _ => Ok(json!({})),
+        })
+    }));
+    h.run_steps(2);
+    send_ask(&tx, "cart", "approval", "npm test");
+    h.run_steps(3);
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert!(
+        h.state().state.toasts.iter().any(|t| t.text.contains("not on agent a1's screen")),
+        "{:?}",
+        h.state().state.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn without_the_engine_feature_an_approval_still_opens_its_terminal() {
+    let caps: Vec<&str> = I4E.iter().copied().filter(|c| *c != crate::home_view::F_APPROVAL).collect();
+    let (app, tx) = engine_home(&caps);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |_, _| None);
+    h.run_steps(2);
+    send_ask(&tx, "cart", "approval", "npm test");
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(h.state().state.view, crate::app::View::Worktrees);
+    assert!(calls_of(&calls, "approval_answer").is_empty());
+}
+
+#[test]
+fn a_question_is_answered_in_a_field_under_its_line() {
+    let (mut h, tx, calls) = i4e_home(|m, _| match m {
+        "status_timeline" => Some(json!({"key": "repo:search", "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    send_ask(&tx, "search", "question", "Should the index include archived products?");
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_label("Should the index include archived products?");
+    h.event(egui::Event::Text("No, only live ones".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(
+        calls_of(&calls, "question_answer"),
+        [json!({"key": "repo:search", "id": "Question:/r/repo-search/a1", "text": "No, only live ones"})]
+    );
+    assert!(h.state().state.toasts.iter().any(|t| t.text == "Sent to agent a1 once its turn is over."));
+}
+
+#[test]
+fn an_expanded_brief_takes_1_to_4_and_ctrl_enter() {
+    let (mut h, tx, calls) = i4e_home(|m, p| match m {
+        "decision_answer" => {
+            let mut d = brief("d1", "billing", true);
+            (d["state"], d["answered_by"]) = (json!("answered"), json!("user"));
+            d["answer"] = json!({"choice": p["choice"], "at": crate::app::unix_now()});
+            Some(json!({"decision": d}))
+        }
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    tx.send(event("decision.created", json!({"decision": brief("d1", "billing", true)}))).unwrap();
+    tx.send(event("actionable.created", json!({"item": brief_item("d1", "billing", "deep", true)}))).unwrap();
+    tx.send(event("status.updated", json!({"row": inbox_row("billing", "deep", "Decision:d1", "decide")}))).unwrap();
+    tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(3);
+    h.state_mut().state.home.expanded = Some("repo:billing".into());
+    h.state_mut().state.home.selected = Some("repo:billing".into());
+    h.run_steps(2);
+    h.get_by_label("Answer A  (Ctrl+Enter)");
+    // 2 picks B (it does not jump to the Round).
+    h.key_press(egui::Key::Num2);
+    h.run_steps(2);
+    assert_eq!(h.state().state.home.selected.as_deref(), Some("repo:billing"));
+    h.get_by_label("Answer B  (Ctrl+Enter)");
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_answer"), [json!({"id": "d1", "choice": "B", "comment": ""})]);
+    // Collapsed, 4 jumps to In flight again.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    assert!(h.state().state.home.expanded.is_none(), "Esc collapses the expanded line");
+    h.key_press(egui::Key::Num4);
+    h.run_steps(1);
+    assert_eq!(h.state().state.home.selected.as_deref(), Some("repo:cart"));
+}
+
+#[test]
+fn zone_jumps_tab_and_esc() {
+    let (mut h, tx, _calls) = i4e_home(|m, p| match m {
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    send_ask(&tx, "cart", "approval", "npm test");
+    let mut red = status_row("tax", "inbox", Some("round"), "you", "CI red: tests", 300.0);
+    red["rule"] = json!(5);
+    tx.send(event("status.updated", json!({"row": red}))).unwrap();
+    tx.send(event("status.updated", json!({"row": status_row("search", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(3);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(1);
+    let selected = |h: &Harness<'static, App>| h.state().state.home.selected.clone().unwrap_or_default();
+    h.key_press(egui::Key::Num4);
+    h.run_steps(1);
+    assert_eq!(selected(&h), "repo:search");
+    h.key_press(egui::Key::Num2);
+    h.run_steps(1);
+    assert_eq!(selected(&h), "repo:tax");
+    h.key_press(egui::Key::Num3);
+    h.run_steps(1);
+    assert!(h.state().state.toasts.iter().any(|t| t.text == "Nothing in To sit down with."));
+    h.key_press(egui::Key::Tab);
+    h.run_steps(1);
+    assert_eq!(selected(&h), "repo:cart", "Tab: the next that needs you, wrapping");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(1);
+    assert_eq!(selected(&h), "repo:tax");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(1);
+    assert_eq!(h.state().state.home.expanded.as_deref(), Some("repo:tax"));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    assert!(h.state().state.home.expanded.is_none());
+}
+
+#[test]
+fn the_hint_bar_is_pinned_to_the_bottom_with_shifted_keys() {
+    let (mut h, tx, _calls) = i4e_home(|_, _| None);
+    h.run_steps(2);
+    for i in 0..60 {
+        let key = format!("b{i:02}");
+        tx.send(event("status.updated", json!({"row": status_row(&key, "in_flight", None, "agent", "Edit", 60.0)})))
+            .unwrap();
+    }
+    h.run_steps(3);
+    let bar = h.get_by_label_contains("⇧X close");
+    let text = text_of(&bar);
+    for key in ["⇧X", "⇧U", "⇧O", "⇧Z", "⇧M"] {
+        assert!(text.contains(key), "{key} in {text}");
+    }
+    let bottom = bar.rect().max.y;
+    assert!(bottom > 880.0 - 60.0, "the bar stays at the bottom with a long list: {bottom}");
+}
+
+#[test]
+fn undo_takes_back_a_dismiss_a_park_a_delegation_and_a_pass() {
+    let (mut h, tx, calls) = i4e_home(|m, p| match m {
+        "status_gesture" => Some(json!({"key": p["key"], "claim": null, "gesture": null, "kept": false, "row": null})),
+        "actionables_mark" => Some(json!({"item": ask_item("cart", "approval", "now", "npm test")})),
+        _ => None,
+    });
+    h.state_mut().state.store.orchestrator =
+        vec![serde_json::from_value(agent("", "Orchestrator", "waiting", "so")).unwrap()];
+    h.run_steps(2);
+    send_ask(&tx, "cart", "approval", "npm test");
+    h.run_steps(3);
+    h.key_press(egui::Key::X);
+    h.run_steps(2);
+    h.get_by_label("Dismissed cart");
+    h.get_by_label("Undo  (Ctrl+Z)").click();
+    h.run_steps(2);
+    assert_eq!(
+        calls_of(&calls, "actionables_mark")[1],
+        json!({"id": "Approval:/r/repo-cart/a1", "action": "undismiss"})
+    );
+    // A park of the item: unpark. Ctrl+Z works as the button.
+    let line = h.state().state.home.lines["repo:cart"].clone();
+    h.state_mut().state.park_line(&line, crate::home_view::Park::For(3600.0), false);
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "actionables_mark")[3], json!({"id": "Approval:/r/repo-cart/a1", "action": "unpark"}));
+    // A delegation and a pass: the engine's undo of just that.
+    let mut red = status_row("tax", "inbox", Some("round"), "you", "CI red: tests", 300.0);
+    red["needs_you"] = json!({"count": 1, "top": "Ci:/r/repo-tax:7"});
+    red["agents"] = json!([{"id": "a3", "status": "waiting", "since": 0.0}]);
+    let mut ci = ci_item("tax");
+    ci["id"] = json!("Ci:/r/repo-tax:7");
+    tx.send(event("actionable.created", json!({"item": ci}))).unwrap();
+    tx.send(event("status.updated", json!({"row": red}))).unwrap();
+    h.run_steps(2);
+    let line = h.state().state.home.lines["repo:tax"].clone();
+    h.state_mut().state.delegate_line(&line);
+    h.run_steps(2);
+    h.get_by_label("Delegated tax to its agent");
+    h.get_by_label("Undo  (Ctrl+Z)").click();
+    h.run_steps(2);
+    let gestures = calls_of(&calls, "status_gesture");
+    assert_eq!(gestures.last().unwrap(), &json!({"key": "repo:tax", "kind": "undo", "what": "delegate"}));
+    h.state_mut().state.pass_line(&line);
+    h.run_steps(2);
+    h.get_by_label("Passed tax to the orchestrator");
+    // After 5 s the Undo is gone.
+    h.state_mut().state.undo.as_mut().unwrap().at -= crate::home_view::UNDO_FOR;
+    h.run_steps(2);
+    assert!(h.query_by_label("Undo  (Ctrl+Z)").is_none());
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run_steps(2);
+    assert!(!calls_of(&calls, "status_gesture").iter().any(|p| p["what"] == "pass"), "too late to undo");
+}
+
+#[test]
+fn shift_x_says_what_it_closes_and_stops_the_agent_only() {
+    let (mut h, tx, calls) = i4e_home(|m, p| match m {
+        "status_gesture" => Some(json!({"key": p["key"], "claim": null, "gesture": null, "kept": false, "row": null,
+                                        "stopped": ["a1"]})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    let mut row = status_row("cart", "in_flight", None, "agent", "working", 60.0);
+    row["agents"] = json!([{"id": "a1", "status": "running", "since": crate::app::unix_now() - 300.0}]);
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    h.run_steps(2);
+    h.get_by_label(
+        "Close this work item: it leaves Home after a day. Agent a1 is stopped; its notes are kept. The worktree, the \
+         branch and the PR are not touched.",
+    );
+    assert!(calls_of(&calls, "status_gesture").is_empty(), "nothing before the confirmation");
+    h.get_by_label("Close as done and stop").click();
+    h.run_steps(2);
+    assert_eq!(
+        calls_of(&calls, "status_gesture"),
+        [json!({"key": "repo:cart", "kind": "close", "how": "done", "stop_agents": true})]
+    );
+    assert_eq!(
+        crate::home_view::close_text(&["a1".into()], false),
+        "Close this work item: it leaves Home after a day. Its agents keep running (this engine does not stop them). \
+         The worktree, the branch and the PR are not touched."
+    );
+}
+
+#[test]
+fn a_first_launch_shows_no_dots_and_marks_what_was_never_looked_at_once() {
+    let (mut h, tx, calls) = i4e_home(|_, _| None);
+    h.run_steps(2);
+    let mut fresh = status_row("cart", "in_flight", None, "agent", "Edit", 60.0);
+    fresh["last_event_at"] = json!(crate::app::unix_now() - 30.0);
+    let mut looked = status_row("tax", "in_flight", None, "agent", "Edit", 60.0);
+    (looked["last_event_at"], looked["seen_at"]) =
+        (json!(crate::app::unix_now() - 30.0), json!(crate::app::unix_now() - 600.0));
+    tx.send(event("status.updated", json!({"row": fresh.clone()}))).unwrap();
+    tx.send(event("status.updated", json!({"row": looked}))).unwrap();
+    h.run_steps(3);
+    let seen = calls_of(&calls, "status_seen");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["key"], "repo:cart");
+    let home = &h.state().state.home;
+    assert!(!home.lines["repo:cart"].unseen(0.0), "no dot for what was never looked at");
+    assert!(home.lines["repo:tax"].unseen(0.0), "a real change since a real look keeps its dot");
+    // Once: the engine's next row (still null, say) is not marked again.
+    tx.send(event("status.updated", json!({"row": fresh}))).unwrap();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "status_seen").len(), 1);
+}
+
+#[test]
+fn a_working_line_reads_its_age_and_report_and_held_lines_their_last_step() {
+    let (mut h, tx, _calls) = i4e_home(|_, _| None);
+    h.run_steps(2);
+    let now = crate::app::unix_now();
+    let mut working = status_row("cart", "in_flight", None, "agent", "mcp__lazyagent_app__notes_append done", 60.0);
+    working["agents"] = json!([{"id": "a1", "status": "running", "since": now - 720.0}]);
+    working["note"] = json!({"text": "tests pass; opening the PR", "by": "agent:a1", "at": now - 60.0});
+    let mut held = status_row("search", "in_flight", None, "agent", "orchestrator · verifying tests", 600.0);
+    held["rule"] = json!(15);
+    held["holder"] = json!("orchestrator");
+    held["hold"] = json!({"key": "repo:search", "holder": "orchestrator", "at": now - 600.0, "until": now + 3000.0,
+                          "by": "orchestrator", "note": "verifying tests", "auto": false});
+    held["last_step"] = json!({"at": now - 240.0, "kind": "ci", "actor": "engine", "text": "CI green"});
+    let mut delegated = status_row("tax", "in_flight", None, "agent", "agent a3 · fixing CI red: tests", 60.0);
+    delegated["rule"] = json!(16);
+    delegated["holder"] = json!("agent");
+    let mut input = status_row("pdf", "in_flight", None, "agent", "waits: waiting_for_input", 60.0);
+    input["rule"] = json!(12);
+    for r in [working, held, delegated, input] {
+        tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    }
+    h.run_steps(3);
+    h.get_by_label("working · 12m · tests pass; opening the PR");
+    assert!(h.query_by_label_contains("notes_append").is_none(), "never a tool name");
+    h.get_by_label("verifying tests · 50m left");
+    h.get_by_label("last step: CI green (4m ago)");
+    h.get_by_label("agent a3 · fixing CI red: tests");
+    h.get_by_label("waits: waiting for input");
+    assert!(h.query_all_by_label("orchestrator").count() >= 1);
+}
+
+#[test]
+fn the_orchestrator_strip_says_what_it_does_holds_and_did_today() {
+    let now = crate::app::unix_now();
+    let (mut h, tx, calls) = i4e_home(move |m, p| match m {
+        "orchestrator_actions" => Some(json!({"actions": [
+            {"key": "repo:billing", "at": now - 300.0, "kind": "decision", "action": "answer_reversible",
+             "text": "decided by orchestrator (away): Retries? → B", "reason": "fixed is enough here",
+             "mandate": "away", "decision_id": "d1", "revertible": true},
+            {"key": "repo:cart", "at": now - 900.0, "kind": "action", "action": "ci_rerun", "text": "re-ran CI",
+             "reason": null, "mandate": "present", "decision_id": null, "revertible": false}]})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    let s = &mut h.state_mut().state;
+    s.status_counts.auto_actions = Some(2);
+    s.status_counts.auto_reverted = Some(0);
+    s.presence =
+        Some(lazyagent_proto::types::Presence { mode: Some("auto".into()), effective: "present".into(), since: None });
+    s.orchestrator = Some(serde_json::from_value(json!({"alive": true,
+        "report": {"note": "verifying cart's tests", "at": now - 120.0},
+        "queue": [{"key": "repo:search", "kind": "hold", "note": "waiting on your merge", "until": now + 1800.0,
+                   "by": "orchestrator", "auto": false},
+                  {"key": "repo:tax", "kind": "pass", "note": null, "until": now + 3600.0, "by": "user", "auto": false}]}))
+    .unwrap());
+    h.run_steps(2);
+    let mut d = brief("d1", "billing", true);
+    (d["answered_by"], d["revertible"], d["state"]) = (json!("orchestrator"), json!(true), json!("answered"));
+    d["answer"] = json!({"choice": "B", "reason": "fixed is enough here"});
+    d["closed_at"] = json!(now - 300.0);
+    d["inverse"] = json!([{"kind": "git_reset", "sha": "abc1234def", "branch": "billing"}]);
+    tx.send(event("decision.answered", json!({"decision": d}))).unwrap();
+    tx.send(event("status.updated", json!({"row": status_row("billing", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(3);
+    h.get_by_label("verifying cart's tests · 2m ago");
+    h.get_by_label("Queue: search · waiting on your merge · 30m left  ·  tax · passed · 1h 00m left");
+    h.get_by_label("Presence: auto (present)");
+    h.key_press(egui::Key::T);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "orchestrator_actions").len(), 1);
+    h.get_by_label_contains("re-ran CI");
+    h.get_by_label("Revert…").click();
+    h.run_steps(2);
+    assert_eq!(h.state().state.home.expanded.as_deref(), Some("repo:billing"));
+    h.get_by_label(
+        "Revert the orchestrator's B: agent a2 is told your override, and the branch is reset to abc1234 if nothing \
+         was pushed since.",
+    );
+}
+
+#[test]
+fn labels_are_imperatives_items_are_counted_and_since_you_looked_says_nothing_new() {
+    let (mut h, tx, _calls) = i4e_home(|m, p| match m {
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    let item = ask_item("cart", "approval", "now", "npm test");
+    let mut row = inbox_row("cart", "now", item["id"].as_str().unwrap(), "approve: npm test");
+    row["needs_you"] = json!({"count": 2, "top": item["id"]});
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    let mut nobody = status_row("pdf", "inbox", Some("round"), "you", "PR has no reviewer", 600.0);
+    nobody["rule"] = json!(10);
+    nobody["urls"] = json!(["https://example.com/repo/pull/16"]);
+    tx.send(event("status.updated", json!({"row": nobody}))).unwrap();
+    h.run_steps(3);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    h.get_by_label("2 items");
+    assert!(h.query_by_label("+1").is_none());
+    h.get_by_label("Request reviewer");
+    // Expanded: the short name is not repeated, nothing new, at most six
+    // buttons and the rest under More….
+    h.state_mut().state.home.selected = Some("repo:pdf".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_label("nothing new");
+    assert_eq!(h.query_all_by_label("pdf").count(), 1, "the branch once, on the line");
+    h.get_by_label("More…").click();
+    h.run_steps(2);
+    h.get_by_label("Close…  (⇧X)");
+}
+
+#[test]
+fn the_auto_delegation_menu_is_wide_enough_to_wrap_by_words() {
+    let (mut h, _tx, _calls) = i4e_home(|m, _| match m {
+        "inbox_config_get" => Some(json!({"config": {"repo": "repo", "auto_delegate": ["ci_red"],
+                                                     "auto_delegate_target": "owner"}})),
+        _ => None,
+    });
+    h.run_steps(2);
+    h.get_by_label("Auto-delegation ▾").click();
+    h.run_steps(3);
+    let first = h.get_by_label_contains("When one of these stalls in");
+    assert!(first.rect().width() >= 200.0, "{:?}", first.rect());
+    let menu = h.get_by_label("Conflict with the base branch");
+    assert!(menu.rect().width() > 120.0, "a checkbox label is not a column of letters: {:?}", menu.rect());
+    // The offscreen render, for the record (no GPU: skipped).
+    let _ = h.render();
+}
+
+/// Home after I4e, in dark and light at 1600 and 1100 points wide, for
+/// docs/design/desktop-screenshots/i4e-*.png: the orchestrator strip with
+/// its queue and today's actions, an approval answered on its line, a
+/// question's field, the Round with the next one dimmed under it and the
+/// parked chip, a working line with its report, a held line's last step.
+#[test]
+fn home_i4e_screenshots() {
+    let now = crate::app::unix_now();
+    let w = |b: &str| format!("/home/dev/shop-{b}");
+    for (width, tag) in [(1600.0, "1600"), (1100.0, "1100")] {
+        let (tx, rx) = mpsc::channel();
+        let state_dir = tempfile::tempdir().unwrap().keep();
+        let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+        let conn = Conn::new("/home/dev/shop".into(), env, tx.clone(), egui::Context::default());
+        let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+        state.capabilities = Some(I4E.iter().map(|c| c.to_string()).collect());
+        state.look_from = now - 1800.0;
+        state.presence = Some(lazyagent_proto::types::Presence {
+            mode: Some("auto".into()),
+            effective: "present".into(),
+            since: None,
+        });
+        state.status_counts.auto_actions = Some(3);
+        state.status_counts.auto_reverted = Some(0);
+        state.status_counts.not_started = 2;
+        state.status_counts.deep_max = 5;
+        state.orchestrator = Some(
+            serde_json::from_value(json!({"alive": true,
+                "report": {"note": "verifying search-filters: running the unit tests", "at": now - 120.0},
+                "queue": [{"key": "shop:search-filters", "kind": "hold", "note": "verifying tests", "until": now + 3000.0,
+                           "by": "orchestrator", "auto": false},
+                          {"key": "shop:cart-discount", "kind": "pass", "note": null, "until": now + 6600.0, "by": "user",
+                           "auto": false}]}))
+            .unwrap(),
+        );
+        state.orchestrator_actions = Some(
+            serde_json::from_value(json!([
+                {"key": "shop:billing-retries", "at": now - 300.0, "kind": "decision", "action": "answer_quick",
+                 "text": "decided: retries → B", "reason": "fixed is enough here", "mandate": "present",
+                 "decision_id": "d9", "revertible": true},
+                {"key": "shop:stock-sync", "at": now - 1500.0, "kind": "action", "action": "ci_rerun",
+                 "text": "re-ran CI", "reason": null, "mandate": "present", "decision_id": null, "revertible": false}]))
+            .unwrap(),
+        );
+        let branches = [
+            "cart-discount",
+            "billing-retries",
+            "search-filters",
+            "invoice-pdf",
+            "order-export",
+            "stock-sync",
+            "docs-index",
+            "tax-rules",
+            "refunds",
+        ];
+        let trees: Vec<_> = std::iter::once(worktree("/home/dev/shop", "main", vec![]))
+            .chain(branches.iter().map(|b| worktree(&w(b), b, vec![])))
+            .collect();
+        let seed: SidebarState = serde_json::from_value(json!({
+            "worktrees": trees, "orchestrator": {"agents": [agent("", "Orchestrator", "waiting", "so")]},
+            "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+        }))
+        .unwrap();
+        tx.send(Msg::Link(Link::Connected)).unwrap();
+        tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+        let row = |b: &str, zone: &str, level: Option<&str>, ball: &str, st: &str, ago: f64| {
+            let mut r = status_row(b, zone, level, ball, st, ago);
+            r["key"] = json!(format!("shop:{b}"));
+            r["repo"] = json!("shop");
+            r["worktree_path"] = json!(w(b));
+            (r["seen_at"], r["last_event_at"]) = (json!(now - 1800.0), json!(now - ago.min(3600.0) * 0.5));
+            r
+        };
+        let item = |b: &str, kind: &str, detail: &str| {
+            let mut i = ask_item(b, kind, "now", detail);
+            let id = format!("{}:{}/a1", if kind == "approval" { "Approval" } else { "Question" }, w(b));
+            (i["id"], i["work_item"], i["worktree_path"]) = (json!(id), json!(format!("shop:{b}")), json!(w(b)));
+            i
+        };
+        let approval = item("invoice-pdf", "approval", "rm -rf build/ && npm run build -- --prod && npm test");
+        let mut approve = row("invoice-pdf", "inbox", Some("now"), "you", "approve: rm -rf build/", 120.0);
+        approve["needs_you"] = json!({"count": 1, "top": approval["id"]});
+        approve["agents"] = json!([{"id": "a1", "status": "waiting_for_approval", "since": now - 120.0}]);
+        let question = item("refunds", "question", "Refund the shipping fee too, or only the items?");
+        let mut ask = row("refunds", "inbox", Some("now"), "you", "answer: refund shipping?", 300.0);
+        ask["needs_you"] = json!({"count": 1, "top": question["id"]});
+        let mut red = row("tax-rules", "inbox", Some("round"), "you", "CI red: tests", 900.0);
+        red["rule"] = json!(5);
+        let mut nobody = row("order-export", "inbox", Some("round"), "you", "PR has no reviewer", 2400.0);
+        nobody["rule"] = json!(10);
+        let mut working = row("stock-sync", "in_flight", None, "agent", "working", 700.0);
+        working["agents"] = json!([{"id": "a4", "status": "running", "since": now - 720.0}]);
+        working["note"] = json!({"text": "tests pass; opening the PR", "by": "agent:a4", "at": now - 60.0});
+        let mut held = row("search-filters", "in_flight", None, "agent", "orchestrator · verifying tests", 600.0);
+        (held["rule"], held["holder"]) = (json!(15), json!("orchestrator"));
+        held["hold"] = json!({"key": "shop:search-filters", "holder": "orchestrator", "at": now - 600.0,
+                              "until": now + 3000.0, "by": "orchestrator", "note": "verifying tests", "auto": false});
+        held["last_step"] = json!({"at": now - 240.0, "kind": "ci", "actor": "engine", "text": "CI green"});
+        let mut passed = row("cart-discount", "in_flight", None, "agent", "orchestrator · looking", 600.0);
+        (passed["rule"], passed["holder"]) = (json!(13), json!("orchestrator"));
+        passed["claim"] = json!({"key": "shop:cart-discount", "holder": "orchestrator", "at": now - 600.0,
+                                 "until": now + 6600.0, "by": "user", "allowed": ["answer_quick", "ci_rerun"]});
+        let mut delegated =
+            row("billing-retries", "in_flight", None, "agent", "agent a2 · fixing conflict with base", 400.0);
+        (delegated["rule"], delegated["holder"]) = (json!(16), json!("agent"));
+        let mut stalled = row("docs-index", "in_flight", None, "stalled", "no activity", 3.0 * 86400.0);
+        stalled["rule"] = json!(11);
+        let mut parked = row("cart-coupons", "parked", None, "you", "parked until something changes", 900.0);
+        parked["rule"] = json!(7);
+        parked["gesture"] = json!({"kind": "park", "at": now - 900.0, "by": "user", "until": "change"});
+        parked["needs_you"] = json!({"count": 1, "top": "Question:/home/dev/shop-cart-coupons/a5"});
+        let events = vec![
+            event("actionable.created", json!({"item": approval})),
+            event("actionable.created", json!({"item": question})),
+        ];
+        let rows = vec![approve, ask, red, working, held, passed, delegated, stalled, parked];
+        let mut h = Harness::builder()
+            .with_size([width, 980.0])
+            .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+        h.run_steps(2);
+        fake_engine(&h, |m, p| match m {
+            "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+            _ => None,
+        });
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        for r in rows {
+            tx.send(event("status.updated", json!({"row": r}))).unwrap();
+        }
+        h.run_steps(3);
+        h.state_mut().state.inbox_loaded = 3;
+        h.state_mut().state.inbox_gen += 1;
+        h.run_steps(2);
+        h.state_mut().state.home.cut(now);
+        // One more for the next round, after this one was delivered.
+        tx.send(event("status.updated", json!({"row": nobody}))).unwrap();
+        h.run_steps(2);
+        let s = &mut h.state_mut().state;
+        s.home.strip_open = true;
+        s.home.selected = Some("shop:invoice-pdf".into());
+        s.home.expanded = Some("shop:invoice-pdf".into());
+        s.undo = Some(crate::home_view::Undo {
+            text: "Dismissed tax-rules".into(),
+            act: crate::home_view::UndoAct::Undismiss("x".into()),
+            at: now - 1.0,
+        });
+        h.run_steps(4);
+        h.state_mut().state.toasts.clear();
+        h.run_steps(2);
+        h.get_by_label("Round (+1 next)");
+        h.get_by_label("1 parked needs you ▸");
+        h.get_by_label("Approve  (y)");
+        // The list stops at CONTENT_MAX: the age sits near its state.
+        let left = h.get_by_label("In flight").rect().min.x;
+        let age = h.get_all_by_label("11m").map(|n| n.rect().max.x).fold(0.0_f32, f32::max);
+        assert!(age > left && age - left <= crate::home_view::CONTENT_MAX + 20.0, "{age} vs {left}");
+        let out = std::env::temp_dir();
+        let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+            Ok(image) => {
+                image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+                true
+            }
+            Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+            Err(_) => false,
+        };
+        if !shot(&mut h, &format!("i4e-home-dark-{tag}")) {
+            return;
+        }
+        let ctx = h.ctx.clone();
+        h.state_mut().state.toggle_theme(&ctx);
+        h.run_steps(4);
+        shot(&mut h, &format!("i4e-home-light-{tag}"));
+        if tag == "1600" {
+            // The auto-delegation menu, open: wide enough for its sentences.
+            fake_engine(&h, |m, _| match m {
+                "inbox_config_get" => Some(json!({"config": {"repo": "shop", "auto_delegate": ["ci_red"],
+                                                             "auto_delegate_target": "owner"}})),
+                _ => None,
+            });
+            h.get_by_label("Auto-delegation ▾").click();
+            h.run_steps(4);
+            let label = h.get_by_label_contains("When one of these stalls in");
+            assert!(label.rect().width() >= 200.0, "{:?}", label.rect());
+            shot(&mut h, "i4e-auto-delegation-light");
+        }
+    }
 }

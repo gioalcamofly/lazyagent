@@ -317,8 +317,11 @@ async def test_report_rules():
         await methods.status_report({"note": "x"})
     _agent(engine, ORCHESTRATOR_KEY, "", "running")
     engine._tokens["tok-orch"] = (ORCHESTRATOR_KEY, "")
-    with pytest.raises(ValueError, match="not the orchestrator"):
-        await methods.status_report({"note": "x", "caller": "tok-orch"})
+    # The orchestrator reports only what it is doing now, on no work item.
+    mine = await methods.status_report({"note": "verifying feat", "caller": "tok-orch"})
+    assert (mine["key"], mine["report"]["note"]) == (None, "verifying feat")
+    with pytest.raises(ValueError, match="reports only a note"):
+        await methods.status_report({"note": "x", "ball": "others", "caller": "tok-orch"})
     with pytest.raises(ValueError, match="use needs_user"):
         await _report(engine, note="x", ball="you")
     with pytest.raises(ValueError, match="Nothing to report"):
@@ -388,7 +391,7 @@ async def test_a_tool_line_is_not_a_timeline_entry():
     _agent(engine, FEAT, "a1", "running", "Bash")
     _row(engine)
     _agent(engine, FEAT, "a1", "running", "Edit")
-    assert _row(engine)["state"] == "Edit"
+    assert _row(engine)["state"] == "working"
     assert _timeline(engine) == []
 
 

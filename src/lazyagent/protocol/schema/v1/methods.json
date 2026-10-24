@@ -788,7 +788,7 @@
     "status_row": {
       "type": "object",
       "description": "One work item (proposal 0013): a branch with its worktree, agents and PR, projected by the engine; nothing in it is stored.",
-      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint", "class", "seen_at", "last_event_at"],
+      "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint", "class", "seen_at", "last_event_at", "activity_at", "last_step"],
       "properties": {
         "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached)."},
         "repo": {"type": "string", "description": "The repo root's directory name."},
@@ -872,7 +872,9 @@
         "class": {"enum": ["quick", "deep", null], "description": "Inbox rows only: deep when its level is deep (needs reading), else quick."},
         "seen_at": {"type": ["number", "null"], "description": "The user's last look at it (status_seen: this item's mark or 'all seen', the later); null: never."},
         "last_event_at": {"type": ["number", "null"], "description": "Its latest timeline entry (status_timeline); later than seen_at: changed since the user looked."},
-        "holder": {"enum": ["user", "orchestrator", null], "description": "Who answers what the item asks: orchestrator while it holds a routed brief or question (state 'orchestrator · looking'), user while the row is in the inbox, else null (feature first_responder)."},
+        "holder": {"enum": ["user", "orchestrator", "agent", null], "description": "Who has the ball (feature first_responder; agent with orchestrator_activity): user for an inbox row, and a parked row whose items are still the user's; orchestrator while it holds the item (a pass, rule 13; its hold, rule 15; a routed brief or question, rule 14); agent while an agent has it directly (it works, idles on the item, reported the ball, or was delegated the item, rule 16); else null (others, stalled, done)."},
+        "activity_at": {"type": ["number", "null"], "description": "The newest sign of work on the item (feature orchestrator_activity): the branch's last commit, its agents' notes edits (live or restorable), the agent's status_report, a timeline entry by someone other than the engine, an agent status change the engine saw happen (not the first sighting when it starts). A stalled row's changed_at is this (never the engine's start), and 'no activity' compares it with [status] stalled_hours. Null: nothing known."},
+        "last_step": {"oneOf": [{"type": "object", "required": ["at", "kind", "actor", "text"], "properties": {"at": {"type": "number"}, "kind": {"type": "string"}, "actor": {"type": "string"}, "text": {"type": "string"}}}, {"type": "null"}], "description": "The newest timeline entry that is not a ball or state change (feature orchestrator_activity)."},
         "project": {"oneOf": [{"$ref": "#/$defs/work_item_project"}, {"type": "null"}], "description": "The linked feeder work item's project (feature work_items); absent when no feeder item is linked."},
         "depends_on": {"type": "array", "items": {"type": "string"}, "description": "The linked feeder work item's dependencies (URLs); absent when none is linked."},
         "waits_on": {"type": "array", "items": {"$ref": "#/$defs/work_item_dependency"}, "description": "Of those, the ones still open or in review: 'waits on <title>'."},
@@ -1024,6 +1026,31 @@
           }
         },
         "presence": {"$ref": "#/$defs/presence"},
+        "orchestrator": {
+          "type": "object",
+          "description": "The orchestrator as Home shows it (feature orchestrator_activity).",
+          "required": ["alive", "report", "queue"],
+          "properties": {
+            "alive": {"type": "boolean"},
+            "report": {"oneOf": [{"type": "object", "required": ["note", "at"], "properties": {"note": {"type": "string"}, "at": {"type": "number"}}}, {"type": "null"}], "description": "Its last status_report: what it says it is doing now."},
+            "queue": {
+              "type": "array",
+              "description": "The passes and holds in force, soonest until first.",
+              "items": {
+                "type": "object",
+                "required": ["key", "kind", "note", "until", "by", "auto"],
+                "properties": {
+                  "key": {"type": "string"},
+                  "kind": {"enum": ["pass", "hold"]},
+                  "note": {"type": "string", "description": "A hold's note; empty for a pass."},
+                  "until": {"type": "number"},
+                  "by": {"type": "string", "description": "user (a pass), orchestrator or engine (a hold)."},
+                  "auto": {"type": "boolean", "description": "The engine's hold on its worker's done or review item."}
+                }
+              }
+            }
+          }
+        },
         "not_started_items": {"type": "array", "items": {"type": "object", "required": ["url", "title", "source", "priority"]}, "description": "What counts.not_started counts, highest priority first (present when a feeder has work items): feeder items as work_item plus startable, tracker tasks as {url, title, source: tracker:<adapter>, priority, ticket}."},
         "generated_at": {"type": "number"}
       }
@@ -1145,7 +1172,7 @@
       "required": ["id", "action"],
       "properties": {
         "id": {"type": "string"},
-        "action": {"enum": ["dismiss", "park", "unpark"], "description": "dismiss hides this occurrence for every client; park hides the item until 'until'; unpark shows it again."},
+        "action": {"enum": ["dismiss", "park", "unpark", "undismiss"], "description": "dismiss hides this occurrence for every client; park hides the item until 'until'; unpark shows it again; undismiss brings back the dismissed current occurrence, and for 10 minutes what the dismissal forgot (an exit, a failed job, a delegation, a claim handed back; feature undo)."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park only: required."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The orchestrator's token, or none (the user); a worker's token is refused."}
       }
@@ -1220,7 +1247,9 @@
       "required": ["key", "kind"],
       "properties": {
         "key": {"type": "string", "description": "A work item key (status_list rows)."},
-        "kind": {"enum": ["label", "park", "close", "delegate", "keep_for_me", "clear"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); keep_for_me: the orchestrator's mandate there is none (nothing is routed to it); clear: drop the gesture, the keep and take back a pass."},
+        "kind": {"enum": ["label", "park", "close", "delegate", "keep_for_me", "clear", "undo"], "description": "label: a ball and a short text until the facts cross a rule; park: until a time or an event; close: done or dropped; delegate: pass the item to the orchestrator (a claim); keep_for_me: the orchestrator's mandate there is none (nothing is routed to it); clear: drop the gesture, the keep and take back a pass; undo: reverse only 'what' (feature undo)."},
+        "what": {"enum": ["park", "delegate", "pass"], "description": "undo only (required): park (the user's park goes, the gesture it replaced comes back), delegate (the delegation to the agent ends, its pending line is dropped), pass (the claim ends; a hold stays)."},
+        "stop_agents": {"type": "boolean", "default": false, "description": "close only (feature close_stop): also stop every agent of the item's worktree, their notes kept; the worktree, branch and PR are left alone."},
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label only (required)."},
         "text": {"type": "string", "description": "label: at most 40 characters; park: the reason (optional); delegate to agent: the line the agent gets (default: the item's fact)."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park only (required)."},
@@ -1241,6 +1270,9 @@
         "gesture": {"oneOf": [{"$ref": "#/$defs/gesture"}, {"type": "null"}]},
         "kept": {"type": "boolean", "description": "keep_for_me holds on the item."},
         "delegation": {"$ref": "#/$defs/delegation", "description": "delegate to agent: the delegation made."},
+        "stopped": {"type": "array", "items": {"type": "string"}, "description": "close only: the agents stopped (stop_agents), empty otherwise."},
+        "undone": {"enum": ["park", "delegate", "pass"], "description": "undo only: what was reversed."},
+        "delegation_sent": {"type": "boolean", "description": "undo delegate: the line had already reached the agent (it may act on it)."},
         "row": {"oneOf": [{"$ref": "#/$defs/status_row"}, {"type": "null"}]}
       }
     },
@@ -1271,7 +1303,7 @@
       "required": ["at", "kind", "actor", "text"],
       "properties": {
         "at": {"type": "number", "description": "When it happened (a commit: its commit time)."},
-        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward", "action", "delegate"]},
+        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward", "action", "delegate", "approval", "undo"]},
         "actor": {"type": "string", "description": "user, agent:<id>, orchestrator or engine (what the engine saw)."},
         "text": {"type": "string", "description": "At most 200 characters."},
         "ref": {"type": "string", "description": "A commit sha, a decision id, a notes id, or an outward action's ref."},
@@ -1297,27 +1329,38 @@
             "text": {"type": "string"}
           }
         },
-        "caller": {"$ref": "#/$defs/notes_caller", "description": "The agent's token (required): the report is on its own work item."}
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The agent's token (required): the report is on its own work item. The orchestrator's token: only a note, what it is doing now (status_list orchestrator.report, feature orchestrator_activity)."}
       }
     },
     "status_report.result": {
       "type": "object",
       "required": ["key", "report", "outward"],
       "properties": {
-        "key": {"type": "string"},
+        "key": {"type": ["string", "null"], "description": "The worker's work item; null for the orchestrator's report."},
         "report": {
-          "type": ["object", "null"],
-          "required": ["agent", "worktree_path", "label", "note", "ball", "needs_user", "at", "turn_over"],
-          "properties": {
-            "agent": {"type": "string"},
-            "worktree_path": {"type": "string"},
-            "label": {"type": "string"},
-            "note": {"type": "string"},
-            "ball": {"enum": ["agent", "others", "stalled", null]},
-            "needs_user": {"type": "boolean"},
-            "at": {"type": "number"},
-            "turn_over": {"type": "boolean", "description": "The agent has ended a turn since."}
-          }
+          "description": "A worker's report, or the orchestrator's {note, at}.",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["agent", "worktree_path", "label", "note", "ball", "needs_user", "at", "turn_over"],
+              "properties": {
+                "agent": {"type": "string"},
+                "worktree_path": {"type": "string"},
+                "label": {"type": "string"},
+                "note": {"type": "string"},
+                "ball": {"enum": ["agent", "others", "stalled", null]},
+                "needs_user": {"type": "boolean"},
+                "at": {"type": "number"},
+                "turn_over": {"type": "boolean", "description": "The agent has ended a turn since."}
+              }
+            },
+            {
+              "type": "object",
+              "required": ["note", "at"],
+              "properties": {"note": {"type": "string"}, "at": {"type": "number"}}
+            },
+            {"type": "null"}
+          ]
         },
         "outward": {"oneOf": [{"$ref": "#/$defs/timeline_entry"}, {"type": "null"}]}
       }
@@ -1733,6 +1776,82 @@
         },
         "text": {"type": "string", "description": "The summary as an agent gets it on a delegation (at most 6000 characters)."},
         "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there."}
+      }
+    },
+    "approval_answer.params": {
+      "type": "object",
+      "required": ["allow"],
+      "description": "Feature approval_answer. One of id and key.",
+      "properties": {
+        "id": {"type": "string", "description": "The approval item's id (Approval:<worktree>/<agent>)."},
+        "key": {"type": "string", "description": "A work item: its first open approval item."},
+        "allow": {"type": "boolean", "description": "true allows the tool call, false denies it."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: approvals are the user's; any token is refused."}
+      }
+    },
+    "approval_answer.result": {
+      "type": "object",
+      "required": ["id", "key", "agent_id", "allow", "sent"],
+      "properties": {
+        "id": {"type": "string"},
+        "key": {"type": ["string", "null"], "description": "Its work item; null for the orchestrator's own prompt."},
+        "agent_id": {"type": "string"},
+        "allow": {"type": "boolean"},
+        "sent": {"enum": ["allow", "deny"], "description": "The key written to the prompt: allow is 1 (Claude Code) or y (Codex), deny is Esc."}
+      }
+    },
+    "question_answer.params": {
+      "type": "object",
+      "required": ["text"],
+      "description": "Feature question_answer. One of id and key.",
+      "properties": {
+        "id": {"type": "string", "description": "The question item's id (Question:<worktree>/<agent>), or a routed question's decision item."},
+        "key": {"type": "string", "description": "A work item: its first open question (an item, else a question record routed to the orchestrator)."},
+        "text": {"type": "string", "minLength": 1, "description": "The answer, one paragraph, at most 2000 characters (200 when it answers a question record)."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: answers are the user's; any token is refused."}
+      }
+    },
+    "question_answer.result": {
+      "type": "object",
+      "required": ["key", "agent_id", "queued", "decision"],
+      "properties": {
+        "key": {"type": ["string", "null"]},
+        "agent_id": {"type": "string"},
+        "queued": {"type": "boolean", "description": "Always true: the answer reaches the agent once its turn is over (at its question it is)."},
+        "decision": {"oneOf": [{"$ref": "#/$defs/decision"}, {"type": "null"}], "description": "The question record answered (decision_answer's path); null when the text went to the agent directly."}
+      }
+    },
+    "orchestrator_actions.params": {
+      "type": "object",
+      "description": "Feature orchestrator_activity.",
+      "properties": {
+        "since": {"type": "number", "description": "Unix time; default local midnight today."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None (the user) or the orchestrator's token; a worker's is refused."}
+      }
+    },
+    "orchestrator_actions.result": {
+      "type": "object",
+      "required": ["actions"],
+      "properties": {
+        "actions": {
+          "type": "array",
+          "description": "The orchestrator's timeline entries of kinds action, decision and delegate, newest first.",
+          "items": {
+            "type": "object",
+            "required": ["key", "at", "kind", "action", "text", "reason", "mandate", "decision_id", "revertible"],
+            "properties": {
+              "key": {"type": "string", "description": "The work item."},
+              "at": {"type": "number"},
+              "kind": {"enum": ["action", "decision", "delegate"]},
+              "action": {"type": ["string", "null"], "description": "e.g. answer_quick, spawn_worker, escalate."},
+              "text": {"type": "string"},
+              "reason": {"type": ["string", "null"]},
+              "mandate": {"type": ["string", "null"], "description": "present, away or claim."},
+              "decision_id": {"type": ["string", "null"], "description": "The decision the entry is about (its ref), if any."},
+              "revertible": {"type": "boolean", "description": "That decision is the orchestrator's answer and the user can still revert it (decision_revert)."}
+            }
+          }
+        }
       }
     },
 

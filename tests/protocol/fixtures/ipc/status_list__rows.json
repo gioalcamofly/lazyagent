@@ -20,6 +20,11 @@
         "stale": 0
       },
       "generated_at": 1700000000.0,
+      "orchestrator": {
+        "alive": false,
+        "queue": [],
+        "report": null
+      },
       "presence": {
         "effective": "away",
         "mode": "auto",
@@ -27,6 +32,7 @@
       },
       "rows": [
         {
+          "activity_at": null,
           "agents": [
             {
               "id": "a1",
@@ -47,6 +53,7 @@
           "holder": "user",
           "key": "repo:login-ttl",
           "last_event_at": null,
+          "last_step": null,
           "level": "now",
           "needs_you": {
             "count": 1,
@@ -67,6 +74,7 @@
           "zone": "inbox"
         },
         {
+          "activity_at": null,
           "agents": [],
           "ball": "you",
           "blocks_agent": false,
@@ -81,6 +89,7 @@
           "holder": "user",
           "key": "repo:docs-index",
           "last_event_at": null,
+          "last_step": null,
           "level": "round",
           "needs_you": null,
           "note": null,
@@ -106,6 +115,7 @@
           "zone": "inbox"
         },
         {
+          "activity_at": null,
           "agents": [
             {
               "id": "a2",
@@ -123,9 +133,10 @@
           "fingerprint": "d95513a0e536",
           "gesture": null,
           "hold": null,
-          "holder": null,
+          "holder": "agent",
           "key": "repo:export-csv",
           "last_event_at": null,
+          "last_step": null,
           "level": null,
           "needs_you": null,
           "note": null,
@@ -135,7 +146,7 @@
           "rule": 9,
           "seen_at": null,
           "stale": false,
-          "state": "Edit",
+          "state": "working",
           "suggestion": null,
           "title": "export-csv",
           "urls": [],

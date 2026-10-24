@@ -1,0 +1,25 @@
+{
+  "case": "orchestrator_actions/today",
+  "method": "orchestrator_actions",
+  "params": {
+    "since": 1699996400.0
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "actions": [
+        {
+          "action": "answer_reversible",
+          "at": 1700000000.0,
+          "decision_id": "d1",
+          "key": "repo:export-csv",
+          "kind": "decision",
+          "mandate": "away",
+          "reason": "3/30 runs time out with fixed",
+          "revertible": true,
+          "text": "decided by orchestrator (away): Retries: fixed or exponential backoff? \u2192 A"
+        }
+      ]
+    }
+  }
+}

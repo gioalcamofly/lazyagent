@@ -185,6 +185,15 @@ pub struct State {
     pub presence_reported: f64,
     /// The repo's auto-delegation, as the settings menu last read it.
     pub inbox_config: Option<InboxConfig>,
+    /// The orchestrator on Home (`status_list.orchestrator`): its last
+    /// report and its queue.
+    pub orchestrator: Option<lazyagent_proto::types::OrchestratorStatus>,
+    /// Its actions today (`orchestrator_actions`), once the strip is open.
+    pub orchestrator_actions: Option<Vec<lazyagent_proto::types::OrchestratorAction>>,
+    /// The last gesture Home can take back (a 5 s Undo).
+    pub undo: Option<crate::home_view::Undo>,
+    /// Rows never looked at, marked seen now (once): no dots on a first launch.
+    seen_seeded: HashSet<String>,
     /// `status_list` (1) and `actionables_list` (2) answered: Home's first
     /// complete lines are a cut point.
     pub inbox_loaded: u8,
@@ -284,6 +293,10 @@ impl State {
             presence: None,
             presence_reported: f64::NEG_INFINITY,
             inbox_config: None,
+            orchestrator: None,
+            orchestrator_actions: None,
+            undo: None,
+            seen_seeded: HashSet::new(),
             inbox_loaded: 0,
             home_key: (false, u64::MAX, u64::MAX),
             home_changed: HashMap::new(),
@@ -613,6 +626,7 @@ impl State {
             }) {
                 s.status_counts = list.counts;
                 s.presence = list.presence;
+                s.orchestrator = list.orchestrator;
                 s.status_rows = list.rows.into_iter().map(|r| (r.key.clone(), r)).collect();
                 s.inbox_gen += 1;
                 s.inbox_loaded |= 1;
@@ -667,6 +681,9 @@ impl State {
         let engine = self.engine_inbox();
         let key = if engine { (true, self.inbox_gen, 0) } else { (false, self.att_gen, self.store.version) };
         if key != self.home_key && (self.seeded || engine) {
+            if engine && self.gestures() {
+                self.seed_seen(now);
+            }
             self.home_key = key;
             let lines = if engine {
                 crate::home::engine_lines(&self.status_rows, &self.actionables, &self.decisions, now)
@@ -698,6 +715,17 @@ impl State {
         self.home.tick(now);
     }
 
+    /// An item the user never looked at (`seen_at` null) is seen now, once:
+    /// a first launch shows no dots, only what happens from then on.
+    fn seed_seen(&mut self, now: f64) {
+        for row in self.status_rows.values_mut() {
+            if row.seen_at.is_none() && row.last_event_at.is_some() && self.seen_seeded.insert(row.key.clone()) {
+                self.conn.notify("status_seen", json!({"key": row.key, "at": now}));
+                row.seen_at = Some(now);
+            }
+        }
+    }
+
     /// Shows Home; back from a terminal is a cut point (the Round waiting
     /// is delivered).
     pub fn go_home(&mut self) {
@@ -720,6 +748,7 @@ impl State {
             }) {
                 s.status_counts = list.counts;
                 s.presence = list.presence;
+                s.orchestrator = list.orchestrator;
             }
         });
     }

@@ -34,6 +34,8 @@ The rows themselves stay a projection (status.py); this store keeps only:
   workers, whose finished work it holds first: claims.py).
 - **delegations**, inbox items the user delegated to the branch's agent
   (delegation.py).
+- **orchestrator_report**, the orchestrator's own last ``status_report``
+  (``{note, at}``): what it says it is doing, tied to no work item.
 
 Kept in ``$XDG_STATE_HOME/lazyagent/status/<repo hash>.json`` (0600, atomic)
 by the engine that owns the repo, written at most once per :data:`SAVE_EVERY`.
@@ -86,6 +88,10 @@ TIMELINE_KINDS = (
     "outward",
     "action",
     "delegate",
+    # The user answered a tool approval from Home (approval_answer).
+    "approval",
+    # The user took back one gesture (status_gesture undo).
+    "undo",
 )
 LABEL_CHARS = 40
 NOTE_CHARS = 200
@@ -173,6 +179,7 @@ class Overlay:
         self.released: dict[str, dict[str, Any]] = {}
         self.spawned: dict[str, dict[str, Any]] = {}
         self.delegations: dict[str, dict[str, Any]] = {}
+        self.orchestrator_report: dict[str, Any] | None = None
         self._saved: str | None = None
         self._handle: asyncio.TimerHandle | None = None
 
@@ -233,6 +240,10 @@ class Overlay:
         orchestrator = data.get("orchestrator")
         if isinstance(orchestrator, dict):
             self.orchestrator = orchestrator
+        report = data.get("orchestrator_report")
+        if isinstance(report, dict) and isinstance(report.get("note"), str) \
+                and isinstance(report.get("at"), (int, float)):
+            self.orchestrator_report = {"note": report["note"], "at": report["at"]}
         next_decision = data.get("next_decision")
         if type(next_decision) is int and next_decision > 0:
             self.next_decision = next_decision
@@ -255,6 +266,7 @@ class Overlay:
                 "released": self.released,
                 "spawned": self.spawned,
                 "delegations": self.delegations,
+                "orchestrator_report": self.orchestrator_report,
             },
             indent=1,
             sort_keys=True,
@@ -484,9 +496,33 @@ class Overlay:
             g.update(how=how, basis=basis(facts), agents=sorted(a.agent_id for a in facts.agents))
         else:
             raise ValueError(f"kind must be one of {', '.join(GESTURE_KINDS)}")
+        before = self.gestures.get(facts.key)
+        if kind == "park" and before is not None:
+            # Undoing the park brings back what it replaced (a label).
+            g["replaced"] = before.get("replaced") if before["kind"] == "park" else before
         self.gestures[facts.key] = g
         self.changed()
         return g
+
+    def undo_park(self, key: str) -> dict[str, Any]:
+        """Take back the user's park on ``key``: the gesture it replaced, if
+        any, comes back. Raises ValueError when the user did not park it."""
+        g = self.gestures.get(key)
+        if g is None or g["kind"] != "park" or g.get("by", "user") != "user":
+            raise ValueError(f"{key} is not parked by you: nothing to undo")
+        replaced = g.get("replaced")
+        if isinstance(replaced, dict) and replaced.get("kind") in GESTURE_KINDS:
+            self.gestures[key] = replaced
+        else:
+            del self.gestures[key]
+        self.changed()
+        return g
+
+    def report_orchestrator(self, note: str, now: float) -> dict[str, Any]:
+        """The orchestrator says what it is doing now (no work item)."""
+        self.orchestrator_report = {"note": one_line(note, NOTE_CHARS), "at": now}
+        self.changed()
+        return dict(self.orchestrator_report)
 
     def clear_gesture(self, key: str) -> dict[str, Any] | None:
         g = self.gestures.pop(key, None)

@@ -41,6 +41,9 @@ pub const DONE_FOR: f64 = 86400.0;
 /// An orchestrator's decision shows on its row this long.
 pub const DECIDED_FOR: f64 = 86400.0;
 
+/// An agent's report on a working line is cut to this many characters.
+pub const REPORT_CHARS: usize = 80;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Zone {
     Now,
@@ -195,20 +198,53 @@ impl Line {
     }
 
     /// Something happened since the last look: the engine's per-item seen
-    /// mark when it keeps them, else the client's own last look.
+    /// mark when it keeps them, else the client's own last look. An item
+    /// never looked at (no `seen_at` yet) counts as seen now: the first
+    /// launch shows no dots (the app then marks it seen, once).
     pub fn unseen(&self, look: f64) -> bool {
         match self.row.as_ref().and_then(|r| r.last_event_at) {
-            Some(last) => last > self.row.as_ref().and_then(|r| r.seen_at).unwrap_or(0.0),
+            Some(last) => self.row.as_ref().and_then(|r| r.seen_at).is_some_and(|seen| last > seen),
             None => self.changed_at > look,
         }
     }
 
-    /// The one-word action an inbox line asks for.
+    /// The first agent working on the line, when one runs.
+    pub fn running_agent(&self) -> Option<&lazyagent_proto::types::RowAgent> {
+        self.row.as_ref()?.agents.iter().find(|a| matches!(a.status.as_str(), "running" | "starting"))
+    }
+
+    /// The agent's own last word on the item (`status_report`), not the
+    /// notes' bullet nor the orchestrator's release note.
+    pub fn report(&self) -> Option<&str> {
+        let note = self.row.as_ref()?.note.as_ref()?;
+        note.by.starts_with("agent:").then_some(note.text.as_str())
+    }
+
+    /// A running agent's line: "working · 12m · <its last report>", never
+    /// its tool calls ("Bash done"). None when no agent runs or the row
+    /// says something more specific (fixing CI, a delegation).
+    pub fn working(&self, now: f64) -> Option<String> {
+        let agent = self.running_agent()?;
+        let rule9 = self.row.as_ref().is_some_and(|r| r.rule == 9) && self.state != "fixing CI";
+        if !rule9 || self.zone != Zone::Flight {
+            return None;
+        }
+        if agent.status == "starting" {
+            return Some("starting".into());
+        }
+        let mut text = format!("working · {}", age(now - agent.since));
+        if let Some(report) = self.report() {
+            text.push_str(&format!(" · {}", middle_ellipsis(report, REPORT_CHARS)));
+        }
+        Some(text)
+    }
+
+    /// The action an inbox line asks for, always an imperative.
     pub fn verb(&self) -> &'static str {
         let Some(top) = &self.top else {
             return match self.row.as_ref() {
                 Some(r) if r.rule == 4 => "Merge",
-                Some(r) if r.state == "PR has no reviewer" => "Assign",
+                Some(r) if r.state == "PR has no reviewer" => "Request reviewer",
                 _ => "Look",
             };
         };
@@ -217,18 +253,33 @@ impl Line {
             "question" => "Answer",
             "done" => "Review",
             "ci" | "ci_failed" => "Fix CI",
-            "review" => "Changes",
-            "conflict" => "Conflict",
-            "hanged" => "Check",
+            "review" => "Address review",
+            "conflict" => "Resolve conflict",
+            "hanged" => "Check agent",
             "failed" | "exited" => "Relaunch",
-            "job" => "Job",
+            "job" => "Fix job",
             "delegation" => "Decide",
-            "tracker_status" => "Tracker",
+            "tracker_status" => "Update task",
             "decision" if top.asks(self.brief.as_ref()) => "Answer",
             "decision" => "Decide",
             "report" => "Read",
             _ => "Look",
         }
+    }
+
+    /// What expanding the line shows of its ask, in full: the command an
+    /// approval waits on, the question an agent asks.
+    pub fn ask_text(&self) -> Option<String> {
+        let top = self.top.as_ref()?;
+        let text = match top.kind.as_str() {
+            "approval" => top.detail.clone(),
+            "question" => top.detail.clone(),
+            "decision" => self.brief.as_ref().map(|d| d.brief.question.clone()).unwrap_or_else(|| top.label.clone()),
+            _ => return None,
+        };
+        let text = text.trim();
+        (!text.is_empty() && !matches!(text, "waiting_for_user" | "waiting_for_approval" | "needs approval"))
+            .then(|| text.to_string())
     }
 
     /// The agent to open for this line: the top item's, else the first.
@@ -470,10 +521,8 @@ pub fn fallback_lines(
             Some(i) => (level(i.kind), "you".to_string(), fallback_state(i)),
             None if pr.is_some_and(|p| p.state == "MERGED" || p.state == "CLOSED") => continue,
             None => match (running, pr) {
-                (Some(a), _) => {
-                    let d = if a.detail.is_empty() { "working".to_string() } else { a.detail.clone() };
-                    (Zone::Flight, "agent".into(), d)
-                }
+                // "working", never the agent's tool calls ("Bash done").
+                (Some(_), _) => (Zone::Flight, "agent".into(), "working".into()),
                 (None, Some(p)) if store::ci_summary(p) == Some("pending") => {
                     (Zone::Flight, "agent".into(), "CI running".into())
                 }
@@ -567,6 +616,9 @@ pub struct Home {
     order: [Vec<String>; 5],
     /// The Round as delivered at the last cut point.
     delivered: HashSet<String>,
+    /// Round lines waiting for the next cut point, in arrival order: drawn
+    /// dimmed under the Round (never in In flight).
+    next: Vec<String>,
     pub round_at: f64,
     /// Round lines that left on their own since the cut.
     pub resolved: u32,
@@ -584,23 +636,25 @@ pub struct Home {
     pub labeling: Option<Label>,
     /// The revert form (an optional comment) is open on this line.
     pub reverting: Option<(String, String)>,
-    /// Give the form just opened (label, revert) the keyboard once.
+    /// Give the form just opened (label, revert, answer) the keyboard once.
     pub focus_form: bool,
+    /// The answer field of a question line: its key and the text typed.
+    pub answering: Option<(String, String)>,
+    /// The option picked on an expanded brief (decision id, option key).
+    pub brief_choice: Option<(String, String)>,
+    /// The orchestrator strip lists today's actions.
+    pub strip_open: bool,
     /// The first complete lines came: from then on, nothing reorders
     /// between cut points (before, every update is a cut).
     pub ready: bool,
 }
 
 impl Home {
-    /// Where a line shows: Round only once delivered, else where it was.
-    fn shown(&self, line: &Line, before: Option<Zone>) -> Zone {
+    /// Where a line shows; None: under the Round, for the next one.
+    fn shown(&self, line: &Line) -> Option<Zone> {
         match line.zone {
-            Zone::Round if self.delivered.contains(&line.key) => Zone::Round,
-            Zone::Round => match before {
-                Some(Zone::Round) | None | Some(Zone::Now) | Some(Zone::Deep) => Zone::Flight,
-                Some(z) => z,
-            },
-            z => z,
+            Zone::Round if !self.delivered.contains(&line.key) => None,
+            z => Some(z),
         }
     }
 
@@ -627,20 +681,31 @@ impl Home {
         let mut keys: Vec<&Line> = self.lines.values().collect();
         keys.sort_by(|a, b| cmp(a, b));
         let keys: Vec<String> = keys.into_iter().map(|l| l.key.clone()).collect();
+        let mut next = vec![];
         for key in keys {
             let before = self.zone_of(&key);
-            let target = self.shown(&self.lines[&key], before);
-            if before == Some(target) {
+            let target = self.shown(&self.lines[&key]);
+            if before == target && target.is_some() {
                 continue;
             }
             if let Some(b) = before {
                 self.order[b as usize].retain(|k| k != &key);
                 // Parked by the user is not "resolved on its own".
-                if b == Zone::Round && target != Zone::Parked {
+                if b == Zone::Round && target != Some(Zone::Parked) {
                     self.resolved += 1;
                 }
             }
-            self.order[target as usize].push(key);
+            match target {
+                Some(t) => self.order[t as usize].push(key),
+                None => next.push(key),
+            }
+        }
+        // The next round keeps its arrival order between cut points.
+        self.next.retain(|k| next.contains(k));
+        for k in next {
+            if !self.next.contains(&k) {
+                self.next.push(k);
+            }
         }
         self.delivered.retain(|k| self.lines.get(k).is_some_and(|l| l.zone == Zone::Round));
     }
@@ -651,6 +716,7 @@ impl Home {
         all.sort_by(|a, b| cmp(a, b));
         self.order = Default::default();
         self.delivered.clear();
+        self.next.clear();
         for l in all {
             if l.zone == Zone::Round {
                 self.delivered.insert(l.key.clone());
@@ -674,7 +740,12 @@ impl Home {
 
     /// Round lines held back until the next cut point.
     pub fn waiting(&self) -> usize {
-        self.lines.values().filter(|l| l.zone == Zone::Round && !self.delivered.contains(&l.key)).count()
+        self.next.len()
+    }
+
+    /// The lines of the next round, dimmed under the current one.
+    pub fn next_round(&self) -> Vec<&Line> {
+        self.next.iter().filter_map(|k| self.lines.get(k)).collect()
     }
 
     pub fn shown_in(&self, zone: Zone) -> Vec<&Line> {
@@ -686,6 +757,7 @@ impl Home {
     pub fn visible(&self, folded: bool) -> Vec<&Line> {
         let mut v = self.shown_in(Zone::Now);
         v.extend(self.shown_in(Zone::Round));
+        v.extend(self.next_round());
         v.extend(self.shown_in(Zone::Deep));
         if !folded {
             v.extend(self.shown_in(Zone::Flight));
@@ -703,6 +775,39 @@ impl Home {
 
     pub fn count(&self, zone: Zone) -> usize {
         self.lines.values().filter(|l| l.zone == zone).count()
+    }
+
+    /// `1`-`4`: the first line of Now, Round, To sit down with or In
+    /// flight; false when that zone is empty.
+    pub fn jump(&mut self, zone: Zone, folded: bool) -> bool {
+        let first = match zone {
+            Zone::Round => self.shown_in(Zone::Round).first().or(self.next_round().first()).map(|l| l.key.clone()),
+            Zone::Flight if folded => None,
+            z => self.shown_in(z).first().map(|l| l.key.clone()),
+        };
+        let found = first.is_some();
+        if found {
+            self.selected = first;
+        }
+        found
+    }
+
+    /// Tab: the next line that needs the user (Now, Round, To sit down
+    /// with), after the selected one, wrapping around.
+    pub fn next_needing_you(&mut self, folded: bool) -> bool {
+        let keys: Vec<String> = self
+            .visible(folded)
+            .iter()
+            .filter(|l| matches!(l.zone, Zone::Now | Zone::Round | Zone::Deep))
+            .map(|l| l.key.clone())
+            .collect();
+        if keys.is_empty() {
+            return false;
+        }
+        let at = self.selected.as_ref().and_then(|s| keys.iter().position(|k| k == s));
+        let next = at.map_or(0, |i| (i + 1) % keys.len());
+        self.selected = Some(keys[next].clone());
+        true
     }
 
     pub fn select_next(&mut self, delta: i32, folded: bool) {
@@ -832,7 +937,9 @@ mod tests {
         h.update(lines(&rows), 102.0);
         assert_eq!(keys(&h, Zone::Now), ["b"], "Now at once");
         assert!(keys(&h, Zone::Round).is_empty());
-        assert_eq!(keys(&h, Zone::Flight), ["a", "n"], "each shown once, where it was");
+        assert!(keys(&h, Zone::Flight).is_empty(), "never in In flight");
+        let next: Vec<&str> = h.next_round().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(next, ["a", "n"], "under the Round, for the next one, once each");
         assert_eq!(h.waiting(), 2);
         assert_eq!(h.counts(), (1, 2));
         h.tick(100.0 + ROUND_EVERY - 1.0);
@@ -893,7 +1000,7 @@ mod tests {
         assert_eq!(keys(&h, Zone::Deep), ["a"], "no cut point needed");
         assert_eq!(h.waiting(), 1, "only the Round line waits");
         assert_eq!((h.count(Zone::Deep), h.counts()), (1, (0, 1)));
-        assert_eq!(h.visible(true).len(), 1, "folding hides only the in-flight list");
+        assert_eq!(h.visible(true).len(), 2, "folding hides only the in-flight list (the next round shows)");
         h.cut(200.0);
         assert_eq!((keys(&h, Zone::Round), keys(&h, Zone::Deep)), (vec!["b".to_string()], vec!["a".to_string()]));
     }
@@ -1004,6 +1111,64 @@ mod tests {
         r.state = "merged".into();
         assert_eq!(lines(&[r])[0].state, "merged");
         assert_eq!((priority_marker("high"), priority_marker("medium"), priority_marker("low")), ("▴", "", "▾"));
+    }
+
+    #[test]
+    fn zone_jumps_and_tab_go_to_what_needs_you() {
+        let mut h = Home::default();
+        let rows = vec![
+            row("a", "inbox", Some("now"), "you", 1.0),
+            row("b", "inbox", Some("round"), "you", 2.0),
+            row("c", "inbox", Some("deep"), "you", 3.0),
+            row("d", "in_flight", None, "agent", 4.0),
+        ];
+        h.update(lines(&rows), 10.0);
+        assert!(h.jump(Zone::Flight, false));
+        assert_eq!(h.selected.as_deref(), Some("shop:d"));
+        assert!(!h.jump(Zone::Flight, true), "folded: nothing to jump to");
+        assert!(h.jump(Zone::Deep, false));
+        assert_eq!(h.selected.as_deref(), Some("shop:c"));
+        // Tab: c → a → b → c (In flight is skipped).
+        let mut seen = vec![];
+        for _ in 0..3 {
+            assert!(h.next_needing_you(false));
+            seen.push(h.selected.clone().unwrap());
+        }
+        assert_eq!(seen, ["shop:a", "shop:b", "shop:c"]);
+    }
+
+    #[test]
+    fn verbs_are_imperatives_and_a_working_line_reads_its_report_not_its_tools() {
+        let mut r = row("cart", "in_flight", None, "agent", 1.0);
+        r.agents = serde_json::from_value(json!([{"id": "a1", "status": "running", "since": 100.0}])).unwrap();
+        r.state = "Bash done".into();
+        let mut l = lines(&[r.clone()])[0].clone();
+        assert_eq!(l.working(820.0).as_deref(), Some("working · 12m"));
+        r.note = Some(
+            serde_json::from_value(json!({"text": "tests pass; opening the PR", "by": "agent:a1", "at": 700.0}))
+                .unwrap(),
+        );
+        l = lines(&[r.clone()])[0].clone();
+        assert_eq!(l.working(820.0).as_deref(), Some("working · 12m · tests pass; opening the PR"));
+        r.note = Some(serde_json::from_value(json!({"text": "Pending item", "by": "notes", "at": 700.0})).unwrap());
+        assert_eq!(lines(&[r.clone()])[0].working(820.0).as_deref(), Some("working · 12m"), "notes are not a report");
+        r.rule = 16;
+        assert!(lines(&[r])[0].working(820.0).is_none(), "a delegation says more");
+        let mut nobody = row("pdf", "inbox", Some("round"), "you", 1.0);
+        nobody.state = "PR has no reviewer".into();
+        nobody.rule = 10;
+        assert_eq!(lines(&[nobody])[0].verb(), "Request reviewer");
+    }
+
+    #[test]
+    fn a_line_never_looked_at_shows_no_dot() {
+        let mut r = row("a", "in_flight", None, "agent", 1.0);
+        r.last_event_at = Some(50.0);
+        assert!(!lines(&[r.clone()])[0].unseen(0.0), "no seen_at yet: seen now");
+        r.seen_at = Some(40.0);
+        assert!(lines(&[r.clone()])[0].unseen(0.0));
+        r.seen_at = Some(60.0);
+        assert!(!lines(&[r])[0].unseen(0.0));
     }
 
     #[test]

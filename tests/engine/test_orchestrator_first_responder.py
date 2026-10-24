@@ -313,7 +313,8 @@ async def test_a_question_answered_in_the_terminal_is_resolved():
     _agent(engine, FEAT, "a1", "running")
     engine.status.flush()
     assert engine.decisions.get(record["id"])["state"] == "resolved"
-    assert _row(engine)["holder"] is None
+    # Not the orchestrator's any more: the working agent has it.
+    assert _row(engine)["holder"] == "agent"
 
 
 async def test_a_tool_approval_is_never_routed():

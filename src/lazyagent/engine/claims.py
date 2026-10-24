@@ -348,6 +348,19 @@ class Claims:
         self._changed()
         return claim
 
+    def take_back(self, key: str) -> Claim:
+        """The user undoes a pass: the claim ends (a hold is left alone)."""
+        claim = self.active.pop(key, None)
+        if claim is None:
+            raise ValueError(f"{key} is not passed to the orchestrator: nothing to undo")
+        self._wakes = [w for w in self._wakes if w.key != key]
+        self._engine.events.emit(
+            CLAIM_RELEASED,
+            {"key": key, "outcome": "taken_back", "note": "", "claim": claim.to_dict()},
+        )
+        self._changed()
+        return claim
+
     def release(self, key: str, outcome: str, note: str = "") -> Claim:
         """The orchestrator ends its pass or hold: ``done``, or ``returned``
         to the user's Round with ``note``. The note shows on the row and on
@@ -467,6 +480,27 @@ class Claims:
                 worktree_path=path,
             )
 
-    def _dismissed(self, item: Item) -> None:
-        if item.kind == DELEGATION.name and item.work_item is not None:
-            self.returned.pop(item.work_item, None)
+    def _dismissed(self, item: Item) -> Callable[[], None] | None:
+        if item.kind != DELEGATION.name or item.work_item is None:
+            return None
+        key = item.work_item
+        back = self.returned.pop(key, None)
+        if back is None:
+            return None
+
+        def undo() -> None:
+            self.returned.setdefault(key, back)
+
+        return undo
+
+    # --- What the user sees of the orchestrator ---
+
+    def queue(self) -> list[dict[str, Any]]:
+        """The passes and holds in force, soonest ``until`` first:
+        ``{key, kind: pass | hold, note, until, by, auto}``."""
+        out = [
+            {"key": c.key, "kind": c.kind, "note": c.note, "until": c.until, "by": c.by,
+             "auto": c.auto}
+            for c in (*self.active.values(), *self.holds.values())
+        ]
+        return sorted(out, key=lambda c: (c["until"], c["key"]))

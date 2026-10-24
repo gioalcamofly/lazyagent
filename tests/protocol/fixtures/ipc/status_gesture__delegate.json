@@ -33,6 +33,7 @@
       "kept": false,
       "key": "repo:export-csv",
       "row": {
+        "activity_at": 1700000000.0,
         "agents": [
           {
             "id": "a2",
@@ -68,9 +69,15 @@
         "fingerprint": "e23cd2ec5450",
         "gesture": null,
         "hold": null,
-        "holder": null,
+        "holder": "orchestrator",
         "key": "repo:export-csv",
         "last_event_at": 1700000000.0,
+        "last_step": {
+          "actor": "user",
+          "at": 1700000000.0,
+          "kind": "delegate",
+          "text": "passed to the orchestrator until 23:13"
+        },
         "level": null,
         "needs_you": null,
         "note": null,

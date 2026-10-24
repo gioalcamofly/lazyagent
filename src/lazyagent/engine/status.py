@@ -167,6 +167,10 @@ class Facts:
     spawned_by: dict[str, str] = field(default_factory=dict)
     # The feeder's work item linked to the branch (work_items.py, public).
     feeder: dict[str, Any] | None = None
+    # The newest sign of work on the item (StatusProjection._activity): a
+    # commit, a notes edit, a report, a step by someone other than the
+    # engine, an agent status change the engine saw happen.
+    activity_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -302,7 +306,9 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         return Derived(HELD_RULE, "agent", HELD_STATE)
     delegation = facts.delegation
     if delegation is not None and delegation.get("phase") == "on_it":
-        return Derived(DELEGATED_RULE, "agent", f"agent {delegation['agent']} · on it")
+        fact = delegation.get("fact") or "it"
+        return Derived(DELEGATED_RULE, "agent",
+                       clip_words(f"agent {delegation['agent']} · fixing {fact}", 8))
     for status, level, text, blocks in _NEEDS_YOU if queue is None else ():
         agent = next((a for a in agents if a.status == status), None)
         if agent is not None:
@@ -348,9 +354,9 @@ def _derive_tail(
     if running:
         if ci == "red":
             return Derived(9, "agent", "fixing CI", None)
-        agent = running[0]
-        state = "starting" if agent.status == STARTING else agent.detail or "working"
-        return Derived(9, "agent", clip_words(state))
+        # Not the agent's tool line ("Bash done"): that is noise on a row.
+        state = "starting" if running[0].status == STARTING else "working"
+        return Derived(9, "agent", state)
     if open_pr and ci == "running":
         return Derived(9, "agent", "CI running")
 
@@ -389,7 +395,8 @@ def _derive_tail(
         return Derived(12, "agent", f"waits: {waits}" if waits else "agent idle")
     if facts.restorable:
         return Derived(12, "stalled", "agent to restore")
-    if now - last_change > stalled_hours * 3600:
+    last = facts.activity_at if facts.activity_at is not None else last_change
+    if now - last > stalled_hours * 3600:
         return Derived(11, "stalled", "no activity")
     if open_pr and pr.review_decision == "APPROVED":
         return Derived(12, "stalled", "approved, not mergeable")
@@ -464,6 +471,36 @@ def row_note(facts: Facts) -> dict[str, Any] | None:
     return max(reversed(found), key=lambda n: n.get("at") or 0, default=None)
 
 
+def holder_of(facts: Facts, derived: Derived, zone: str) -> str | None:
+    """Who has the ball now: ``user`` for an inbox row (and a parked one
+    whose items still wait on the user); ``orchestrator`` while it holds the
+    item (a pass, its hold, a routed brief or question); ``agent`` while an
+    agent has it directly (it works, idles on the item, reported the ball,
+    or was delegated the item); else None (others, stalled, done)."""
+    if zone == "inbox":
+        return "user"
+    if facts.holder == "orchestrator" or derived.rule in (CLAIM_RULE, HELD_RULE, HOLD_RULE):
+        return "orchestrator"
+    if zone == "parked":
+        return "user" if facts.actionables else None
+    if derived.rule == DELEGATED_RULE:
+        return "agent"
+    if derived.ball == "agent" and facts.agents:
+        if derived.rule == 9 and not any(a.status in _RUNNING for a in facts.agents):
+            return None  # CI running, nobody working on it
+        return "agent"
+    return None
+
+
+def last_step(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The newest timeline entry that is a step (not a ball or state
+    change): ``{at, kind, actor, text}``."""
+    for entry in reversed(entries):
+        if entry["kind"] not in ("ball", "state"):
+            return {k: entry[k] for k in ("at", "kind", "actor", "text")}
+    return None
+
+
 def build_row(
     facts: Facts,
     derived: Derived,
@@ -527,15 +564,13 @@ def build_row(
         "class": None,
         "seen_at": seen_at,
         "last_event_at": last_event_at,
-        # Who answers what the item asks: the orchestrator while it holds a
-        # routed brief or question, the user while the row is in the inbox.
-        "holder": facts.holder or ("user" if zone == "inbox" else None),
+        "holder": holder_of(facts, derived, zone),
+        "activity_at": facts.activity_at,
+        # The newest timeline entry but ball / state (StatusProjection).
+        "last_step": None,
     }
     if zone == "inbox":
         row["class"] = "deep" if derived.level == "deep" else "quick"
-    if zone == "parked" and facts.actionables:
-        # Parked, but what its items ask is still the user's (not routed).
-        row["holder"] = facts.holder or "user"
     feeder = facts.feeder
     if feeder is not None:
         if feeder["url"] not in row["urls"]:
@@ -656,6 +691,10 @@ class StatusProjection:
         self._rows: dict[str, dict[str, Any]] = {}
         self._seen: dict[str, _Seen] = {}
         self._since: dict[tuple[str, str], tuple[str, float]] = {}
+        # worktree path → when the engine last saw one of its agents change
+        # status, start or go (not the first sighting when it starts).
+        self._saw: dict[str, float] = {}
+        self._primed = False
         self._commit_times: dict[str, float] = {}
         # (key, head) → the branch that head is already in, or None.
         self._merged: dict[tuple[str, str], str | None] = {}
@@ -888,6 +927,7 @@ class StatusProjection:
         responder = self._engine.first_responder
         result["counts"].update(responder.counts(now))
         result["presence"] = responder.presence.to_dict(now)
+        result["orchestrator"] = responder.report()
         result["generated_at"] = now
         return result
 
@@ -929,6 +969,7 @@ class StatusProjection:
         for item in visible_items:
             if item["work_item"] is not None:
                 queue.setdefault(item["work_item"], []).append(item)
+        notes_ids = self._restorable_notes()
         for facts in self._facts(now):
             key = facts.key
             items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
@@ -950,6 +991,7 @@ class StatusProjection:
                 released=overlay.released_note(key, now),
                 spawned_by=overlay.spawned_by(key),
             )
+            facts = replace(facts, activity_at=self._activity(facts, notes_ids, now))
             facts_by_key[facts.key] = facts
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
             seen = self._seen.get(facts.key)
@@ -960,23 +1002,30 @@ class StatusProjection:
                 seen = self._seen[facts.key] = _Seen(fp, last_change)
             elif seen.fingerprint != fp:
                 seen.fingerprint, seen.changed_at = fp, now
+            changed_at = seen.changed_at
+            if derived.ball == "stalled" and facts.activity_at is not None:
+                # A stalled row's age is how long nothing happened, not when
+                # the engine last noticed a fact (its start, PR info coming).
+                changed_at = min(facts.activity_at, now)
             stale = (
                 not facts.agents
                 and facts.pr is None
                 and not facts.restorable
-                and now - seen.changed_at > config.stale_days * 86400
+                and now - changed_at > config.stale_days * 86400
             )
-            rows[facts.key] = build_row(facts, derived, seen.changed_at, fp, stale=stale)
+            rows[facts.key] = build_row(facts, derived, changed_at, fp, stale=stale)
         self._projects(rows, now)
         self._track(rows, facts_by_key, now)
         self._close(rows, now)
         for key, row in rows.items():
             row["seen_at"] = overlay.seen_at(key)
             row["last_event_at"] = overlay.last_event_at(key)
+            row["last_step"] = last_step(overlay.timeline.get(key, ()))
         for key in [k for k in self._seen if k not in rows]:
             del self._seen[key]
         for slot in [s for s in self._since if s not in live_agents]:
             del self._since[slot]
+        self._primed = True
         self._facts_by_key = facts_by_key
         self._engine.autodelegate.check(rows, visible_items, now)
         return rows
@@ -1209,6 +1258,41 @@ class StatusProjection:
             times.append(facts.commit_time)
         return min(max(times), now) if times else now
 
+    def _restorable_notes(self) -> dict[str, list[str]]:
+        """worktree path → the notes ids of its restorable agents."""
+        engine = self._engine
+        out: dict[str, list[str]] = {}
+        if engine.manifest is not None:
+            for entry in engine._offerable():
+                if entry.notes_id:
+                    out.setdefault(entry.worktree_path, []).append(entry.notes_id)
+        return out
+
+    def _activity(self, facts: Facts, notes_ids: dict[str, list[str]], now: float
+                  ) -> float | None:
+        """The newest sign of work on the item: its branch's last commit,
+        its agents' (live or restorable) notes edits, the agent's report, a
+        timeline step by someone other than the engine, and the agent status
+        changes this engine saw happen. None when nothing is known."""
+        engine = self._engine
+        path = facts.worktree_path or ""
+        times = [facts.commit_time] if facts.commit_time is not None else []
+        store = engine.notes
+        if store is not None:
+            ids = [engine.notes_id(path, a.agent_id) for a in facts.agents]
+            ids += notes_ids.get(path, [])
+            times += [store.get(i).meta.updated_at for i in ids if i is not None and i in store]
+        if facts.report is not None:
+            times.append(facts.report["at"])
+        for entry in reversed(engine.overlay.timeline.get(facts.key, ())):
+            if entry["actor"] != "engine":
+                times.append(entry["at"])
+                break
+        if path in self._saw:
+            times.append(self._saw[path])
+        times = [t for t in times if t]
+        return min(max(times), now) if times else None
+
     def _members(self) -> list[Any]:
         """The worktrees that are work items: all but bare ones, and the main
         checkout only while an agent runs there."""
@@ -1273,10 +1357,16 @@ class StatusProjection:
             slot = (path, agent_id)
             known = self._since.get(slot)
             if known is None or known[0] != status:
+                if known is not None or self._primed:
+                    # Seen happen, not found running when the engine started.
+                    self._saw[path] = now
                 known = self._since[slot] = (status, now)
             facts.append(
                 AgentFact(agent_id, status, state.detail if state else "", known[1])
             )
+        if any(p == path and a not in ids for p, a in self._since):
+            # An agent went: something happened there.
+            self._saw[path] = now
         return tuple(facts)
 
     def _note(self, path: str, agents: tuple[AgentFact, ...]) -> dict[str, Any] | None:

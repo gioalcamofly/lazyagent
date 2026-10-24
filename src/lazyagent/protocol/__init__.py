@@ -92,6 +92,10 @@ LEGACY_METHODS: tuple[str, ...] = (
     "work_items_close",
     # The failed-log summary of a red CI run (proposal 0013 I7).
     "ci_log_summary",
+    # Answers from Home and the orchestrator's log (proposal 0013 I4e).
+    "approval_answer",
+    "question_answer",
+    "orchestrator_actions",
 )
 
 # The methods protocol v1 adds.

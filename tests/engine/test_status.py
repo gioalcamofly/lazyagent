@@ -98,7 +98,7 @@ DERIVATION = {
     ),
     "conflict_being_fixed": (
         facts(agent("running", "Bash"), pr_info=pr(mergeable="CONFLICTING")),
-        (9, "agent", None, "Bash"),
+        (9, "agent", None, "working"),
     ),
     "ci_red_no_agent": (facts(pr_info=pr(checks=RED)), (5, "you", "round", "CI red: tests")),
     "ci_red_being_fixed": (
@@ -111,7 +111,8 @@ DERIVATION = {
         facts(agent("waiting"), agent("running", agent_id="a2")),
         (9, "agent", None, "working"),
     ),
-    "working": (facts(agent("running", "Bash")), (9, "agent", None, "Bash")),
+    # Never the agent's tool line ("Bash done").
+    "working": (facts(agent("running", "Bash done")), (9, "agent", None, "working")),
     "starting": (facts(agent("starting")), (9, "agent", None, "starting")),
     "own_ci_running": (facts(pr_info=pr(checks=RUNNING_CI)), (9, "agent", None, "CI running")),
     "review_requested": (
@@ -135,6 +136,12 @@ DERIVATION = {
         (12, "stalled", None, "approved, not mergeable"),
     ),
     "nothing_recent": (facts(), (12, "stalled", None, "no agent")),
+    "delegated_to_its_agent": (
+        replace(facts(agent("running", "Bash done")),
+                delegation={"agent": "a1", "phase": "on_it", "fact": "conflict with base",
+                            "at": NOW}),
+        (16, "agent", None, "agent a1 · fixing conflict with base"),
+    ),
     "to_restore": (facts(restorable=1), (12, "stalled", None, "agent to restore")),
 }
 
@@ -180,7 +187,7 @@ DERIVATION.update({
     ),
     "no_reviewer_while_an_agent_works_is_the_agents": (
         facts(agent("running", "Edit"), pr_info=pr(requests=0, reviews=0)),
-        (9, "agent", None, "Edit"),
+        (9, "agent", None, "working"),
     ),
 })
 
@@ -241,6 +248,9 @@ def test_derivation_table(case):
 def test_no_activity_for_a_day_is_stalled():
     assert run(facts(), NOW - 25 * HOUR) == (11, "stalled", None, "no activity")
     assert run(facts(), NOW - 23 * HOUR)[0] == 12
+    # The item's activity, when known, decides; not the last change of facts.
+    assert run(replace(facts(), activity_at=NOW - 25 * HOUR))[0] == 11
+    assert run(replace(facts(), activity_at=NOW - HOUR), NOW - 25 * HOUR)[0] == 12
 
 
 def test_blocks_agent_only_for_dialogs():
@@ -330,7 +340,7 @@ def test_table_shows_level_item_ball_state_and_age():
     assert lines[0] == "NOW 1   ROUND 0   IN FLIGHT 1   (1 done)"
     assert lines[1].split() == ["LEVEL", "ITEM", "BALL", "STATE", "AGE"]
     assert lines[2].split() == ["now", "login-ttl", "you", "approve:", "npm", "test", "2m"]
-    assert lines[3].split() == ["-", "export-csv", "agent", "tests", "2/5", "<1m"]
+    assert lines[3].split() == ["-", "export-csv", "agent", "working", "<1m"]
     assert len(lines) == 4
     assert format_table(summarize([]), NOW).endswith("no work items")
 
@@ -400,7 +410,7 @@ def test_every_worktree_is_a_row_with_or_without_an_agent():
     rows = _rows(engine)
     # The main checkout is not a work item while no agent runs there.
     assert set(rows) == {"repo:feat", "repo:fix-typo", "repo:@def4567890ab"}
-    assert (rows["repo:feat"]["ball"], rows["repo:feat"]["state"]) == ("agent", "Bash")
+    assert (rows["repo:feat"]["ball"], rows["repo:feat"]["state"]) == ("agent", "working")
     assert rows["repo:feat"]["agents"] == [{"id": "a1", "status": "running", "since": NOW}]
     assert (rows["repo:fix-typo"]["ball"], rows["repo:fix-typo"]["state"]) == (
         "stalled", "no agent",
@@ -445,7 +455,7 @@ def test_ages_start_at_the_last_commit_and_move_with_the_facts():
     clock.now += 60
     _state(engine, FEAT, "a1", AgentStatus.RUNNING, "Edit")
     row = _rows(engine)["repo:feat"]
-    assert (row["state"], row["changed_at"]) == ("Edit", NOW + 60)
+    assert (row["state"], row["changed_at"]) == ("working", NOW + 60)
     clock.now += 60
     _state(engine, FEAT, "a1", AgentStatus.WAITING)
     row = _rows(engine)["repo:feat"]

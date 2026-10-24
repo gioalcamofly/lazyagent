@@ -1,0 +1,18 @@
+{
+  "case": "approval_answer/allowed",
+  "method": "approval_answer",
+  "params": {
+    "allow": true,
+    "key": "repo:login-ttl"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "allow": true,
+      "id": "Approval:/tmp/repo-login/a1",
+      "key": "repo:login-ttl",
+      "sent": "allow"
+    }
+  }
+}
