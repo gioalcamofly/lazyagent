@@ -16,3 +16,4 @@ Improvement ideas for lazyagent, one file each. Ranked and motivated in [engine-
 | 0011 | Session notes per agent | Accepted | ★★ (★★★ orchestrator) | PR 9; desktop D2/D3 | [0011](0011-session-notes.md) |
 | 0012 | Actionables (auto-triage + prioritised human queue) | Superseded by 0013 | ★★★ | PR 3, PR 6, 0011 N2 | [0012](0012-actionables.md) |
 | 0013 | Inbox and status: one home screen (inbox + in-flight list) | Accepted | ★★★ | PR 3, PR 6, 0011 N2 | [0013](0013-inbox-and-status.md) |
+| 0014 | Rules catalog: states, actions and the facts behind them | Proposed | ★★★ | I4e; I7, I8a/I8b, I6 | [0014](0014-rules-catalog.md) |
