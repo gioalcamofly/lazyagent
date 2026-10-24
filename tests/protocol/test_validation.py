@@ -149,6 +149,12 @@ EVENT_SAMPLES = {
         "answered_by": "orchestrator", "revertible": True,
         "inverse": [{"kind": "git_reset", "sha": "abc123", "branch": "feat"}],
     }},
+    "decision.explain": {"explain": {
+        "target": "d1", "id": "d1", "key": "repo:feat", "kind": "explain", "route": "owner",
+        "to": "agent:a1", "agent": "a1", "worktree_path": "/r", "state": "answered",
+        "asked_at": 1.0, "sent_at": 1.5, "text": "A backs off.", "by": "agent:a1",
+        "answered_at": 2.0, "truncated": False,
+    }},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

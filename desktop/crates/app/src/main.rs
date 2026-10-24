@@ -6,6 +6,7 @@ mod attention_view;
 mod bench;
 mod boxdraw;
 mod conn;
+mod decision_view;
 mod dialogs;
 mod diff;
 mod diff_view;

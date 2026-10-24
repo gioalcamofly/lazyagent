@@ -1264,6 +1264,8 @@
         "answered_by": {"enum": ["user", "orchestrator"]},
         "revertible": {"type": "boolean", "description": "An orchestrator answer the user may still revert (decision_revert)."},
         "inverse": {"type": "array", "items": {"type": "object"}, "description": "What Revert runs: {kind: git_reset, sha, branch} / {kind: stop_agent, worktree_path, agent_id}."},
+        "explain": {"$ref": "#/$defs/decision_explain", "description": "The last Explain this on it (feature decision_view)."},
+        "rebrief": {"$ref": "#/$defs/decision_explain", "description": "The last Request a new brief on it (feature decision_view)."},
         "reverted": {"type": "object", "properties": {"at": {"type": "number"}, "choice": {"type": ["string", "null"]}, "comment": {"type": "string"}, "results": {"type": "array", "items": {"type": "string"}}}},
         "replaces": {"type": ["string", "null"], "description": "The brief this one superseded."},
         "superseded_by": {"type": "string"},
@@ -1475,6 +1477,99 @@
       }
     },
     "inbox_config_set.result": {"$ref": "#/$defs/inbox_config_get.result"},
+
+    "decision_explain": {
+      "type": "object",
+      "description": "An Explain this or Request a new brief request and its answer (feature decision_view, proposal 0013 I5).",
+      "required": ["id", "key", "kind", "route", "to", "state", "asked_at"],
+      "properties": {
+        "target": {"type": "string", "description": "The decision id, or key:<work item key>."},
+        "id": {"type": ["string", "null"], "description": "The brief; null for an explanation of a work item."},
+        "key": {"type": "string"},
+        "kind": {"enum": ["explain", "rebrief"]},
+        "route": {"enum": ["owner", "restore", "orchestrator"], "description": "Who was asked: the owner agent, the owner after an explicit restore, or the orchestrator."},
+        "to": {"type": "string", "description": "agent:<id> or orchestrator."},
+        "agent": {"type": ["string", "null"], "description": "The owner agent's id, when known."},
+        "worktree_path": {"type": ["string", "null"]},
+        "question": {"type": "string", "description": "The user's own question (Explain), at most 300 characters."},
+        "note": {"type": "string", "description": "The user's note (rebrief), at most 300 characters."},
+        "state": {"enum": ["asked", "answered"]},
+        "asked_at": {"type": "number"},
+        "sent_at": {"type": "number", "description": "When the prompt reached the agent (its turn was over)."},
+        "text": {"type": "string", "description": "The explanation: at most 10 lines."},
+        "by": {"type": "string", "description": "agent:<id> or orchestrator."},
+        "answered_at": {"type": "number"},
+        "truncated": {"type": "boolean", "description": "The reply was cut to 10 lines."},
+        "replaced_by": {"type": "string", "description": "The new brief (rebrief)."}
+      }
+    },
+    "decision_explain_request.params": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "description": "The brief to explain."},
+        "key": {"type": "string", "description": "Or a work item (any inbox item) to explain."},
+        "question": {"type": "string", "description": "The user's own question, passed on."},
+        "restore": {"type": "boolean", "description": "Restore the owner agent first when it is not running but restorable (Restore agent and explain); never automatic."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: the user's only."}
+      }
+    },
+    "decision_explain_request.result": {
+      "type": "object",
+      "required": ["explain"],
+      "properties": {"explain": {"$ref": "#/$defs/decision_explain"}}
+    },
+    "decision_rebrief_request.params": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "description": "An open brief of the user's."},
+        "note": {"type": "string", "description": "What the new brief should cover."},
+        "restore": {"type": "boolean"},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "None: the user's only."}
+      }
+    },
+    "decision_rebrief_request.result": {"$ref": "#/$defs/decision_explain_request.result"},
+    "decision_explain.params": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "id": {"type": "string", "description": "The brief the user asked about."},
+        "key": {"type": "string", "description": "Or the work item."},
+        "text": {"type": "string", "description": "At most 10 lines; the rest is cut."},
+        "caller": {"$ref": "#/$defs/notes_caller", "description": "The owner agent's token or the orchestrator's."}
+      }
+    },
+    "decision_explain.result": {
+      "type": "object",
+      "required": ["explain"],
+      "properties": {
+        "explain": {"$ref": "#/$defs/decision_explain"},
+        "message": {"type": "string", "description": "Set when the reply was cut."}
+      }
+    },
+    "decision_evidence.params": {
+      "type": "object",
+      "required": ["id", "index"],
+      "properties": {
+        "id": {"type": "string"},
+        "index": {"type": "integer", "minimum": 0, "description": "Into brief.evidence."}
+      }
+    },
+    "decision_evidence.result": {
+      "type": "object",
+      "required": ["id", "index", "kind"],
+      "properties": {
+        "id": {"type": "string"},
+        "index": {"type": "integer"},
+        "kind": {"enum": ["diff", "log", "file", "notes", "url"]},
+        "start": {"type": "integer", "description": "The first line's number in text."},
+        "text": {"type": "string", "description": "The lines (with a little context)."},
+        "total": {"type": "integer", "description": "Lines in the whole file, log or section."},
+        "note": {"type": "string", "description": "e.g. 'as in the worktree now'."},
+        "url": {"type": ["string", "null"]},
+        "error": {"type": "string", "description": "Why it cannot be read here."}
+      }
+    },
 
     "ui.get_view.params": {"type": "object", "properties": {}},
     "ui.get_view.result": {

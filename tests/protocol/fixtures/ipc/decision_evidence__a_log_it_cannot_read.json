@@ -1,0 +1,17 @@
+{
+  "case": "decision_evidence/a_log_it_cannot_read",
+  "method": "decision_evidence",
+  "params": {
+    "id": "d1",
+    "index": 1
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "error": "job:tests is not a log the engine can read (open it from the PR's checks)",
+      "id": "d1",
+      "index": 1,
+      "kind": "log"
+    }
+  }
+}

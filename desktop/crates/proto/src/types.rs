@@ -878,6 +878,12 @@ pub struct Decision {
     /// `{at, choice, comment, results}` once the user reverted it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverted: Option<Value>,
+    /// The last Explain this on it (feature `decision_view`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explain: Option<DecisionExplain>,
+    /// The last Request a new brief on it (feature `decision_view`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebrief: Option<DecisionExplain>,
 }
 
 impl Decision {
@@ -892,6 +898,73 @@ impl Decision {
     pub fn reason(&self) -> Option<&str> {
         self.answer_field("reason")
     }
+}
+
+/// An Explain this or Request a new brief, and its answer (feature
+/// `decision_view`): who was asked (`route`: owner · restore ·
+/// orchestrator), and the reply with who wrote it (`by`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionExplain {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub id: Option<String>,
+    pub key: String,
+    /// `explain` · `rebrief`.
+    pub kind: String,
+    pub route: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// `asked` · `answered`.
+    pub state: String,
+    pub asked_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
+}
+
+/// `decision_explain_request` / `decision_rebrief_request` /
+/// `decision_explain`; `decision.explain`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionExplainResult {
+    pub explain: DecisionExplain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// `decision_evidence`: one piece of a brief's evidence as text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionEvidence {
+    pub id: String,
+    pub index: u32,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// `decision_get`; `decision.created` / `.answered` / `.resolved`.
@@ -1046,6 +1119,7 @@ pub enum EngineEvent {
     StatusTimeline(Box<TimelineAdded>),
     DecisionCreated(Box<DecisionResult>),
     DecisionResolved(Box<DecisionResult>),
+    DecisionExplain(Box<DecisionExplainResult>),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -1082,6 +1156,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "decision.created",
     "decision.resolved",
     "decision.answered",
+    "decision.explain",
 ];
 
 impl EngineEvent {
@@ -1119,6 +1194,7 @@ impl EngineEvent {
             "decision.created" => de(&event).map(|d| EngineEvent::DecisionCreated(Box::new(d))),
             // The orchestrator's answer (I4b) carries the same shape.
             "decision.resolved" | "decision.answered" => de(&event).map(|d| EngineEvent::DecisionResolved(Box::new(d))),
+            "decision.explain" => de(&event).map(|d| EngineEvent::DecisionExplain(Box::new(d))),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

@@ -1,0 +1,26 @@
+{
+  "case": "decision_rebrief_request/to_the_owner",
+  "method": "decision_rebrief_request",
+  "params": {
+    "id": "d1",
+    "note": "add the cost of each"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "explain": {
+        "agent": "a2",
+        "asked_at": 1700000000.0,
+        "id": "d1",
+        "key": "repo:export-csv",
+        "kind": "rebrief",
+        "note": "add the cost of each",
+        "route": "owner",
+        "state": "asked",
+        "target": "d1",
+        "to": "agent:a2",
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}

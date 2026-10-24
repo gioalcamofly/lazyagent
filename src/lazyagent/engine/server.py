@@ -132,6 +132,10 @@ FEATURES: tuple[str, ...] = (
     # The park gesture parks the whole work item (zone parked, counts
     # parked / parked_needs_you); until tomorrow, change, indefinite (I4d).
     "parked",
+    # The decision view (I5): decision_explain_request,
+    # decision_rebrief_request, decision_explain, decision_evidence,
+    # decision.explain; answers redelivered to a restored agent.
+    "decision_view",
 )
 
 STREAM_RESIZED = "stream.resized"

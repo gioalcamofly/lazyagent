@@ -100,8 +100,14 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "decision_revert" => round_trip::<DecisionResult>(case, result),
             "inbox_config_get" | "inbox_config_set" => round_trip::<InboxConfig>(case, result),
             "presence_report" | "presence_set" => round_trip::<PresenceResult>(case, result),
-            // The orchestrator's (MCP).
-            "decision_answer" | "decision_escalate" => continue,
+            // The user answers from the decision view (I5).
+            "decision_answer" => round_trip::<DecisionResult>(case, result),
+            "decision_explain_request" | "decision_rebrief_request" => {
+                round_trip::<DecisionExplainResult>(case, result)
+            }
+            "decision_evidence" => round_trip::<DecisionEvidence>(case, result),
+            // The orchestrator's and the agents' (MCP).
+            "decision_escalate" | "decision_explain" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -161,6 +167,10 @@ const METHODS_USED: &[&str] = &[
     "decision_revert",
     "inbox_config_get",
     "inbox_config_set",
+    "decision_answer",
+    "decision_explain_request",
+    "decision_rebrief_request",
+    "decision_evidence",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.

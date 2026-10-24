@@ -345,6 +345,12 @@
       "required": ["decision"],
       "properties": {"decision": {"$ref": "methods.json#/$defs/decision"}}
     },
+    "decision.explain": {
+      "type": "object",
+      "description": "An Explain this or Request a new brief was asked or answered (feature decision_view).",
+      "required": ["explain"],
+      "properties": {"explain": {"$ref": "methods.json#/$defs/decision_explain"}}
+    },
     "decision.resolved": {
       "type": "object",
       "description": "A brief closed: withdrawn, superseded or expired (its state says which).",

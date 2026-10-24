@@ -159,6 +159,10 @@ fn evidence_text(e: &Value) -> String {
 impl State {
     /// Home's single-letter keys; true when one was taken.
     pub fn home_key(&mut self, take: &impl Fn(Modifiers, Key) -> bool) -> bool {
+        if self.decision.is_some() {
+            // The decision view has the keys while it is open (decision_view.rs).
+            return self.decision_key(take);
+        }
         let folded = self.saved.home_fold;
         if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
             self.open_dialog(crate::dialogs::Kind::HomeHelp);
@@ -210,11 +214,24 @@ impl State {
         let Some(line) = self.home.current(folded) else { return false };
         if take(Modifiers::NONE, Key::Enter) {
             let asks = line.top.as_ref().is_some_and(|t| t.asks(line.brief.as_ref()));
-            if (line.zone == Zone::Now || asks) && line.agent().is_some() {
+            let brief = line.top.as_ref().is_some_and(|t| t.kind == "decision" && t.decision_id.is_some());
+            if brief && !asks && self.decision_view_on() {
+                self.open_line_decision(&line);
+            } else if (line.zone == Zone::Now || asks) && line.agent().is_some() {
                 self.open_line(&line);
             } else {
                 self.toggle_line(&line.key);
             }
+        } else if take(Modifiers::NONE, Key::V) {
+            if !self.decision_view_on() {
+                self.toast(Severity::Info, "This engine has no decision view: expand the line (Enter).");
+            } else if !self.open_line_decision(&line) {
+                self.toast(Severity::Info, "No brief on this line.");
+            }
+        } else if take(Modifiers::SHIFT, Key::Y) {
+            self.explain_line(&line, true);
+        } else if take(Modifiers::NONE, Key::Y) {
+            self.explain_line(&line, false);
         } else if take(Modifiers::SHIFT, Key::O) {
             self.pass_line(&line);
         } else if take(Modifiers::NONE, Key::O) {
@@ -734,6 +751,10 @@ fn section(ui: &mut Ui, title: &str, color: Color32, extra: impl FnOnce(&mut Ui)
 
 impl App {
     pub(crate) fn home_view(&mut self, ui: &mut Ui) {
+        if self.state.decision.is_some() {
+            self.decision_view(ui);
+            return;
+        }
         let t = self.state.theme;
         let now = unix_now();
         let folded = self.state.saved.home_fold;
@@ -767,6 +788,8 @@ impl App {
             parks: s.parks(),
             selected: selected.as_deref(),
             timelines: &s.timelines,
+            decision_view: s.decision_view_on(),
+            explains: &s.explains,
         };
         let presence = s.presence.clone();
         let mut acts: Vec<Act> = vec![];
@@ -902,6 +925,9 @@ impl App {
             if ctx.first_responder {
                 keys.push_str(" · U revert");
             }
+            if ctx.decision_view {
+                keys.push_str(" · v decision view · y explain · Y restore and explain");
+            }
             ui.label(RichText::new(keys).small().color(t.muted));
         });
         let s = &mut self.state;
@@ -996,6 +1022,8 @@ struct LineCtx<'a> {
     parks: &'static [(&'static str, Park)],
     selected: Option<&'a str>,
     timelines: &'a std::collections::HashMap<String, StatusTimeline>,
+    decision_view: bool,
+    explains: &'a std::collections::HashMap<String, lazyagent_proto::types::DecisionExplain>,
 }
 
 /// Presence (auto / present / away), what the engine applies, and the
@@ -1212,7 +1240,7 @@ fn timeline_line(e: &TimelineEntry, now: f64) -> String {
 }
 
 /// The brief, read-only (the decision view with answers is I5's).
-fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision) {
+fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool) {
     if !d.valid {
         ui.label(RichText::new(format!("agent {} asks: {}", d.agent, d.brief.question)).color(t.text));
         ui.label(RichText::new("Answer it in the agent's terminal (o).").small().color(t.muted));
@@ -1243,7 +1271,8 @@ fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision) {
         let ev: Vec<String> = d.brief.evidence.iter().map(evidence_text).collect();
         ui.label(RichText::new(format!("Evidence: {}", ev.join(" · "))).small().color(t.muted));
     }
-    ui.label(RichText::new("Answer it in the agent's terminal (o) for now.").small().color(t.muted));
+    let how = if view { "Open it to answer (Enter or v)." } else { "Answer it in the agent's terminal (o) for now." };
+    ui.label(RichText::new(how).small().color(t.muted));
 }
 
 /// The expanded line: who is on it, the agent's note, and the actions.
@@ -1256,7 +1285,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
         ui.label(RichText::new(&l.name).small().strong().color(t.text));
         let is_brief = l.top.as_ref().is_some_and(|t| t.kind == "decision");
         match (&l.top, &l.brief) {
-            (Some(_), Some(d)) if is_brief => brief_ui(ui, t, d),
+            (Some(_), Some(d)) if is_brief => brief_ui(ui, t, d, c.decision_view),
             (Some(top), _) => {
                 let text = [top.label.as_str(), top.detail.as_str()]
                     .iter()
@@ -1305,6 +1334,23 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             }
             if let Some(g) = &row.gesture {
                 ui.label(RichText::new(gesture_text(g, c.now)).small().color(t.purple));
+            }
+        }
+        let target = match l.top.as_ref().and_then(|t| t.decision_id.clone()) {
+            Some(id) => id,
+            None => format!("key:{}", l.key),
+        };
+        if c.decision_view
+            && let Some(e) = c.explains.get(&format!("explain:{target}"))
+        {
+            match &e.text {
+                Some(text) if e.state == "answered" => {
+                    ui.label(RichText::new(crate::decision_view::explained_by(e)).small().strong().color(t.cyan));
+                    ui.label(RichText::new(text).small().color(t.text));
+                }
+                _ => {
+                    ui.label(RichText::new(format!("explain: asked {}", e.to.replace(':', " "))).small().color(t.muted));
+                }
             }
         }
         if let Some(hold) = l.hold() {

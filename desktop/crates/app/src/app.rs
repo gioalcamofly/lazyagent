@@ -169,6 +169,11 @@ pub struct State {
     pub status_counts: lazyagent_proto::types::StatusCounts,
     /// The briefs the engine holds (feature `decisions`), open and closed.
     pub decisions: BTreeMap<String, Decision>,
+    /// The open decision view (I5), drawn in place of Home's list.
+    pub decision: Option<crate::decision_view::DecisionView>,
+    /// Explain this / Request a new brief, by `<kind>:<target>` (a
+    /// decision id, or `key:<work item>`), as last heard.
+    pub explains: HashMap<String, lazyagent_proto::types::DecisionExplain>,
     /// "Since you looked" of the expanded lines (`status_timeline`).
     pub timelines: HashMap<String, StatusTimeline>,
     /// Whether the user counts as present (feature `first_responder`).
@@ -269,6 +274,8 @@ impl State {
             inbox_gen: 0,
             status_counts: Default::default(),
             decisions: BTreeMap::new(),
+            decision: None,
+            explains: HashMap::new(),
             timelines: HashMap::new(),
             presence: None,
             presence_reported: f64::NEG_INFINITY,
@@ -1044,10 +1051,14 @@ impl State {
                 self.inbox_gen += 1;
             }
             EngineEvent::StatusTimeline(t) => {
+                if let Some(view) = self.decision.as_mut().filter(|v| v.key == t.key) {
+                    view.timeline.push(t.entry.clone());
+                }
                 if let Some(open) = self.timelines.get_mut(&t.key) {
                     open.entries.push(t.entry);
                 }
             }
+            EngineEvent::DecisionExplain(r) => self.on_explain(r.explain),
             EngineEvent::DecisionCreated(d) | EngineEvent::DecisionResolved(d) => {
                 self.decisions.insert(d.decision.id.clone(), d.decision);
                 self.inbox_gen += 1;

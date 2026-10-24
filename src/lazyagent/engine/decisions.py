@@ -41,6 +41,7 @@ Auto-delegation (engine/autodelegate.py) writes a brief of its own
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -48,6 +49,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine.actionables import DECISION, Item, Snapshot
+from lazyagent.engine.notes import _section_bounds
 from lazyagent.engine.overlay import one_line
 from lazyagent.engine.status import clip_words
 
@@ -224,6 +226,43 @@ def check_brief(
     return brief, invalid, problems
 
 
+EVIDENCE_LINES = 400
+EVIDENCE_CONTEXT = 3
+
+
+def _span(lines: str | None, total: int) -> tuple[int, int]:
+    """``(first, last)`` 1-based lines to show for ``lines`` ("120-134"),
+    with a little context, at most :data:`EVIDENCE_LINES`."""
+    if not lines:
+        return 1, min(total, EVIDENCE_LINES)
+    a, _, b = lines.partition("-")
+    first, last = int(a), int(b or a)
+    if last < first:
+        first, last = last, first
+    first = max(1, first - EVIDENCE_CONTEXT)
+    last = min(total, last + EVIDENCE_CONTEXT, first + EVIDENCE_LINES - 1)
+    return first, last
+
+
+def _numbered(text: str, lines: str | None) -> dict[str, Any]:
+    all_lines = text.splitlines()
+    first, last = _span(lines, len(all_lines))
+    return {"start": first, "text": "\n".join(all_lines[first - 1:last]),
+            "total": len(all_lines)}
+
+
+async def _git_show(path: str, sha: str | None, rel: str) -> str | None:
+    args = ["git", "-C", path, "show", f"{sha}:{rel}"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), 10.0)
+    except (OSError, asyncio.TimeoutError):
+        return None
+    return out.decode(errors="replace") if proc.returncode == 0 else None
+
+
 def level_of(record: dict[str, Any]) -> str:
     """Its inbox level: ``deep``, or for a quick one Now when blocking."""
     if record["class"] == "deep":
@@ -276,6 +315,67 @@ class Decisions:
             and (r["worktree_path"], r["agent"]) == (worktree_path, agent_id)
         ]
 
+    async def evidence(self, decision_id: str, index: Any) -> dict[str, Any]:
+        """``decision_evidence``: what one piece of evidence points at, as
+        text (a file at its lines, at the brief's commit; a log's lines;
+        a notes section). A diff hunk is read from ``get_diff``, a URL is
+        only a link."""
+        record = self.get(decision_id)
+        evidence = record["brief"]["evidence"]
+        if type(index) is not int or not 0 <= index < len(evidence):
+            raise ValueError(f"index must be 0-{len(evidence) - 1}")
+        e = evidence[index]
+        out: dict[str, Any] = {"id": decision_id, "index": index, "kind": e["kind"]}
+        path = record["worktree_path"]
+        engine = self._engine
+        if e["kind"] == "file":
+            text = await _git_show(path, e.get("sha"), e["path"]) if e.get("sha") else None
+            if text is None:
+                rel = inside(path, e["path"])
+                try:
+                    with open(os.path.join(path, rel or ""), encoding="utf-8", errors="replace") as f:
+                        text = f.read(4_000_000)
+                    out["note"] = "as in the worktree now (its commit is not readable)"
+                except OSError as err:
+                    out["error"] = f"cannot read {e['path']}: {err.strerror or err}"
+                    return out
+            out.update(_numbered(text, e.get("lines")))
+        elif e["kind"] == "log":
+            ref = e["ref"]
+            agent = ref.removeprefix("agent:") if ref.startswith("agent") else None
+            if agent is not None:
+                agent = agent if agent and agent != "agent" else record["agent"]
+                try:
+                    lines, _ = engine.read_agent_output(path, agent, 2000)
+                except ValueError:
+                    out["error"] = f"agent {agent} is not running: its output is gone"
+                    return out
+                out.update(_numbered("\n".join(lines), e.get("lines")))
+                out["note"] = f"agent {agent}'s terminal now (line numbers count from its tail)"
+            elif inside(path, ref) is not None and os.path.isfile(os.path.join(path, ref)):
+                with open(os.path.join(path, ref), encoding="utf-8", errors="replace") as f:
+                    out.update(_numbered(f.read(4_000_000), e.get("lines")))
+            else:
+                out["error"] = f"{ref} is not a log the engine can read (open it from the PR's checks)"
+        elif e["kind"] == "notes":
+            store = engine.notes
+            notes_id = engine.first_responder._notes_id(record)
+            if store is None or notes_id is None or notes_id not in store:
+                out["error"] = "the agent's notes are gone"
+                return out
+            lines = store.get(notes_id).text.splitlines()
+            bounds = _section_bounds(lines, e["section"])
+            if bounds is None:
+                out["error"] = f"no section {e['section']!r} in the agent's notes"
+                return out
+            body = lines[bounds[0] + 1:bounds[1]]
+            out.update(start=1, text="\n".join(body).strip("\n"), total=len(body))
+        elif e["kind"] == "diff":
+            out["error"] = "read the diff with get_diff (worktree_path, pr: true)"
+        else:
+            out["url"] = e.get("url")
+        return out
+
     # --- The agent's calls ---
 
     def request(
@@ -288,10 +388,12 @@ class Decisions:
         head: str | None,
         now: float,
         holder: str = "user",
+        by: str | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Keep a brief from ``agent_id`` on ``key``; returns it and the
         message for the agent. Raises ValueError (no question, over the
-        limit, a bad ``replaces``)."""
+        limit, a bad ``replaces``). ``by``: the orchestrator writing it for
+        ``agent_id`` (a new brief the user asked it for)."""
         if holder not in HOLDERS:
             raise ValueError(f"holder must be one of {', '.join(HOLDERS)}")
         brief, invalid, problems = check_brief(params, worktree_path, head)
@@ -339,10 +441,13 @@ class Decisions:
             "answer": None,
         }
         self.store[decision_id] = record
-        actor = f"agent:{agent_id}"
+        actor = by or f"agent:{agent_id}"
+        # The user asked for this one (Request a new brief): theirs, not routed.
+        rebrief = old is not None and old.get("rebrief", {}).get("state") == "asked"
         if old is not None:
             self.close(old, "superseded", now, actor, f"replaced by {decision_id}")
-        if holder == "user":
+            self._engine.explainer.rebriefed(old, decision_id, actor)
+        if holder == "user" and not rebrief:
             self._engine.first_responder.route(record, now)
         overlay.add(key, "decision", actor, f"asked: {brief['question']}", ref=decision_id)
         self._engine.events.emit(DECISION_CREATED, {"decision": dict(record)})

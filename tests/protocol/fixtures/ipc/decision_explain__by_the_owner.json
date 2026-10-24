@@ -1,0 +1,30 @@
+{
+  "case": "decision_explain/by_the_owner",
+  "method": "decision_explain",
+  "params": {
+    "caller": "tok-a2",
+    "id": "d1",
+    "text": "A backs off on outages.\nB keeps runs short."
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "explain": {
+        "agent": "a2",
+        "answered_at": 1700000000.0,
+        "asked_at": 1700000000.0,
+        "by": "agent:a2",
+        "id": "d1",
+        "key": "repo:export-csv",
+        "kind": "explain",
+        "route": "owner",
+        "state": "answered",
+        "target": "d1",
+        "text": "A backs off on outages.\nB keeps runs short.",
+        "to": "agent:a2",
+        "truncated": false,
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}
