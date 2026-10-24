@@ -208,6 +208,8 @@ class EngineMethods:
             "presence_set": self.presence_set,
             "inbox_config_get": self.inbox_config_get,
             "inbox_config_set": self.inbox_config_set,
+            "work_items_upsert": self.work_items_upsert,
+            "work_items_close": self.work_items_close,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -1035,9 +1037,14 @@ class EngineMethods:
             if kept is not None:
                 engine.overlay.changed()
             delegated = engine.delegations.clear(key)
+            # Unparking an item a feeder holds waiting: until it says
+            # something else.
+            facts = status.facts(key)
+            feeder = facts.feeder if facts is not None else None
+            unwaited = feeder is not None and engine.work_items.override_waiting(feeder["url"])
             if claims.get(key) is not None or claims.get_hold(key) is not None:
                 claims.clear(key)
-            elif gesture is None and kept is None and not delegated:
+            elif gesture is None and kept is None and not delegated and not unwaited:
                 raise ValueError(f"{key} has no gesture and is not with the orchestrator")
             status.by(key, role)
         elif kind in ("label", "park", "close"):
@@ -1390,6 +1397,32 @@ class EngineMethods:
         self._engine.load_config()
         self._engine.status.mark_dirty()
         return await self.inbox_config_get({"repo": root})
+
+    async def work_items_upsert(self, params: dict) -> Any:
+        """A feeder (a planner, a script) creates or replaces a work item,
+        one per URL. Params: url, title, source, priority (high, medium,
+        low; default medium), ticket? (links it to the branch with that
+        ticket key), branch?, project? {id, title, policy?
+        {continue_while_review}}, depends_on? [url], waiting? {reason?,
+        until?} (parks its row; left out, it clears), expires_at? (Unix
+        time). Optional fields left out go back to their defaults."""
+        engine = self._engine
+        self._caller(params)
+        record, created = engine.work_items.upsert(params, engine.status.clock())
+        rows = engine.status.flush()
+        key = next((r["key"] for r in rows.values()
+                    if (r.get("feeder") or {}).get("url") == record["url"]), None)
+        return {"item": record, "created": created, "key": key}
+
+    async def work_items_close(self, params: dict) -> Any:
+        """A feeder is done with a work item (it was finished or dropped
+        upstream). Params: url. Closing an unknown URL is not an error
+        (``closed: false``)."""
+        engine = self._engine
+        self._caller(params)
+        record = engine.work_items.close(params.get("url"))
+        engine.status.flush()
+        return {"url": params["url"].strip(), "closed": record is not None, "item": record}
 
     async def list_agents(self, params: dict) -> Any:
         """List the agents in a worktree. Params: worktree_path.

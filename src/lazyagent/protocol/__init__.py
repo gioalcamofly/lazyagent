@@ -81,6 +81,9 @@ LEGACY_METHODS: tuple[str, ...] = (
     "presence_set",
     "inbox_config_get",
     "inbox_config_set",
+    # Work items from external feeders (proposal 0013 I6).
+    "work_items_upsert",
+    "work_items_close",
 )
 
 # The methods protocol v1 adds.

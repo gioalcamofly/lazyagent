@@ -1,0 +1,16 @@
+{
+  "case": "work_items_upsert/error_bad_source",
+  "method": "work_items_upsert",
+  "params": {
+    "source": "my board",
+    "title": "x",
+    "url": "https://tracker.example.com/browse/SHOP-1"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "source is required: 1-32 letters, digits, '_', '.' or '-' (e.g. 'planner')"
+    },
+    "id": "req-1"
+  }
+}

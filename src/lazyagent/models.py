@@ -6,6 +6,22 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
+# The default ticket key in a branch name or a URL: ``ABC-123``.
+# ``[status] ticket_pattern`` (config.py) may replace it.
+TICKET_PATTERN = r"\b[A-Z][A-Z0-9]*-\d+"
+
+
+def ticket_id(text: str | None, pattern: str | None = None) -> str | None:
+    """The ticket key in ``text`` (a branch name, a URL): the pattern's first
+    group when it has one, else the whole match; ``pattern`` None is
+    :data:`TICKET_PATTERN`."""
+    if not text:
+        return None
+    match = re.search(pattern or TICKET_PATTERN, text)
+    if match is None:
+        return None
+    return match.group(1) if match.re.groups else match.group(0)
+
 
 @dataclass
 class WorktreeInfo:
@@ -25,10 +41,7 @@ class WorktreeInfo:
     @property
     def ticket_id(self) -> str | None:
         """Extract a ticket ID like TASK-123 from the branch name, if present."""
-        if self.branch is None:
-            return None
-        match = re.search(r"\b[A-Z][A-Z0-9]*-\d+", self.branch)
-        return match.group(0) if match else None
+        return ticket_id(self.branch)
 
     @property
     def display_label(self) -> str:

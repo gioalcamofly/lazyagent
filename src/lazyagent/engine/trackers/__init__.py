@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from lazyagent.models import TICKET_PATTERN, ticket_id
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -57,10 +59,11 @@ BACKOFF_MIN = 60.0
 BACKOFF_MAX = 3600.0
 
 BALLS = ("you", "agent", "others", "stalled", "done")
+PRIORITIES = ("high", "medium", "low")
 LEVELS = ("now", "round")
 
-# models.WorktreeInfo.ticket_id's pattern: the default key in a branch name.
-GENERIC_KEY = r"\b[A-Z][A-Z0-9]*-\d+"
+# models.ticket_id's pattern: the default key in a branch name.
+GENERIC_KEY = TICKET_PATTERN
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,8 @@ class TrackerTask:
     assignee: str | None = None
     updated_at: float = 0.0
     etag: str | None = None
+    # high, medium or low, when the adapter can tell (optional).
+    priority: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,10 +282,7 @@ def credential(config: TrackerConfig, name: str = "token") -> str | None:
 
 
 def branch_key(pattern: str | None, branch: str) -> str | None:
-    match = re.search(pattern or GENERIC_KEY, branch)
-    if match is None:
-        return None
-    return match.group(1) if match.re.groups else match.group(0)
+    return ticket_id(branch, pattern)
 
 
 # ----------------------------------------------------------------------
@@ -302,6 +304,7 @@ class TrackerFact:
     level: str | None
     at: float
     stale: bool
+    priority: str | None = None
 
 
 @dataclass(frozen=True)
@@ -458,22 +461,25 @@ class TrackerHub:
                 level=item.level if item is not None else None,
                 at=at,
                 stale=feed.error is not None and feed.error_at >= at,
+                priority=task.priority if task.priority in PRIORITIES else None,
             )
         return None
 
     def not_started(self, branches: Iterable[str]) -> int:
         """Assigned tasks that no branch links to."""
+        return len(self.not_started_tasks(branches))
+
+    def not_started_tasks(self, branches: Iterable[str]) -> list[tuple[str, TrackerTask]]:
+        """``(adapter, task)`` of the assigned tasks no branch links to."""
         linked: dict[str, set[str]] = {}
         for branch in branches:
             for feed, key in self.links(branch):
                 linked.setdefault(feed.name, set()).add(key)
-        count = 0
+        out = []
         for feed in self._feeds:
-            if not feed.assigned:
-                continue
             keys = linked.get(feed.name, set())
-            count += sum(t.key not in keys for t in feed.assigned)
-        return count
+            out += [(feed.name, t) for t in feed.assigned or () if t.key not in keys]
+        return out
 
     # --- Polling ---
 

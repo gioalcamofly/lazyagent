@@ -27,7 +27,8 @@ pub const GUIDE: &[(&str, &[&str])] = &[
              (merged, closed) stay a day, dimmed.",
             "- Parked: work items you parked, with their inbox items, folded until you open it (Shift+Z). \
              A parked line says when it comes back, or why it waits, and \"needs you\" when one of its items \
-             is still yours.",
+             is still yours. Items a planner holds in its own Waiting lane wait here too, as \"waiting \
+             (board)\" or \"waiting: <reason>\".",
         ],
     ),
     (
@@ -42,7 +43,8 @@ pub const GUIDE: &[(&str, &[&str])] = &[
         &["The state is a short fact, never a guess: \"approve: npm test\", \"CI red: tests\", \"conflict with \
              base\", \"merge: approved, CI green\", \"review requested\", \"PR has no reviewer\", \"orchestrator \
              · looking\", \"orchestrator · verifying tests\", \"agent a1 · on it\", \"agent a1 finished; still CI \
-             red\", \"parked until Tue 08:00\". A label you set shows before it: \"QA · CI running\"."],
+             red\", \"parked until Tue 08:00\", \"waiting (board)\". A label you set shows before it: \"QA · CI \
+             running\"; an open dependency after it: \"Edit · waits on Cart totals\"."],
     ),
     (
         "Rounds, and changed since your last look",
@@ -85,6 +87,19 @@ pub const GUIDE: &[(&str, &[&str])] = &[
              pushed.",
             "- Keep for me (the engine's keep_for_me): nothing on that item is routed to the orchestrator.",
         ],
+    ),
+    (
+        "Projects, priority and not started",
+        &["A planner or a script can feed Home the tasks it tracks (work_items_upsert). A task with no \
+             branch yet counts in In flight's header (\"3 not started\"), together with the issues assigned \
+             to you in a tracker. Once a branch carries its ticket key (SHOP-12-checkout), the task joins \
+             that line with its title and priority. In flight groups lines by project under a header \
+             (\"▸ Checkout revamp · 3\"); a line whose dependency is still open or in review reads \"waits \
+             on <title>\". High priority shows ▴ before the name and low ▾; priority orders lines inside a \
+             level, after anything that blocks an agent. A project that \"continues while in review\" lets \
+             the orchestrator start its next task once the dependencies are merged or in review: alone \
+             while you are away, as a proposal while you are present. u on a waiting line unparks it until \
+             the planner changes it."],
     ),
     (
         "Delegate to the branch's agent",

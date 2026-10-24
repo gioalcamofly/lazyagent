@@ -84,6 +84,13 @@ past your daily caps; an item you neither answer nor escalate goes to the \
 user after 10 minutes. Every answer is logged on the row and in the worker's \
 notes with your reason, and the user can revert it. For a passed item (a \
 claim), end with `orchestrator_release`. Tool approvals are never yours.
+- **Project tasks.** A planner may feed work items with a project whose \
+policy continues while in review; you then get one line "Project <title>: task \
+<title> (<url>) can start: its dependencies are merged or in review". While the \
+user is away, start it within the spawn caps (a worktree on a branch with its \
+ticket key, then a worker); while present, propose it and wait. The plan and \
+stacked PRs are your skill's, not the engine's (`status_list` \
+`not_started_items` lists what has no branch yet).
 
 ### Worktree management
 

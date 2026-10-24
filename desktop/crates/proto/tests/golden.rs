@@ -102,6 +102,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "presence_report" | "presence_set" => round_trip::<PresenceResult>(case, result),
             // The orchestrator's (MCP).
             "decision_answer" | "decision_escalate" => continue,
+            // External feeders' (MCP, a planner or a script).
+            "work_items_upsert" | "work_items_close" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;

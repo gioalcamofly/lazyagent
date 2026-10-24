@@ -243,6 +243,14 @@ provider = "claude"
 # instruction. Replace the text here, or turn it off with "".
 # worker_preamble = ""
 
+[status]
+# A branch's ticket key, which links a feeder's work item (work_items_upsert)
+# to its branch: a regex, its first group or else the whole match. Default:
+# the generic ABC-123 key.
+# ticket_pattern = "(?i)\\b[a-z]+-\\d+"
+# Open work items per feeder source; a new one past it is refused (0: no cap).
+# max_open_per_source = 50
+
 [inbox]
 # "To sit down with" (decision briefs, changes requested, a finished branch to
 # review) shows its count against this; nothing is refused over it.
@@ -335,6 +343,52 @@ A status mapped with a `level` opens an inbox item when the issue enters it
 and clears it when the issue leaves. The token (an
 [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens))
 is never written by lazyagent and is sent only to `base_url`.
+
+### Feeding work items (a planner, a script)
+
+Anything that tracks work elsewhere (a planner with its own board, a
+script over an issue tracker) can tell the engine about it with the MCP
+tools `work_items_upsert` and `work_items_close` (or the engine methods of
+the same names). lazyagent never starts a task on its own: it shows them.
+
+- **One item per URL.** Upserting the same URL again replaces it; optional
+  fields left out go back to their defaults, so send the whole item each
+  time. At most `[status] max_open_per_source` (50) open items per
+  `source`; `expires_at` (Unix time) forgets one on its own.
+- **Not started, then a row.** While no local branch carries its ticket key
+  (given, or read from the URL with `[status] ticket_pattern`), the item
+  adds to Home's "N not started" (with the trackers' assigned issues, once
+  per URL). Once a branch such as `SHOP-12-checkout` exists, it joins that
+  row with its title, priority and project.
+- **Priority** (`high` · `medium` · `low`) orders the row and its inbox
+  items inside their level, after "blocks a live agent".
+- **Waiting.** `waiting: {reason?, until?}` parks the row in Parked as
+  "waiting (<source>)" or "waiting: <reason>", until `until` (a time,
+  `tomorrow`, or a park event) or your next upsert without it. The user's own
+  park or unpark wins until you send a different `waiting`.
+- **Projects.** `project: {id, title, policy?}` groups In flight;
+  `depends_on` shows "waits on <title>". With
+  `policy.continue_while_review = true`, the engine wakes the orchestrator
+  once when a task's dependencies are all merged or in review; it starts it
+  within its mandate (away) or proposes it (present). The plan and the
+  next-task choice stay with you or your skill.
+
+```python
+# From a Claude session with lazyagent's MCP server:
+work_items_upsert(
+    url="https://tracker.example.com/browse/SHOP-12",
+    title="Checkout flow",
+    source="planner",
+    priority="high",
+    project={"id": "shop", "title": "Checkout revamp",
+             "policy": {"continue_while_review": True}},
+    depends_on=["https://tracker.example.com/browse/SHOP-11"],
+)
+work_items_upsert(url="https://tracker.example.com/browse/SHOP-14",
+                  title="Refunds", source="board",
+                  waiting={"reason": "design review"})
+work_items_close(url="https://tracker.example.com/browse/SHOP-11")
+```
 
 ### Environment variables
 
