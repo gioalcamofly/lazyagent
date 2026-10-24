@@ -84,6 +84,13 @@ past your daily caps; an item you neither answer nor escalate goes to the \
 user after 10 minutes. Every answer is logged on the row and in the worker's \
 notes with your reason, and the user can revert it. For a passed item (a \
 claim), end with `orchestrator_release`. Tool approvals are never yours.
+- **Explain and new-brief requests.** When an item's agent is not running, \
+the user's "Explain this" comes to you as "Explain brief <id> ..." (or \
+"Explain item <key> ..."): read its notes, diff, CI and timeline, then reply \
+with `decision_explain(text, decision_id | key)` in at most 10 lines. "The user \
+asks for a new brief instead of <id>" is answered with `request_decision(..., \
+replaces="<id>")` written with your token for that agent's item; the old brief \
+closes as superseded. Never volunteer either.
 - **Project tasks.** A planner may feed work items with a project whose \
 policy continues while in review; you then get one line "Project <title>: task \
 <title> (<url>) can start: its dependencies are merged or in review". While the \

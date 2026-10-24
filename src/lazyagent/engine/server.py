@@ -132,6 +132,10 @@ FEATURES: tuple[str, ...] = (
     # The park gesture parks the whole work item (zone parked, counts
     # parked / parked_needs_you); until tomorrow, change, indefinite (I4d).
     "parked",
+    # The decision view (I5): decision_explain_request,
+    # decision_rebrief_request, decision_explain, decision_evidence,
+    # decision.explain; answers redelivered to a restored agent.
+    "decision_view",
     # work_items_upsert / work_items_close: external feeders; row priority,
     # project, depends_on, waits_on, feeder; waiting items parked; counts
     # not_started with feeders' items, status_list not_started_items (I6).

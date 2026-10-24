@@ -81,6 +81,12 @@ LEGACY_METHODS: tuple[str, ...] = (
     "presence_set",
     "inbox_config_get",
     "inbox_config_set",
+    # Explain this, Request a new brief, the evidence tabs (proposal 0013
+    # I5).
+    "decision_explain_request",
+    "decision_rebrief_request",
+    "decision_explain",
+    "decision_evidence",
     # Work items from external feeders (proposal 0013 I6).
     "work_items_upsert",
     "work_items_close",
@@ -155,6 +161,7 @@ EVENTS: tuple[str, ...] = (
     "status.timeline",
     "decision.created",
     "decision.answered",
+    "decision.explain",
     "decision.resolved",
     "ui.command",
     "ui.view_changed",

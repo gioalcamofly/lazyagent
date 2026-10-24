@@ -416,6 +416,8 @@ class FirstResponder:
                 self._escalate(record, now, "engine", KEPT)
             elif now - record["routed"]["at"] >= window:
                 self._escalate(record, now, "engine", DID_NOT_ANSWER)
+        self._redeliver()
+        engine.explainer.prune(now)
         for record in engine.overlay.decisions.values():
             tag = f"wake:{record['id']}"
             if (record["state"] != "open" or record.get("holder") != "orchestrator") \
@@ -559,23 +561,7 @@ class FirstResponder:
             record["inverse"] = inverse
             self._count(now, key=key, decision=True)
         # Delivered like a review reply: when the agent is idle.
-        parts = [f"Decision {decision_id}: {choice}"]
-        if label:
-            parts[0] += f" — {label}"
-        text = parts[0] + "." + (f" {comment}" if comment else "")
-
-        def sent() -> None:
-            answer["delivered_at"] = self.clock()
-            if record.get("source") == "question":
-                engine.status.mark_dirty()
-            engine.overlay.changed()
-
-        def gone() -> None:
-            answer["delivery"] = "agent gone"
-            engine.overlay.changed()
-
-        self.mailbox.post((record["worktree_path"], record["agent"]), text,
-                          tag=f"answer:{decision_id}", on_sent=sent, on_gone=gone)
+        self._deliver(record)
         actor = by
         question = record["brief"]["question"]
         who = f"orchestrator, {presence}" if by == "orchestrator" else "user"
@@ -596,11 +582,59 @@ class FirstResponder:
         self.mailbox.flush()
         return dict(record)
 
+    def _deliver(self, record: dict[str, Any]) -> None:
+        """Post the answer's line for the agent, sent once its turn is over.
+        An agent gone by then gets it when it is back (restored)."""
+        engine = self._engine
+        answer = record["answer"]
+
+        def sent() -> None:
+            answer["delivered_at"] = self.clock()
+            answer.pop("delivery", None)
+            if record.get("source") == "question":
+                engine.status.mark_dirty()
+            engine.overlay.changed()
+
+        def gone() -> None:
+            answer["delivery"] = "agent gone"
+            engine.overlay.changed()
+
+        self.mailbox.post((record["worktree_path"], record["agent"]), answer_text(record),
+                          tag=f"answer:{record['id']}", on_sent=sent, on_gone=gone)
+
+    def _redeliver(self) -> None:
+        """Answers that found their agent gone: posted again once an agent
+        with that id runs there (a restore). Its notes already have them."""
+        engine = self._engine
+        for record in engine.overlay.decisions.values():
+            answer = record.get("answer") or {}
+            if record["state"] != "answered" or answer.get("delivered_at") \
+                    or answer.get("delivery") != "agent gone":
+                continue
+            if self.mailbox.has(f"answer:{record['id']}"):
+                continue
+            session = engine.get_session(record["worktree_path"], record["agent"])
+            if session is not None and session.running:
+                answer["delivery"] = "after restore"
+                self._deliver(record)
+
+    def _notes_id(self, record: dict[str, Any]) -> str | None:
+        """The worker's notes: its live ones, else its restorable entry's
+        (they come back with it)."""
+        engine = self._engine
+        notes_id = engine.notes_id(record["worktree_path"], record["agent"])
+        if notes_id is not None or engine.manifest is None:
+            return notes_id
+        for entry in engine.manifest.restorable.values():
+            if (entry.worktree_path, entry.agent_id) == (record["worktree_path"], record["agent"]):
+                return entry.notes_id
+        return None
+
     def _notes(self, record: dict[str, Any], line: str, by: str) -> None:
         """Append to the worker's notes, section Decisions (append only)."""
         engine = self._engine
-        notes_id = engine.notes_id(record["worktree_path"], record["agent"])
-        if engine.notes is None or notes_id is None:
+        notes_id = self._notes_id(record)
+        if engine.notes is None or notes_id is None or notes_id not in engine.notes:
             return
         try:
             engine.notes.append(notes_id, "Decisions", line, by)
@@ -746,6 +780,15 @@ class FirstResponder:
             raise ValueError(
                 f"Never alone: deleting a worktree with unpushed work ({why}). Ask the user."
             )
+
+
+def answer_text(record: dict[str, Any]) -> str:
+    """``Decision <id>: <choice> — <label>. <comment>``."""
+    answer = record["answer"]
+    text = f"Decision {record['id']}: {answer['choice']}"
+    if answer.get("label"):
+        text += f" — {answer['label']}"
+    return text + "." + (f" {answer['comment']}" if answer.get("comment") else "")
 
 
 def _date(now: float) -> str:

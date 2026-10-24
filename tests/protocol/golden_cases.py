@@ -1095,6 +1095,61 @@ async def _():
         shutil.rmtree(root, ignore_errors=True)
 
 
+# --- The decision view: Explain this, a new brief, evidence (I5) ------------
+
+
+@case("decision_explain_request/to_the_owner")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(
+        engine, "decision_explain_request", {"id": "d1", "question": "why not both?"}
+    )
+
+
+@case("decision_explain_request/error_nobody_can")
+async def _():
+    return await _call(_status_engine(), "decision_explain_request", {"key": "repo:docs-index"})
+
+
+@case("decision_rebrief_request/to_the_owner")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(
+        engine, "decision_rebrief_request", {"id": "d1", "note": "add the cost of each"}
+    )
+
+
+@case("decision_explain/by_the_owner")
+async def _():
+    from lazyagent.engine.methods import EngineMethods
+
+    engine = _worker_engine()
+    await _brief(engine)
+    await EngineMethods(engine).decision_explain_request({"id": "d1"})
+    return await _call(
+        engine, "decision_explain",
+        {"id": "d1", "text": "A backs off on outages.\nB keeps runs short.", "caller": "tok-a2"},
+    )
+
+
+@case("decision_explain/error_not_asked")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(
+        engine, "decision_explain", {"id": "d1", "text": "unasked", "caller": "tok-a2"}
+    )
+
+
+@case("decision_evidence/a_log_it_cannot_read")
+async def _():
+    engine = _worker_engine()
+    await _brief(engine)
+    return await _call(engine, "decision_evidence", {"id": "d1", "index": 1})
+
+
 # --- work_items_* (external feeders, I6) --------------------------------------
 
 

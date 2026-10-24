@@ -58,6 +58,27 @@ pub const GUIDE: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "The decision view",
+        &[
+            "Enter (or v) on a brief opens it: the question and its options on the left, the recommendation \
+             preselected (or the orchestrator's suggestion when it handed the brief to you), what the agent \
+             tried, how reversible it is and what goes wrong if the choice is wrong, and a comment box. The \
+             evidence is on the right, one tab per piece: a diff hunk, a log's or a file's lines, a notes \
+             section, a link; the item's timeline is under it. \"Outdated\" means the branch moved since the \
+             brief.",
+            "Answer (Ctrl+Enter) sends \"Decision d3: B — <label>. <comment>\" to the agent once its turn is \
+             over, never in the middle of one, and adds it to the agent's notes (Decisions), so a restored \
+             agent still knows. A decision the orchestrator took shows as \"decided by orchestrator\" with \
+             Revert.",
+            "- Explain this (y): the owner agent explains in at most 10 lines. When it is not running but can \
+             be restored, the view offers \"Restore agent and explain\" (Shift+Y); it is never restored on \
+             its own. With neither, the orchestrator explains; with nobody, the button is disabled and Open \
+             terminal and Pass to orchestrator are there instead. y works on any Home line too.",
+            "- Request a new brief (b): through the same chain, with a note; the agent answers with a new \
+             brief that replaces this one.",
+        ],
+    ),
+    (
         "Pass to orchestrator",
         &[
             "Shift+O passes the item to the orchestrator for two hours: the line reads \"orchestrator · \
@@ -135,7 +156,9 @@ pub const GUIDE: &[(&str, &[&str])] = &[
 /// Home's keys, for the guide's table.
 pub const HOME_KEYS: &[(&str, &str)] = &[
     ("J K ↓ ↑", "Next / previous line"),
-    ("Enter", "Answer a Now line (its terminal); expand any other"),
+    ("Enter", "Answer a Now line (its terminal); open a brief's decision view; expand any other"),
+    ("V", "The decision view of the line's brief (or of the orchestrator's decision)"),
+    ("Y  Shift+Y", "Explain this: by its agent or the orchestrator / restore its agent and explain"),
     ("O", "The line's agent terminal"),
     ("N", "Its session notes"),
     ("P", "Its PR (or tracker task)"),
@@ -152,6 +175,18 @@ pub const HOME_KEYS: &[(&str, &str)] = &[
     ("F", "Fold In flight"),
     ("G W  G H", "The worktrees / back to Home"),
     ("?", "This guide"),
+];
+
+/// The decision view's keys.
+pub const DECISION_KEYS: &[(&str, &str)] = &[
+    ("1-4", "Pick an option"),
+    ("Ctrl+Enter", "Answer"),
+    ("]  [", "Next / previous evidence tab"),
+    ("Y  Shift+Y", "Explain this / restore its agent and explain"),
+    ("B", "Request a new brief"),
+    ("O", "The agent's terminal"),
+    ("Shift+U", "Revert the orchestrator's decision"),
+    ("Esc", "Back to Home"),
 ];
 
 /// The guide, drawn (in the Home guide dialog).
@@ -183,6 +218,15 @@ pub fn show(ui: &mut Ui, t: &Theme) {
             ui.end_row();
         }
     });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Keys in the decision view").strong().color(t.accent));
+    egui::Grid::new("home-help-decision-keys").num_columns(2).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+        for (keys, what) in DECISION_KEYS {
+            ui.label(RichText::new(*keys).monospace().color(t.accent));
+            ui.label(*what);
+            ui.end_row();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -196,7 +240,7 @@ mod tests {
         for (heading, _) in GUIDE {
             assert!(doc.contains(&format!("## {heading}")), "docs/guides/home.md lacks ## {heading}");
         }
-        for (keys, _) in HOME_KEYS {
+        for (keys, _) in HOME_KEYS.iter().chain(DECISION_KEYS) {
             assert!(doc.contains(&format!("`{keys}`")), "docs/guides/home.md lacks the key `{keys}`");
         }
     }

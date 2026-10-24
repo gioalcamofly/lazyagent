@@ -1,0 +1,16 @@
+{
+  "case": "decision_explain/error_not_asked",
+  "method": "decision_explain",
+  "params": {
+    "caller": "tok-a2",
+    "id": "d1",
+    "text": "unasked"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Nobody asked for an explanation of d1 (or it was answered): explain only when the user asks"
+    },
+    "id": "req-1"
+  }
+}

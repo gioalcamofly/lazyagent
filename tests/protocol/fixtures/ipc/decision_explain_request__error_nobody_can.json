@@ -1,0 +1,14 @@
+{
+  "case": "decision_explain_request/error_nobody_can",
+  "method": "decision_explain_request",
+  "params": {
+    "key": "repo:docs-index"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Nobody can explain it: its agent is not running and cannot be restored, and no orchestrator runs. Open its terminal, or pass it to the orchestrator."
+    },
+    "id": "req-1"
+  }
+}

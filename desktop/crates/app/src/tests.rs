@@ -4131,3 +4131,380 @@ fn home_i6_screenshots() {
     h.run_steps(4);
     shot(&mut h, "i6-home-light");
 }
+
+// --- I5: the decision view (brief | evidence | timeline), answers, Explain
+// this and a new brief, against a fake engine --------------------------------
+
+const I5: &[&str] = &["status", "actionables", "claims", "gestures", "decisions", "first_responder", "decision_view"];
+
+const RETRY_DIFF: &str = "diff --git a/src/retry.py b/src/retry.py\n--- a/src/retry.py\n+++ b/src/retry.py\n\
+@@ -10,2 +10,2 @@ import time\n ctx\n-a\n+b\n@@ -40,7 +40,12 @@ def retry():\n-    sleep(2)\n+    sleep(backoff(n))\n";
+
+/// Home with a billing worktree (agent a2 when `alive`) and its brief d1 in
+/// To sit down with; the fake engine answers the view's requests.
+fn i5_home(alive: bool, caps: &[&str]) -> (Harness<'static, App>, mpsc::Sender<Msg>, Calls) {
+    let agents = if alive { vec![agent("a2", "Implementer", "waiting", "s2")] } else { vec![] };
+    let (mut app, tx) = app(vec![worktree("/r/repo", "main", vec![]), worktree("/r/repo-billing", "billing", agents)]);
+    app.state.view = crate::app::View::Home;
+    app.state.capabilities = Some(caps.iter().map(|c| c.to_string()).collect());
+    app.state.inbox_loaded = 3;
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "decision_get" => Some(json!({"decision": brief("d1", "billing", true)})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": 0, "seen_at": null, "entries": [
+            {"at": crate::app::unix_now() - 900.0, "kind": "commit", "actor": "engine", "text": "retry: backoff"},
+            {"at": crate::app::unix_now() - 600.0, "kind": "decision", "actor": "agent:a2",
+             "text": "asked: Retries: fixed or exponential backoff?", "ref": "d1"}]})),
+        "get_diff" => Some(json!({"worktree_path": "/r/repo-billing", "diff": RETRY_DIFF, "truncated": false})),
+        "decision_evidence" => Some(json!({"id": p["id"], "index": p["index"], "kind": "log", "start": 117,
+                                           "text": "collected 30 items\nFAILED test_retry - timeout\n3 failed", "total": 400})),
+        "decision_answer" => {
+            let mut d = brief("d1", "billing", true);
+            d["state"] = json!("answered");
+            d["answered_by"] = json!("user");
+            d["answer"] = json!({"choice": p["choice"], "comment": p["comment"], "at": crate::app::unix_now()});
+            Some(json!({"decision": d}))
+        }
+        "decision_explain_request" | "decision_rebrief_request" => Some(json!({"explain": {
+            "target": "d1", "id": "d1", "key": "repo:billing", "route": "owner", "to": "agent:a2", "agent": "a2",
+            "kind": if m == "decision_explain_request" { "explain" } else { "rebrief" },
+            "state": "asked", "asked_at": crate::app::unix_now()}})),
+        _ => None,
+    });
+    h.run_steps(2);
+    tx.send(event("decision.created", json!({"decision": brief("d1", "billing", true)}))).unwrap();
+    tx.send(event("actionable.created", json!({"item": brief_item("d1", "billing", "deep", true)}))).unwrap();
+    tx.send(event("status.updated", json!({"row": inbox_row("billing", "deep", "Decision:d1", "decide")}))).unwrap();
+    h.run_steps(3);
+    (h, tx, calls)
+}
+
+fn view(h: &Harness<'static, App>) -> crate::decision_view::DecisionView {
+    h.state().state.decision.clone().expect("the decision view is open")
+}
+
+#[test]
+fn enter_on_a_brief_opens_the_view_with_the_recommendation_preselected() {
+    let (mut h, _tx, calls) = i5_home(true, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert_eq!(view(&h).choice.as_deref(), Some("A"), "the recommendation");
+    assert_eq!(calls_of(&calls, "status_timeline"), [json!({"key": "repo:billing", "since": 0})]);
+    h.get_by_label("Retries: fixed or exponential backoff?");
+    h.get_by_label("A  Exponential, cap 30 s   (recommended)");
+    h.get_by_label("fixed 2 s: 3 of 30 runs hit the 10 s limit");
+    h.get_by_label("Reversible: yes");
+    h.get_by_label_contains("asked: Retries: fixed or exponential backoff? · agent:a2");
+    assert!(h.query_by_label_contains("Outdated").is_none(), "abc1234 is the brief's abc123");
+    // The keys pick an option; Esc goes back to Home.
+    h.key_press(egui::Key::Num2);
+    h.run_steps(2);
+    assert_eq!(view(&h).choice.as_deref(), Some("B"));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().state.decision.is_none());
+    h.get_by_label_contains("TO SIT DOWN WITH");
+    // v opens it as well.
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(view(&h).id, "d1");
+}
+
+#[test]
+fn an_orchestrators_suggestion_is_preselected_over_the_recommendation() {
+    let mut d: lazyagent_proto::types::Decision = serde_json::from_value(brief("d1", "billing", true)).unwrap();
+    assert_eq!(crate::decision_view::preselected(&d).as_deref(), Some("A"));
+    d.escalation = Some(json!({"by": "orchestrator", "note": "a product call", "suggestion": "b", "at": 1.0}));
+    assert_eq!(crate::decision_view::preselected(&d).as_deref(), Some("B"));
+}
+
+#[test]
+fn answering_sends_the_choice_and_the_comment() {
+    let (mut h, _tx, calls) = i5_home(true, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_label_contains("B  Fixed 2 s, 5 tries").click();
+    h.run_steps(2);
+    h.state_mut().state.decision.as_mut().unwrap().comment = "keep it simple".into();
+    h.run_steps(1);
+    h.get_by_label("Answer B  (Ctrl+Enter)").click();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_answer"), [json!({"id": "d1", "choice": "B", "comment": "keep it simple"})]);
+    h.get_by_label("Answered: B · sent to agent a2 once its turn is over");
+    assert!(h.query_by_label("Answer B  (Ctrl+Enter)").is_none(), "no second answer");
+}
+
+#[test]
+fn the_outdated_banner_shows_when_the_branch_moved() {
+    let (mut h, tx, _calls) = i5_home(true, I5);
+    let mut moved = brief("d1", "billing", true);
+    moved["sha"] = json!("0ddba11");
+    tx.send(event("decision.created", json!({"decision": moved}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.conn.fake.lock().unwrap().take();
+    h.state_mut().state.open_decision("d1", "repo:billing");
+    h.run_steps(3);
+    h.get_by_label(
+        "Outdated: the branch moved since the brief (0ddba11 → abc1234). Its evidence may not match; ask for a new brief (b).",
+    );
+}
+
+#[test]
+fn evidence_tabs_show_the_hunk_and_the_log_lines() {
+    use crate::decision_view::Ev;
+    use crate::diff;
+    let (mut h, _tx, calls) = i5_home(true, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    h.get_by_label("diff src/retry.py");
+    h.get_by_label("log job:tests:120-134");
+    assert_eq!(calls_of(&calls, "get_diff")[0]["worktree_path"], json!("/r/repo-billing"));
+    match view(&h).evidence.get(&0) {
+        Some(Ev::Hunk(rows, None)) => {
+            assert!(rows[0].text.starts_with("@@ -40,7 +40,12 @@"), "only the hunk asked for");
+            assert_eq!(rows.len(), 3);
+        }
+        other => panic!("{other:?}"),
+    }
+    h.key_press(egui::Key::CloseBracket);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_evidence"), [json!({"id": "d1", "index": 1})]);
+    h.get_by_label_contains("  118  FAILED test_retry - timeout");
+    // The hunk gone from the diff: the file's whole diff, said so.
+    let d = diff::parse(RETRY_DIFF);
+    match crate::decision_view::find_hunk(&d, "src/retry.py", Some("@@ -1,1 +1,1 @@")) {
+        Ev::Hunk(rows, Some(note)) => {
+            assert_eq!(rows.len(), d.files[0].rows.len());
+            assert!(note.contains("not in the diff now"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(crate::decision_view::find_hunk(&d, "src/other.py", None), Ev::Failed(_)));
+}
+
+#[test]
+fn explain_goes_to_the_owner_and_shows_who_explained() {
+    let (mut h, tx, calls) = i5_home(true, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_label("Explain this  (y)");
+    h.key_press(egui::Key::Y);
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_explain_request"), [json!({"id": "d1"})]);
+    h.get_by_label("asked agent a2: sent once its turn is over");
+    tx.send(event(
+        "decision.explain",
+        json!({"explain": {
+        "target": "d1", "id": "d1", "key": "repo:billing", "kind": "explain", "route": "owner", "to": "agent:a2",
+        "agent": "a2", "state": "answered", "asked_at": crate::app::unix_now() - 5.0, "by": "agent:a2",
+        "text": "A backs off on outages.\nB keeps runs short.", "answered_at": crate::app::unix_now()}}),
+    ))
+    .unwrap();
+    h.run_steps(3);
+    h.get_by_label("explained by agent a2");
+    h.get_by_label("A backs off on outages.\nB keeps runs short.");
+}
+
+#[test]
+fn explain_offers_restore_and_is_disabled_when_nobody_can() {
+    let (mut h, _tx, calls) = i5_home(false, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    // Nobody: no agent, nothing restorable, no orchestrator.
+    use egui_kittest::kittest::NodeT;
+    let button = h.get_by_label("Explain this");
+    assert!(button.accesskit_node().is_disabled());
+    h.get_by_label("Open terminal");
+    h.get_by_label("Pass to orchestrator");
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert!(calls_of(&calls, "decision_explain_request").is_empty());
+    // Restorable: offered, never automatic.
+    let entry: lazyagent_proto::types::RestorableAgent = serde_json::from_value(json!({
+        "id": "r1", "worktree_path": "/r/repo-billing", "agent_id": "a2", "kind": "agent", "provider": "claude",
+        "label": "", "session_name": "", "skip_permissions": true, "conversation_id": null, "instruction": null,
+        "started_at": 1.0, "engine_id": null, "ended_at": 2.0}))
+    .unwrap();
+    h.state_mut().state.restorable = vec![entry];
+    h.run_steps(2);
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert!(calls_of(&calls, "decision_explain_request").is_empty(), "y never restores");
+    h.get_by_label("Restore agent and explain  (Y)").click();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_explain_request"), [json!({"id": "d1", "restore": true})]);
+    // An orchestrator, and nothing restorable: it explains.
+    h.state_mut().state.restorable.clear();
+    let orch: lazyagent_proto::types::Agent =
+        serde_json::from_value(agent("", "Orchestrator", "waiting", "so")).unwrap();
+    h.state_mut().state.store.orchestrator = vec![orch];
+    h.run_steps(2);
+    h.get_by_label("its agent is not running: the orchestrator answers");
+}
+
+#[test]
+fn a_new_brief_is_asked_for_with_a_note() {
+    let (mut h, _tx, calls) = i5_home(true, I5);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    h.state_mut().state.decision.as_mut().unwrap().rebrief = Some("add the cost of each".into());
+    h.run_steps(1);
+    h.get_by_label("Ask for a new brief").click();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "decision_rebrief_request"), [json!({"id": "d1", "note": "add the cost of each"})]);
+    h.get_by_label("Request a new brief: asked agent a2: sent once its turn is over");
+}
+
+#[test]
+fn an_orchestrators_decision_shows_with_revert() {
+    let (mut h, tx, calls) = i5_home(true, I5);
+    let mut d = brief("d1", "billing", true);
+    d["state"] = json!("answered");
+    d["answered_by"] = json!("orchestrator");
+    d["revertible"] = json!(true);
+    d["answer"] = json!({"choice": "A", "label": "Exponential, cap 30 s", "reason": "3/30 time out with fixed",
+                         "presence": "away", "at": crate::app::unix_now()});
+    tx.send(event("decision.answered", json!({"decision": d.clone()}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.conn.fake.lock().unwrap().take();
+    let calls2 = fake_engine(&h, move |m, _| match m {
+        "decision_get" => Some(json!({"decision": d.clone()})),
+        _ => None,
+    });
+    drop(calls);
+    h.state_mut().state.open_decision("d1", "repo:billing");
+    h.run_steps(3);
+    h.get_by_label("decided by orchestrator: A (Exponential, cap 30 s) — 3/30 time out with fixed");
+    assert!(h.query_by_label("Answer A  (Ctrl+Enter)").is_none(), "answered: no answer form");
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
+    h.run_steps(2);
+    h.get_by_label("Revert").click();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls2, "decision_revert"), [json!({"id": "d1"})]);
+}
+
+#[test]
+fn without_the_decision_view_feature_enter_still_expands_the_brief() {
+    let (mut h, _tx, calls) = i5_home(true, I4);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.decision.is_none());
+    h.get_by_label("Answer it in the agent's terminal (o) for now.");
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert!(calls_of(&calls, "decision_explain_request").is_empty());
+}
+
+#[test]
+fn explain_works_on_any_home_line_by_its_work_item() {
+    let (mut h, tx, calls) = i5_home(true, I5);
+    let mut row = inbox_row("billing", "round", "Ci:/r/repo-billing:7", "CI red: tests");
+    row["agents"] = json!([{"id": "a2", "status": "waiting", "since": crate::app::unix_now()}]);
+    tx.send(event("actionable.resolved", json!({"id": "Decision:d1"}))).unwrap();
+    tx.send(event("actionable.created", json!({"item": ci_item("billing")}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "decision_explain_request"), [json!({"key": "repo:billing"})]);
+    tx.send(event(
+        "decision.explain",
+        json!({"explain": {
+        "target": "key:repo:billing", "id": null, "key": "repo:billing", "kind": "explain", "route": "owner",
+        "to": "agent:a2", "agent": "a2", "state": "answered", "asked_at": crate::app::unix_now(), "by": "agent:a2",
+        "text": "The tests time out: the retry waits 2 s five times."}}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label("The tests time out: the retry waits 2 s five times.");
+}
+
+#[test]
+fn i5_decision_screenshots() {
+    let now = crate::app::unix_now();
+    let (mut h, tx, _calls) = {
+        let (tx, rx) = mpsc::channel();
+        let state_dir = tempfile::tempdir().unwrap().keep();
+        let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+        let conn = Conn::new("/home/dev/shop".into(), env, tx.clone(), egui::Context::default());
+        let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+        state.capabilities = Some(I5.iter().map(|c| c.to_string()).collect());
+        state.inbox_loaded = 3;
+        let mut wt = worktree("/r/repo-billing", "billing", vec![agent("a2", "Implementer", "running", "s2")]);
+        wt["head"] = json!("f00d123");
+        let seed: SidebarState = serde_json::from_value(json!({
+            "worktrees": [worktree("/home/dev/shop", "main", vec![]), wt],
+            "orchestrator": {"agents": []}, "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+        }))
+        .unwrap();
+        tx.send(Msg::Link(Link::Connected)).unwrap();
+        tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+        let h = Harness::builder()
+            .with_size([1400.0, 900.0])
+            .wgpu()
+            .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+        (h, tx, ())
+    };
+    h.run_steps(2);
+    let mut d = brief("d1", "billing", true);
+    d["brief"]["evidence"] = json!([
+        {"kind": "diff", "path": "src/retry.py", "hunk": "@@ -40,7 +40,12 @@"},
+        {"kind": "log", "ref": "job:tests", "lines": "120-134"},
+        {"kind": "file", "path": "docs/retry.md", "lines": "10-24"},
+        {"kind": "notes", "section": "Doubts"},
+        {"kind": "url", "url": "https://example.com/shop/actions/runs/7"}]);
+    d["brief"]["options"][1]["consequence"] = json!("3/30 runs time out at the 10 s limit");
+    d["explain"] = json!({"id": "d1", "key": "repo:billing", "kind": "explain", "route": "owner", "to": "agent:a2",
+        "agent": "a2", "state": "answered", "asked_at": now - 120.0, "by": "agent:a2", "answered_at": now - 60.0,
+        "text": "Fixed 2 s retries five times, so a slow upstream fails the run in 10 s.\n\
+                 Exponential backoff (cap 30 s) rides out short outages but a hard outage takes ~1 min to fail.\n\
+                 I recommend A: the outages we saw last under 20 s."});
+    let dd = d.clone();
+    fake_engine(&h, move |m, p| match m {
+        "decision_get" => Some(json!({"decision": dd.clone()})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": 0, "seen_at": null, "entries": [
+            {"at": now - 3000.0, "kind": "commit", "actor": "engine", "text": "retry: exponential backoff"},
+            {"at": now - 1500.0, "kind": "ci", "actor": "engine", "text": "CI red: tests"},
+            {"at": now - 600.0, "kind": "decision", "actor": "agent:a2",
+             "text": "asked: Retries: fixed or exponential backoff?", "ref": "d1"},
+            {"at": now - 120.0, "kind": "decision", "actor": "user", "text": "asked agent:a2 for explain", "ref": "d1"},
+            {"at": now - 60.0, "kind": "decision", "actor": "agent:a2", "text": "explained", "ref": "d1"}]})),
+        "get_diff" => Some(
+            json!({"worktree_path": "/r/repo-billing", "diff": "diff --git a/src/retry.py b/src/retry.py\n--- a/src/retry.py\n+++ b/src/retry.py\n\
+@@ -40,7 +40,12 @@ def retry(call):\n     for n in range(TRIES):\n         try:\n             return call()\n\
+         except Timeout:\n-            sleep(2)\n+            delay = min(30, 2 ** n)\n+            sleep(delay + jitter())\n\
++            log.info(\"retry %d in %.1fs\", n, delay)\n     raise GaveUp(TRIES)\n", "truncated": false}),
+        ),
+        _ => None,
+    });
+    tx.send(event("decision.created", json!({"decision": d}))).unwrap();
+    tx.send(event("actionable.created", json!({"item": brief_item("d1", "billing", "deep", true)}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.open_decision("d1", "repo:billing");
+    h.run_steps(5);
+    h.state_mut().state.toasts.clear();
+    h.run_steps(2);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    h.get_by_label_contains("Outdated: the branch moved since the brief (abc123 → f00d123)");
+    if !shot(&mut h, "i5-decision-dark") {
+        return;
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().state.toggle_theme(&ctx);
+    h.run_steps(4);
+    shot(&mut h, "i5-decision-light");
+}

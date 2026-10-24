@@ -1,0 +1,26 @@
+{
+  "case": "decision_explain_request/to_the_owner",
+  "method": "decision_explain_request",
+  "params": {
+    "id": "d1",
+    "question": "why not both?"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "explain": {
+        "agent": "a2",
+        "asked_at": 1700000000.0,
+        "id": "d1",
+        "key": "repo:export-csv",
+        "kind": "explain",
+        "question": "why not both?",
+        "route": "owner",
+        "state": "asked",
+        "target": "d1",
+        "to": "agent:a2",
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}

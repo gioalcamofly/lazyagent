@@ -23,7 +23,7 @@ use crate::diff::{self, Comment, Diff, Pair, RowKind};
 use crate::store::{self, ORCHESTRATOR_KEY};
 
 pub const ROW_H: f32 = 18.0;
-const MAX_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const NUM_W: f32 = 44.0;
 const HBAR_H: f32 = 10.0;
 
@@ -1629,7 +1629,7 @@ fn draw_number(p: &egui::Painter, t: &crate::theme::Theme, rect: Rect, x: f32, n
     }
 }
 
-fn draw_cell(
+pub(crate) fn draw_cell(
     p: &egui::Painter,
     t: &crate::theme::Theme,
     font: &FontId,

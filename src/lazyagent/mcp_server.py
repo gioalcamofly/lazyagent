@@ -993,7 +993,9 @@ async def request_decision(
         decision_class: "deep" (default: needs reading) or "quick" (small).
         blocking: True only if you cannot go on without the answer; then end
             your turn. Otherwise keep working on what does not depend on it.
-        replaces: The id of one of your open briefs this one replaces.
+        replaces: The id of one of your open briefs this one replaces; also
+            the answer to "The user asks for a new brief instead of ..."
+            (the orchestrator may write that one when it was asked).
 
     Returns:
         Object with ``decision`` (its id, state, class, valid, ...) and
@@ -1110,6 +1112,37 @@ async def work_items_close(url: str) -> dict:
         Object with url, ``closed`` (false: there was none) and the ``item``.
     """
     return await _get_client().call("work_items_close", _add_caller({"url": url}))
+
+
+
+@mcp.tool()
+async def decision_explain(
+    text: str, decision_id: str | None = None, key: str | None = None
+) -> dict:
+    """Answer the user's "Explain this": a short explanation of a brief or
+    of a work item, shown in their decision view with who wrote it.
+
+    When to use: only when you got the line "Explain brief <id> ..." or
+    "Explain item <key> ..." (the user clicked Explain this). The engine
+    refuses an explanation nobody asked for. Plain text, at most 10 lines
+    (the rest is cut): what the choice is about, what each option does,
+    and why you recommend yours. Do not answer the brief itself here.
+
+    Args:
+        text: The explanation, at most 10 lines.
+        decision_id: The brief's id, e.g. "d3" (when the line named one).
+        key: The work item key (when the line named an item instead).
+
+    Returns:
+        Object with ``explain`` (state answered, ``by``) and, when cut, a
+        ``message``.
+    """
+    params: dict[str, Any] = {"text": text}
+    if decision_id is not None:
+        params["id"] = decision_id
+    if key is not None:
+        params["key"] = key
+    return await _get_client().call("decision_explain", _add_caller(params))
 
 
 if __name__ == "__main__":

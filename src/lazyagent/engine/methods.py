@@ -204,6 +204,10 @@ class EngineMethods:
             "decision_answer": self.decision_answer,
             "decision_escalate": self.decision_escalate,
             "decision_revert": self.decision_revert,
+            "decision_explain_request": self.decision_explain_request,
+            "decision_rebrief_request": self.decision_rebrief_request,
+            "decision_explain": self.decision_explain,
+            "decision_evidence": self.decision_evidence,
             "presence_report": self.presence_report,
             "presence_set": self.presence_set,
             "inbox_config_get": self.inbox_config_get,
@@ -1200,8 +1204,16 @@ class EngineMethods:
         log | file | notes | url, ...}] (1-8), reversible (yes, partly, no),
         impact_if_wrong, class? (deep, quick), blocking?, replaces? (one of
         its open briefs), caller (the agent's token)."""
-        path, agent_id, key = self._worker(params, "request_decision")
         engine = self._engine
+        by = None
+        role, _ = self._caller(params)
+        old = engine.explainer.rebrief_for_orchestrator(params.get("replaces"))
+        if role == ORCHESTRATOR_BY and old is not None:
+            # The user asked the orchestrator for a new brief (its agent is
+            # not running): it writes it for that agent's work item.
+            path, agent_id, key, by = old["worktree_path"], old["agent"], old["key"], "orchestrator"
+        else:
+            path, agent_id, key = self._worker(params, "request_decision")
         head = await engine.head_sha(path)
         record, message = engine.decisions.request(
             params,
@@ -1210,6 +1222,7 @@ class EngineMethods:
             agent_id=agent_id,
             head=head,
             now=engine.status.clock(),
+            by=by,
         )
         engine.status.flush()
         return {"decision": record, "message": message}
@@ -1322,6 +1335,51 @@ class EngineMethods:
         )
         engine.status.flush()
         return {"decision": record}
+
+    async def decision_evidence(self, params: dict) -> Any:
+        """What one piece of a brief's evidence points at, as text. Params:
+        id, index (into brief.evidence). A file at its lines (at the brief's
+        commit), a log's lines, a notes section; ``error`` when it cannot be
+        read here."""
+        return await self._engine.decisions.evidence(_decision_id(params), params.get("index"))
+
+    async def decision_explain_request(self, params: dict) -> Any:
+        """The user asks for an explanation of a brief (``id``) or of any
+        inbox item's work item (``key``). Params: id | key, question?,
+        restore? (true: restore its agent first, when it is not running but
+        restorable). Who answers: its agent when alive, else (restore) the
+        restored agent, else the orchestrator; refused when none can. The
+        user's only."""
+        self._user_only(params, "decision_explain_request")
+        engine = self._engine
+        req = await engine.explainer.request(params, "explain")
+        engine.status.flush()
+        return {"explain": req}
+
+    async def decision_rebrief_request(self, params: dict) -> Any:
+        """The user asks for a new brief instead of an open one. Params: id,
+        note?, restore?. Same chain as decision_explain_request; the answer
+        is a request_decision with replaces: <id> (the old one closes as
+        superseded). The user's only."""
+        self._user_only(params, "decision_rebrief_request")
+        engine = self._engine
+        req = await engine.explainer.request(params, "rebrief")
+        engine.status.flush()
+        return {"explain": req}
+
+    async def decision_explain(self, params: dict) -> Any:
+        """The answer to the user's Explain this. Params: id | key, text (at
+        most 10 lines), caller (the owner agent's token or the
+        orchestrator's). Only while the user's request is open."""
+        role, slot = self._caller(params)
+        engine = self._engine
+        req = engine.explainer.explain(params, role, slot)
+        engine.status.flush()
+        message = req.pop("message", None)
+        result: dict[str, Any] = {"explain": req}
+        if message:
+            result["message"] = message
+        return result
 
     def _user_only(self, params: dict, what: str) -> None:
         role, _ = self._caller(params)

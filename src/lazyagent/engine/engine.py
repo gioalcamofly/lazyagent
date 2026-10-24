@@ -73,6 +73,7 @@ from lazyagent.engine.actionables import ActionableQueue, actionables_path, trac
 from lazyagent.engine.autodelegate import AutoDelegate
 from lazyagent.engine.claims import Claims
 from lazyagent.engine.delegation import Delegations
+from lazyagent.engine.explain import Explainer
 from lazyagent.engine.decisions import Decisions
 from lazyagent.engine.orchestrator import FirstResponder
 from lazyagent.engine.overlay import Overlay, overlay_path
@@ -294,6 +295,8 @@ class Engine:
         # The orchestrator as first responder: routing, presence, mandate,
         # caps, revert (engine/orchestrator.py); opt-in auto-delegation.
         self.first_responder = FirstResponder(self)
+        # Explain this and Request a new brief (engine/explain.py, I5).
+        self.explainer = Explainer(self)
         self.autodelegate = AutoDelegate(self)
         # The caps on spawns asked for by agents (engine/methods.py).
         self.spawn_caps = SpawnCaps()
