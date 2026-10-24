@@ -872,7 +872,108 @@
         "class": {"enum": ["quick", "deep", null], "description": "Inbox rows only: deep when its level is deep (needs reading), else quick."},
         "seen_at": {"type": ["number", "null"], "description": "The user's last look at it (status_seen: this item's mark or 'all seen', the later); null: never."},
         "last_event_at": {"type": ["number", "null"], "description": "Its latest timeline entry (status_timeline); later than seen_at: changed since the user looked."},
-        "holder": {"enum": ["user", "orchestrator", null], "description": "Who answers what the item asks: orchestrator while it holds a routed brief or question (state 'orchestrator · looking'), user while the row is in the inbox, else null (feature first_responder)."}
+        "holder": {"enum": ["user", "orchestrator", null], "description": "Who answers what the item asks: orchestrator while it holds a routed brief or question (state 'orchestrator · looking'), user while the row is in the inbox, else null (feature first_responder)."},
+        "project": {"oneOf": [{"$ref": "#/$defs/work_item_project"}, {"type": "null"}], "description": "The linked feeder work item's project (feature work_items); absent when no feeder item is linked."},
+        "depends_on": {"type": "array", "items": {"type": "string"}, "description": "The linked feeder work item's dependencies (URLs); absent when none is linked."},
+        "waits_on": {"type": "array", "items": {"$ref": "#/$defs/work_item_dependency"}, "description": "Of those, the ones still open or in review: 'waits on <title>'."},
+        "feeder": {"$ref": "#/$defs/work_item", "description": "The feeder work item linked by the branch (its ticket key or its branch); absent when none is."}
+      }
+    },
+    "work_item_project": {
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "policy": {"type": "object", "properties": {"continue_while_review": {"type": "boolean", "default": false, "description": "The orchestrator may start the next task whose dependencies are merged or in review, within its mandate and the spawn caps; the engine wakes it once when one becomes startable."}}}
+      }
+    },
+    "work_item_dependency": {
+      "type": "object",
+      "required": ["url", "title", "state"],
+      "properties": {
+        "url": {"type": "string"},
+        "title": {"type": "string"},
+        "state": {"enum": ["open", "review"], "description": "review: its row has an open PR."}
+      }
+    },
+    "work_item": {
+      "type": "object",
+      "description": "A work item from an external feeder (work_items_upsert, proposal 0013 I6), one per URL.",
+      "required": ["url", "title", "source", "priority", "ticket", "branch", "project", "depends_on", "waiting", "expires_at", "created_at", "updated_at"],
+      "properties": {
+        "url": {"type": "string"},
+        "title": {"type": "string"},
+        "source": {"type": "string", "description": "Who feeds it, e.g. planner."},
+        "priority": {"enum": ["high", "medium", "low"]},
+        "ticket": {"type": ["string", "null"], "description": "Its ticket key (given, else read from its URL with [status] ticket_pattern): links it to the branch with that key."},
+        "branch": {"type": ["string", "null"]},
+        "project": {"oneOf": [{"$ref": "#/$defs/work_item_project"}, {"type": "null"}]},
+        "depends_on": {"type": "array", "items": {"type": "string"}},
+        "waiting": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["reason", "until", "since", "active"],
+              "properties": {
+                "reason": {"type": ["string", "null"]},
+                "until": {"$ref": "#/$defs/actionable_until"},
+                "since": {"type": "number"},
+                "active": {"type": "boolean", "description": "False once until has passed or the user unparked it (until the feeder sends a different waiting)."}
+              }
+            }
+          ],
+          "description": "The feeder holds it in a Waiting lane: its row is parked as 'waiting (<source>)' or 'waiting: <reason>'."
+        },
+        "expires_at": {"type": ["number", "null"]},
+        "created_at": {"type": "number"},
+        "updated_at": {"type": "number"},
+        "startable": {"type": "boolean", "description": "not_started_items only: its project continues while review and every dependency is merged or in review."}
+      }
+    },
+    "work_items_upsert.params": {
+      "type": "object",
+      "required": ["url", "title", "source"],
+      "properties": {
+        "url": {"type": "string", "description": "http(s); the dedupe key."},
+        "title": {"type": "string"},
+        "source": {"type": "string", "minLength": 1, "description": "At most 32 letters, digits, _ . -. Who feeds it; [status] max_open_per_source (50) open items each."},
+        "priority": {"enum": ["high", "medium", "low"], "default": "medium"},
+        "ticket": {"type": ["string", "null"]},
+        "branch": {"type": ["string", "null"]},
+        "project": {
+          "oneOf": [{"type": "null"}, {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "policy": {"type": "object", "properties": {"continue_while_review": {"type": "boolean"}}}}}]
+        },
+        "depends_on": {"type": ["array", "null"], "items": {"type": "string"}, "description": "At most 20 URLs."},
+        "waiting": {
+          "oneOf": [{"type": "null"}, {"type": "object", "properties": {"reason": {"type": ["string", "null"]}, "until": {"oneOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}], "description": "A Unix time, tomorrow, or a park event; none: until the feeder clears it."}}}]
+        },
+        "expires_at": {"type": ["number", "null"]},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "work_items_upsert.result": {
+      "type": "object",
+      "required": ["item", "created", "key"],
+      "properties": {
+        "item": {"$ref": "#/$defs/work_item"},
+        "created": {"type": "boolean"},
+        "key": {"type": ["string", "null"], "description": "The work item row it joined, null while no branch links to it (it counts as not started)."}
+      }
+    },
+    "work_items_close.params": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {"url": {"type": "string"}, "caller": {"$ref": "#/$defs/notes_caller"}}
+    },
+    "work_items_close.result": {
+      "type": "object",
+      "required": ["url", "closed", "item"],
+      "properties": {
+        "url": {"type": "string"},
+        "closed": {"type": "boolean", "description": "False: no work item had that URL."},
+        "item": {"oneOf": [{"$ref": "#/$defs/work_item"}, {"type": "null"}]}
       }
     },
     "gesture": {
@@ -886,7 +987,9 @@
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label: the ball it puts on the row (rule 8); the state stays a fact."},
         "text": {"type": "string", "description": "label: at most 40 characters, e.g. 'QA'; park: the reason (optional)."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park: the whole work item waits in Parked, 'parked until ...' (rule 7)."},
-        "how": {"enum": ["done", "dropped"], "description": "close: the row is done (rule 1)."}
+        "how": {"enum": ["done", "dropped"], "description": "close: the row is done (rule 1)."},
+        "waiting": {"type": "boolean", "description": "A feeder's Waiting lane, not the user's park (by 'feeder:<source>'): state 'waiting (<source>)' or 'waiting: <text>'."},
+        "source": {"type": "string", "description": "waiting only: the feeder."}
       }
     },
     "status_list.params": {
@@ -913,7 +1016,7 @@
             "in_flight": {"type": "integer"},
             "done": {"type": "integer"},
             "stale": {"type": "integer"},
-            "not_started": {"type": "integer", "description": "Tasks assigned to the user (tracker adapters) that no local branch links to."},
+            "not_started": {"type": "integer", "description": "Tasks no local branch links to, once per URL: the tracker adapters' assigned tasks and the feeders' work items (not those waiting)."},
             "parked": {"type": "integer", "description": "Parked work items (feature parked)."},
             "parked_needs_you": {"type": "integer", "description": "Of those, the ones with inbox items still the user's (not routed to the orchestrator)."},
             "auto_actions": {"type": "integer", "description": "The orchestrator's own decisions and actions today (feature first_responder)."},
@@ -921,6 +1024,7 @@
           }
         },
         "presence": {"$ref": "#/$defs/presence"},
+        "not_started_items": {"type": "array", "items": {"type": "object", "required": ["url", "title", "source", "priority"]}, "description": "What counts.not_started counts, highest priority first (present when a feeder has work items): feeder items as work_item plus startable, tracker tasks as {url, title, source: tracker:<adapter>, priority, ticket}."},
         "generated_at": {"type": "number"}
       }
     },

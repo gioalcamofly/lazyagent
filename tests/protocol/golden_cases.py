@@ -628,9 +628,10 @@ async def _():
 # --- status_list -------------------------------------------------------------
 
 
-def _status_engine():
+def _status_engine(*extra):
     """Four work items on a fixed clock: an agent waiting for approval, one
-    working, an approved green PR with no agent, and a merged one."""
+    working, an approved green PR with no agent, and a merged one (plus
+    the ``extra`` worktrees)."""
     from lazyagent.models import CiCheck, PrInfo
 
     engine = _make_engine(
@@ -640,6 +641,7 @@ def _status_engine():
             _make_worktree("/tmp/repo-export", "export-csv", is_main=False),
             _make_worktree("/tmp/repo-docs", "docs-index", is_main=False),
             _make_worktree("/tmp/repo-typo", "fix-typo", is_main=False),
+            *extra,
         ],
         agent_states={
             "/tmp/repo-login": {
@@ -1091,6 +1093,52 @@ async def _():
         import shutil
 
         shutil.rmtree(root, ignore_errors=True)
+
+
+# --- work_items_* (external feeders, I6) --------------------------------------
+
+
+@case("work_items_upsert/linked_by_ticket")
+async def _():
+    engine = _status_engine(_make_worktree("/tmp/repo-shop", "SHOP-12-checkout", is_main=False))
+    return await _call(
+        engine,
+        "work_items_upsert",
+        {"url": "https://tracker.example.com/browse/SHOP-12", "title": "Checkout flow",
+         "source": "planner", "priority": "high",
+         "project": {"id": "shop", "title": "Shop", "policy": {"continue_while_review": True}},
+         "depends_on": ["https://tracker.example.com/browse/SHOP-11"]},
+    )
+
+
+@case("work_items_upsert/not_started_waiting")
+async def _():
+    return await _call(
+        _status_engine(),
+        "work_items_upsert",
+        {"url": "https://tracker.example.com/browse/SHOP-20", "title": "Refunds",
+         "source": "board", "waiting": {"reason": "design review", "until": "indefinite"}},
+    )
+
+
+@case("work_items_upsert/error_bad_source")
+async def _():
+    return await _call(
+        _status_engine(), "work_items_upsert",
+        {"url": "https://tracker.example.com/browse/SHOP-1", "title": "x", "source": "my board"},
+    )
+
+
+@case("work_items_close/closed")
+async def _():
+    engine = _status_engine()
+    engine.work_items.upsert(
+        {"url": "https://tracker.example.com/browse/SHOP-30", "title": "Coupons",
+         "source": "planner"}, FIXED_TIME,
+    )
+    return await _call(
+        engine, "work_items_close", {"url": "https://tracker.example.com/browse/SHOP-30"}
+    )
 
 
 def normalize(value: Any) -> Any:

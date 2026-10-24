@@ -1,0 +1,28 @@
+{
+  "case": "work_items_close/closed",
+  "method": "work_items_close",
+  "params": {
+    "url": "https://tracker.example.com/browse/SHOP-30"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "closed": true,
+      "item": {
+        "branch": null,
+        "created_at": 1700000000.0,
+        "depends_on": [],
+        "expires_at": null,
+        "priority": "medium",
+        "project": null,
+        "source": "planner",
+        "ticket": "SHOP-30",
+        "title": "Coupons",
+        "updated_at": 1700000000.0,
+        "url": "https://tracker.example.com/browse/SHOP-30",
+        "waiting": null
+      },
+      "url": "https://tracker.example.com/browse/SHOP-30"
+    }
+  }
+}

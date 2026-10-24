@@ -625,6 +625,37 @@ pub struct StatusRow {
     /// A hint for the user, e.g. "close PR #12: its head is in develop".
     #[serde(default)]
     pub suggestion: Option<String>,
+    /// The linked feeder work item's project (feature `work_items`; absent
+    /// when no feeder item is linked, and on older engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<RowProject>,
+    /// Its dependencies (URLs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// Of those, the ones still open or in review: "waits on <title>".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waits_on: Vec<WaitsOn>,
+    /// The feeder's work item (`work_items_upsert`) the branch links to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feeder: Option<Value>,
+}
+
+/// A feeder's project (`work_items_upsert {project}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowProject {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Value>,
+}
+
+/// An open dependency of a work item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaitsOn {
+    pub url: String,
+    pub title: String,
+    /// `open` · `review` (its row has an open PR).
+    pub state: String,
 }
 
 /// The orchestrator holds a work item itself while it verifies or waits.
@@ -757,6 +788,10 @@ pub struct StatusList {
     /// Whether the user counts as present (feature `first_responder`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<Presence>,
+    /// What `counts.not_started` counts (feature `work_items`, when a
+    /// feeder has items).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_started_items: Vec<Value>,
 }
 
 /// `mode` is the Home toggle (`auto` · `present` · `away`); `effective`

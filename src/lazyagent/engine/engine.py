@@ -94,6 +94,7 @@ from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.status import TICK as STATUS_TICK
 from lazyagent.engine.status import StatusProjection
 from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
+from lazyagent.engine.work_items import WorkItems, work_items_path
 from lazyagent.engine.session import (
     AgentSession,
     SessionEvent,
@@ -280,7 +281,11 @@ class Engine:
         # seen marks and briefs.
         self.overlay = Overlay(self)
         self.actionables.add_detector(self.overlay.items)
+        # Work items from external feeders (work_items_upsert).
+        self.work_items = WorkItems(self)
         self.status = StatusProjection(self)
+        # Inbox items take their work item's priority.
+        self.actionables.filters.append(self.status.prioritize)
         # Pass to orchestrator (claims on work items): rows and queue read it.
         self.claims = Claims(self)
         self.decisions = Decisions(self)
@@ -370,6 +375,7 @@ class Engine:
         if self.manifest is not None and self.repo_root:
             self.actionables.open(actionables_path(self.repo_root))
             self.overlay.open(overlay_path(self.repo_root))
+            self.work_items.open(work_items_path(self.repo_root))
         self.actionables.start()
         self.status.start()
         if (
@@ -393,6 +399,7 @@ class Engine:
         self.status.stop()
         self.actionables.stop()
         self.overlay.save()
+        self.work_items.save()
         self.worktree_service.stop()
         for task in list(self._tasks):
             task.cancel()

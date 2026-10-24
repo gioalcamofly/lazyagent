@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +22,8 @@ else:
         import tomli as tomllib  # type: ignore[no-redef]
     except ImportError:
         tomllib = None  # type: ignore[assignment]
+
+log = logging.getLogger(__name__)
 
 CONFIG_FILENAME = ".lazyagent.toml"
 
@@ -90,6 +94,12 @@ class StatusConfig:
     stale_days: int = 14
     # No agent and no change for this long: "stalled".
     stalled_hours: int = 24
+    # The ticket key in a branch name (a regex; its first group, else the
+    # whole match) that links a feeder's work item to its branch; None:
+    # models.TICKET_PATTERN (ABC-123).
+    ticket_pattern: str | None = None
+    # Open work items per feeder source (work_items_upsert); 0: no cap.
+    max_open_per_source: int = 50
 
 
 @dataclass
@@ -282,6 +292,16 @@ def _status_config(data: object) -> StatusConfig:
         value = data.get(name)
         if type(value) is int and value > 0:
             setattr(config, name, value)
+    value = data.get("max_open_per_source")
+    if type(value) is int and value >= 0:
+        config.max_open_per_source = value
+    pattern = data.get("ticket_pattern")
+    if isinstance(pattern, str) and pattern:
+        try:
+            re.compile(pattern)
+            config.ticket_pattern = pattern
+        except re.error:
+            log.warning("[status] ticket_pattern is not a valid regex: %r", pattern)
     return config
 
 
