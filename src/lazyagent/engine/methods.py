@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
+from lazyagent.engine import actions
 from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
 from lazyagent.engine.notes import MODES as NOTES_MODES
@@ -214,6 +215,7 @@ class EngineMethods:
             "inbox_config_set": self.inbox_config_set,
             "work_items_upsert": self.work_items_upsert,
             "work_items_close": self.work_items_close,
+            "ci_log_summary": self.ci_log_summary,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -1342,6 +1344,13 @@ class EngineMethods:
         commit), a log's lines, a notes section; ``error`` when it cannot be
         read here."""
         return await self._engine.decisions.evidence(_decision_id(params), params.get("index"))
+
+    async def ci_log_summary(self, params: dict) -> Any:
+        """The failed-log summary of a work item's red CI on its head
+        (``key``), or of one run (``run_id``): the failed jobs, the failing
+        step and the last lines of each failed log, trimmed; what a
+        delegation of a CI item sends its agent. Params: key | run_id."""
+        return await actions.log_summary(self._engine, params.get("key"), params.get("run_id"))
 
     async def decision_explain_request(self, params: dict) -> Any:
         """The user asks for an explanation of a brief (``id``) or of any

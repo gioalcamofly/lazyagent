@@ -8,7 +8,7 @@
   "response": {
     "id": "req-1",
     "result": {
-      "error": "job:tests is not a log the engine can read (open it from the PR's checks)",
+      "error": "CI tracking is off ([status] actions_poll_s = 0) or there is no repo",
       "id": "d1",
       "index": 1,
       "kind": "log"

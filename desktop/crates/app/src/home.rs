@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lazyagent_proto::types::{Actionable, Claim, Decision, PrInfo, StatusRow};
+use lazyagent_proto::types::{Actionable, CiRun, Claim, Decision, PrInfo, StatusRow};
 
 use crate::attention::{self, Kind};
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -66,9 +66,34 @@ pub struct Top {
     pub since: f64,
     /// A `decision` item's brief.
     pub decision_id: Option<String>,
+    /// A CI item's red run on the head (feature `actions`).
+    pub run: Option<CiRun>,
 }
 
 impl Top {
+    /// A red CI item: on a PR (`ci`) or on a branch with none (`ci_failed`).
+    pub fn is_ci(&self) -> bool {
+        matches!(self.kind.as_str(), "ci" | "ci_failed")
+    }
+
+    /// What a CI line says: the red workflow, its failed job and step when
+    /// the engine has read them; None with no run.
+    pub fn ci_text(&self) -> Option<String> {
+        let run = self.run.as_ref()?;
+        let mut text = format!("CI red · {}", run.workflow);
+        if let Some(job) = run.failed_jobs.as_ref().and_then(|j| j.first()) {
+            text += &format!(" / {}", job.name);
+            if !job.step.is_empty() {
+                text += &format!(" (step: {})", job.step);
+            }
+            let more = run.failed_jobs.as_ref().map_or(0, |j| j.len()) - 1;
+            if more > 0 {
+                text += &format!(" +{more}");
+            }
+        }
+        Some(text)
+    }
+
     /// A brief that failed validation: a quick "agent a2 asks: …", answered
     /// in the agent's terminal.
     pub fn asks(&self, decisions: Option<&Decision>) -> bool {
@@ -191,7 +216,7 @@ impl Line {
             "approval" => "Approve",
             "question" => "Answer",
             "done" => "Review",
-            "ci" => "Fix CI",
+            "ci" | "ci_failed" => "Fix CI",
             "review" => "Changes",
             "conflict" => "Conflict",
             "hanged" => "Check",
@@ -237,6 +262,7 @@ fn top_of(item: &Actionable) -> Top {
         }),
         since: item.since,
         decision_id: item.decision_id.clone(),
+        run: item.run.clone(),
     }
 }
 
@@ -417,6 +443,7 @@ pub fn fallback_lines(
         pr_url: i.pr.as_ref().and_then(|p| p.url.clone()),
         since: i.since,
         decision_id: None,
+        run: None,
     };
     let mut by_place: HashMap<&str, Vec<&attention::Item>> = HashMap::new();
     for i in items {

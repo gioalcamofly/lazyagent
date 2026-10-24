@@ -1,0 +1,12 @@
+{
+  "case": "ci_log_summary/error_no_key",
+  "method": "ci_log_summary",
+  "params": {},
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "key or run_id is required"
+    },
+    "id": "req-1"
+  }
+}

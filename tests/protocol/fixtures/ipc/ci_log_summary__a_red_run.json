@@ -1,0 +1,47 @@
+{
+  "case": "ci_log_summary/a_red_run",
+  "method": "ci_log_summary",
+  "params": {
+    "key": "repo:api-retry"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "jobs": [
+        {
+          "lines": [
+            "collected 12 items",
+            "tests/test_retry.py F",
+            "E   assert 3 == 2",
+            "FAILED tests/test_retry.py::test_backoff - assert 3 == 2",
+            "1 failed, 11 passed"
+          ],
+          "name": "unit",
+          "step": "Run pytest",
+          "total": 5,
+          "url": "https://github.com/o/r/job/0"
+        }
+      ],
+      "key": "repo:api-retry",
+      "runs": [
+        {
+          "attempt": 1,
+          "branch": "api-retry",
+          "conclusion": "failure",
+          "failed_jobs": [
+            {
+              "name": "unit",
+              "step": "Run pytest",
+              "url": "https://github.com/o/r/job/0"
+            }
+          ],
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "id": 301,
+          "url": "https://github.com/o/r/actions/runs/301",
+          "workflow": "Tests"
+        }
+      ],
+      "text": "CI failed on api-retry at aaaaaaa: Tests (failure, run 301) https://github.com/o/r/actions/runs/301\nJob \"unit\", step \"Run pytest\":\n    collected 12 items\n    tests/test_retry.py F\n    E   assert 3 == 2\n    FAILED tests/test_retry.py::test_backoff - assert 3 == 2\n    1 failed, 11 passed"
+    }
+  }
+}

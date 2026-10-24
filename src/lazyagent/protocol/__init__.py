@@ -90,6 +90,8 @@ LEGACY_METHODS: tuple[str, ...] = (
     # Work items from external feeders (proposal 0013 I6).
     "work_items_upsert",
     "work_items_close",
+    # The failed-log summary of a red CI run (proposal 0013 I7).
+    "ci_log_summary",
 )
 
 # The methods protocol v1 adds.

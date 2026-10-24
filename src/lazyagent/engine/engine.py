@@ -94,6 +94,7 @@ from lazyagent.engine.reviews import ReviewStore, reviews_path
 from lazyagent.engine.scheduler import Scheduler
 from lazyagent.engine.status import TICK as STATUS_TICK
 from lazyagent.engine.status import StatusProjection
+from lazyagent.engine.actions import ActionsHub
 from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
 from lazyagent.engine.work_items import WorkItems, work_items_path
 from lazyagent.engine.session import (
@@ -227,6 +228,9 @@ class Engine:
         self.config = Config()
         # Optional issue trackers (proposal 0013): none until the config loads.
         self.trackers = TrackerHub()
+        # GitHub Actions runs on the worktrees' branches (I7): off until the
+        # config loads.
+        self.actions = ActionsHub()
 
         self.events = EventBus()
         # persist_ids=False keeps agent ids in memory (tests, throwaway engines).
@@ -498,6 +502,11 @@ class Engine:
         self.trackers = TrackerHub.from_configs(
             self._tracker_loader(root) if root else [], root
         )
+        poll_s = self.config.status.actions_poll_s
+        if self.actions.repo_root != (root or ""):
+            self.actions = ActionsHub(root or "", poll_s=poll_s)
+        else:
+            self.actions.poll_s = poll_s
 
     def get_config(self) -> ConfigView:
         config = self.config

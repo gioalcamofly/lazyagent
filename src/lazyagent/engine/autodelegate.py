@@ -22,17 +22,21 @@ by someone else). After two failed attempts the item becomes an engine
 brief in To sit down with (what was tried, the agent's last lines).
 
 Kinds: ``conflict_with_base`` (the inbox's ``conflict``), ``agent_dead``
-(``exited``) and ``ci_red``, which is accepted but inactive until I7's
-"fresh red on head" exists.
+(``exited``) and ``ci_red`` (``ci`` and ``ci_failed``: a fresh red run on
+the branch's head, engine/actions.py, with no agent at work). A CI brief
+carries the failed-log summary, as the Delegate key's line does.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.engine import actions
+from lazyagent.engine.delegation import CI_KINDS, SUMMARY_WAIT, with_summary
 from lazyagent.engine.orchestrator import _git
 
 if TYPE_CHECKING:
@@ -40,17 +44,22 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Config name → the inbox kinds it acts on (ci_red: none until I7).
+# Config name → the inbox kinds it acts on.
 KINDS: dict[str, tuple[str, ...]] = {
     "conflict_with_base": ("conflict",),
     "agent_dead": ("exited",),
-    "ci_red": (),
+    "ci_red": ("ci", "ci_failed"),
 }
 TARGETS = ("owner", "orchestrator")
 MAX_ATTEMPTS = 2
 PROTECTED = ("main", "master")
 _RUNNING = ("running", "starting")
-_WHAT = {"conflict": "a merge conflict with its base", "exited": "an agent that exited"}
+_WHAT = {
+    "conflict": "a merge conflict with its base",
+    "exited": "an agent that exited",
+    "ci": "red CI on its head",
+    "ci_failed": "red CI on its head",
+}
 
 
 def brief_text(branch: str, kind: str, state: str, attempt: int) -> str:
@@ -149,6 +158,8 @@ class AutoDelegate:
                 return
             n = attempt["count"] + 1
             text = brief_text(row["branch"], kind, item["state"], n)
+            if kind in CI_KINDS:
+                text = await self._ci_summary(key, text)
             target = engine.config.inbox.auto_delegate_target
             if target == "orchestrator":
                 if engine.claims.get(key) is not None:
@@ -170,6 +181,20 @@ class AutoDelegate:
             attempt["tries"].append(f"{time.strftime('%H:%M')} could not delegate: {e}")
         finally:
             self._busy.discard(slot)
+
+    async def _ci_summary(self, key: str, text: str) -> str:
+        engine = self._engine
+        try:
+            runs = actions.red_runs(engine, key)[1]
+        except ValueError:
+            return text
+        if not runs:
+            return text
+        try:
+            summary = await asyncio.wait_for(engine.actions.summary(runs), SUMMARY_WAIT)
+        except (asyncio.TimeoutError, OSError, ValueError):
+            summary = None
+        return with_summary(text, summary, runs)
 
     async def _to_owner(self, path: str, text: str, attempt: dict[str, Any]) -> str:
         engine = self._engine

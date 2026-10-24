@@ -38,6 +38,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.engine.actions import (
+    CiVerdict,
+    ci_verdict,
+    run_detail,
+    run_info,
+    run_title,
+)
 from lazyagent.engine.events import AGENT_EXITED, JOB_FINISHED, JOB_STARTED
 from lazyagent.engine.notes import _atomic_write
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
@@ -122,6 +129,8 @@ HANGED = register_kind(Kind("hanged", "round", "Hanged?", 3))
 FAILED = register_kind(Kind("failed", "round", "Failed", 4))
 EXITED = register_kind(Kind("exited", "round", "Exited", 4))
 CI = register_kind(Kind("ci", "round", "CI failing", 5))
+# A fresh red Actions run on the head of a branch with no PR (I7).
+CI_FAILED = register_kind(Kind("ci_failed", "round", "CI failed", 5))
 REVIEW = register_kind(Kind("review", "deep", "Changes requested", 5))
 CONFLICT = register_kind(Kind("conflict", "round", "Merge conflict", 5))
 DONE = register_kind(Kind("done", "deep", "Your turn", 6))
@@ -159,6 +168,8 @@ class Item:
     # The kind's blocks_agent unless the item says (a blocking brief).
     blocks_agent: bool | None = None
     decision_id: str | None = None
+    # ci / ci_failed: the red Actions run on the head (actions.run_info).
+    run: dict[str, Any] | None = None
 
     @property
     def occurrence(self) -> str:
@@ -188,6 +199,7 @@ class Item:
             "since": self.since,
             "park": park,
             "decision_id": self.decision_id,
+            "run": self.run,
         }
 
 
@@ -227,6 +239,9 @@ class Place:
     pr: PrInfo | None = None
     # The worktree's head commit (a park "until something changes").
     head: str | None = None
+    # Actions on the head: the PR's head with an open PR, else the branch's
+    # (engine/actions.py); None when Actions has no run on the branch.
+    ci: CiVerdict | None = None
 
     @property
     def running(self) -> bool:
@@ -324,6 +339,25 @@ def agent_items(snap: Snapshot) -> Iterable[Item]:
             )
 
 
+def _actions_check(url: str) -> bool:
+    return "/actions/runs/" in url
+
+
+def pr_red(pr: PrInfo, ci: CiVerdict | None) -> bool:
+    """The PR's checks are red on its head. Actions, when it has runs on the
+    branch, makes it precise: a newer run on another sha (the head moved),
+    or a re-run that is running or passed, clears a red that only Actions
+    checks gave (another CI's red is left as the checks say)."""
+    if ci_state(pr) != "red":
+        return False
+    if ci is None or ci.state == "red":
+        return True
+    if ci.state == "moved":
+        return False
+    failing = [c for c in pr.checks if c.conclusion.upper() == "FAILURE"]
+    return not all(_actions_check(c.details_url) for c in failing)
+
+
 def pr_items(snap: Snapshot) -> Iterable[Item]:
     """An open PR that is red or conflicting with no agent at work on it, or
     whose reviewer asked for changes."""
@@ -332,9 +366,15 @@ def pr_items(snap: Snapshot) -> Iterable[Item]:
         if pr is None or pr.state.upper() != "OPEN":
             continue
         found = []
-        if ci_state(pr) == "red" and not place.running:
-            failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
-            found.append((CI, _with("CI red", _failing_check(pr)), ", ".join(failed)))
+        run = None
+        if pr_red(pr, place.ci) and not place.running:
+            red = place.ci.red if place.ci is not None else ()
+            if red:
+                run = red[0]
+                found.append((CI, _with("CI red", run_title(run)), run_detail(run)))
+            else:
+                failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
+                found.append((CI, _with("CI red", _failing_check(pr)), ", ".join(failed)))
         if (pr.review_decision or "").upper() == "CHANGES_REQUESTED":
             found.append((REVIEW, "changes requested", "a reviewer asked for changes"))
         if (pr.mergeable or "").upper() == "CONFLICTING" and not place.running:
@@ -349,7 +389,30 @@ def pr_items(snap: Snapshot) -> Iterable[Item]:
                 work_item=place.work_item,
                 worktree_path=place.path,
                 pr={"number": pr.number, "title": pr.title, "url": pr.url},
+                run=run_info(run) if kind is CI and run is not None else None,
             )
+
+
+def actions_items(snap: Snapshot) -> Iterable[Item]:
+    """A fresh red Actions run on the head of a branch with no PR, while no
+    agent is at work there (I7). The id is the branch's: the item clears
+    when a newer run on the head goes green or the head moves, and a later
+    red is a new occurrence."""
+    for place in snap.places:
+        ci = place.ci
+        if place.pr is not None or ci is None or ci.state != "red" or place.running:
+            continue
+        run = ci.red[0]
+        yield Item(
+            _id(CI_FAILED, f"{place.path}:{ci.branch}"),
+            CI_FAILED.name,
+            _with("CI red", run_title(run)),
+            label=ci.branch,
+            detail=run_detail(run),
+            work_item=place.work_item,
+            worktree_path=place.path,
+            run=run_info(run),
+        )
 
 
 def _exit_id(e: Exit) -> str:
@@ -386,7 +449,9 @@ def job_items(snap: Snapshot) -> Iterable[Item]:
         )
 
 
-DEFAULT_DETECTORS: tuple[Detector, ...] = (agent_items, pr_items, exit_items, job_items)
+DEFAULT_DETECTORS: tuple[Detector, ...] = (
+    agent_items, pr_items, actions_items, exit_items, job_items,
+)
 
 
 def tracker_items(hub: TrackerHub, snap: Snapshot) -> Iterable[Item]:
@@ -673,13 +738,15 @@ class ActionableQueue:
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
+            pr = engine.get_pr_info(wt.path)
             places.append(
                 Place(
                     wt.path,
                     work_item_key(repo, wt),
                     self._agents(wt.path),
-                    engine.get_pr_info(wt.path),
+                    pr,
                     getattr(wt, "head", None),
+                    ci_verdict(engine, wt.branch, pr),
                 )
             )
         # An exit is answered once an agent runs in its slot again.
