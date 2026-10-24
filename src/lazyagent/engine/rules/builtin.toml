@@ -1,0 +1,505 @@
+# The built-in rules catalog (proposal 0014; docs/design/rules-plan.md R1).
+#
+# Row rules: first match wins, in this order. `num` is the row's `rule`
+# integer, kept from the old table (docs/design/inbox-plan.md §3). Kinds: the
+# inbox kinds, their fixed level, title, rank and, where a detector reads the
+# engine's state, the condition and the state text.
+#
+# Facts and functions: lazyagent/engine/rules/facts.py. The language:
+# lazyagent/engine/rules/lang.py. An unknown fact never matches.
+
+version = 1
+
+# --- Locked prefix: closed -------------------------------------------------
+
+[[rule]]
+id = "closed.merged"
+num = 1
+locked = true
+when = 'pr.state == "merged"'
+[rule.then]
+ball = "done"
+state = "merged"
+
+[[rule]]
+id = "closed.pr_closed"
+num = 1
+locked = true
+when = 'pr.state == "closed"'
+[rule.then]
+ball = "done"
+state = "PR closed"
+
+[[rule]]
+id = "closed.already_merged"
+num = 1
+locked = true
+says = "Closing the PR stays the user's (never alone)."
+when = 'pr.state == "open" and pr.merged_into != ""'
+[rule.then]
+ball = "done"
+state_expr = '"already merged into " + pr.merged_into'
+suggestion_expr = '"close PR #" + pr.number + ": its head is in " + pr.merged_into'
+
+[[rule]]
+id = "closed.by_you"
+num = 1
+locked = true
+when = 'gesture.kind == "close"'
+[rule.then]
+ball = "done"
+state_expr = 'gesture.how == "dropped" ? "dropped by you" : "closed by you"'
+
+# --- Locked prefix: park ---------------------------------------------------
+
+[[rule]]
+id = "park"
+num = 7
+locked = true
+says = "The whole work item waits in Parked, with the ball it would have."
+when = 'gesture.kind == "park"'
+[rule.then]
+inherit = ["ball"]
+state_expr = '''
+gesture.waiting ? waiting_text(gesture.source, gesture.text)
+                : park_text(gesture.until, gesture.text)
+'''
+
+# --- Locked prefix: the inbox queue and the first responder ---------------
+
+[[rule]]
+id = "queue"
+num = 2
+locked = true
+says = "The work item's open inbox items, top first."
+when = 'items.count > 0'
+[rule.then]
+ball = "you"
+state_expr = 'items.top.state'
+level_expr = 'items.top.level'
+blocks_agent_expr = 'items.blocks_agent'
+
+[[rule]]
+id = "claim"
+num = 13
+locked = true
+says = "You passed it to the orchestrator."
+when = 'claim.active'
+[rule.then]
+ball = "agent"
+state = "orchestrator · looking"
+
+[[rule]]
+id = "hold"
+num = 15
+locked = true
+when = 'hold.active'
+[rule.then]
+ball = "agent"
+state_expr = 'clip("orchestrator · " + (hold.note == "" ? "holding" : hold.note), 8)'
+
+[[rule]]
+id = "held"
+num = 14
+locked = true
+says = "The orchestrator holds a routed brief or question here."
+when = 'holder == "orchestrator"'
+[rule.then]
+ball = "agent"
+state = "orchestrator · looking"
+
+[[rule]]
+id = "delegated"
+num = 16
+locked = true
+when = 'delegation.phase == "on_it"'
+[rule.then]
+ball = "agent"
+state_expr = '''
+clip("agent " + delegation.agent + " · fixing "
+     + (delegation.fact == "" ? "it" : delegation.fact), 8)
+'''
+
+# --- Without the inbox queue: the agents' dialogs and reports -------------
+
+[[rule]]
+id = "approve"
+num = 2
+when = 'not queue.enabled and "waiting_for_approval" in agents.statuses'
+[rule.then]
+ball = "you"
+level = "now"
+state_expr = 'with("approve", agents.detail_of("waiting_for_approval"))'
+blocks_agent = true
+
+[[rule]]
+id = "answer"
+num = 2
+when = 'not queue.enabled and "waiting_for_user" in agents.statuses'
+[rule.then]
+ball = "you"
+level = "now"
+state_expr = 'with("answer", agents.detail_of("waiting_for_user"))'
+blocks_agent = true
+
+[[rule]]
+id = "agent_failed"
+num = 2
+when = 'not queue.enabled and "failed" in agents.statuses'
+[rule.then]
+ball = "you"
+level = "round"
+state = "agent failed"
+
+[[rule]]
+id = "agent_may_hang"
+num = 2
+when = 'not queue.enabled and "possibly_hanged" in agents.statuses'
+[rule.then]
+ball = "you"
+level = "round"
+state = "agent may hang"
+
+[[rule]]
+id = "needs_you"
+num = 3
+when = 'not queue.enabled and report.needs_user'
+[rule.then]
+ball = "you"
+level = "round"
+state_expr = 'with("needs you", report.note)'
+
+# --- The open PR -----------------------------------------------------------
+
+[[rule]]
+id = "merge"
+num = 4
+when = '''
+pr.state == "open" and pr.review == "approved"
+and ci.state in ["green", "none"] and pr.mergeable == "mergeable"
+'''
+[rule.then]
+ball = "you"
+level = "round"
+state = "merge: approved, CI green"
+
+[[rule]]
+id = "changes_requested"
+num = 5
+when = 'pr.state == "open" and not queue.enabled and pr.review == "changes_requested"'
+[rule.then]
+ball = "you"
+level = "deep"
+state = "changes requested"
+
+[[rule]]
+id = "conflict_no_agent"
+num = 5
+when = '''
+pr.state == "open" and not queue.enabled and agents.running == 0
+and pr.mergeable == "conflicting"
+'''
+[rule.then]
+ball = "you"
+level = "round"
+state = "conflict with base"
+
+[[rule]]
+id = "ci_red_no_agent"
+num = 5
+when = '''
+pr.state == "open" and not queue.enabled and agents.running == 0
+and ci.state == "red"
+'''
+[rule.then]
+ball = "you"
+level = "round"
+state_expr = 'with("CI red", ci.first_failing)'
+
+[[rule]]
+id = "agent_finished"
+num = 6
+when = '''
+not queue.enabled and agents.idle > 0 and agents.running == 0 and not pr.exists
+'''
+[rule.then]
+ball = "you"
+level = "deep"
+state = "review: agent finished"
+
+# --- The label: the ball only, the state stays the fact below -------------
+
+[[rule]]
+id = "label"
+num = 8
+when = 'gesture.kind == "label"'
+[rule.then]
+ball_expr = 'gesture.ball'
+inherit = ["state"]
+
+# --- Who has the ball when the user does not ------------------------------
+
+[[rule]]
+id = "agent_running"
+num = 9
+says = "Never the agent's tool line (\"Bash done\"): that is noise on a row."
+when = 'agents.running > 0'
+[rule.then]
+ball = "agent"
+state_expr = '''
+ci.state == "red" ? "fixing CI"
+  : agents.first_running == "starting" ? "starting" : "working"
+'''
+
+[[rule]]
+id = "ci_running"
+num = 9
+when = 'pr.state == "open" and ci.state == "running"'
+[rule.then]
+ball = "agent"
+state = "CI running"
+
+[[rule]]
+id = "reported_others"
+num = 10
+when = 'report.ball == "others"'
+[rule.then]
+ball_expr = 'report.ball'
+state_expr = 'clip(report.note == "" ? "reported: " + report.ball : report.note, 5)'
+
+[[rule]]
+id = "reported_ball"
+num = 12
+when = 'report.ball != ""'
+[rule.then]
+ball_expr = 'report.ball'
+state_expr = 'clip(report.note == "" ? "reported: " + report.ball : report.note, 5)'
+
+[[rule]]
+id = "tracker_you"
+num = 3
+says = "Without the queue: the level while the task's entered-status item is open."
+when = 'tracker.ball == "you" and known(tracker.level) and not queue.enabled'
+[rule.then]
+ball = "you"
+level_expr = 'tracker.level'
+state_expr = 'clip(tracker.state, 5)'
+
+[[rule]]
+id = "tracker_others"
+num = 10
+when = 'tracker.ball == "others"'
+[rule.then]
+ball = "others"
+state_expr = 'clip(tracker.state, 5)'
+
+[[rule]]
+id = "tracker_ball"
+num = 12
+when = 'tracker.ball != "you"'
+[rule.then]
+ball_expr = 'tracker.ball'
+state_expr = 'clip(tracker.state, 5)'
+
+[[rule]]
+id = "no_reviewer"
+num = 10
+says = "Nobody was asked: that is the user's to do, not others' to wait on."
+when = '''
+pr.state == "open" and pr.review in ["review_required", "none"]
+and pr.review_requests == 0 and pr.reviews == 0
+'''
+[rule.then]
+ball = "you"
+level = "round"
+state = "PR has no reviewer"
+
+[[rule]]
+id = "review_requested"
+num = 10
+when = 'pr.state == "open" and pr.review in ["review_required", "none"]'
+[rule.then]
+ball = "others"
+state_expr = '''
+(pr.review == "none" ? "PR open" : "review requested")
+  + (ci.state == "green" ? ", CI green" : "")
+'''
+
+[[rule]]
+id = "agent_idle"
+num = 12
+says = "An agent still on a dialog whose item was dismissed or parked."
+when = 'agents.count > 0'
+[rule.then]
+ball = "agent"
+state_expr = '''
+"waiting_for_approval" in agents.statuses ? "waits: approve"
+  : "waiting_for_user" in agents.statuses ? "waits: answer"
+  : "failed" in agents.statuses ? "waits: agent failed"
+  : "possibly_hanged" in agents.statuses ? "waits: agent may hang"
+  : "agent idle"
+'''
+
+[[rule]]
+id = "restorable"
+num = 12
+when = 'item.restorable > 0'
+[rule.then]
+ball = "stalled"
+state = "agent to restore"
+
+[[rule]]
+id = "no_activity"
+num = 11
+when = 'item.idle > config.stalled_after'
+[rule.then]
+ball = "stalled"
+state = "no activity"
+
+[[rule]]
+id = "approved_not_mergeable"
+num = 12
+when = 'pr.state == "open" and pr.review == "approved"'
+[rule.then]
+ball = "stalled"
+state = "approved, not mergeable"
+
+[[rule]]
+id = "no_agent"
+num = 12
+when = 'true'
+[rule.then]
+ball = "stalled"
+state = "no agent"
+
+# --- The inbox kinds (0013 "Kinds → level"), in their old order ----------
+# quick: decided from the row (now, round); deep: needs reading.
+
+[[kind]]
+id = "approval"
+level = "now"
+title = "Needs approval"
+rank = 1
+blocks_agent = true
+detector = "agents"
+when = 'agent.status == "waiting_for_approval"'
+state_expr = 'with("approve", agent.detail)'
+
+[[kind]]
+id = "question"
+level = "now"
+title = "Question"
+rank = 2
+blocks_agent = true
+detector = "agents"
+when = 'agent.status == "waiting_for_user"'
+state_expr = 'with("answer", agent.detail)'
+
+[[kind]]
+id = "hanged"
+level = "round"
+title = "Hanged?"
+rank = 3
+detector = "agents"
+when = 'agent.status == "possibly_hanged"'
+state = "agent may hang"
+
+[[kind]]
+id = "failed"
+level = "round"
+title = "Failed"
+rank = 4
+detector = "agents"
+when = 'agent.status == "failed"'
+state = "agent failed"
+
+[[kind]]
+id = "exited"
+level = "round"
+title = "Exited"
+rank = 4
+detector = "exits"
+state = "agent exited"
+
+[[kind]]
+id = "ci"
+level = "round"
+title = "CI failing"
+rank = 5
+detector = "pr"
+says = "An open PR red on its head with no agent at work on it."
+when = 'pr.state == "open" and ci.pr_red and agents.running == 0'
+state_expr = 'with("CI red", ci.first_failing)'
+
+[[kind]]
+id = "ci_failed"
+level = "round"
+title = "CI failed"
+rank = 5
+detector = "actions"
+says = "A fresh red Actions run on the head of a branch with no PR (I7)."
+when = 'not pr.exists and ci.head == "red" and agents.running == 0'
+state_expr = 'with("CI red", ci.first_failing)'
+
+[[kind]]
+id = "review"
+level = "deep"
+title = "Changes requested"
+rank = 5
+detector = "pr"
+when = 'pr.state == "open" and pr.review == "changes_requested"'
+state = "changes requested"
+
+[[kind]]
+id = "conflict"
+level = "round"
+title = "Merge conflict"
+rank = 5
+detector = "pr"
+when = 'pr.state == "open" and pr.mergeable == "conflicting" and agents.running == 0'
+state = "conflict with base"
+
+[[kind]]
+id = "done"
+level = "deep"
+title = "Your turn"
+rank = 6
+detector = "agents"
+says = "Only when nothing else runs there and there is no PR yet; never the orchestrator."
+when = '''
+agent.status in ["completed", "waiting", "interrupted"] and agents.running == 0
+and not pr.exists and not place.is_orchestrator
+'''
+state = "review: agent finished"
+
+[[kind]]
+id = "job"
+level = "round"
+title = "Job failed"
+rank = 7
+detector = "jobs"
+state = "job failed"
+
+[[kind]]
+id = "tracker_status"
+level = "round"
+title = "Tracker"
+rank = 5
+detector = "tracker"
+says = "A linked tracker task entered a status mapped with a level (its own)."
+
+[[kind]]
+id = "report"
+level = "round"
+title = "Agent reports"
+rank = 5
+detector = "report"
+says = "An agent's status_report with needs_user."
+
+[[kind]]
+id = "decision"
+level = "deep"
+title = "Decide"
+rank = 2
+detector = "decision"
+says = "A brief: its level and blocks_agent are the item's own."
