@@ -49,7 +49,9 @@ from lazyagent.engine.actions import (
 )
 from lazyagent.engine.events import AGENT_EXITED, JOB_FINISHED, JOB_STARTED
 from lazyagent.engine.notes import _atomic_write
+from lazyagent.engine import rules
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
+from lazyagent.engine.rules.facts import ItemContext
 from lazyagent.engine.runtime import repo_digest, state_dir
 from lazyagent.engine.status import (
     _RUNNING,
@@ -57,8 +59,6 @@ from lazyagent.engine.status import (
     LEVELS,
     PRIORITY_ORDER,
     STARTING,
-    _failing_check,
-    _with,
     ci_state,
     clip_words,
     format_age,
@@ -125,28 +125,33 @@ def register_kind(kind: Kind) -> Kind:
     return kind
 
 
-# The attention queue's ten kinds (0013 "Kinds → level"), with the class of
-# 0013 "Class per kind": a change request and a finished branch with no PR
-# need reading (deep); the rest are decided from the row (quick).
-APPROVAL = register_kind(Kind("approval", "now", "Needs approval", 1, True))
-QUESTION = register_kind(Kind("question", "now", "Question", 2, True))
-HANGED = register_kind(Kind("hanged", "round", "Hanged?", 3))
-FAILED = register_kind(Kind("failed", "round", "Failed", 4))
-EXITED = register_kind(Kind("exited", "round", "Exited", 4))
-CI = register_kind(Kind("ci", "round", "CI failing", 5))
+# The kinds, their levels, titles and ranks, from the rules catalog
+# (engine/rules/builtin.toml, 0013 "Kinds → level" and "Class per kind"): a
+# change request and a finished branch with no PR need reading (deep); the
+# rest are decided from the row (quick). Where a detector reads the engine's
+# state, the kind's condition and state text are the catalog's too.
+_CATALOG = rules.builtin()
+for _k in _CATALOG.kinds:
+    register_kind(Kind(_k.id, _k.level, _k.title, _k.rank, _k.blocks_agent))
+APPROVAL = KINDS["approval"]
+QUESTION = KINDS["question"]
+HANGED = KINDS["hanged"]
+FAILED = KINDS["failed"]
+EXITED = KINDS["exited"]
+CI = KINDS["ci"]
 # A fresh red Actions run on the head of a branch with no PR (I7).
-CI_FAILED = register_kind(Kind("ci_failed", "round", "CI failed", 5))
-REVIEW = register_kind(Kind("review", "deep", "Changes requested", 5))
-CONFLICT = register_kind(Kind("conflict", "round", "Merge conflict", 5))
-DONE = register_kind(Kind("done", "deep", "Your turn", 6))
-JOB = register_kind(Kind("job", "round", "Job failed", 7))
+CI_FAILED = KINDS["ci_failed"]
+REVIEW = KINDS["review"]
+CONFLICT = KINDS["conflict"]
+DONE = KINDS["done"]
+JOB = KINDS["job"]
 # A linked tracker task entered a status mapped with a level (its own).
-TRACKER_STATUS = register_kind(Kind("tracker_status", "round", "Tracker", 5))
+TRACKER_STATUS = KINDS["tracker_status"]
 # An agent's status_report with needs_user (overlay.py).
-REPORT = register_kind(Kind("report", "round", "Agent reports", 5))
+REPORT = KINDS["report"]
 # A brief (decisions.py): deep unless it failed validation or says quick;
 # its level and blocks_agent are the item's own.
-DECISION = register_kind(Kind("decision", "deep", "Decide", 2))
+DECISION = KINDS["decision"]
 
 
 @dataclass
@@ -287,22 +292,6 @@ Detector = Callable[[Snapshot], Iterable[Item]]
 # its agent's question.
 Filter = Callable[[dict[str, Item]], None]
 
-_AGENT_KINDS = {
-    AgentStatus.WAITING_FOR_APPROVAL.value: (APPROVAL, "approve"),
-    AgentStatus.WAITING_FOR_USER.value: (QUESTION, "answer"),
-    AgentStatus.POSSIBLY_HANGED.value: (HANGED, "agent may hang"),
-    AgentStatus.FAILED.value: (FAILED, "agent failed"),
-}
-# Turn over, at its prompt (status.py's idle): the user's turn.
-_DONE_STATUSES = frozenset(
-    {
-        AgentStatus.COMPLETED.value,
-        AgentStatus.WAITING.value,
-        AgentStatus.INTERRUPTED.value,
-    }
-)
-
-
 def _id(kind: Kind, rest: str) -> str:
     # The desktop's ids (attention.rs): "Approval:/path/a1".
     return f"{kind.name.capitalize()}:{rest}"
@@ -313,29 +302,23 @@ def _default_label(path: str, agent_id: str) -> str:
 
 
 def agent_items(snap: Snapshot) -> Iterable[Item]:
-    """Agents waiting on the user, failed, hung, or done with their turn.
-    "Your turn" only when nothing else runs there and there is no PR yet
-    (then the PR says what is next), and never for the orchestrator, whose
-    prompt is where it waits."""
+    """Agents waiting on the user, failed, hung, or done with their turn
+    (the catalog's ``agents`` kinds, first match per agent). "Your turn"
+    only when nothing else runs there and there is no PR yet (then the PR
+    says what is next), and never for the orchestrator, whose prompt is
+    where it waits."""
+    kinds = _CATALOG.kinds_of("agents")
     for place in snap.places:
         for a in place.agents:
-            found = _AGENT_KINDS.get(a.status)
-            if found is not None:
-                kind, text = found
-                state = _with(text, a.detail) if kind.blocks_agent else text
-            elif (
-                a.status in _DONE_STATUSES
-                and not place.running
-                and place.pr is None
-                and place.path != ORCHESTRATOR_KEY
-            ):
-                kind, state = DONE, "review: agent finished"
-            else:
+            ctx = ItemContext(place, a)
+            rule = next((k for k in kinds if k.matches(ctx)), None)
+            if rule is None:
                 continue
+            kind = KINDS[rule.id]
             yield Item(
                 _id(kind, f"{place.path}/{a.agent_id}"),
                 kind.name,
-                state,
+                rule.state_of(ctx),
                 label=a.label or _default_label(place.path, a.agent_id),
                 detail=a.detail or a.status,
                 work_item=place.work_item,
@@ -363,61 +346,72 @@ def pr_red(pr: PrInfo, ci: CiVerdict | None) -> bool:
     return not all(_actions_check(c.details_url) for c in failing)
 
 
+def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
+    """An open PR item's detail, and the red run for ``ci``."""
+    if kind is CI:
+        red = place.ci.red if place.ci is not None else ()
+        if red:
+            return run_detail(red[0]), red[0]
+        failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
+        return ", ".join(failed), None
+    if kind is REVIEW:
+        return "a reviewer asked for changes", None
+    return "conflicts with the base branch", None
+
+
 def pr_items(snap: Snapshot) -> Iterable[Item]:
     """An open PR that is red or conflicting with no agent at work on it, or
-    whose reviewer asked for changes."""
+    whose reviewer asked for changes (the catalog's ``pr`` kinds)."""
+    kinds = _CATALOG.kinds_of("pr")
     for place in snap.places:
         pr = place.pr
-        if pr is None or pr.state.upper() != "OPEN":
+        if pr is None:
             continue
-        found = []
-        run = None
-        if pr_red(pr, place.ci) and not place.running:
-            red = place.ci.red if place.ci is not None else ()
-            if red:
-                run = red[0]
-                found.append((CI, _with("CI red", run_title(run)), run_detail(run)))
-            else:
-                failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
-                found.append((CI, _with("CI red", _failing_check(pr)), ", ".join(failed)))
-        if (pr.review_decision or "").upper() == "CHANGES_REQUESTED":
-            found.append((REVIEW, "changes requested", "a reviewer asked for changes"))
-        if (pr.mergeable or "").upper() == "CONFLICTING" and not place.running:
-            found.append((CONFLICT, "conflict with base", "conflicts with the base branch"))
-        for kind, state, detail in found:
+        ctx = ItemContext(place)
+        for rule in kinds:
+            if not rule.matches(ctx):
+                continue
+            kind = KINDS[rule.id]
+            detail, run = _pr_detail(kind, place, pr)
             yield Item(
                 _id(kind, f"{place.path}:{pr.number}"),
                 kind.name,
-                state,
+                rule.state_of(ctx),
                 label=f"#{pr.number} {pr.title}",
                 detail=detail,
                 work_item=place.work_item,
                 worktree_path=place.path,
                 pr={"number": pr.number, "title": pr.title, "url": pr.url},
-                run=run_info(run) if kind is CI and run is not None else None,
+                run=run_info(run) if run is not None else None,
             )
 
 
 def actions_items(snap: Snapshot) -> Iterable[Item]:
     """A fresh red Actions run on the head of a branch with no PR, while no
-    agent is at work there (I7). The id is the branch's: the item clears
-    when a newer run on the head goes green or the head moves, and a later
-    red is a new occurrence."""
+    agent is at work there (I7, the catalog's ``actions`` kinds). The id is
+    the branch's: the item clears when a newer run on the head goes green or
+    the head moves, and a later red is a new occurrence."""
+    kinds = _CATALOG.kinds_of("actions")
     for place in snap.places:
         ci = place.ci
-        if place.pr is not None or ci is None or ci.state != "red" or place.running:
+        if ci is None:
             continue
-        run = ci.red[0]
-        yield Item(
-            _id(CI_FAILED, f"{place.path}:{ci.branch}"),
-            CI_FAILED.name,
-            _with("CI red", run_title(run)),
-            label=ci.branch,
-            detail=run_detail(run),
-            work_item=place.work_item,
-            worktree_path=place.path,
-            run=run_info(run),
-        )
+        ctx = ItemContext(place)
+        for rule in kinds:
+            if not rule.matches(ctx):
+                continue
+            kind = KINDS[rule.id]
+            run = ci.red[0]
+            yield Item(
+                _id(kind, f"{place.path}:{ci.branch}"),
+                kind.name,
+                rule.state_of(ctx),
+                label=ci.branch,
+                detail=run_detail(run),
+                work_item=place.work_item,
+                worktree_path=place.path,
+                run=run_info(run),
+            )
 
 
 def _exit_id(e: Exit) -> str:
@@ -429,7 +423,7 @@ def exit_items(snap: Snapshot) -> Iterable[Item]:
         yield Item(
             _exit_id(e),
             EXITED.name,
-            "agent exited",
+            _CATALOG.kind["exited"].state_of(None),
             label=e.label,
             detail="exited" if e.exit_code is None else f"exited with code {e.exit_code}",
             work_item=e.work_item,
@@ -446,7 +440,7 @@ def job_items(snap: Snapshot) -> Iterable[Item]:
         yield Item(
             _id(JOB, j.job_id),
             JOB.name,
-            "job failed",
+            _CATALOG.kind["job"].state_of(None),
             label=j.title,
             detail="killed" if j.exit_code is None else f"exit {j.exit_code}",
             job_id=j.job_id,
