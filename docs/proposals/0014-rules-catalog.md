@@ -1,6 +1,6 @@
 # 0014. Rules catalog: states, actions and the facts behind them
 
-- **Status:** Proposed (2026-10-24). Plan in [rules-plan.md](../design/rules-plan.md); open questions Q-R1-Q-R26 below
+- **Status:** Accepted (2026-10-24; Q-R1-Q-R26 answered by the owner, all as recommended, with notes on Q-R7 and Q-R24). Plan in [rules-plan.md](../design/rules-plan.md); the answers in "Open questions" below
 - **Design refs:** [0013-inbox-and-status.md](0013-inbox-and-status.md) ("No LLM in the state path", "Kinds → level", "The orchestrator"); [inbox-plan.md](../design/inbox-plan.md) §3 (derivation), §5c (mandate, never alone), §7b (trackers), §8 I1-I8b as landed; [docs/guides/home.md](../guides/home.md)
 
 Today the rules that decide every Home row live in four places that must agree by hand: `derive()` in `engine/status.py` (rules 1-16, first match wins), the kinds and detectors in `engine/actionables.py`, the verb table in the desktop (`home.rs` `verb()`), and the guide text (`home_help.rs` and `docs/guides/home.md`, kept in step only by a heading test). This proposal turns them into **one catalog**: a closed list of **facts** the engine computes, and **rules** over those facts that give a row its ball, state, level, verb and action. Today's behaviour becomes the built-in catalog, byte for byte. The user can override and add rules in TOML. The desktop gets a **"How lazyagent works"** page generated from the same catalog, with a **"Why is this row in this state?"** view. Evaluation stays deterministic: there is never an LLM at evaluation time. An LLM may only help the user *write* a rule, and the user accepts or rejects the result.
@@ -265,7 +265,24 @@ where `branch_failing` and `base_failing` are **sets of failing test ids**, not 
 | **M: merge-base** | `git merge-base H origin/<base>` (the newest commit both histories share). After a sync by merge or rebase it equals the base commit last synced in, so "last synced to" and merge-base are the same commit in the common cases | The failing run tested the branch's own head (a `push` event, or any run on the branch ref): that run contains exactly M plus the branch's commits | Criss-cross histories have several merge-bases (`git merge-base --all`); a rewritten base (force-push, revert of the synced commit) leaves M off the base's current history |
 | **T: the base the run was built on** | For a `pull_request` run GitHub tests a **merge ref** (`refs/pull/<n>/merge`): the PR head merged into the base **tip at the time the run started**, not the commit the branch last synced to. T is that merge commit's base parent. The engine records it when it first sees the run: it fetches `refs/pull/<n>/merge`, checks that one parent is the run's `head_sha`, and keeps the other parent as T. If the ref has moved on (the base got a new commit, or GitHub rebuilt the ref) by the time the engine looks, T cannot be recovered and is unknown | Every `pull_request` run: failures the base tip brought in after the branch synced show up in the PR's CI even though the branch never contained them; comparing to M would call those failures the branch's | The engine first sees the run after the merge ref moved (engine down, long poll gaps): unknown |
 
-**Decision proposed (Q-R7):** P is **the base commit the failing run actually built on**: M for runs on the branch ref; T for merge-ref runs; unknown when it cannot be established (several merge-bases, a moved merge ref, a run event the engine does not know). Unknown means related.
+**Decided (Q-R7):** by default P is **the base commit the failing run actually built on** (the *build base*): M for runs on the branch ref; T for merge-ref runs; unknown when it cannot be established (several merge-bases, a moved merge ref, a run event the engine does not know). Unknown means related.
+
+**A configurable comparison base** (owner's note on Q-R7). In a project with stacked branches, a feature branch is often built on a project base branch (`feature-x-base`), itself built on the default branch. The project base may have no CI runs of its own, or runs whose failures are the project's own work in progress; what the team wants to know is whether the failure also exists on the default branch. So the comparison base is configurable, per repo and per project:
+
+```toml
+# rules.toml (global or repo)
+[ci_unrelated]
+compare_to = "build_base"          # default: P as defined above
+
+[ci_unrelated.project."checkout-redesign"]   # an I6 project id
+compare_to = "origin/main"         # any ref: compare against that branch's runs
+```
+
+- `compare_to = "build_base"` (default): P as above.
+- `compare_to = "<ref>"` (e.g. `origin/main`): first compute the build base B (as above; unknown → the whole comparison is unknown). Then the comparison point is **the newest commit of `<ref>` that is an ancestor of B** (`git merge-base B <ref>`; with several merge-bases, unknown). The base data is that ref's own run of the same check at exactly that commit (a `push` run on the ref's branch with that `head_sha`).
+- Lookup order: the project's `compare_to` (when the work item belongs to an I6 project), else the repo file's, else the global file's, else `build_base`.
+- **Missing run:** no run of that check at exactly that commit (the ref batched its pushes, the run is older than the runs list the engine keeps, its artifacts or logs expired) → the base data is unknown → **related**, as everywhere else. Q-R8's answer (no nearest-run fallback) applies to a ref too.
+- The "Why?" view names the comparison used: `unit-tests: compared with origin/main at 3f2a9c1 (project checkout-redesign)`.
 
 **The base's failures at P.** The base branch's own run of the same check **at exactly P** (a `push` run on the base branch whose `head_sha == P`). Base branches often batch pushes, so P may have no run of its own; then the base data is **unknown** by default (Q-R8). The engine never starts a base run itself. An agent or the orchestrator may (a `ci_rerun` or `workflow_dispatch` is already an action they may take); its result is then picked up like any run.
 
@@ -352,6 +369,13 @@ While an attestation is pending for a check, that check counts as related for `c
 | The head moves (a new commit) | Attestations for the old head expire; A is recomputed on the new head's run | `CI red: eval-suite (head moved, attestation expired)` until the new run's data says otherwise |
 | A failing test not in the base set appears (a re-run, a new job) | That check leaves `ci.unrelated_checks` | `CI red: unit-tests (1 new failing test)` |
 | The base gets fixed while the branch stays red (the base's newest run passes the tests the branch still fails) | Not Fix CI: the branch only lacks the base's fix | **Sync** `Sync with base: unit-tests fixed on base` |
+
+**What Sync costs** (owner's note on Q-R24: only if it does not mean watching the base branch constantly). It adds no polling:
+
+- **Runs:** I7 already reads the repo's latest 100 Actions runs with one ETag call per `actions_poll_s`, and the base branch's runs are in that list. `ci.base_fixed` first looks only at that list: the newest base run of the same check (at or after the comparison point) and its conclusion. A green newest base run of that check is enough; no further call.
+- **Test-level data for the base** (only when the newest base run is still red, to see whether it still fails the branch's tests) is fetched lazily: only for rows currently in the unrelated state (every failing check explained by A), and cached per base run attempt, so one base run serves every branch on that base.
+- **Cap:** at most 3 base-run test fetches per Actions poll (`[ci_unrelated] base_fetches_per_poll`, 3), inside the hub's 20 `gh` calls a minute; the rest wait for the next poll. Until fetched, `ci.base_fixed` is unknown and Sync does not fire.
+- Base runs older than the 100 runs the list holds are not looked up: Sync stays unknown for them.
 
 **Dismiss** stays per occurrence, as today: a dismissed Fix CI, Sync or Confirm item stays dismissed while its condition holds, and comes back on a re-trigger, which is a new occurrence.
 
@@ -474,6 +498,7 @@ There is no LLM after step 2. The accepted TOML is evaluated by the engine like 
 | method / MCP | `rules_propose {scope, toml, says, repo?}` → `{id, valid, errors, preview}`; `rules_decide {id, accept, note?}` (user) | R7 | |
 | method / MCP | `ci_attest {…}`; `ci_attestation_revoke {id}` (user) | R5 | |
 | field | `work_items_upsert.facts` | R3 | `tracker.*` only |
+| config | `[ci_unrelated] compare_to, base_fetches_per_poll`, `[ci_unrelated.project."<id>"] compare_to` | R4 | In `rules.toml` |
 | config | `[ci] nondeterministic, accept_attestation_for, attestation_ttl`, `[ci.check."<name>"] tests_from, parser options, confirm, min_base_runs, min_repetitions, max_drop` | R4, R5 | In `rules.toml` |
 | config | `[<adapter>.qa]`, `qa_field`, `qa_field_values` | R3 | In `trackers.toml` |
 
@@ -547,9 +572,9 @@ There is no LLM after step 2. The accepted TOML is evaluated by the engine like 
 | Keep the code table, add only config switches (`merge_requires_qa = true`) | Each team's gate needs a new switch and code; the help still drifts |
 | Mechanism A at check level (red on base too → unrelated) | Rejected: a check red on both sides with different failing tests hides the branch's own failures, the case the owner raised |
 
-## Open questions
+## Open questions (answered 2026-10-24)
 
-Each has 2-4 options and a recommendation (marked **rec**). The same questions, in Spanish, are kept outside the repo for the owner's form.
+The owner answered all 26: the recommendation (column **Rec**) stands for every one. Q-R7 and Q-R24 carry an owner's note, applied in the text above.
 
 | # | Question | Options | Rec |
 |---|---|---|---|
@@ -559,7 +584,7 @@ Each has 2-4 options and a recommendation (marked **rec**). The same questions, 
 | Q-R4 | Locked rules (cannot be overridden or preceded) | a) closed/merged, park, queue (approvals and questions), first-responder rules; b) only tool approvals; c) none | a |
 | Q-R5 | Repo rules (`.lazyagent/rules.toml`) | a) loaded only after the user allows the file's hash; b) always loaded; c) no repo rules, global only | a |
 | Q-R6 | Unknown facts | a) three-valued: unknown never matches, `known()` to test; b) unknown is false (so `not` makes it true); c) a default per fact | a |
-| Q-R7 | Base point for mechanism A | a) the base the failing run built on: merge-base for branch runs, the merge ref's base parent for PR runs, else unknown; b) always the merge-base; c) always the base tip when the run started | a |
+| Q-R7 | Base point for mechanism A | a) the base the failing run built on: merge-base for branch runs, the merge ref's base parent for PR runs, else unknown; b) always the merge-base; c) always the base tip when the run started | aa — Owner's note: in projects with a base branch and dependent (stacked) branches it is sometimes better to compare against the default branch; a configurable comparison base `[ci_unrelated] compare_to` per repo and per project, default the build base (see "A configurable comparison base") |
 | Q-R8 | No base run at exactly that point | a) unknown, so related; b) the nearest base run up to N commits before it, if every commit between touches no file under the check's paths; c) ask the agent to start a base run | a |
 | Q-R9 | Sources of failing-test ids in R4 | a) JUnit artifacts plus built-in log parsers (pytest, jest/vitest, go, cargo, junit-console); b) JUnit artifacts only; c) log parsers only | a |
 | Q-R10 | User regex parsers per check | a) allowed, RE2 syntax only, with a count regex; b) not in R4, built-in parsers only; c) allowed, Python `re` with line caps | a |
@@ -576,6 +601,6 @@ Each has 2-4 options and a recommendation (marked **rec**). The same questions, 
 | Q-R21 | Rebinding keys | a) fixed in this proposal; b) in `rules.toml`; c) in the desktop settings | a |
 | Q-R22 | Built-in `merge`: a dismissable inbox item? | a) stays row-only in R1 (byte-identical), becomes an item in R2 as a visible change; b) stays row-only; c) only user overrides are items | a |
 | Q-R23 | How the "unrelated" chip is shown | a) a new opt-in row field `ci_note`, appended to the state in the CLI table; b) folded into the state text (≤ 5 words, so cut); c) only in the expanded line and "Why?" | a |
-| Q-R24 | When "Sync with base" fires | a) the base's newest run no longer fails the tests the branch still fails; b) any newer green run of that check on the base; c) never: keep the chip, the user notices | a |
+| Q-R24 | When "Sync with base" fires | a) the base's newest run no longer fails the tests the branch still fails; b) any newer green run of that check on the base; c) never: keep the chip, the user notices | aa — Owner's note: only if it does not mean watching the base branch constantly; it reuses I7's runs list (no extra polling), fetches base test data lazily for rows in the unrelated state, cached per base run, capped per poll (see "What Sync costs") |
 | Q-R25 | After the user rejects an attestation | a) the comment goes to the attesting agent, Fix CI returns to Round for `d`; b) the same, and the item is re-delegated to that agent automatically; c) Fix CI returns, nothing is sent | a |
 | Q-R26 | While an attestation waits for confirmation | a) the Confirm item replaces Fix CI for the checks it covers; b) both items show; c) Fix CI stays, Confirm shows in the expanded line | a |
