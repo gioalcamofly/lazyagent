@@ -318,7 +318,7 @@ fn create_and_launch_then_stop_then_remove() {
     step_until(&mut h, "the worktree removed", |a| {
         a.state.store.worktree(&path).is_none() && a.state.selected.as_deref() == Some(world.repo.as_str())
     });
-    assert!(!std::path::Path::new(&path).exists());
+    step_until(&mut h, "the worktree's directory gone", |_| !std::path::Path::new(&path).exists());
     conn.shutdown();
 }
 
@@ -2194,7 +2194,9 @@ fn the_mvp_demo_notes_survive_compaction_and_restore_then_hand_off() {
     h.key_press(egui::Key::C);
     step_until(&mut h, "copied", |a| a.state.last_copied.as_deref() == Some(text.as_str()));
     step_until(&mut h, "stopped", |a| a.state.store.agent_count() == 0);
-    assert!(!path.exists(), "copied, then deleted");
+    // The engine deletes the notes as the stop finishes, not before the
+    // agent leaves the store: wait for it.
+    step_until(&mut h, "copied, then deleted", |_| !path.exists());
     conn.shutdown();
 }
 
