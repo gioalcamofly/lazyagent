@@ -12,7 +12,7 @@ One line per work item: a branch with its PR, its agents and its CI. The engine 
 - Round: quick things that need you but block nobody (CI red with no agent on it, a conflict, a merge-ready PR, a PR with no reviewer, an item the orchestrator handed back). Delivered in rounds, see below.
 - To sit down with: things that need reading (a decision brief, changes requested, a finished branch to review). Shown at once, outside the rounds, against your limit (deep_max).
 - In flight: everything whose ball is not yours, with who has it and since when. Done rows (merged, closed) stay a day, dimmed.
-- Parked: work items you parked, with their inbox items, folded until you open it (Shift+Z). A parked line says when it comes back, or why it waits, and "needs you" when one of its items is still yours.
+- Parked: work items you parked, with their inbox items, folded until you open it (Shift+Z). A parked line says when it comes back, or why it waits, and "needs you" when one of its items is still yours. Items a planner holds in its own Waiting lane wait here too, as "waiting (board)" or "waiting: <reason>".
 
 ## The ball
 
@@ -20,7 +20,7 @@ Who must move next. you: the line is in your inbox. agent: an agent works on it,
 
 ## The states
 
-The state is a short fact, never a guess: "approve: npm test", "CI red: tests", "conflict with base", "merge: approved, CI green", "review requested", "PR has no reviewer", "orchestrator · looking", "orchestrator · verifying tests", "agent a1 · on it", "agent a1 finished; still CI red", "parked until Tue 08:00". A label you set shows before it: "QA · CI running".
+The state is a short fact, never a guess: "approve: npm test", "CI red: tests", "conflict with base", "merge: approved, CI green", "review requested", "PR has no reviewer", "orchestrator · looking", "orchestrator · verifying tests", "agent a1 · on it", "agent a1 finished; still CI red", "parked until Tue 08:00", "waiting (board)". A label you set shows before it: "QA · CI running"; an open dependency after it: "Edit · waits on Cart totals".
 
 ## Rounds, and changed since your last look
 
@@ -50,6 +50,10 @@ The orchestrator can also hold an item itself while it verifies a worker's branc
 - Never alone: merge to a default or protected branch, publish (tag, release, package), force-push a shared branch, delete a branch or worktree with unpushed work, close or reopen a PR. Those are always yours.
 - Revert: a decision the orchestrator took shows on its row for a day; Shift+U reverts it, tells the agent your choice, stops what it spawned and resets the branch while nothing was pushed.
 - Keep for me (the engine's keep_for_me): nothing on that item is routed to the orchestrator.
+
+## Projects, priority and not started
+
+A planner or a script can feed Home the tasks it tracks (work_items_upsert). A task with no branch yet counts in In flight's header ("3 not started"), together with the issues assigned to you in a tracker. Once a branch carries its ticket key (SHOP-12-checkout), the task joins that line with its title and priority. In flight groups lines by project under a header ("▸ Checkout revamp · 3"); a line whose dependency is still open or in review reads "waits on <title>". High priority shows ▴ before the name and low ▾; priority orders lines inside a level, after anything that blocks an agent. A project that "continues while in review" lets the orchestrator start its next task once the dependencies are merged or in review: alone while you are away, as a proposal while you are present. u on a waiting line unparks it until the planner changes it.
 
 ## Delegate to the branch's agent
 

@@ -1,0 +1,49 @@
+{
+  "case": "work_items_upsert/linked_by_ticket",
+  "method": "work_items_upsert",
+  "params": {
+    "depends_on": [
+      "https://tracker.example.com/browse/SHOP-11"
+    ],
+    "priority": "high",
+    "project": {
+      "id": "shop",
+      "policy": {
+        "continue_while_review": true
+      },
+      "title": "Shop"
+    },
+    "source": "planner",
+    "title": "Checkout flow",
+    "url": "https://tracker.example.com/browse/SHOP-12"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "created": true,
+      "item": {
+        "branch": null,
+        "created_at": 1700000000.0,
+        "depends_on": [
+          "https://tracker.example.com/browse/SHOP-11"
+        ],
+        "expires_at": null,
+        "priority": "high",
+        "project": {
+          "id": "shop",
+          "policy": {
+            "continue_while_review": true
+          },
+          "title": "Shop"
+        },
+        "source": "planner",
+        "ticket": "SHOP-12",
+        "title": "Checkout flow",
+        "updated_at": 1700000000.0,
+        "url": "https://tracker.example.com/browse/SHOP-12",
+        "waiting": null
+      },
+      "key": "repo:SHOP-12-checkout"
+    }
+  }
+}

@@ -3917,6 +3917,221 @@ fn home_i4d_screenshots() {
     shot(&mut h, "i4d-home-guide-light");
 }
 
+// --- Home, I6: feeders' work items (projects, waits on, priority, waiting) ----
+
+const I6: &[&str] =
+    &["status", "actionables", "claims", "gestures", "decisions", "holds", "delegation", "parked", "work_items"];
+
+/// A row linked to a feeder's work item: its project, what it waits on.
+fn feeder_row(key: &str, ball: &str, state: &str, project: Option<(&str, &str)>, waits: &[&str]) -> serde_json::Value {
+    let mut r = status_row(key, "in_flight", None, ball, state, 600.0);
+    let url = format!("https://board.example.com/c/{key}");
+    r["urls"] = json!([url]);
+    r["project"] = match project {
+        Some((id, title)) => json!({"id": id, "title": title, "policy": {"continue_while_review": true}}),
+        None => json!(null),
+    };
+    r["depends_on"] = json!(waits.iter().map(|w| format!("https://board.example.com/c/{w}")).collect::<Vec<_>>());
+    r["waits_on"] = json!(
+        waits
+            .iter()
+            .map(|w| json!({"url": format!("https://board.example.com/c/{w}"), "title": w, "state": "review"}))
+            .collect::<Vec<_>>()
+    );
+    r["feeder"] = json!({"url": url, "title": key, "source": "planner", "priority": "medium", "ticket": null,
+                         "branch": null, "project": r["project"], "depends_on": r["depends_on"], "waiting": null,
+                         "expires_at": null, "created_at": 1.0, "updated_at": 1.0});
+    r
+}
+
+#[test]
+fn in_flight_groups_by_project_with_waits_on_priority_and_not_started() {
+    use crate::home::Zone;
+    let (app, tx) = engine_home(I6);
+    let mut h = harness(app);
+    fake_engine(&h, |_, _| None);
+    h.run_steps(2);
+    let mut cart = feeder_row("cart", "others", "review requested", Some(("shop", "Shop")), &[]);
+    cart["priority"] = json!("high");
+    let mut refunds = feeder_row("refunds", "agent", "Edit", Some(("shop", "Shop")), &["cart"]);
+    refunds["priority"] = json!("low");
+    refunds["feeder"]["priority"] = json!("low");
+    let docs = status_row("docs", "in_flight", None, "agent", "Write", 300.0);
+    let search = feeder_row("search", "agent", "Bash", Some(("find", "Search revamp")), &[]);
+    for r in [refunds, docs, search, cart] {
+        tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    }
+    h.state_mut().state.status_counts.not_started = 2;
+    h.run_steps(2);
+    // Lines with no project first, then each project's together.
+    let names = home_names(&h, Zone::Flight);
+    assert_eq!(names[0], "docs");
+    let shop: Vec<usize> = ["cart", "refunds"].iter().map(|n| names.iter().position(|x| x == n).unwrap()).collect();
+    assert_eq!((shop[0] as i32 - shop[1] as i32).abs(), 1, "{names:?}");
+    h.get_by_label("▸ Shop");
+    h.get_by_label("▸ Search revamp");
+    assert!(h.query_all_by_label("· continues while in review").count() >= 1);
+    // Keyboard order follows the groups.
+    let visible: Vec<String> = h.state().state.home.visible(false).iter().map(|l| l.name.clone()).collect();
+    assert_eq!(visible, names);
+    h.get_by_label_contains("waits on cart");
+    // The priority marker: high and low only.
+    h.get_by_label("▴");
+    h.get_by_label("▾");
+    // The counter counts the feeders' items too (the engine's counts).
+    h.get_by_label_contains("· 2 not started");
+    // Expanded: the project, what it waits on (in review), the feeder.
+    h.state_mut().state.home.expanded = Some("repo:refunds".into());
+    h.run_steps(2);
+    h.get_by_label("project Shop · waits on cart (in review)");
+    h.get_by_label_contains("from planner · low priority · https://board.example.com/c/refunds");
+}
+
+#[test]
+fn a_waiting_item_sits_in_parked_with_its_reason_and_unparks() {
+    let (app, tx) = engine_home(I6);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "status_gesture" => Some(json!({"key": p["key"], "claim": null, "gesture": null, "row": null})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    h.run_steps(2);
+    let now = crate::app::unix_now();
+    let mut held = feeder_row("refunds", "stalled", "waiting (board)", None, &[]);
+    held["zone"] = json!("parked");
+    held["rule"] = json!(7);
+    held["gesture"] = json!({"kind": "park", "at": now - 600.0, "by": "feeder:board", "until": "indefinite",
+                             "waiting": true, "source": "board"});
+    let mut why = feeder_row("coupons", "stalled", "waiting: design review", None, &[]);
+    why["zone"] = json!("parked");
+    why["rule"] = json!(7);
+    why["gesture"] = json!({"kind": "park", "at": now - 60.0, "by": "feeder:board", "until": now + 7200.0,
+                            "waiting": true, "source": "board", "text": "design review"});
+    tx.send(event("status.updated", json!({"row": held}))).unwrap();
+    tx.send(event("status.updated", json!({"row": why}))).unwrap();
+    h.run_steps(2);
+    h.get_by_label("PARKED (2)");
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run_steps(2);
+    h.get_by_label("waiting (board)");
+    h.get_by_label("waiting: design review");
+    h.state_mut().state.home.selected = Some("repo:refunds".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label_contains("waiting (board) · held in board's Waiting lane; u unparks it until board changes it");
+    h.get_by_label("Unpark  (u)").click();
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "status_gesture"), [json!({"key": "repo:refunds", "kind": "clear"})]);
+    h.state_mut().state.home.expanded = Some("repo:coupons".into());
+    h.run_steps(2);
+    h.get_by_label("waiting (board) for 2h 00m (design review), by feeder:board 1m ago");
+}
+
+/// Projects in In flight, "waits on", priority markers, the not-started
+/// counter and a waiting item in Parked, in dark and light, for
+/// docs/design/desktop-screenshots/i6-*.png.
+#[test]
+fn home_i6_screenshots() {
+    let now = crate::app::unix_now();
+    let w = |b: &str| format!("/home/dev/shop-{b}");
+    let (tx, rx) = mpsc::channel();
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/home/dev/shop".into(), env, tx.clone(), egui::Context::default());
+    let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.capabilities = Some(I6.iter().map(|c| c.to_string()).collect());
+    state.look_from = now - 1800.0;
+    let branches =
+        ["SHOP-11-cart", "SHOP-12-checkout", "SHOP-14-refunds", "docs-index", "SHOP-20-search", "SHOP-9-tax"];
+    let trees: Vec<_> = std::iter::once(worktree("/home/dev/shop", "main", vec![]))
+        .chain(branches.iter().map(|b| worktree(&w(b), b, vec![])))
+        .collect();
+    let seed: SidebarState = serde_json::from_value(json!({
+        "worktrees": trees, "orchestrator": {"agents": []}, "pr_info": {}, "git_statuses": {}, "view": null,
+        "cursor": 1
+    }))
+    .unwrap();
+    tx.send(Msg::Link(Link::Connected)).unwrap();
+    tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+    let row = |b: &str, ball: &str, st: &str, ago: f64, project: Option<(&str, &str)>, waits: &[&str]| {
+        let mut r = feeder_row(b, ball, st, project, waits);
+        r["key"] = json!(format!("shop:{b}"));
+        r["repo"] = json!("shop");
+        r["worktree_path"] = json!(w(b));
+        r["changed_at"] = json!(now - ago);
+        (r["seen_at"], r["last_event_at"]) = (json!(now - 1800.0), json!(now - 3600.0));
+        r
+    };
+    let shop = Some(("shop", "Checkout revamp"));
+    let mut cart = row("SHOP-11-cart", "others", "review requested, CI green", 5400.0, shop, &[]);
+    cart["priority"] = json!("high");
+    cart["feeder"]["priority"] = json!("high");
+    cart["title"] = json!("Cart totals");
+    cart["pr"] =
+        json!({"number": 21, "state": "OPEN", "review": "REVIEW_REQUIRED", "ci": "green", "mergeable": "MERGEABLE"});
+    let mut checkout = row("SHOP-12-checkout", "agent", "Edit", 600.0, shop, &["Cart totals"]);
+    checkout["agents"] = json!([{"id": "a2", "status": "running", "since": now - 600.0}]);
+    let mut tax = row("SHOP-9-tax", "stalled", "no agent", 86400.0, None, &[]);
+    tax["priority"] = json!("low");
+    tax["feeder"]["priority"] = json!("low");
+    let docs = {
+        let mut r = status_row("docs-index", "in_flight", None, "agent", "Write", 300.0);
+        r["key"] = json!("shop:docs-index");
+        r["worktree_path"] = json!(w("docs-index"));
+        r
+    };
+    let mut search = row("SHOP-20-search", "agent", "Bash", 1200.0, Some(("find", "Search")), &[]);
+    search["agents"] = json!([{"id": "a3", "status": "running", "since": now - 1200.0}]);
+    search["project"]["policy"] = json!({"continue_while_review": false});
+    let mut refunds = row("SHOP-14-refunds", "stalled", "waiting: design review", 7200.0, shop, &[]);
+    refunds["zone"] = json!("parked");
+    refunds["rule"] = json!(7);
+    refunds["gesture"] = json!({"kind": "park", "at": now - 7200.0, "by": "feeder:board", "until": "indefinite",
+                                "waiting": true, "source": "board", "text": "design review"});
+    let mut h = Harness::builder()
+        .with_size([1400.0, 720.0])
+        .wgpu()
+        .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+    h.run_steps(2);
+    fake_engine(&h, |m, p| match m {
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        _ => None,
+    });
+    for r in [cart, checkout, tax, docs, search, refunds] {
+        tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    }
+    h.run_steps(3);
+    h.state_mut().state.inbox_loaded = 3;
+    h.state_mut().state.inbox_gen += 1;
+    h.state_mut().state.status_counts.not_started = 3;
+    h.run_steps(2);
+    h.state_mut().state.home.cut(now);
+    h.state_mut().state.home.parked_open = true;
+    h.state_mut().state.home.selected = Some("shop:SHOP-12-checkout".into());
+    h.state_mut().state.home.expanded = Some("shop:SHOP-12-checkout".into());
+    h.run_steps(4);
+    h.state_mut().state.toasts.clear();
+    h.run_steps(2);
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    h.get_by_label("▸ Checkout revamp");
+    if !shot(&mut h, "i6-home-dark") {
+        return;
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().state.toggle_theme(&ctx);
+    h.run_steps(4);
+    shot(&mut h, "i6-home-light");
+}
+
 // --- I5: the decision view (brief | evidence | timeline), answers, Explain
 // this and a new brief, against a fake engine --------------------------------
 

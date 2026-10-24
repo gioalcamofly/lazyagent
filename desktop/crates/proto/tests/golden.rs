@@ -108,6 +108,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "decision_evidence" => round_trip::<DecisionEvidence>(case, result),
             // The orchestrator's and the agents' (MCP).
             "decision_escalate" | "decision_explain" => continue,
+            // External feeders' (MCP, a planner or a script).
+            "work_items_upsert" | "work_items_close" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;

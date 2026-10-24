@@ -740,6 +740,36 @@ fn name_cell(ui: &mut Ui, width: f32, name: &str) {
     });
 }
 
+/// A project's header inside In flight: its title and how many lines.
+fn project_header(ui: &mut Ui, t: &Theme, title: &str, n: usize, continues: bool) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(10.0);
+        ui.label(RichText::new(format!("▸ {title}")).small().strong().color(t.text));
+        ui.label(RichText::new(format!("· {n}")).small().color(t.muted));
+        if continues {
+            ui.label(RichText::new("· continues while in review").small().color(t.muted)).on_hover_text(
+                "The orchestrator may start the next task once its dependencies are merged or in review",
+            );
+        }
+    });
+}
+
+/// High and low priority, before the name ("▴" / "▾"); medium shows none.
+fn priority_cell(ui: &mut Ui, t: &Theme, priority: &str) {
+    let marker = home::priority_marker(priority);
+    let color = if priority == "high" { t.yellow } else { t.muted };
+    let r = ui
+        .allocate_ui_with_layout(Vec2::new(8.0, 18.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_width(8.0);
+            ui.label(RichText::new(marker).small().color(color));
+        })
+        .response;
+    if !marker.is_empty() {
+        r.on_hover_text(format!("{priority} priority"));
+    }
+}
+
 fn section(ui: &mut Ui, title: &str, color: Color32, extra: impl FnOnce(&mut Ui)) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -799,7 +829,20 @@ impl App {
                 presence_bar(ui, &t, presence.as_ref(), counts, &mut acts);
             }
             let mut zone = |ui: &mut Ui, z: Zone, acts: &mut Vec<Act>| {
-                for l in &lines[z as usize] {
+                let mut group: Option<&str> = None;
+                for (i, l) in lines[z as usize].iter().enumerate() {
+                    // In flight is grouped by project (home::group_by_project).
+                    let project = home::project_of(l).filter(|_| z == Zone::Flight);
+                    if let Some(p) = project
+                        && group != Some(p.id.as_str())
+                    {
+                        let n = lines[z as usize][i..]
+                            .iter()
+                            .take_while(|m| home::project_of(m).is_some_and(|q| q.id == p.id))
+                            .count();
+                        project_header(ui, &t, &p.title, n, home::continues_while_review(p));
+                    }
+                    group = project.map(|p| p.id.as_str());
                     line_ui(ui, &ctx, l, z, &mut forms_out, acts);
                 }
             };
@@ -1083,6 +1126,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
                 if matches!(shown, Zone::Flight | Zone::Parked) {
                     let dot = if l.unseen(c.look) { "•" } else { " " };
                     cell(ui, 10.0, RichText::new(dot).strong().color(t.accent));
+                    priority_cell(ui, t, &l.priority);
                     name_cell(ui, name_w, &l.name);
                     let (ball, state) = match (&l.claim, l.hold()) {
                         (Some(claim), _) => {
@@ -1123,6 +1167,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
                     let dot = if c.gestures && l.unseen(c.look) { "•" } else { " " };
                     cell(ui, 10.0, RichText::new(if selected { "▸" } else { dot }).color(color));
                     cell(ui, 74.0, RichText::new(l.verb()).strong().color(color));
+                    priority_cell(ui, t, &l.priority);
                     name_cell(ui, name_w, &l.name);
                     // "approve: npm test" after "Approve": the fact alone.
                     let text = if l.looking() && c.first_responder {
@@ -1221,12 +1266,19 @@ fn gesture_text(g: &Value, now: f64) -> String {
 
 /// A park, as words: "parked for 1h 40m (after the release)".
 fn park_until_text(g: &Value, now: f64) -> String {
+    // A feeder's Waiting lane parks the same way (`waiting: true`).
+    let word = if g["waiting"] == true {
+        format!("waiting ({})", g["source"].as_str().unwrap_or("feeder"))
+    } else {
+        "parked".to_string()
+    };
     let mut text = match &g["until"] {
-        Value::Number(n) => format!("parked for {}", left(n.as_f64().unwrap_or(now) - now)),
+        Value::Number(n) => format!("{word} for {}", left(n.as_f64().unwrap_or(now) - now)),
+        Value::String(e) if e == "indefinite" && g["waiting"] == true => word,
         Value::String(e) if e == "indefinite" => "parked indefinitely".into(),
-        Value::String(e) if e == "change" => "parked until something changes (CI, review, commit, agent)".into(),
-        Value::String(e) => format!("parked until {}", e.replace('_', " ")),
-        _ => "parked".into(),
+        Value::String(e) if e == "change" => format!("{word} until something changes (CI, review, commit, agent)"),
+        Value::String(e) => format!("{word} until {}", e.replace('_', " ")),
+        _ => word,
     };
     if let Some(reason) = g["text"].as_str().filter(|r| !r.is_empty()) {
         text.push_str(&format!(" ({reason})"));
@@ -1317,6 +1369,27 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
                     .collect();
                 ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
             }
+            if let Some(p) = &row.project {
+                let mut text = format!("project {}", p.title);
+                for w in &row.waits_on {
+                    let review = if w.state == "review" { " (in review)" } else { "" };
+                    text.push_str(&format!(" · waits on {}{review}", w.title));
+                }
+                ui.label(RichText::new(text).small().color(t.muted));
+            } else if !row.waits_on.is_empty() {
+                let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
+                ui.label(RichText::new(format!("waits on {}", titles.join(", "))).small().color(t.muted));
+            }
+            if let Some(f) = &row.feeder {
+                let mut text = format!("from {}", f["source"].as_str().unwrap_or("a feeder"));
+                if let Some(p) = f["priority"].as_str().filter(|p| *p != "medium") {
+                    text.push_str(&format!(" · {p} priority"));
+                }
+                if let Some(url) = f["url"].as_str() {
+                    text.push_str(&format!(" · {url}"));
+                }
+                ui.label(RichText::new(text).small().color(t.muted));
+            }
             if let Some(tr) = &row.tracker {
                 let stale = if tr.stale { format!(" ({} ago)", home::age(c.now - tr.at)) } else { String::new() };
                 ui.label(
@@ -1374,6 +1447,10 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             let mut text = park_until_text(g, c.now);
             if l.parked_needs_you() {
                 text.push_str(" · needs you: its items are not routed to the orchestrator");
+            }
+            if g["waiting"] == true {
+                let source = g["source"].as_str().unwrap_or("the feeder");
+                text.push_str(&format!(" · held in {source}'s Waiting lane; u unparks it until {source} changes it"));
             }
             ui.label(RichText::new(text).small().color(if l.parked_needs_you() { t.yellow } else { t.muted }));
         }

@@ -102,6 +102,42 @@ pub struct Line {
     pub decided: Option<Decision>,
 }
 
+/// The project a line belongs to (a feeder's `project`): In flight groups
+/// by it.
+pub fn project_of(line: &Line) -> Option<&lazyagent_proto::types::RowProject> {
+    line.row.as_ref().and_then(|r| r.project.as_ref())
+}
+
+/// In flight, grouped: lines with no project first, then each project's
+/// lines together, projects in the order their first line came. Inside a
+/// group the order is kept.
+pub fn group_by_project(lines: Vec<&Line>) -> Vec<&Line> {
+    let mut out: Vec<&Line> = lines.iter().copied().filter(|l| project_of(l).is_none()).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for l in &lines {
+        if let Some(p) = project_of(l)
+            && seen.insert(p.id.as_str())
+        {
+            out.extend(lines.iter().copied().filter(|m| project_of(m).is_some_and(|q| q.id == p.id)));
+        }
+    }
+    out
+}
+
+/// The project lets the orchestrator start the next task while review.
+pub fn continues_while_review(p: &lazyagent_proto::types::RowProject) -> bool {
+    p.policy.as_ref().is_some_and(|v| v["continue_while_review"] == true)
+}
+
+/// "high" and "low" get a marker; medium (the default) none.
+pub fn priority_marker(priority: &str) -> &'static str {
+    match priority {
+        "high" => "▴",
+        "low" => "▾",
+        _ => "",
+    }
+}
+
 impl Line {
     /// The user's gesture on the row: `label`, `park` or `close`.
     pub fn gesture(&self) -> Option<&serde_json::Value> {
@@ -246,10 +282,15 @@ pub fn engine_lines(
         let count = row.needs_you.as_ref().map(|n| n.count).unwrap_or(0);
         // A label is the user's word next to the fact: "QA · CI running".
         let label = row.gesture.as_ref().filter(|g| g["kind"] == "label").and_then(|g| g["text"].as_str());
-        let state = match label {
+        let mut state = match label {
             Some(text) if !text.is_empty() => format!("{text} · {}", row.state),
             _ => row.state.clone(),
         };
+        // A feeder's dependencies still open: "waits on <title>".
+        if !row.waits_on.is_empty() && row.ball != "done" {
+            let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
+            state.push_str(&format!(" · waits on {}", titles.join(", ")));
+        }
         out.push(Line {
             key: row.key.clone(),
             name: row_name(row),
@@ -610,7 +651,8 @@ impl Home {
     }
 
     pub fn shown_in(&self, zone: Zone) -> Vec<&Line> {
-        self.order[zone as usize].iter().filter_map(|k| self.lines.get(k)).collect()
+        let lines = self.order[zone as usize].iter().filter_map(|k| self.lines.get(k)).collect();
+        if zone == Zone::Flight { group_by_project(lines) } else { lines }
     }
 
     /// The selectable lines, top to bottom.
@@ -903,6 +945,38 @@ mod tests {
         assert_eq!(h.visible(false).len(), 1, "folded by default");
         h.parked_open = true;
         assert_eq!(h.visible(false).len(), 2);
+    }
+
+    #[test]
+    fn in_flight_groups_by_project_keeping_the_order_inside() {
+        let mut rows: Vec<StatusRow> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .enumerate()
+            .map(|(i, k)| row(k, "in_flight", None, "agent", i as f64))
+            .collect();
+        for (i, p) in [(0, "x"), (2, "y"), (3, "x")] {
+            rows[i].project = Some(serde_json::from_value(json!({"id": p, "title": p.to_uppercase()})).unwrap());
+        }
+        let mut h = Home::default();
+        h.update(lines(&rows), 10.0);
+        // Newest first: e d c b a. No project first, then x (d, a), then y.
+        assert_eq!(keys(&h, Zone::Flight), ["e", "b", "d", "a", "c"]);
+        assert_eq!(h.visible(false).len(), 5);
+    }
+
+    #[test]
+    fn waits_on_joins_the_state_and_only_high_and_low_get_a_marker() {
+        let mut r = row("a", "in_flight", None, "agent", 1.0);
+        r.state = "Edit".into();
+        r.waits_on = serde_json::from_value(json!([{"url": "u", "title": "Cart", "state": "review"},
+                                                     {"url": "v", "title": "Tax", "state": "open"}]))
+        .unwrap();
+        let l = &lines(&[r.clone()])[0];
+        assert_eq!(l.state, "Edit · waits on Cart, Tax");
+        r.ball = "done".into();
+        r.state = "merged".into();
+        assert_eq!(lines(&[r])[0].state, "merged");
+        assert_eq!((priority_marker("high"), priority_marker("medium"), priority_marker("low")), ("▴", "", "▾"));
     }
 
     #[test]

@@ -1036,6 +1036,83 @@ async def decision_withdraw(decision_id: str) -> dict:
         "decision_withdraw", _add_caller({"id": decision_id})
     )
 
+# ------------------------------------------------------------------
+# External feeders (proposal 0013 I6)
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+async def work_items_upsert(
+    url: str,
+    title: str,
+    source: str,
+    priority: str = "medium",
+    ticket: str | None = None,
+    branch: str | None = None,
+    project: dict | None = None,
+    depends_on: list[str] | None = None,
+    waiting: dict | None = None,
+    expires_at: float | None = None,
+) -> dict:
+    """Tell lazyagent about a task you track elsewhere (a planner's board, an
+    issue tracker), so the user's Home shows it. For feeders: a planner or a
+    script, not a worker reporting on its own branch (use status_report).
+
+    One work item per URL: calling again with the same URL replaces it, and
+    an optional argument left out goes back to its default (so leaving out
+    ``waiting`` takes the item out of Parked). Send the whole item each
+    time. While no local branch links to it, it counts in Home's "N not
+    started"; once a branch carries its ticket key (e.g. ``ABC-123-fix``),
+    it joins that branch's row with its priority and project. lazyagent
+    never starts a task on its own.
+
+    Args:
+        url: The task's http(s) URL (the dedupe key).
+        title: Its title, as the user knows it.
+        source: Who feeds it, e.g. "planner" (at most
+            [status] max_open_per_source open items each, 50 by default).
+        priority: "high", "medium" or "low": orders it (and its inbox items)
+            within its level.
+        ticket: Its ticket key (e.g. "ABC-123"); default: read from the URL.
+        branch: The branch it is worked on, when it has no ticket key.
+        project: {"id", "title", "policy": {"continue_while_review": bool}}:
+            rows group by project; with continue_while_review the
+            orchestrator is woken when a task's dependencies are all merged
+            or in review.
+        depends_on: URLs of the items it waits on ("waits on <title>").
+        waiting: {"reason"?, "until"?}: the item sits in Parked as "waiting
+            (<source>)" until ``until`` (a Unix time, "tomorrow" or a park
+            event) or your next call without it.
+        expires_at: Unix time after which lazyagent forgets it.
+
+    Returns:
+        Object with ``item``, ``created`` and ``key`` (its row, or null while
+        not started).
+    """
+    params: dict[str, Any] = {
+        "url": url, "title": title, "source": source, "priority": priority,
+    }
+    for name, value in (("ticket", ticket), ("branch", branch), ("project", project),
+                        ("depends_on", depends_on), ("waiting", waiting),
+                        ("expires_at", expires_at)):
+        if value is not None:
+            params[name] = value
+    return await _get_client().call("work_items_upsert", _add_caller(params))
+
+
+@mcp.tool()
+async def work_items_close(url: str) -> dict:
+    """Forget a task you fed with work_items_upsert: it was finished or
+    dropped where you track it. Closing an unknown URL is not an error.
+
+    Args:
+        url: The task's URL, as upserted.
+
+    Returns:
+        Object with url, ``closed`` (false: there was none) and the ``item``.
+    """
+    return await _get_client().call("work_items_close", _add_caller({"url": url}))
+
 
 
 @mcp.tool()

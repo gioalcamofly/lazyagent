@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.trackers import TrackerFact
+from lazyagent.engine.work_items import EXT_PREFIX, waiting_text
+from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.models import AgentStatus, PrInfo
 
 if TYPE_CHECKING:
@@ -163,6 +165,8 @@ class Facts:
     released: dict[str, Any] | None = None
     # agent id → who spawned it (the orchestrator's workers).
     spawned_by: dict[str, str] = field(default_factory=dict)
+    # The feeder's work item linked to the branch (work_items.py, public).
+    feeder: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -274,7 +278,12 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
         # The whole work item: its row and its inbox items wait in Parked.
         before = derive(replace(facts, gesture=None), now, last_change,
                         stalled_hours=stalled_hours)
-        return Derived(PARK_RULE, before.ball, park_text(gesture.get("until"), gesture.get("text"), now))
+        if gesture.get("waiting"):
+            # A feeder's Waiting lane (work_items.py): parked the same way.
+            state = waiting_text(gesture.get("source", "feeder"), gesture.get("text"))
+        else:
+            state = park_text(gesture.get("until"), gesture.get("text"), now)
+        return Derived(PARK_RULE, before.ball, state)
 
     queue = facts.actionables
     if queue:
@@ -427,7 +436,7 @@ def public_gesture(gesture: dict[str, Any] | None) -> dict[str, Any] | None:
     if gesture is None:
         return None
     out = {"kind": gesture["kind"], "at": gesture["at"], "by": gesture.get("by", "user")}
-    for name in ("ball", "text", "until", "how"):
+    for name in ("ball", "text", "until", "how", "waiting", "source"):
         if name in gesture:
             out[name] = gesture[name]
     return out
@@ -482,7 +491,9 @@ def build_row(
         "zone": zone,
         "level": derived.level if zone == "inbox" else None,
         "ball": derived.ball,
-        "priority": DEFAULT_PRIORITY,
+        "priority": (facts.feeder or {}).get("priority")
+        or (facts.tracker.priority if facts.tracker is not None else None)
+        or DEFAULT_PRIORITY,
         "state": derived.state,
         "rule": derived.rule,
         "blocks_agent": derived.blocks_agent,
@@ -525,6 +536,17 @@ def build_row(
     if zone == "parked" and facts.actionables:
         # Parked, but what its items ask is still the user's (not routed).
         row["holder"] = facts.holder or "user"
+    feeder = facts.feeder
+    if feeder is not None:
+        if feeder["url"] not in row["urls"]:
+            row["urls"].append(feeder["url"])
+        if row["title"] in (facts.branch, facts.key):
+            row["title"] = feeder["title"]
+        row["project"] = feeder["project"]
+        row["depends_on"] = feeder["depends_on"]
+        # Filled in once every row is known (StatusProjection._projects).
+        row["waits_on"] = []
+        row["feeder"] = feeder
     tracker = facts.tracker
     if tracker is not None:
         if tracker.url and tracker.url not in row["urls"]:
@@ -831,12 +853,16 @@ class StatusProjection:
         rows = self.flush().values()
         if repo is not None:
             rows = [r for r in rows if r["repo"] == repo]
+        unstarted = self.not_started_items()
         result = summarize(
             rows,
             include_done=include_done,
-            not_started=self.not_started(),
+            not_started=len(unstarted),
             deep_max=self._engine.config.inbox.deep_max,
         )
+        if self._engine.work_items.records:
+            # The feeders' (and trackers') tasks with no branch yet.
+            result["not_started_items"] = unstarted
         now = self.clock()
         responder = self._engine.first_responder
         result["counts"].update(responder.counts(now))
@@ -867,9 +893,11 @@ class StatusProjection:
         claims = self._engine.claims
         overlay = self._engine.overlay
         delegations = self._engine.delegations
+        work_items = self._engine.work_items
         claims.check(now)
         self._engine.first_responder.check(now)
         overlay.expire_reports(now)
+        work_items.expire(now)
         rows: dict[str, dict[str, Any]] = {}
         facts_by_key: dict[str, Facts] = {}
         live_agents: set[tuple[str, str]] = set()
@@ -883,13 +911,19 @@ class StatusProjection:
         for facts in self._facts(now):
             key = facts.key
             items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
+            gesture = overlay.gesture(facts, now)
+            if gesture is None or gesture["kind"] == "label":
+                # The feeder's Waiting lane parks it; the user's park or
+                # close wins, and their label comes back once it ends.
+                record = work_items.records.get((facts.feeder or {}).get("url", ""))
+                gesture = work_items.waiting_gesture(record, facts, now) or gesture
             facts = replace(
                 facts,
                 actionables=tuple(items),
                 claim=claims.get(key),
                 hold=claims.get_hold(key),
                 delegation=delegations.get(key),
-                gesture=overlay.gesture(facts, now),
+                gesture=gesture,
                 report=overlay.reports.get(key),
                 holder="orchestrator" if self._engine.first_responder.held(key) else None,
                 released=overlay.released_note(key, now),
@@ -912,6 +946,7 @@ class StatusProjection:
                 and now - seen.changed_at > config.stale_days * 86400
             )
             rows[facts.key] = build_row(facts, derived, seen.changed_at, fp, stale=stale)
+        self._projects(rows, now)
         self._track(rows, facts_by_key, now)
         self._close(rows, now)
         for key, row in rows.items():
@@ -1014,14 +1049,136 @@ class StatusProjection:
             if r["worktree_path"] is not None
         }
 
-    def not_started(self) -> int:
-        """Tasks assigned to the user that no local branch links to."""
-        hub = self._engine.trackers
-        if not hub.enabled:
-            return 0
+    def _branches(self) -> set[str]:
+        """Every local branch: the worktrees' and every for-each-ref one."""
         branches = set(self._commit_times)
         branches.update(wt.branch for wt in self._members() if wt.branch)
-        return hub.not_started(branches)
+        return branches
+
+    def not_started(self) -> int:
+        """Tasks no local branch links to: the trackers' assigned tasks and
+        the feeders' work items (not those waiting), once per URL."""
+        return len(self.not_started_items())
+
+    def not_started_items(self) -> list[dict[str, Any]]:
+        """What :meth:`not_started` counts, highest priority first, then
+        oldest."""
+        hub = self._engine.trackers
+        work_items = self._engine.work_items
+        if not hub.enabled and not work_items.records:
+            return []
+        branches = self._branches()
+        out: dict[str, dict[str, Any]] = {}
+        for record in work_items.unlinked(branches):
+            if work_items.waiting_active(record):
+                continue
+            item = work_items.public(record)
+            item["startable"] = self._startable(record)
+            out[record["url"]] = item
+        if hub.enabled:
+            for adapter, task in hub.not_started_tasks(branches):
+                url = task.url or f"{adapter}:{task.key}"
+                out.setdefault(url, {
+                    "url": url,
+                    "title": task.title,
+                    "source": f"tracker:{adapter}",
+                    "priority": task.priority if task.priority in PRIORITY_ORDER
+                    else DEFAULT_PRIORITY,
+                    "ticket": task.key,
+                })
+        return sorted(out.values(), key=lambda i: (
+            PRIORITY_ORDER.get(i["priority"], 1), i.get("created_at") or 0, i["url"]))
+
+    def priority_of(self, work_item: str | None) -> str | None:
+        """The priority a work item's inbox items inherit: its feeder's, else
+        its tracker task's; None: the default."""
+        if not work_item:
+            return None
+        branch = work_item.partition(":")[2]
+        record = self._engine.work_items.link(branch)
+        if record is not None:
+            return record["priority"]
+        fact = self._engine.trackers.fact(branch)
+        return fact.priority if fact is not None else None
+
+    def prioritize(self, items: dict[str, Any]) -> None:
+        """An inbox queue filter: items take their work item's priority."""
+        for item in items.values():
+            priority = self.priority_of(item.work_item)
+            if priority is not None:
+                item.priority = priority
+
+    # --- Projects ---
+
+    def _dependency(self, url: str, rows: dict[str, dict[str, Any]]
+                    ) -> tuple[str, str] | None:
+        """``(state, title)`` of a dependency: ``merged`` (a done row, or a
+        URL the engine no longer knows: closed or never fed), ``review`` (a
+        row with an open PR) or ``open``."""
+        for row in rows.values():
+            if url in row["urls"]:
+                if row["ball"] == "done":
+                    return "merged", row["title"]
+                state = "review" if row["pr"] and row["pr"]["state"] == "OPEN" else "open"
+                return state, row["title"]
+        record = self._engine.work_items.records.get(url)
+        if record is not None:
+            return "open", record["title"]
+        return None
+
+    def _waits_on(self, record: dict[str, Any], rows: dict[str, dict[str, Any]]
+                  ) -> tuple[list[dict[str, str]], bool]:
+        """The open dependencies, and whether every one is merged or in
+        review."""
+        waits, ready = [], True
+        for url in record.get("depends_on") or ():
+            dep = self._dependency(url, rows)
+            if dep is None or dep[0] == "merged":
+                continue
+            waits.append({"url": url, "title": dep[1], "state": dep[0]})
+            ready = ready and dep[0] == "review"
+        return waits, ready
+
+    def _startable(self, record: dict[str, Any]) -> bool:
+        """A task with dependencies, all merged or in review, in a project
+        that continues while review."""
+        return bool(
+            record.get("depends_on")
+            and self._engine.work_items.continues_while_review(record.get("project"))
+            and self._waits_on(record, self._rows)[1]
+        )
+
+    def _projects(self, rows: dict[str, dict[str, Any]], now: float) -> None:
+        """"waits on <title>" on rows with open dependencies; a wake for the
+        orchestrator when a project task becomes startable under
+        ``continue_while_review``."""
+        work_items = self._engine.work_items
+        if not work_items.records:
+            return
+        for row in rows.values():
+            feeder = row.get("feeder")
+            record = work_items.records.get(feeder["url"]) if feeder else None
+            if record is not None:
+                row["waits_on"] = self._waits_on(record, rows)[0]
+        responder = self._engine.first_responder
+        for record in work_items.unlinked(self._branches()):
+            deps = record.get("depends_on") or []
+            if not deps or not work_items.continues_while_review(record.get("project")):
+                continue
+            if work_items.waiting_active(record) or not self._waits_on(record, rows)[1]:
+                continue
+            if record.get("woke") == deps or not responder.alive():
+                continue
+            key = EXT_PREFIX + record["url"]
+            verdict, _ = responder.verdict("next_project_task", key, now)
+            project = work_items.project(record.get("project")) or {}
+            responder.mailbox.post(
+                (ORCHESTRATOR_KEY, ""),
+                project_wake_text(project.get("title", ""), record, verdict == "allow"),
+                tag=f"project:{record['url']}",
+            )
+            work_items.set_woke(record["url"], list(deps))
+        responder.mailbox.flush()
 
     def _seed(self, facts: Facts, now: float) -> float:
         """When a row first seen last changed: its branch's last commit, or
@@ -1070,11 +1227,16 @@ class StatusProjection:
                     restorable=restorable.get(wt.path, 0),
                     note=self._note(wt.path, agents),
                     tracker=engine.trackers.fact(branch),
+                    feeder=self._feeder(branch),
                     head=head,
                     merged_into=merged,
                 )
             )
         return out
+
+    def _feeder(self, branch: str | None) -> dict[str, Any] | None:
+        record = self._engine.work_items.link(branch)
+        return self._engine.work_items.public(record) if record is not None else None
 
     def _agents(self, path: str, now: float) -> tuple[AgentFact, ...]:
         engine = self._engine
@@ -1122,6 +1284,15 @@ class StatusProjection:
                     "agent_id": agent.agent_id,
                 }
         return None
+
+
+def project_wake_text(project: str, record: dict[str, Any], allowed: bool) -> str:
+    """The orchestrator's wake line for a startable project task."""
+    head = (f"Project {project}: task {record['title']} ({record['url']}) can start: "
+            "its dependencies are merged or in review (continue_while_review).")
+    if allowed:
+        return head + " The user is away: start it within the spawn caps, or say why not."
+    return head + " The user is present: propose it to them; do not start it alone."
 
 
 def merged_into(repo_root: str, head: str, targets: Iterable[str]) -> str | None:
@@ -1181,6 +1352,8 @@ def state_text(row: dict[str, Any], now: float) -> str:
     gesture = row.get("gesture")
     if gesture and gesture.get("kind") == "label" and gesture.get("text"):
         state = f"{gesture['text']} · {state}"
+    if row.get("waits_on") and row["ball"] != "done":
+        state += " · waits on " + ", ".join(w["title"] for w in row["waits_on"])
     tracker = row.get("tracker")
     if not tracker or not tracker["state"]:
         return state

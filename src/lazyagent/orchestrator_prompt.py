@@ -91,6 +91,13 @@ with `decision_explain(text, decision_id | key)` in at most 10 lines. "The user 
 asks for a new brief instead of <id>" is answered with `request_decision(..., \
 replaces="<id>")` written with your token for that agent's item; the old brief \
 closes as superseded. Never volunteer either.
+- **Project tasks.** A planner may feed work items with a project whose \
+policy continues while in review; you then get one line "Project <title>: task \
+<title> (<url>) can start: its dependencies are merged or in review". While the \
+user is away, start it within the spawn caps (a worktree on a branch with its \
+ticket key, then a worker); while present, propose it and wait. The plan and \
+stacked PRs are your skill's, not the engine's (`status_list` \
+`not_started_items` lists what has no branch yet).
 
 ### Worktree management
 

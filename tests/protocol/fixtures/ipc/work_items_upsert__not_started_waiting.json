@@ -1,0 +1,39 @@
+{
+  "case": "work_items_upsert/not_started_waiting",
+  "method": "work_items_upsert",
+  "params": {
+    "source": "board",
+    "title": "Refunds",
+    "url": "https://tracker.example.com/browse/SHOP-20",
+    "waiting": {
+      "reason": "design review",
+      "until": "indefinite"
+    }
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "created": true,
+      "item": {
+        "branch": null,
+        "created_at": 1700000000.0,
+        "depends_on": [],
+        "expires_at": null,
+        "priority": "medium",
+        "project": null,
+        "source": "board",
+        "ticket": "SHOP-20",
+        "title": "Refunds",
+        "updated_at": 1700000000.0,
+        "url": "https://tracker.example.com/browse/SHOP-20",
+        "waiting": {
+          "active": true,
+          "reason": "design review",
+          "since": 1700000000.0,
+          "until": "indefinite"
+        }
+      },
+      "key": null
+    }
+  }
+}

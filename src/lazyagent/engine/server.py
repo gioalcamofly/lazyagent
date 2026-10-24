@@ -136,6 +136,10 @@ FEATURES: tuple[str, ...] = (
     # decision_rebrief_request, decision_explain, decision_evidence,
     # decision.explain; answers redelivered to a restored agent.
     "decision_view",
+    # work_items_upsert / work_items_close: external feeders; row priority,
+    # project, depends_on, waits_on, feeder; waiting items parked; counts
+    # not_started with feeders' items, status_list not_started_items (I6).
+    "work_items",
 )
 
 STREAM_RESIZED = "stream.resized"
