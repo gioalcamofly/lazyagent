@@ -28,7 +28,7 @@ its item resolves or is dismissed, or with a new delegation; the user's
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine import actions
@@ -256,9 +256,18 @@ class Delegations:
         engine.overlay.changed()
         engine.status.mark_dirty()
 
-    def _dismissed(self, item: Item) -> None:
+    def _dismissed(self, item: Item) -> Callable[[], None] | None:
         key = item.work_item
         d = self.store.get(key) if key is not None else None
-        if d is not None and d["item"] == item.id:
-            del self.store[key]
-            self._engine.overlay.changed()
+        if d is None or d["item"] != item.id:
+            return None
+        del self.store[key]
+        self._engine.overlay.changed()
+
+        def undo() -> None:
+            # Not over a delegation made since.
+            if key not in self.store:
+                self.store[key] = d
+                self._engine.overlay.changed()
+
+        return undo

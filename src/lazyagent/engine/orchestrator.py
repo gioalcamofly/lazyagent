@@ -94,6 +94,9 @@ COMMENT_CHARS = 500
 NOTE_CHARS = 200
 CHOICE_CHARS = 200
 
+# What orchestrator_actions lists of its timeline entries.
+ACTION_KINDS = ("action", "decision", "delegate")
+
 LOOKING = "orchestrator · looking"
 DID_NOT_ANSWER = "orchestrator did not answer"
 GONE = "orchestrator gone"
@@ -684,6 +687,47 @@ class FirstResponder:
         self._count(now)
         engine.decisions.changed()
 
+    # --- What it did (the user's view) ---
+
+    def actions(self, since: float | None = None) -> list[dict[str, Any]]:
+        """The orchestrator's timeline entries (``action``, ``decision``,
+        ``delegate``) since ``since`` (local midnight today by default),
+        newest first: ``{key, at, kind, action, text, reason, mandate,
+        decision_id, revertible}``, the decision being the entry's ref."""
+        if since is None:
+            since = midnight(self.clock())
+        decisions = self._engine.overlay.decisions
+        out = []
+        for key, ring in self._engine.overlay.timeline.items():
+            for entry in ring:
+                if entry["actor"] != "orchestrator" or entry["at"] < since \
+                        or entry["kind"] not in ACTION_KINDS:
+                    continue
+                record = decisions.get(entry.get("ref") or "")
+                out.append({
+                    "key": key,
+                    "at": entry["at"],
+                    "kind": entry["kind"],
+                    "action": entry.get("action"),
+                    "text": entry["text"],
+                    "reason": entry.get("reason"),
+                    "mandate": entry.get("mandate"),
+                    "decision_id": record["id"] if record is not None else None,
+                    "revertible": bool(record is not None and record.get("revertible")
+                                       and record.get("answered_by") == "orchestrator"),
+                })
+        return sorted(out, key=lambda a: (-a["at"], a["key"]))
+
+    def report(self) -> dict[str, Any]:
+        """``status_list``'s ``orchestrator``: alive, its own last report
+        and the passes and holds in force."""
+        report = self._engine.overlay.orchestrator_report
+        return {
+            "alive": self.alive(),
+            "report": dict(report) if report is not None else None,
+            "queue": self._engine.claims.queue(),
+        }
+
     # --- Revert ---
 
     async def revert(self, decision_id: str, choice: Any, comment: Any, now: float) -> dict[str, Any]:
@@ -789,6 +833,12 @@ def answer_text(record: dict[str, Any]) -> str:
     if answer.get("label"):
         text += f" — {answer['label']}"
     return text + "." + (f" {answer['comment']}" if answer.get("comment") else "")
+
+
+def midnight(now: float) -> float:
+    """Local midnight of ``now``'s day."""
+    day = time.localtime(now)
+    return time.mktime((day.tm_year, day.tm_mon, day.tm_mday, 0, 0, 0, 0, 0, -1))
 
 
 def _date(now: float) -> str:

@@ -638,6 +638,13 @@ pub struct StatusRow {
     /// The feeder's work item (`work_items_upsert`) the branch links to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feeder: Option<Value>,
+    /// The last real activity there (a commit, notes, a report, a step by
+    /// someone other than the engine): stalled rows age from it (I4e).
+    #[serde(default)]
+    pub activity_at: Option<f64>,
+    /// The item's newest timeline entry that is not a ball or state change.
+    #[serde(default)]
+    pub last_step: Option<LastStep>,
 }
 
 /// A feeder's project (`work_items_upsert {project}`).
@@ -792,6 +799,73 @@ pub struct StatusList {
     /// feeder has items).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_started_items: Vec<Value>,
+    /// The orchestrator's report and queue (I4e; older engines: absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<OrchestratorStatus>,
+}
+
+/// A row's last real step (`status_row.last_step`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LastStep {
+    pub at: f64,
+    pub kind: String,
+    pub actor: String,
+    pub text: String,
+}
+
+/// `status_list.orchestrator` (I4e): what it says it is doing, and the
+/// items it holds or was passed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrchestratorStatus {
+    pub alive: bool,
+    #[serde(default)]
+    pub report: Option<OrchestratorReport>,
+    #[serde(default)]
+    pub queue: Vec<OrchestratorQueued>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrchestratorReport {
+    pub note: String,
+    pub at: f64,
+}
+
+/// A pass (`pass`) or a hold (`hold`) in force.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrchestratorQueued {
+    pub key: String,
+    pub kind: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub until: f64,
+    #[serde(default)]
+    pub by: Option<String>,
+    #[serde(default)]
+    pub auto: bool,
+}
+
+/// One of the orchestrator's actions (`orchestrator_actions`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrchestratorAction {
+    pub key: String,
+    pub at: f64,
+    pub kind: String,
+    #[serde(default)]
+    pub action: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub mandate: Option<String>,
+    #[serde(default)]
+    pub decision_id: Option<String>,
+    #[serde(default)]
+    pub revertible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrchestratorActions {
+    pub actions: Vec<OrchestratorAction>,
 }
 
 /// `mode` is the Home toggle (`auto` · `present` · `away`); `effective`
@@ -1039,6 +1113,15 @@ pub struct StatusGestureResult {
     /// `delegate` to the branch's agent (feature `delegation`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<Delegation>,
+    /// The agents a close with `stop_agents` stopped (I4e).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Vec<String>>,
+    /// An undone delegation's line had already reached the agent (I4e).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_sent: Option<bool>,
+    /// What `kind: "undo"` took back: park, delegate or pass (I4e).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone: Option<String>,
 }
 
 /// An inbox item (feature `actionables`).

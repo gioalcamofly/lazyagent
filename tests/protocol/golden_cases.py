@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -1242,6 +1243,105 @@ async def _():
     )
 
 
+# --- Home UX fixes (proposal 0013 I4e) -------------------------------------
+
+CLAUDE_PROMPT = (
+    "Bash command\n\n  npm test\n\n Do you want to proceed?\n ❯ 1. Yes\n"
+    "   2. Yes, and don't ask again for npm commands\n"
+    "   3. No, and tell Claude what to do differently (esc)\n"
+)
+
+
+def _approval_engine(screen: str):
+    """The status engine whose agent a1 (repo:login-ttl, waiting for an
+    approval) shows ``screen``."""
+    from unittest.mock import AsyncMock
+
+    engine = _status_engine()
+    session = _session_in("/tmp/repo-login", "a1")
+    session.catch_up = AsyncMock()
+    session.screen_text.return_value = screen
+    add_session(engine, session)
+    return engine
+
+
+@case("approval_answer/allowed")
+async def _():
+    return await _call(
+        _approval_engine(CLAUDE_PROMPT), "approval_answer", {"key": "repo:login-ttl", "allow": True}
+    )
+
+
+@case("approval_answer/error_prompt_not_on_screen")
+async def _():
+    return await _call(
+        _approval_engine("$ npm test\n"), "approval_answer",
+        {"id": "Approval:/tmp/repo-login/a1", "allow": False},
+    )
+
+
+def _question_engine():
+    engine = _status_engine()
+    _set_status(engine, AgentStatus.WAITING_FOR_USER, path="/tmp/repo-login", detail="Which db?")
+    add_session(engine, _session_in("/tmp/repo-login", "a1"))
+    return engine
+
+
+@case("question_answer/queued")
+async def _():
+    return await _call(
+        _question_engine(), "question_answer",
+        {"key": "repo:login-ttl", "text": "Postgres: we already run it."},
+    )
+
+
+@case("orchestrator_actions/today")
+async def _():
+    engine = await _answered(_first_responder_engine())
+    return await _call(engine, "orchestrator_actions", {"since": FIXED_TIME - 3600})
+
+
+@case("actionables_mark/undismiss")
+async def _():
+    engine = _status_engine()
+    engine.actionables.mark("Approval:/tmp/repo-login/a1", "dismiss")
+    return await _call(
+        engine, "actionables_mark", {"id": "Approval:/tmp/repo-login/a1", "action": "undismiss"}
+    )
+
+
+@case("status_gesture/undo_park")
+async def _():
+    from lazyagent.engine.methods import EngineMethods
+
+    engine = _status_engine()
+    methods = EngineMethods(engine)
+    await methods.status_gesture(
+        {"key": "repo:export-csv", "kind": "label", "ball": "others", "text": "QA"}
+    )
+    await methods.status_gesture({"key": "repo:export-csv", "kind": "park", "until": "indefinite"})
+    return await _call(
+        engine, "status_gesture", {"key": "repo:export-csv", "kind": "undo", "what": "park"}
+    )
+
+
+@case("status_gesture/close_and_stop_agents")
+async def _():
+    engine = _worker_engine()
+    return await _call(
+        engine, "status_gesture",
+        {"key": "repo:export-csv", "kind": "close", "how": "dropped", "stop_agents": True},
+    )
+
+
+@case("status_report/the_orchestrator")
+async def _():
+    return await _call(
+        _claims_engine(), "status_report",
+        {"note": "verifying export-csv's fix", "caller": "tok-orch"},
+    )
+
+
 def normalize(value: Any) -> Any:
     """Replace wall-clock event times so fixtures are reproducible."""
     if isinstance(value, dict):
@@ -1255,7 +1355,18 @@ def normalize(value: Any) -> Any:
 
 
 async def capture(name: str) -> dict[str, Any]:
-    method, params, response = await CASES[name]()
+    # Local times in texts ("until 02:13") read the same on every machine.
+    saved = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        method, params, response = await CASES[name]()
+    finally:
+        if saved is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = saved
+        time.tzset()
     return normalize({"case": name, "method": method, "params": params, "response": response})
 
 

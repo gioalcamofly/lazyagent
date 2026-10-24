@@ -19,6 +19,7 @@
       "kept": false,
       "key": "repo:docs-index",
       "row": {
+        "activity_at": null,
         "agents": [],
         "ball": "done",
         "blocks_agent": false,
@@ -38,6 +39,7 @@
         "holder": null,
         "key": "repo:docs-index",
         "last_event_at": 1700000000.0,
+        "last_step": null,
         "level": null,
         "needs_you": null,
         "note": null,
@@ -61,7 +63,8 @@
         ],
         "worktree_path": "/tmp/repo-docs",
         "zone": "in_flight"
-      }
+      },
+      "stopped": []
     }
   }
 }

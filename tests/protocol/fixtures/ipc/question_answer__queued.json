@@ -1,0 +1,17 @@
+{
+  "case": "question_answer/queued",
+  "method": "question_answer",
+  "params": {
+    "key": "repo:login-ttl",
+    "text": "Postgres: we already run it."
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": "a1",
+      "decision": null,
+      "key": "repo:login-ttl",
+      "queued": true
+    }
+  }
+}

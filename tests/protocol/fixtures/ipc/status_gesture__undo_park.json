@@ -1,0 +1,75 @@
+{
+  "case": "status_gesture/undo_park",
+  "method": "status_gesture",
+  "params": {
+    "key": "repo:export-csv",
+    "kind": "undo",
+    "what": "park"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "gesture": {
+        "at": 1700000000.0,
+        "ball": "others",
+        "by": "user",
+        "kind": "label",
+        "text": "QA"
+      },
+      "kept": false,
+      "key": "repo:export-csv",
+      "row": {
+        "activity_at": 1700000000.0,
+        "agents": [
+          {
+            "id": "a2",
+            "since": 1700000000.0,
+            "status": "running"
+          }
+        ],
+        "ball": "others",
+        "blocks_agent": false,
+        "branch": "export-csv",
+        "changed_at": 1700000000.0,
+        "claim": null,
+        "class": null,
+        "delegation": null,
+        "fingerprint": "9f60e6ccd4a9",
+        "gesture": {
+          "at": 1700000000.0,
+          "ball": "others",
+          "by": "user",
+          "kind": "label",
+          "text": "QA"
+        },
+        "hold": null,
+        "holder": null,
+        "key": "repo:export-csv",
+        "last_event_at": 1700000000.0,
+        "last_step": {
+          "actor": "user",
+          "at": 1700000000.0,
+          "kind": "undo",
+          "text": "undone: park"
+        },
+        "level": null,
+        "needs_you": null,
+        "note": null,
+        "pr": null,
+        "priority": "medium",
+        "repo": "repo",
+        "rule": 8,
+        "seen_at": null,
+        "stale": false,
+        "state": "working",
+        "suggestion": null,
+        "title": "export-csv",
+        "urls": [],
+        "worktree_path": "/tmp/repo-export",
+        "zone": "in_flight"
+      },
+      "undone": "park"
+    }
+  }
+}

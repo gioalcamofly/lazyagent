@@ -21,6 +21,7 @@
       "kept": false,
       "key": "repo:export-csv",
       "row": {
+        "activity_at": null,
         "agents": [
           {
             "id": "a2",
@@ -47,6 +48,7 @@
         "holder": null,
         "key": "repo:export-csv",
         "last_event_at": 1700000000.0,
+        "last_step": null,
         "level": null,
         "needs_you": null,
         "note": null,
@@ -56,7 +58,7 @@
         "rule": 8,
         "seen_at": null,
         "stale": false,
-        "state": "Edit",
+        "state": "working",
         "suggestion": null,
         "title": "export-csv",
         "urls": [],

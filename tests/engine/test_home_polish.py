@@ -375,11 +375,11 @@ async def test_a_delegated_item_is_the_agents_until_its_turn_ends_with_the_fact_
                                                              "CI red: tests")
     assert session.send_input.await_args.args[0].startswith(f"Item {KEY}: CI failing: CI red: tests.")
     row = _row(engine)
-    assert (row["zone"], row["ball"], row["state"]) == ("in_flight", "agent", "agent a1 · on it")
+    assert (row["zone"], row["ball"], row["state"]) == ("in_flight", "agent", "agent a1 · fixing CI red: tests")
     assert _timeline(engine)[-1] == "delegated to agent a1: CI red: tests"
     # The agent works, and ends its turn; CI is still red.
     _agent(engine, FEAT, "a1", "running")
-    assert _row(engine)["state"] == "agent a1 · on it"
+    assert _row(engine)["state"] == "agent a1 · fixing CI red: tests"
     _agent(engine, FEAT, "a1", "waiting")
     row = _row(engine)
     assert (row["level"], row["state"]) == ("round", "agent a1 finished; still CI red: tests")

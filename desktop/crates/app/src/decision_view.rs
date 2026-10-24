@@ -445,7 +445,7 @@ impl State {
         match self.explain_route(path.as_deref(), agent.as_deref()) {
             Route::Restore(a) if !restore => {
                 self.home.expanded = Some(line.key.clone());
-                self.toast(Severity::Info, format!("Agent {a} is not running: Shift+Y restores it and asks."));
+                self.toast(Severity::Info, format!("Agent {a} is not running: ⇧Y restores it and asks."));
             }
             Route::Nobody => self.toast(
                 Severity::Info,
@@ -502,7 +502,7 @@ impl State {
         if shift || take(Modifiers::NONE, Key::Y) {
             match self.explain_route(Some(&d.worktree_path), Some(&d.agent)) {
                 Route::Restore(a) if !shift => {
-                    self.toast(Severity::Info, format!("Agent {a} is not running: Shift+Y restores it and asks."))
+                    self.toast(Severity::Info, format!("Agent {a} is not running: ⇧Y restores it and asks."))
                 }
                 Route::Nobody => {
                     self.toast(Severity::Info, "Nobody can explain it: open its terminal (o) or pass it (O).")
@@ -638,7 +638,7 @@ impl App {
         if d.answered_by.as_deref() == Some("orchestrator") {
             ui.horizontal(|ui| {
                 banner(ui, &t, t.cyan, &crate::home_view::decided_text(&d));
-                if d.revertible == Some(true) && view.reverting.is_none() && ui.button("Revert…  (U)").clicked() {
+                if d.revertible == Some(true) && view.reverting.is_none() && ui.button("Revert…  (⇧U)").clicked() {
                     acts.push(Do::RevertOpen);
                 }
                 if d.reverted.is_some() {
@@ -972,7 +972,7 @@ fn explain_buttons(ui: &mut Ui, t: &Theme, route: &Route, kind: &str, acts: &mut
             ui.label(RichText::new(format!("agent {a}")).small().color(t.muted));
         }
         Route::Restore(a) => {
-            let label = if kind == "explain" { "Restore agent and explain  (Y)" } else { "Restore agent and ask" };
+            let label = if kind == "explain" { "Restore agent and explain  (⇧Y)" } else { "Restore agent and ask" };
             if ui.button(label).on_hover_text("Starts its process again, with its notes").clicked() {
                 acts.push(act(true));
             }

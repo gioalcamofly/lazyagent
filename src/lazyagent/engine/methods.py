@@ -22,13 +22,14 @@ from typing import TYPE_CHECKING, Any
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
-from lazyagent.engine import actions
+from lazyagent.engine import actions, approvals
 from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
 from lazyagent.engine.notes import MODES as NOTES_MODES
 from lazyagent.engine.notes import Notes, NotesConflict, NotesStore
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.engine.reviews import check_comment_id
+from lazyagent.engine.status import clip_words
 from lazyagent.engine.types import AGENT_KIND, ORCHESTRATOR_KIND
 from lazyagent.models import AgentStatus
 from lazyagent.worktree_manager import WorktreeManagerError
@@ -46,6 +47,8 @@ AGENT_BY = "agent"
 ORCHESTRATOR_BY = "orchestrator"
 
 _DAY = 86400.0
+# question_answer: the user's answer, one paragraph.
+QUESTION_TEXT_CHARS = 2000
 
 # How long a spawn may take before the caller is told it timed out.
 _OP_TIMEOUT = 30.0
@@ -216,6 +219,9 @@ class EngineMethods:
             "work_items_upsert": self.work_items_upsert,
             "work_items_close": self.work_items_close,
             "ci_log_summary": self.ci_log_summary,
+            "approval_answer": self.approval_answer,
+            "question_answer": self.question_answer,
+            "orchestrator_actions": self.orchestrator_actions,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -967,9 +973,11 @@ class EngineMethods:
 
     async def actionables_mark(self, params: dict) -> Any:
         """Dismiss an item's occurrence, park it until a time or an event
-        (ci_done, agent_stopped, human_review), or unpark it, for every
-        client. Params: id, action, until (park only). The user's (no token)
-        or the orchestrator's; a worker's token is refused."""
+        (ci_done, agent_stopped, human_review), unpark it, or undismiss it
+        (the dismissed current occurrence comes back, with what the
+        dismissal forgot for a while), for every client. Params: id, action,
+        until (park only). The user's (no token) or the orchestrator's; a
+        worker's token is refused."""
         role, _ = self._caller(params)
         if role == AGENT_BY:
             raise ValueError("Only the user or the orchestrator marks inbox items")
@@ -1003,9 +1011,15 @@ class EngineMethods:
           optional ``ttl_s``), or hand one inbox item to the branch's agent
           (``to: "agent"``, optional ``item``, ``agent_id``, ``text``);
         - ``clear``: drop the gesture, take back a pass or a hold, and end a
-          delegation.
+          delegation;
+        - ``undo``: take back one thing only, ``what``: ``park`` (the
+          gesture it replaced comes back), ``delegate`` (the delegation
+          ends; ``delegation_sent`` says whether its line already reached
+          the agent) or ``pass`` (the claim; a hold stays).
 
-        The user's only (no token)."""
+        ``close`` with ``stop_agents: true`` also stops every agent of the
+        item's worktree (their notes kept); the worktree, the branch and
+        the PR are left alone. The user's only (no token)."""
         role, _ = self._caller(params)
         if role != USER_BY:
             raise ValueError("Only the user makes gestures on work items")
@@ -1016,7 +1030,14 @@ class EngineMethods:
         status = engine.status
         claim = None
         delegation = None
-        if kind == "delegate" and params.get("to") == "agent":
+        stop_agents = params.get("stop_agents", False)
+        if type(stop_agents) is not bool:
+            raise ValueError("stop_agents must be a boolean")
+        stopped: list[str] = []
+        undo: dict[str, Any] | None = None
+        if kind == "undo":
+            undo = self._undo_gesture(key, params.get("what"))
+        elif kind == "delegate" and params.get("to") == "agent":
             delegation = engine.delegations.delegate(
                 key, item_id=params.get("item"), agent_id=params.get("agent_id"),
                 text=params.get("text"), by=role,
@@ -1072,10 +1093,15 @@ class EngineMethods:
             )
             if kind == "close" and claims.get(key) is not None:
                 claims.clear(key)
+            if kind == "close" and stop_agents and row["worktree_path"]:
+                path = row["worktree_path"]
+                for agent_id in list(engine.agent_ids(path)):
+                    engine.stop_agent(path, agent_id, notes="keep")
+                    stopped.append(agent_id)
             status.by(key, role)
         else:
             raise ValueError(
-                "kind must be one of label, park, close, delegate, keep_for_me, clear"
+                "kind must be one of label, park, close, delegate, keep_for_me, clear, undo"
             )
         status.flush()
         row = status.row(key)
@@ -1088,7 +1114,31 @@ class EngineMethods:
         }
         if delegation is not None:
             result["delegation"] = delegation
+        if kind == "close":
+            result["stopped"] = stopped
+        if undo is not None:
+            result.update(undo)
         return result
+
+    def _undo_gesture(self, key: str, what: Any) -> dict[str, Any]:
+        """``status_gesture undo``: reverse only ``what`` on ``key``."""
+        engine = self._engine
+        out: dict[str, Any] = {"undone": what}
+        if what == "park":
+            engine.overlay.undo_park(key)
+        elif what == "delegate":
+            d = engine.delegations.get(key)
+            if d is None:
+                raise ValueError(f"{key} has no delegation to its agent: nothing to undo")
+            out["delegation_sent"] = d.get("sent_at") is not None
+            engine.delegations.clear(key)
+        elif what == "pass":
+            engine.claims.take_back(key)
+        else:
+            raise ValueError("what must be one of park, delegate, pass")
+        engine.overlay.add(key, "undo", USER_BY, f"undone: {what}")
+        engine.status.by(key, USER_BY)
+        return out
 
     def _worker(self, params: dict, what: str) -> tuple[str, str, str]:
         """``(worktree_path, agent_id, work item key)`` of a call that must
@@ -1111,11 +1161,27 @@ class EngineMethods:
         """An agent reports on its own work item. Params: note (one line),
         ball (agent, others, stalled; optional), needs_user (bool), outward
         (optional ``{kind, ref, text}``: something it did outside the repo,
-        added to the item's timeline), caller (the agent's token)."""
-        path, agent_id, key = self._worker(params, "status_report")
+        added to the item's timeline), caller (the agent's token).
+
+        With the orchestrator's token: only ``note``, what it is doing now
+        (``status_list`` ``orchestrator.report``), tied to no work item."""
+        role, _ = self._caller(params)
         note = params.get("note", "")
         if not isinstance(note, str):
             raise ValueError("note must be a string")
+        if role == ORCHESTRATOR_BY:
+            if params.get("ball") is not None or params.get("needs_user") \
+                    or params.get("outward") is not None:
+                raise ValueError(
+                    "The orchestrator reports only a note (what it is doing now): ball, "
+                    "needs_user and outward are for a worker's own work item"
+                )
+            if not note.strip():
+                raise ValueError("note is required: what you are doing now, in one line")
+            engine = self._engine
+            report = engine.overlay.report_orchestrator(note, engine.status.clock())
+            return {"key": None, "report": report, "outward": None}
+        path, agent_id, key = self._worker(params, "status_report")
         ball = params.get("ball")
         if ball is not None and ball not in overlay_mod.REPORT_BALLS:
             hint = " (use needs_user=true)" if ball == "you" else ""
@@ -1389,6 +1455,152 @@ class EngineMethods:
         if message:
             result["message"] = message
         return result
+
+    def _answers_item(self, params: dict, kinds: tuple[str, ...], what: str,
+                      keep: Callable[[Any], bool] = lambda item: True) -> Any:
+        """The inbox item a user's answer is for: ``id``, else the work item
+        ``key``'s first item of ``kinds``. Shown, parked or dismissed: the
+        condition holds."""
+        engine = self._engine
+        engine.status.flush()
+        queue = engine.actionables
+        item_id = params.get("id")
+        if item_id is not None:
+            if not isinstance(item_id, str) or not item_id:
+                raise ValueError("id must be an actionable's id")
+            item = queue.found(item_id)
+            if item is None or item.kind not in kinds or not keep(item):
+                raise ValueError(f"No open {what} {item_id!r}: it was answered or it cleared")
+            return item
+        key = self._key(params) if params.get("key") is not None else None
+        if key is None:
+            raise ValueError(f"id or key is required: the {what}'s item or its work item")
+        found = [i for i in queue.items_of(key, kinds) if keep(i)]
+        return found[0] if found else None
+
+    def _live_agent(self, path: str | None, agent_id: str | None) -> Any:
+        engine = self._engine
+        if not path or agent_id is None or agent_id not in engine.agent_ids(path):
+            raise ValueError(f"Agent {agent_id} is gone: nothing to answer")
+        session = engine.get_session(path, agent_id)
+        if session is None or not session.running:
+            raise ValueError(f"Agent {agent_id}'s terminal is not ready")
+        return session
+
+    async def approval_answer(self, params: dict) -> Any:
+        """The user allows or denies a tool approval from Home. Params: id
+        (the ``approval`` item) or key (its work item's first approval),
+        allow (bool). The agent must be waiting for an approval with its
+        permission prompt on the live screen now; then the prompt's key
+        (allow: ``1`` for Claude Code, ``y`` for Codex; deny: Esc) is written
+        to its terminal. The user's only: no token."""
+        role, _ = self._caller(params)
+        if role != USER_BY:
+            raise ValueError("Tool approvals are the user's to answer")
+        allow = params.get("allow")
+        if type(allow) is not bool:
+            raise ValueError("allow must be a boolean")
+        engine = self._engine
+        item = self._answers_item(params, ("approval",), "approval")
+        if item is None:
+            raise ValueError(f"No open approval on {params.get('key')}")
+        path, agent_id = item.worktree_path, item.agent_id
+        session = self._live_agent(path, agent_id)
+        state = engine.agent_states(path).get(agent_id)
+        if state is None or state.status != AgentStatus.WAITING_FOR_APPROVAL:
+            raise ValueError(f"Agent {agent_id} is not waiting for an approval now")
+        await session.catch_up()
+        keys = approvals.prompt_keys(session.screen_text())
+        if keys is None:
+            raise ValueError(
+                f"The permission prompt is not on agent {agent_id}'s screen: open its "
+                "terminal (o)"
+            )
+        sent = "allow" if allow else "deny"
+        engine.write_input(session, keys[sent])
+        engine.status.input_sent(path, agent_id)
+        key = item.work_item
+        if key is not None:
+            what = "approved" if allow else "denied"
+            engine.overlay.add(key, "approval", USER_BY,
+                               f"{what}: {item.detail or item.state}", ref=item.id)
+            engine.status.by(key, USER_BY)
+        engine.status.mark_dirty()
+        return {"id": item.id, "key": key, "agent_id": agent_id, "allow": allow, "sent": sent}
+
+    async def question_answer(self, params: dict) -> Any:
+        """The user answers an agent's free-text question from Home. Params:
+        id (the ``question`` item, or a routed question's ``decision``
+        item) or key (its work item's first question), text (one paragraph,
+        at most 2000 characters). An open question record is answered as a
+        decision (decision_answer's path); otherwise the text goes to the
+        agent through the mailbox, once its turn is over (a worker at its
+        question is). The user's only: no token."""
+        role, _ = self._caller(params)
+        if role != USER_BY:
+            raise ValueError("Questions are the user's to answer")
+        text = params.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text is required: the answer")
+        text = overlay_mod.one_line(text, QUESTION_TEXT_CHARS)
+        engine = self._engine
+        records = engine.overlay.decisions
+
+        def question_record(item: Any) -> bool:
+            if item.kind != "decision":
+                return True
+            record = records.get(item.decision_id or "")
+            return bool(record) and record.get("source") == "question" \
+                and record["state"] == "open"
+
+        item = self._answers_item(params, ("question", "decision"), "question", question_record)
+        if item is not None:
+            key, path, agent_id = item.work_item, item.worktree_path, item.agent_id
+        else:
+            # Routed to the orchestrator: a record with no inbox item.
+            key = params["key"]
+            held = sorted((r for r in records.values() if r["key"] == key
+                           and r.get("source") == "question" and r["state"] == "open"),
+                          key=lambda r: r["created_at"])
+            if not held:
+                raise ValueError(f"No open question on {key}")
+            path, agent_id = held[0]["worktree_path"], held[0]["agent"]
+        record = next((r for r in records.values()
+                       if (r["worktree_path"], r["agent"]) == (path, agent_id)
+                       and r.get("source") == "question" and r["state"] == "open"), None)
+        now = engine.status.clock()
+        if record is not None:
+            answered = await engine.first_responder.answer(
+                record["id"], text, by=USER_BY, now=now
+            )
+            engine.status.flush()
+            return {"key": key, "agent_id": agent_id, "queued": True, "decision": answered}
+        self._live_agent(path, agent_id)
+        mailbox = engine.first_responder.mailbox
+        tag = f"question:{path}/{agent_id}"
+        mailbox.drop(tag)
+        mailbox.post((path, agent_id), text, tag=tag)
+        if key is not None:
+            engine.overlay.add(key, "decision", USER_BY, f"answered: {clip_words(text, 8)}",
+                               ref=item.id if item is not None else None)
+            engine.status.by(key, USER_BY)
+        mailbox.flush()
+        engine.status.mark_dirty()
+        return {"key": key, "agent_id": agent_id, "queued": True, "decision": None}
+
+    async def orchestrator_actions(self, params: dict) -> Any:
+        """What the orchestrator did: its actions, decisions and delegations
+        on work items since ``since`` (default: local midnight today),
+        newest first, with the decision the user can still revert. The
+        user's or the orchestrator's."""
+        role, _ = self._caller(params)
+        if role == AGENT_BY:
+            raise ValueError("orchestrator_actions is the user's or the orchestrator's")
+        since = params.get("since")
+        if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))):
+            raise ValueError("since must be a Unix time")
+        engine = self._engine
+        return {"actions": engine.first_responder.actions(since)}
 
     def _user_only(self, params: dict, what: str) -> None:
         role, _ = self._caller(params)

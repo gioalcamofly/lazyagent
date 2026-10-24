@@ -18,7 +18,9 @@ one) and age, oldest first (Q-B8).
 
 The user's marks are the engine's too, so every client sees them: dismiss
 (one occurrence), park until a time or an event (``ci_done``,
-``agent_stopped``, ``human_review``), unpark. Marks and first-seen times are
+``agent_stopped``, ``human_review``), unpark, undismiss (Home's Undo: what
+the dismissal made the engine forget, an exit or a failed job, comes back
+within :data:`UNDO_FOR`). Marks and first-seen times are
 kept in ``$XDG_STATE_HOME/lazyagent/actionables/<repo hash>.json`` (0600) by
 the engine that owns the repo; agent exits and failed jobs are this engine's
 only, as they were the desktop's.
@@ -89,7 +91,10 @@ MAX_EVENTS = 50
 PARK_EVENTS = ("ci_done", "agent_stopped", "human_review", "change", "indefinite")
 # A park ``until: "tomorrow"`` ends at this local hour the next day.
 TOMORROW_HOUR = 8
-MARK_ACTIONS = ("dismiss", "park", "unpark")
+MARK_ACTIONS = ("dismiss", "park", "unpark", "undismiss")
+# How long a dismissal can be undone with everything it made the engine
+# forget (an exit, a failed job, a delegation, a claim handed back).
+UNDO_FOR = 600.0
 
 
 @dataclass(frozen=True)
@@ -624,8 +629,11 @@ class ActionableQueue:
         self._visible: dict[str, dict[str, Any]] = {}
         self._saved: str | None = None
         self._unsubscribe: Callable[[], None] | None = None
-        # Called with an item the user (or the orchestrator) dismissed.
-        self.on_dismiss: list[Callable[[Item], None]] = []
+        # Called with an item the user (or the orchestrator) dismissed; a
+        # hook may return a function that undoes what it forgot.
+        self.on_dismiss: list[Callable[[Item], Callable[[], None] | None]] = []
+        # id → what a dismissal forgot, for undismiss (UNDO_FOR, memory only).
+        self._undo: dict[str, dict[str, Any]] = {}
 
     @property
     def clock(self) -> Callable[[], float]:
@@ -896,17 +904,32 @@ class ActionableQueue:
             raise ValueError(f"action must be one of {', '.join(MARK_ACTIONS)}")
         now = self.clock()
         self._refresh(now)
+        if action == "undismiss":
+            return self._undismiss(item_id, now)
         item = self._items.get(item_id)
         if item is None or item.occurrence in self._dismissed:
             raise ValueError(f"No actionable {item_id!r}: it is resolved or dismissed")
         if action == "dismiss":
             self._dismissed[item.occurrence] = now
             self._parked.pop(item_id, None)
-            # Nothing else clears these: forget them.
+            # Nothing else clears these: forget them (undismiss brings them
+            # back for a while).
+            undo: dict[str, Any] = {
+                "at": now,
+                "occurrence": item.occurrence,
+                "since": item.since,
+                "exits": [e for e in self._exits if _exit_id(e) == item_id],
+                "jobs": [j for j in self._jobs if _id(JOB, j.job_id) == item_id],
+                "hooks": [],
+            }
             self._exits = [e for e in self._exits if _exit_id(e) != item_id]
             self._jobs = [j for j in self._jobs if _id(JOB, j.job_id) != item_id]
             for hook in self.on_dismiss:
-                hook(item)
+                back = hook(item)
+                if back is not None:
+                    undo["hooks"].append(back)
+            self._undo = {k: u for k, u in self._undo.items() if now - u["at"] < UNDO_FOR}
+            self._undo[item_id] = undo
         elif action == "park":
             until = check_until(until, now)
             place = self.snapshot().place(item.worktree_path)
@@ -916,6 +939,42 @@ class ActionableQueue:
         self._refresh(now)
         park = self._parked.get(item_id)
         return item.to_dict(_public_park(park))
+
+    def _undismiss(self, item_id: str, now: float) -> dict[str, Any]:
+        """Bring back the dismissed current occurrence of ``item_id``, and
+        what its dismissal forgot (within :data:`UNDO_FOR`)."""
+        undo = self._undo.pop(item_id, None)
+        if undo is not None and now - undo["at"] >= UNDO_FOR:
+            undo = None
+        item = self._items.get(item_id)
+        if item is not None and item.occurrence in self._dismissed:
+            occurrence = item.occurrence
+        elif undo is not None and undo["occurrence"] in self._dismissed:
+            occurrence = undo["occurrence"]
+        else:
+            if undo is not None:
+                self._undo[item_id] = undo
+            raise ValueError(f"Nothing to undo: {item_id!r} is not dismissed")
+        del self._dismissed[occurrence]
+        if undo is not None and undo["occurrence"] == occurrence:
+            self._exits = [*self._exits, *undo["exits"]][-MAX_EVENTS:]
+            self._jobs = [*self._jobs, *undo["jobs"]][-MAX_EVENTS:]
+            for back in undo["hooks"]:
+                back()
+            # The same occurrence, not a new one.
+            self._since.setdefault(item_id, undo["since"])
+        self._refresh(now)
+        item = self._items.get(item_id)
+        if item is None:
+            raise ValueError(f"{item_id!r} came back but its condition has cleared")
+        return item.to_dict(_public_park(self._parked.get(item_id)))
+
+    def items_of(self, work_item: str, kinds: Iterable[str]) -> list[Item]:
+        """The items the last pass found on ``work_item`` (shown, parked or
+        dismissed) of ``kinds``, in inbox order."""
+        kinds = set(kinds)
+        found = [i for i in self._items.values() if i.work_item == work_item and i.kind in kinds]
+        return sorted(found, key=lambda i: sort_key(i.to_dict()))
 
     def _refresh(self, now: float) -> list[dict[str, Any]]:
         """:meth:`flush`, and the rows follow when the queue changed."""

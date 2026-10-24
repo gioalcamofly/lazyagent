@@ -1,0 +1,15 @@
+{
+  "case": "approval_answer/error_prompt_not_on_screen",
+  "method": "approval_answer",
+  "params": {
+    "allow": false,
+    "id": "Approval:/tmp/repo-login/a1"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "The permission prompt is not on agent a1's screen: open its terminal (o)"
+    },
+    "id": "req-1"
+  }
+}

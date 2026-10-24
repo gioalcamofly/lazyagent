@@ -21,6 +21,7 @@
       "kept": false,
       "key": "repo:login-ttl",
       "row": {
+        "activity_at": null,
         "agents": [
           {
             "id": "a1",
@@ -47,6 +48,7 @@
         "holder": "user",
         "key": "repo:login-ttl",
         "last_event_at": 1700000000.0,
+        "last_step": null,
         "level": null,
         "needs_you": {
           "count": 1,

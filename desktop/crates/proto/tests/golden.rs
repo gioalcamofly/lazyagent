@@ -108,6 +108,10 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "decision_evidence" => round_trip::<DecisionEvidence>(case, result),
             // The expanded CI line's failed log (I7).
             "ci_log_summary" => round_trip::<CiLogSummary>(case, result),
+            // Answered on Home's line (I4e): only success is read.
+            "approval_answer" | "question_answer" => continue,
+            // The orchestrator strip's list of today's actions (I4e).
+            "orchestrator_actions" => round_trip::<OrchestratorActions>(case, result),
             // The orchestrator's and the agents' (MCP).
             "decision_escalate" | "decision_explain" => continue,
             // External feeders' (MCP, a planner or a script).
@@ -176,6 +180,9 @@ const METHODS_USED: &[&str] = &[
     "decision_rebrief_request",
     "decision_evidence",
     "ci_log_summary",
+    "approval_answer",
+    "question_answer",
+    "orchestrator_actions",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
