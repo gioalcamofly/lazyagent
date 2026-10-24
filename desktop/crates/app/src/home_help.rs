@@ -130,9 +130,20 @@ pub const GUIDE: &[(&str, &[&str])] = &[
              Round as \"agent finished; still <fact>\"."],
     ),
     (
+        "CI on the head",
+        &["The engine follows the GitHub Actions runs of every branch you have a worktree for. Only a \
+             fresh red counts: a run on the branch's current head that failed or timed out. A red run on an \
+             older commit does not. A red PR reads \"Fix CI\" with the workflow and the failed job (\"CI \
+             red · Tests / unit (step: Run pytest)\"); a branch with no PR gets the same line. Expanding it \
+             shows the failed log: each failed job, its failing step and the last lines of its log. d (or \
+             Send the failures to its agent) hands it to the branch's agent with that summary. A green \
+             re-run, or a new push, clears the line on its own."],
+    ),
+    (
         "Auto-delegation",
         &["Off by default. In Auto-delegation (top bar) you choose which stalled kinds the engine hands \
-             over on its own (a conflict with the base branch, an agent that died) and to whom (the \
+             over on its own (a conflict with the base branch, an agent that died, CI red on the head) and \
+             to whom (the \
              branch's owner agent or the orchestrator). It tries at most twice per item, never on main or a \
              teammate's branch; after two failed tries the item comes to To sit down with with what was \
              tried."],

@@ -1069,6 +1069,69 @@ pub struct Actionable {
     /// A `decision` item's brief (feature `decisions`).
     #[serde(default)]
     pub decision_id: Option<String>,
+    /// A `ci` / `ci_failed` item's red run on the branch's head (feature
+    /// `actions`).
+    #[serde(default)]
+    pub run: Option<CiRun>,
+}
+
+/// A GitHub Actions run that went red on a branch's head (feature `actions`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CiRun {
+    pub id: i64,
+    #[serde(default)]
+    pub attempt: i64,
+    pub workflow: String,
+    #[serde(default)]
+    pub head_sha: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub url: String,
+    /// `failure` · `timed_out`.
+    #[serde(default)]
+    pub conclusion: String,
+    /// Fetched on demand: None until the engine has read the run's jobs.
+    #[serde(default)]
+    pub failed_jobs: Option<Vec<CiJob>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CiJob {
+    pub name: String,
+    #[serde(default)]
+    pub step: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+/// `ci_log_summary`: the failed jobs of a work item's red run, with the last
+/// lines of each failed log.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CiLogSummary {
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub runs: Vec<CiRun>,
+    #[serde(default)]
+    pub jobs: Vec<CiLogJob>,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CiLogJob {
+    pub name: String,
+    #[serde(default)]
+    pub step: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub lines: Vec<String>,
+    #[serde(default)]
+    pub total: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

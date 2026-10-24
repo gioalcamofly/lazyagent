@@ -702,6 +702,52 @@ async def _():
     )
 
 
+def _actions_engine():
+    """The status engine plus a branch with no PR whose head's Tests run
+    failed in its unit job (a fake gh, ETag and all)."""
+    from lazyagent.engine.actions import ActionsHub
+    from tests.engine import fake_gh
+
+    engine = _status_engine(_make_worktree("/tmp/repo-api", "api-retry", is_main=False))
+    gh = fake_gh.FakeGh([fake_gh.run_json(301, "api-retry", fake_gh.SHA_A)])
+    gh.jobs[301] = fake_gh.jobs_json(("unit", "Run pytest"))
+    gh.logs[301] = fake_gh.failed_log(
+        "unit", "Run pytest",
+        ["collected 12 items", "tests/test_retry.py F", "E   assert 3 == 2",
+         "FAILED tests/test_retry.py::test_backoff - assert 3 == 2", "1 failed, 11 passed"],
+    )
+    hub = ActionsHub("/tmp/repo", run=gh, read_heads=lambda: {"api-retry": fake_gh.SHA_A},
+                     clock=lambda: FIXED_TIME)
+    engine.actions = hub
+    return engine, hub
+
+
+async def _polled_actions_engine():
+    engine, hub = _actions_engine()
+    await hub.poll(["api-retry"])
+    return engine
+
+
+@case("actionables_list/ci_failed_without_a_pr")
+async def _():
+    return await _call(await _polled_actions_engine(), "actionables_list", {})
+
+
+@case("ci_log_summary/a_red_run")
+async def _():
+    return await _call(await _polled_actions_engine(), "ci_log_summary", {"key": "repo:api-retry"})
+
+
+@case("ci_log_summary/not_red")
+async def _():
+    return await _call(await _polled_actions_engine(), "ci_log_summary", {"key": "repo:docs-index"})
+
+
+@case("ci_log_summary/error_no_key")
+async def _():
+    return await _call(await _polled_actions_engine(), "ci_log_summary", {})
+
+
 @case("actionables_get/error_unknown")
 async def _():
     return await _call(_status_engine(), "actionables_get", {"id": "Approval:/nope/a9"})

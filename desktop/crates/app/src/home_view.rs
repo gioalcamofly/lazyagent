@@ -20,7 +20,7 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    ActionableResult, Decision, InboxConfig, Presence, StatusGestureResult, StatusTimeline, TimelineEntry,
+    ActionableResult, CiLogSummary, Decision, InboxConfig, Presence, StatusGestureResult, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -65,11 +65,10 @@ pub const NAME_MAX: f32 = 420.0;
 pub const PRESENCE_EVERY: f64 = 60.0;
 
 /// The stalled kinds auto-delegation offers (Q-B33), with their labels.
-pub const AUTO_DELEGATE: &[(&str, &str)] = &[
-    ("conflict_with_base", "Conflict with the base branch"),
-    ("agent_dead", "Agent died"),
-    ("ci_red", "CI red (needs CI tracking, inactive)"),
-];
+pub const AUTO_DELEGATE: &[(&str, &str)] =
+    &[("conflict_with_base", "Conflict with the base branch"), ("agent_dead", "Agent died"), ("ci_red", "CI red")];
+/// The `ci_red` label on an engine without CI tracking (feature `actions`).
+pub const CI_RED_INACTIVE: &str = "CI red (needs CI tracking, inactive)";
 
 enum Act {
     Select(String),
@@ -86,6 +85,7 @@ enum Act {
     Pass(Line),
     TakeBack(Line),
     SendCi(Line),
+    CiLog(String, (i64, i64)),
     Cut,
     Fold,
     Seen,
@@ -515,7 +515,10 @@ impl State {
             return;
         }
         let mut params = json!({"key": line.key, "kind": "delegate", "to": "agent", "item": top.id});
+        // With CI tracking the engine writes the failures itself (failed
+        // jobs, steps, the last lines of their logs).
         if top.kind == "ci"
+            && !self.has("actions")
             && let Some(place) = &line.place
             && let Some(pr) = self.store.pr_info.get(place).cloned().flatten()
         {
@@ -658,6 +661,24 @@ impl State {
             self.send_reply(&place, &agent, crate::attention::ci_failure_prompt(&pr));
         }
     }
+
+    /// The failed log of a CI line's red run, once per run (id, attempt).
+    fn fetch_ci_log(&mut self, key: String, run: (i64, i64)) {
+        if self.ci_logs.get(&key).is_some_and(|(r, _)| *r == run) {
+            return;
+        }
+        self.ci_logs.insert(key.clone(), (run, None));
+        self.conn.request("ci_log_summary", json!({"key": key}), move |s, reply| {
+            let summary = match reply {
+                Ok(v) => serde_json::from_value::<CiLogSummary>(v)
+                    .unwrap_or_else(|e| CiLogSummary { error: Some(e.to_string()), ..Default::default() }),
+                Err(e) => CiLogSummary { error: Some(e.to_string()), ..Default::default() },
+            };
+            if let Some(entry) = s.ci_logs.get_mut(&key).filter(|(r, _)| *r == run) {
+                entry.1 = Some(summary);
+            }
+        });
+    }
 }
 
 /// Settings → Auto-delegation (per repo, Q-B33): which stalled kinds the
@@ -670,9 +691,11 @@ pub fn auto_delegation_menu(ui: &mut Ui, s: &mut State) {
     };
     ui.label(RichText::new(format!("When one of these stalls in {}, delegate it:", s.inbox_repo())).small());
     let mut next = config.clone();
+    let tracking = s.has("actions");
     for (kind, label) in AUTO_DELEGATE {
+        let label = if *kind == "ci_red" && !tracking { CI_RED_INACTIVE } else { label };
         let mut on = next.auto_delegate.iter().any(|k| k == kind);
-        if ui.checkbox(&mut on, *label).changed() {
+        if ui.checkbox(&mut on, label).changed() {
             next.auto_delegate.retain(|k| k != kind);
             if on {
                 next.auto_delegate.push(kind.to_string());
@@ -689,6 +712,23 @@ pub fn auto_delegation_menu(ui: &mut Ui, s: &mut State) {
     }
     if next != config {
         s.set_inbox_config(next);
+    }
+}
+
+/// A red run's failed jobs: "job · step", then the last lines of its log.
+fn ci_log(ui: &mut Ui, t: &Theme, summary: &CiLogSummary) {
+    if let Some(e) = &summary.error {
+        ui.label(RichText::new(e).small().color(t.yellow));
+    }
+    for job in &summary.jobs {
+        let head = if job.step.is_empty() { job.name.clone() } else { format!("{} · {}", job.name, job.step) };
+        ui.label(RichText::new(head).small().strong().color(t.text));
+        if !job.lines.is_empty() {
+            ui.label(RichText::new(job.lines.join("\n")).small().monospace().color(t.text));
+        }
+    }
+    if summary.jobs.is_empty() && summary.error.is_none() {
+        ui.label(RichText::new("No failed job log to show.").small().color(t.muted));
     }
 }
 
@@ -818,6 +858,8 @@ impl App {
             parks: s.parks(),
             selected: selected.as_deref(),
             timelines: &s.timelines,
+            actions: s.engine_inbox() && s.has("actions"),
+            ci_logs: &s.ci_logs,
             decision_view: s.decision_view_on(),
             explains: &s.explains,
         };
@@ -1011,6 +1053,7 @@ impl App {
                 Act::Pass(l) => s.pass_line(&l),
                 Act::TakeBack(l) => s.take_back(&l),
                 Act::SendCi(l) => s.send_ci(&l),
+                Act::CiLog(key, run) => s.fetch_ci_log(key, run),
                 Act::Cut => s.home.cut(now),
                 Act::Fold => {
                     s.saved.home_fold = !s.saved.home_fold;
@@ -1065,6 +1108,9 @@ struct LineCtx<'a> {
     parks: &'static [(&'static str, Park)],
     selected: Option<&'a str>,
     timelines: &'a std::collections::HashMap<String, StatusTimeline>,
+    /// CI tracking (feature `actions`): the failed log of a CI line.
+    actions: bool,
+    ci_logs: &'a std::collections::HashMap<String, ((i64, i64), Option<CiLogSummary>)>,
     decision_view: bool,
     explains: &'a std::collections::HashMap<String, lazyagent_proto::types::DecisionExplain>,
 }
@@ -1175,6 +1221,9 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, forms: &mut Forms, a
                     } else if let Some(top) = l.top.as_ref().filter(|t| t.kind == "decision") {
                         // A brief's question (or "agent a2 asks: …") reads better than its state.
                         top.label.clone()
+                    } else if let Some(ci) = l.top.as_ref().and_then(|t| t.ci_text()) {
+                        // The red workflow and its failed job (feature actions).
+                        ci
                     } else {
                         l.state.split_once(": ").map(|(_, rest)| rest).unwrap_or(&l.state).to_string()
                     };
@@ -1502,6 +1551,21 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
                 }
             }
         }
+        if c.actions
+            && let Some(run) = l.top.as_ref().filter(|t| t.is_ci()).and_then(|t| t.run.as_ref())
+        {
+            ui.add_space(2.0);
+            ui.label(RichText::new("Failed log").small().strong().color(t.muted));
+            let wanted = (run.id, run.attempt);
+            match c.ci_logs.get(&l.key) {
+                Some((r, Some(summary))) if *r == wanted => ci_log(ui, t, summary),
+                Some((r, None)) if *r == wanted => {
+                    ui.label(RichText::new("…").small().color(t.muted));
+                }
+                // Not read yet, or for an older run: ask (once per run).
+                _ => acts.push(Act::CiLog(l.key.clone(), wanted)),
+            }
+        }
         if c.gestures && l.row.is_some() {
             ui.add_space(2.0);
             ui.label(RichText::new("Since you looked").small().strong().color(t.muted));
@@ -1531,7 +1595,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec
             {
                 acts.push(Act::Pr(url.clone()));
             }
-            let ci = l.top.as_ref().is_some_and(|t| t.kind == "ci");
+            let ci = l.top.as_ref().is_some_and(|t| t.is_ci());
             let delegable = c.delegation
                 && l.top.as_ref().is_some_and(|t| {
                     !matches!(t.kind.as_str(), "approval" | "question" | "decision" | "delegation")

@@ -140,6 +140,10 @@ FEATURES: tuple[str, ...] = (
     # project, depends_on, waits_on, feeder; waiting items parked; counts
     # not_started with feeders' items, status_list not_started_items (I6).
     "work_items",
+    # GitHub Actions on the branches' heads (I7): actionable.run, the
+    # ci_failed kind, ci_log_summary, the summary on a CI delegation, ci_red
+    # auto-delegation, decision_evidence job:/run: logs.
+    "actions",
 )
 
 STREAM_RESIZED = "stream.resized"

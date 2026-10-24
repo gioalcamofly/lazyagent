@@ -13,7 +13,7 @@ ACTIONABLE = {
     "level": "now", "title": "Needs approval", "label": "Agent a1", "detail": "Bash",
     "state": "approve: Bash", "work_item": "r:feat", "worktree_path": "/r", "agent_id": "a1",
     "pr": None, "job_id": None, "exit_code": None, "blocks_agent": True, "priority": "medium",
-    "since": 1.0, "park": None, "class": "quick", "decision_id": None,
+    "since": 1.0, "park": None, "class": "quick", "decision_id": None, "run": None,
 }
 
 DECISION = {

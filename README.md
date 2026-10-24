@@ -250,6 +250,11 @@ provider = "claude"
 # ticket_pattern = "(?i)\\b[a-z]+-\\d+"
 # Open work items per feeder source; a new one past it is refused (0: no cap).
 # max_open_per_source = 50
+# GitHub Actions runs on the worktrees' branches: one conditional REST call
+# per repo (`gh api`, answered by a 304 when nothing changed) this often, in
+# seconds (at least 15). A red run on a branch's head with no PR is an inbox
+# item; a red PR's item names the workflow and the failed job. 0 turns it off.
+# actions_poll_s = 60
 
 [inbox]
 # "To sit down with" (decision briefs, changes requested, a finished branch to
@@ -260,9 +265,10 @@ provider = "claude"
 # Opt-in auto-delegation of stalled items to the branch's owner agent (a live
 # one gets a fixed brief, a dead one is restored, else one is spawned), or to
 # the orchestrator as a claim. Kinds: "conflict_with_base", "agent_dead", and
-# "ci_red" (accepted, inactive until CI runs are read). At most 2 attempts per
-# item, never on the default branch or a teammate's; after 2 failures the item
-# becomes a brief in To sit down with. The desktop writes these keys too.
+# "ci_red" (a red GitHub Actions run on the branch's head; its brief carries
+# the failed log's tail). At most 2 attempts per item, never on the default
+# branch or a teammate's; after 2 failures the item becomes a brief in To sit
+# down with. The desktop writes these keys too.
 # auto_delegate = []
 # auto_delegate_target = "owner"   # or "orchestrator"
 # auto_delegate_max_per_day = 10

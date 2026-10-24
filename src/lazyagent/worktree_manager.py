@@ -375,6 +375,25 @@ class WorktreeManager:
                 times[name] = float(stamp)
         return times
 
+    def branch_heads(self) -> dict[str, str]:
+        """Each local branch's head commit (full sha), in one git call."""
+        try:
+            result = _run(
+                ["git", "for-each-ref", "--format=%(refname:short)%09%(objectname)", "refs/heads"],
+                capture_output=True,
+                text=True,
+                cwd=str(self.repo_path),
+                check=True,
+            )
+        except (subprocess.CalledProcessError, OSError):
+            return {}
+        heads: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            name, _, sha = line.rpartition("\t")
+            if name and sha:
+                heads[name] = sha
+        return heads
+
     def get_all_git_statuses(
         self, worktrees: list[WorktreeInfo],
     ) -> dict[str, GitStatus]:

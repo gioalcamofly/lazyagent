@@ -20,6 +20,21 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_github(monkeypatch):
+    """GitHub Actions polling never reaches the real ``gh``: a test gives
+    the hub its own runner."""
+    from lazyagent.engine import actions
+
+    def runner(cwd):
+        async def run(args):
+            raise actions.TrackerError("tests never call the real gh")
+
+        return run
+
+    monkeypatch.setattr(actions, "_gh_runner", runner)
+
+
+@pytest.fixture(autouse=True)
 def _temp_dirs_in_tmp_path(tmp_path, monkeypatch):
     """Agent runtime contexts (hook scripts, settings, MCP configs) are
     ``mkdtemp`` dirs; keep a test's under its ``tmp_path``, not in /tmp."""

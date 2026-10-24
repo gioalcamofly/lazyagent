@@ -488,6 +488,7 @@ async def test_the_evidence_read_gives_lines_at_the_briefs_commit(tmp_path):
     notes = await read(2)
     assert notes["text"] == "- is 30 s enough?"
     assert (await read(3))["url"] == "https://example.com/run/1"
-    assert "not a log the engine can read" in (await read(4))["error"]
+    # A CI job is read from the failed log (engine/actions.py): off with no repo.
+    assert "CI tracking is off" in (await read(4))["error"]
     with pytest.raises(ValueError, match="index must be"):
         await read(9)

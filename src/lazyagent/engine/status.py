@@ -696,6 +696,7 @@ class StatusProjection:
         if self._ticks % COMMIT_TIMES_EVERY == 0:
             self._refresh_commit_times()
         self._poll_trackers()
+        self._poll_actions()
         self.flush()
 
     def _on_event(self, event: EngineEvent) -> None:
@@ -755,6 +756,26 @@ class StatusProjection:
         self._engine.worktree_service.set_pr_interest(paths, ENGINE_CLIENT)
         self._refresh_commit_times()
         self._poll_trackers()
+        self._poll_actions()
+
+    def _poll_actions(self) -> None:
+        """Poll GitHub Actions when due (a new branch at once): the
+        members' branches but the merge targets, one poll at a time, once
+        the PR poller has found ``gh`` working."""
+        hub = getattr(self._engine, "actions", None)
+        if hub is None or not hub.enabled:
+            return
+        if self._engine.worktree_service._gh_available is not True:
+            # The PR poller finds out whether gh works (its first tick).
+            return
+        targets = set(self.merge_targets()) | {"main", "master"}
+        branches = [wt.branch for wt in self._members() if wt.branch and wt.branch not in targets]
+
+        async def poll() -> None:
+            if await hub.poll(branches):
+                self.mark_dirty()
+
+        self._spawn(poll())
 
     def _poll_trackers(self) -> None:
         """Poll the tracker adapters that are due (a new branch's key at

@@ -1,0 +1,81 @@
+{
+  "case": "actionables_list/ci_failed_without_a_pr",
+  "method": "actionables_list",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "counts": {
+        "deep": 0,
+        "deep_max": 5,
+        "now": 1,
+        "parked": 0,
+        "round": 1
+      },
+      "generated_at": 1700000000.0,
+      "items": [
+        {
+          "agent_id": "a1",
+          "blocks_agent": true,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "Bash",
+          "exit_code": null,
+          "id": "Approval:/tmp/repo-login/a1",
+          "job_id": null,
+          "kind": "approval",
+          "label": "Agent a1",
+          "level": "now",
+          "occurrence": "Approval:/tmp/repo-login/a1@1700000000.0",
+          "park": null,
+          "pr": null,
+          "priority": "medium",
+          "run": null,
+          "since": 1700000000.0,
+          "state": "approve: Bash",
+          "title": "Needs approval",
+          "work_item": "repo:login-ttl",
+          "worktree_path": "/tmp/repo-login"
+        },
+        {
+          "agent_id": null,
+          "blocks_agent": false,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "Tests: unit (Run pytest)",
+          "exit_code": null,
+          "id": "Ci_failed:/tmp/repo-api:api-retry",
+          "job_id": null,
+          "kind": "ci_failed",
+          "label": "api-retry",
+          "level": "round",
+          "occurrence": "Ci_failed:/tmp/repo-api:api-retry@1700000000.0",
+          "park": null,
+          "pr": null,
+          "priority": "medium",
+          "run": {
+            "attempt": 1,
+            "branch": "api-retry",
+            "conclusion": "failure",
+            "failed_jobs": [
+              {
+                "name": "unit",
+                "step": "Run pytest",
+                "url": "https://github.com/o/r/job/0"
+              }
+            ],
+            "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "id": 301,
+            "url": "https://github.com/o/r/actions/runs/301",
+            "workflow": "Tests"
+          },
+          "since": 1700000000.0,
+          "state": "CI red: Tests / unit",
+          "title": "CI failed",
+          "work_item": "repo:api-retry",
+          "worktree_path": "/tmp/repo-api"
+        }
+      ]
+    }
+  }
+}

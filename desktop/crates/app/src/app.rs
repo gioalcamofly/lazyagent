@@ -176,6 +176,9 @@ pub struct State {
     pub explains: HashMap<String, lazyagent_proto::types::DecisionExplain>,
     /// "Since you looked" of the expanded lines (`status_timeline`).
     pub timelines: HashMap<String, StatusTimeline>,
+    /// The failed log of an expanded CI line (`ci_log_summary`), by work
+    /// item, with the run (id, attempt) it was read for; None while asked.
+    pub ci_logs: HashMap<String, ((i64, i64), Option<lazyagent_proto::types::CiLogSummary>)>,
     /// Whether the user counts as present (feature `first_responder`).
     pub presence: Option<Presence>,
     /// When user input was last reported (`presence_report`, throttled).
@@ -277,6 +280,7 @@ impl State {
             decision: None,
             explains: HashMap::new(),
             timelines: HashMap::new(),
+            ci_logs: HashMap::new(),
             presence: None,
             presence_reported: f64::NEG_INFINITY,
             inbox_config: None,

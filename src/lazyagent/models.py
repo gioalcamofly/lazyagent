@@ -207,6 +207,39 @@ class PrInfo:
         return "pass"
 
 
+@dataclass(frozen=True)
+class WorkflowJob:
+    """A job of a workflow run that did not succeed (``failure``,
+    ``timed_out``), with the step that failed."""
+
+    name: str
+    step: str = ""
+    url: str = ""
+    conclusion: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowRun:
+    """A GitHub Actions run (REST ``/actions/runs``)."""
+
+    id: int
+    workflow: str
+    head_sha: str
+    head_branch: str
+    status: str            # "queued", "in_progress", "completed", ...
+    conclusion: str        # "success", "failure", "timed_out", ...; "" while running
+    html_url: str = ""
+    created_at: float = 0.0
+    attempt: int = 1
+    workflow_id: int = 0
+    # Fetched on demand (``/runs/{id}/jobs``); None until then.
+    failed_jobs: tuple[WorkflowJob, ...] | None = None
+
+    @property
+    def red(self) -> bool:
+        return self.status == "completed" and self.conclusion in ("failure", "timed_out")
+
+
 def default_base(
     default_branch: str | None, worktrees: Iterable[WorktreeInfo]
 ) -> str:

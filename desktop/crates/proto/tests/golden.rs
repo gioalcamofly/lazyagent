@@ -106,6 +106,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
                 round_trip::<DecisionExplainResult>(case, result)
             }
             "decision_evidence" => round_trip::<DecisionEvidence>(case, result),
+            // The expanded CI line's failed log (I7).
+            "ci_log_summary" => round_trip::<CiLogSummary>(case, result),
             // The orchestrator's and the agents' (MCP).
             "decision_escalate" | "decision_explain" => continue,
             // External feeders' (MCP, a planner or a script).
@@ -173,6 +175,7 @@ const METHODS_USED: &[&str] = &[
     "decision_explain_request",
     "decision_rebrief_request",
     "decision_evidence",
+    "ci_log_summary",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.

@@ -100,6 +100,13 @@ class StatusConfig:
     ticket_pattern: str | None = None
     # Open work items per feeder source (work_items_upsert); 0: no cap.
     max_open_per_source: int = 50
+    # GitHub Actions runs (engine/actions.py): one conditional REST call per
+    # repo this often, in seconds; 0 turns CI tracking off.
+    actions_poll_s: int = 60
+
+
+# Below this, actions_poll_s would spend the rate limit for nothing.
+MIN_ACTIONS_POLL_S = 15
 
 
 @dataclass
@@ -295,6 +302,9 @@ def _status_config(data: object) -> StatusConfig:
     value = data.get("max_open_per_source")
     if type(value) is int and value >= 0:
         config.max_open_per_source = value
+    value = data.get("actions_poll_s")
+    if type(value) is int and (value == 0 or value >= MIN_ACTIONS_POLL_S):
+        config.actions_poll_s = value
     pattern = data.get("ticket_pattern")
     if isinstance(pattern, str) and pattern:
         try:

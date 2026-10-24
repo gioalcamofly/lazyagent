@@ -1,0 +1,17 @@
+{
+  "case": "ci_log_summary/not_red",
+  "method": "ci_log_summary",
+  "params": {
+    "key": "repo:docs-index"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "error": "no failed CI run on the head of docs-index",
+      "jobs": [],
+      "key": "repo:docs-index",
+      "runs": [],
+      "text": ""
+    }
+  }
+}

@@ -3627,6 +3627,156 @@ fn the_park_menu_offers_five_choices_and_the_whole_work_item() {
     );
 }
 
+// --- Home, I7: CI on the head (GitHub Actions) -------------------------------
+
+const I7: &[&str] =
+    &["status", "actionables", "claims", "gestures", "decisions", "holds", "delegation", "parked", "actions"];
+
+fn red_run(attempt: i64) -> serde_json::Value {
+    json!({"id": 4242, "attempt": attempt, "workflow": "Tests", "head_sha": "abc1234def", "branch": "cart",
+           "url": "https://github.com/o/r/actions/runs/4242", "conclusion": "failure",
+           "failed_jobs": [{"name": "unit", "step": "Run pytest", "url": "https://github.com/o/r/actions/runs/4242/job/1"}]})
+}
+
+fn ci_log_summary(key: &str) -> serde_json::Value {
+    json!({"key": key, "runs": [red_run(1)],
+           "jobs": [{"name": "unit", "step": "Run pytest", "url": "https://github.com/o/r/actions/runs/4242/job/1",
+                     "lines": ["E   assert 1 == 2", "FAILED tests/test_cart.py::test_total"], "total": 812}],
+           "text": "CI failed on cart"})
+}
+
+/// A CI line on Home with its agent: `item` is the engine's item.
+fn ci_home(caps: &[&str], item: serde_json::Value) -> (Harness<'static, App>, mpsc::Sender<Msg>, Calls) {
+    let (app, tx) = engine_home(caps);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, p| match m {
+        "status_gesture" => Some(json!({"key": p["key"], "claim": null, "gesture": null, "row": null})),
+        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        "ci_log_summary" => Some(ci_log_summary(p["key"].as_str().unwrap())),
+        _ => None,
+    });
+    h.run_steps(2);
+    let mut row = inbox_row("cart", "round", item["id"].as_str().unwrap(), item["state"].as_str().unwrap());
+    row["agents"] = json!([{"id": "a1", "status": "waiting", "since": crate::app::unix_now()}]);
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    (h, tx, calls)
+}
+
+#[test]
+fn a_red_run_shows_its_workflow_and_job_and_the_expanded_line_its_failed_log() {
+    let mut item = ci_item("cart");
+    item["run"] = red_run(1);
+    let (mut h, tx, calls) = ci_home(I7, item.clone());
+    assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Round)[0].verb(), "Fix CI");
+    h.get_by_label("· CI red · Tests / unit (step: Run pytest)");
+    // Expanded: the failed log, read once per run.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert_eq!(calls_of(&calls, "ci_log_summary"), [json!({"key": "repo:cart"})]);
+    h.get_by_label("Failed log");
+    h.get_by_label("unit · Run pytest");
+    h.get_by_label("E   assert 1 == 2\nFAILED tests/test_cart.py::test_total");
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "ci_log_summary").len(), 1, "not asked again for the same run");
+    // A re-run that failed again (attempt 2): read again.
+    item["run"] = red_run(2);
+    tx.send(event("actionable.updated", json!({"item": item}))).unwrap();
+    h.run_steps(4);
+    assert_eq!(calls_of(&calls, "ci_log_summary").len(), 2);
+    // d: the engine writes the failures itself, so no text goes with it.
+    h.key_press(egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(
+        calls_of(&calls, "status_gesture"),
+        [json!({"key": "repo:cart", "kind": "delegate", "to": "agent", "item": "Ci:/r/repo-cart:7"})]
+    );
+}
+
+#[test]
+fn a_branch_with_no_pr_gets_a_fix_ci_line_that_a_green_rerun_clears() {
+    use crate::home::Zone;
+    let mut item = ci_item("cart");
+    item["id"] = json!("Ci_failed:/r/repo-cart:cart");
+    item["kind"] = json!("ci_failed");
+    item["title"] = json!("CI failed");
+    item["label"] = json!("cart");
+    item["run"] = red_run(1);
+    let (mut h, tx, calls) = ci_home(I7, item);
+    let line = h.state().state.home.shown_in(Zone::Round)[0].clone();
+    assert_eq!((line.name.as_str(), line.verb()), ("cart", "Fix CI"));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.get_by_label("Send the failures to its agent  (d)");
+    h.get_by_label("unit · Run pytest");
+    h.key_press(egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(
+        calls_of(&calls, "status_gesture"),
+        [json!({"key": "repo:cart", "kind": "delegate", "to": "agent", "item": "Ci_failed:/r/repo-cart:cart"})]
+    );
+    // A green re-run: the item resolves and the line leaves at once, no
+    // cut point needed.
+    tx.send(event(
+        "actionable.resolved",
+        json!({"id": "Ci_failed:/r/repo-cart:cart", "occurrence": "c@1",
+                                                 "reason": "cleared"}),
+    ))
+    .unwrap();
+    tx.send(event(
+        "status.updated",
+        json!({"row": status_row("cart", "in_flight", None, "stalled", "agent idle", 0.0)}),
+    ))
+    .unwrap();
+    h.run_steps(2);
+    assert!(home_names(&h, Zone::Round).is_empty());
+    assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
+    h.get_by_label("1 resolved on their own");
+}
+
+#[test]
+fn without_ci_tracking_a_red_pr_is_delegated_with_the_failure_prompt() {
+    let (mut h, tx, calls) = ci_home(I4D, ci_item("cart"));
+    tx.send(event("pr_info.updated", json!({"path": "/r/repo-cart", "pr_info": pr_json()}))).unwrap();
+    h.run_steps(2);
+    // No run: the line keeps the engine's state.
+    h.get_by_label("· tests");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.query_by_label("Failed log").is_none());
+    assert!(calls_of(&calls, "ci_log_summary").is_empty());
+    h.key_press(egui::Key::D);
+    h.run_steps(2);
+    let sent = calls_of(&calls, "status_gesture");
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0]["text"].as_str().unwrap().contains("tests"), "{sent:?}");
+}
+
+#[test]
+fn with_ci_tracking_the_auto_delegation_menu_offers_ci_red_as_active() {
+    let (app, tx) = engine_home(&["status", "actionables", "gestures", "first_responder", "actions"]);
+    let mut h = harness(app);
+    let calls = fake_engine(&h, |m, _| match m {
+        "inbox_config_get" => Some(json!({"repo": "repo", "auto_delegate": [], "auto_delegate_target": "owner"})),
+        _ => None,
+    });
+    tx.send(event("status.updated", json!({"row": status_row("cart", "in_flight", None, "agent", "Edit", 60.0)})))
+        .unwrap();
+    h.run_steps(2);
+    h.get_by_label("Auto-delegation ▾").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("CI red (needs CI tracking, inactive)").is_none());
+    h.get_by_label("CI red").click();
+    h.run_steps(2);
+    assert_eq!(
+        calls_of(&calls, "inbox_config_set"),
+        [json!({"repo": "repo", "auto_delegate": ["ci_red"], "auto_delegate_target": "owner"})]
+    );
+}
+
 #[test]
 fn parked_work_items_wait_folded_and_say_when_they_need_you() {
     use crate::home::Zone;

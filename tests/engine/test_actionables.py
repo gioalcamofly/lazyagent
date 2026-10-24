@@ -192,7 +192,8 @@ def test_dismissals_are_pruned_after_a_week():
 def test_every_kind_has_its_fixed_level():
     assert {k: v.level for k, v in KINDS.items()} == {
         "approval": "now", "question": "now", "hanged": "round", "failed": "round",
-        "exited": "round", "ci": "round", "review": "deep", "conflict": "round",
+        "exited": "round", "ci": "round", "ci_failed": "round", "review": "deep",
+        "conflict": "round",
         "done": "deep", "job": "round", "delegation": "round", "report": "round",
         "decision": "deep",
         # Its default: an item carries the tracker mapping's level.

@@ -352,6 +352,8 @@ class Decisions:
                     return out
                 out.update(_numbered("\n".join(lines), e.get("lines")))
                 out["note"] = f"agent {agent}'s terminal now (line numbers count from its tail)"
+            elif ref.startswith(("job:", "run:")):
+                out.update(await self._ci_log(record, ref, e.get("lines")))
             elif inside(path, ref) is not None and os.path.isfile(os.path.join(path, ref)):
                 with open(os.path.join(path, ref), encoding="utf-8", errors="replace") as f:
                     out.update(_numbered(f.read(4_000_000), e.get("lines")))
@@ -375,6 +377,42 @@ class Decisions:
         else:
             out["url"] = e.get("url")
         return out
+
+    async def _ci_log(self, record: dict[str, Any], ref: str, lines: str | None) -> dict[str, Any]:
+        """``job:<name>`` (a failed job of the item's red CI on its head)
+        or ``run:<id>``: the tail of its failed log (engine/actions.py)."""
+        from lazyagent.engine import actions
+
+        name = ref.partition(":")[2].strip()
+        try:
+            if ref.startswith("run:"):
+                if not name.isdigit():
+                    return {"error": f"{ref}: a run is run:<id>"}
+                summary = await actions.log_summary(self._engine, run_id=int(name))
+                jobs = summary["jobs"]
+            else:
+                summary = await actions.log_summary(self._engine, key=record["key"])
+                fold = name.casefold()
+                jobs = [j for j in summary["jobs"] if j["name"].casefold() == fold] or [
+                    j for j in summary["jobs"] if fold in j["name"].casefold()
+                ]
+        except ValueError as err:
+            return {"error": str(err)}
+        if not jobs or not any(j["lines"] for j in jobs):
+            return {"error": summary.get("error")
+                    or f"no failed log for {ref} in the red CI run on the head"}
+        text = []
+        for j in jobs:
+            if len(jobs) > 1:
+                text.append(f"{j['name']} · {j['step']}")
+            text.extend(j["lines"])
+        run = summary["runs"][0] if summary["runs"] else {}
+        job = jobs[0]
+        shown = sum(len(j["lines"]) for j in jobs)
+        note = (f"the last {shown} of {sum(j['total'] for j in jobs)} lines of the failed log"
+                + (f" ({job['name']} · {job['step']})" if len(jobs) == 1 and job["step"] else "")
+                + (f", {run.get('workflow')} run {run.get('id')}" if run else ""))
+        return {**_numbered("\n".join(text), lines), "note": note, "url": job["url"] or run.get("url")}
 
     # --- The agent's calls ---
 

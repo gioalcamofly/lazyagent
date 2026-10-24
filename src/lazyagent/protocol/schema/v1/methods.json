@@ -1031,14 +1031,15 @@
     "actionable": {
       "type": "object",
       "description": "An inbox item (proposal 0013): it lives while its condition holds and resolves itself when it clears.",
-      "required": ["id", "occurrence", "kind", "level", "title", "label", "detail", "state", "work_item", "worktree_path", "agent_id", "pr", "job_id", "exit_code", "blocks_agent", "priority", "since", "park", "class", "decision_id"],
+      "required": ["id", "occurrence", "kind", "level", "title", "label", "detail", "state", "work_item", "worktree_path", "agent_id", "pr", "job_id", "exit_code", "blocks_agent", "priority", "since", "park", "class", "decision_id", "run"],
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision"], "description": "Open set."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions)."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
+        "run": {"anyOf": [{"$ref": "#/$defs/ci_run"}, {"type": "null"}], "description": "ci / ci_failed: the fresh red Actions run on the head (feature actions); null otherwise."},
         "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
         "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>', the job's title, or the tracker task's title."},
         "detail": {"type": "string", "description": "tracker_status: the task's URL."},
@@ -1066,6 +1067,34 @@
             "by": {"type": "string", "x-known-values": ["user", "orchestrator"]}
           }
         }
+      }
+    },
+    "ci_run": {
+      "type": "object",
+      "description": "A GitHub Actions run that failed on a branch's head (feature actions).",
+      "required": ["id", "attempt", "workflow", "head_sha", "branch", "url", "conclusion", "failed_jobs"],
+      "properties": {
+        "id": {"type": "integer"},
+        "attempt": {"type": "integer", "description": "The run attempt (a re-run keeps the id)."},
+        "workflow": {"type": "string"},
+        "head_sha": {"type": "string"},
+        "branch": {"type": "string"},
+        "url": {"type": "string"},
+        "conclusion": {"type": "string", "x-known-values": ["failure", "timed_out"]},
+        "failed_jobs": {
+          "type": ["array", "null"],
+          "description": "null until fetched (once per run attempt).",
+          "items": {"$ref": "#/$defs/ci_job"}
+        }
+      }
+    },
+    "ci_job": {
+      "type": "object",
+      "required": ["name", "step", "url"],
+      "properties": {
+        "name": {"type": "string"},
+        "step": {"type": "string", "description": "The first failing step; empty when unknown."},
+        "url": {"type": "string"}
       }
     },
     "actionable_until": {
@@ -1672,6 +1701,38 @@
         "note": {"type": "string", "description": "e.g. 'as in the worktree now'."},
         "url": {"type": ["string", "null"]},
         "error": {"type": "string", "description": "Why it cannot be read here."}
+      }
+    },
+    "ci_log_summary.params": {
+      "type": "object",
+      "properties": {
+        "key": {"type": "string", "description": "A work item: its fresh red runs on the head."},
+        "run_id": {"type": "integer", "description": "One run of the repo's latest runs instead."}
+      }
+    },
+    "ci_log_summary.result": {
+      "type": "object",
+      "required": ["key", "runs", "jobs", "text"],
+      "properties": {
+        "key": {"type": ["string", "null"]},
+        "runs": {"type": "array", "items": {"$ref": "#/$defs/ci_run"}},
+        "jobs": {
+          "type": "array",
+          "description": "Per failed job: its failing step and the last lines of its failed log (at most 3 jobs, 30 lines each).",
+          "items": {
+            "type": "object",
+            "required": ["name", "step", "url", "lines", "total"],
+            "properties": {
+              "name": {"type": "string"},
+              "step": {"type": "string"},
+              "url": {"type": "string"},
+              "lines": {"type": "array", "items": {"type": "string"}},
+              "total": {"type": "integer", "description": "Lines in the job's failed log; 0 when it could not be read."}
+            }
+          }
+        },
+        "text": {"type": "string", "description": "The summary as an agent gets it on a delegation (at most 6000 characters)."},
+        "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there."}
       }
     },
 
