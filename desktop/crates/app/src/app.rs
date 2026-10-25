@@ -259,6 +259,8 @@ impl State {
         let mut saved = crate::persist::load(&saved_path);
         saved.marks.prune(unix_now());
         let look_from = saved.home_seen.unwrap_or_else(unix_now);
+        let mut home = crate::home::Home::default();
+        home.done_open = saved.home_done_open;
         let theme =
             theme.unwrap_or(if saved.theme.as_deref() == Some("light") { ThemeKind::Light } else { ThemeKind::Dark });
         State {
@@ -282,7 +284,7 @@ impl State {
             marks_gen: 0,
             exits: vec![],
             notified: HashSet::new(),
-            home: Default::default(),
+            home,
             status_rows: BTreeMap::new(),
             actionables: BTreeMap::new(),
             inbox_gen: 0,

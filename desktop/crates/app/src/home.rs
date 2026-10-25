@@ -179,6 +179,12 @@ impl Line {
         self.ball == "done"
     }
 
+    /// A done row with nothing left to do (no suggestion): it goes into In
+    /// flight's folded "N done today" group.
+    pub fn folds(&self) -> bool {
+        self.done() && self.row.as_ref().is_none_or(|r| r.suggestion.is_none())
+    }
+
     /// A routed question the orchestrator is on (first responder).
     pub fn looking(&self) -> bool {
         self.row.as_ref().and_then(|r| r.holder.as_deref()) == Some("orchestrator")
@@ -636,6 +642,9 @@ pub struct Home {
     pub park_whole: bool,
     /// The Parked group is unfolded (folded by default).
     pub parked_open: bool,
+    /// In flight's "N done today" group is unfolded (folded by default;
+    /// kept per repo in `Saved::home_done_open`).
+    pub done_open: bool,
     /// The close choices (done / dropped) are open on this line.
     pub closing: Option<String>,
     /// The label form is open on this line.
@@ -754,9 +763,15 @@ impl Home {
         self.next.iter().filter_map(|k| self.lines.get(k)).collect()
     }
 
+    /// The lines of a zone, in order; In flight without its done group.
     pub fn shown_in(&self, zone: Zone) -> Vec<&Line> {
-        let lines = self.order[zone as usize].iter().filter_map(|k| self.lines.get(k)).collect();
-        if zone == Zone::Flight { group_by_project(lines) } else { lines }
+        let lines = self.order[zone as usize].iter().filter_map(|k| self.lines.get(k));
+        if zone == Zone::Flight { group_by_project(lines.filter(|l| !l.folds()).collect()) } else { lines.collect() }
+    }
+
+    /// In flight's done rows with no suggestion: one group at its end.
+    pub fn done_group(&self) -> Vec<&Line> {
+        self.order[Zone::Flight as usize].iter().filter_map(|k| self.lines.get(k)).filter(|l| l.folds()).collect()
     }
 
     /// The selectable lines, top to bottom.
@@ -767,6 +782,9 @@ impl Home {
         v.extend(self.shown_in(Zone::Deep));
         if !folded {
             v.extend(self.shown_in(Zone::Flight));
+            if self.done_open {
+                v.extend(self.done_group());
+            }
         }
         if self.parked_open {
             v.extend(self.shown_in(Zone::Parked));
@@ -1085,6 +1103,25 @@ mod tests {
         assert_eq!(h.visible(false).len(), 1, "folded by default");
         h.parked_open = true;
         assert_eq!(h.visible(false).len(), 2);
+    }
+
+    #[test]
+    fn done_rows_with_nothing_to_do_fold_into_one_group_at_the_end() {
+        let mut rows = vec![
+            row("a", "in_flight", None, "done", 1.0),
+            row("b", "in_flight", None, "agent", 2.0),
+            row("c", "in_flight", None, "done", 3.0),
+        ];
+        rows[2].suggestion = Some("close PR #47: its head is in develop".into());
+        let mut h = Home::default();
+        h.update(lines(&rows), 10.0);
+        assert_eq!(keys(&h, Zone::Flight), ["b", "c"], "a done row with a suggestion stays in place");
+        let done: Vec<&str> = h.done_group().iter().map(|l| l.key.as_str()).collect();
+        assert_eq!(done, ["shop:a"]);
+        assert_eq!(h.visible(false).len(), 2, "folded by default");
+        h.done_open = true;
+        assert_eq!(h.visible(false).last().map(|l| l.key.as_str()), Some("shop:a"), "at the end of In flight");
+        assert!(h.visible(true).is_empty(), "In flight folded hides the group too");
     }
 
     #[test]
