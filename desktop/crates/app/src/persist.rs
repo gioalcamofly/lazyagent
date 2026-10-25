@@ -48,6 +48,9 @@ pub struct Saved {
     /// Home's in-flight list folded.
     #[serde(default)]
     pub home_fold: bool,
+    /// In flight's "N done today" group unfolded (folded by default).
+    #[serde(default)]
+    pub home_done_open: bool,
 }
 
 impl Saved {

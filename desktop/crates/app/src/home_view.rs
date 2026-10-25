@@ -17,6 +17,9 @@
 //! a folded **Parked (N)** group (`Shift+Z`); `d` delegates the line's item
 //! to the branch's agent; the orchestrator's holds and release notes on the
 //! row; middle-ellipsis names with the full one on hover; `?` the Home guide.
+//!
+//! Done rows with nothing to do fold into one "N done today" group at the
+//! end of In flight (`Shift+F`, kept per repo).
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
@@ -142,6 +145,7 @@ enum Act {
     StripToggle,
     RevertAction(String),
     ParkedShow,
+    DoneFold,
 }
 
 /// `1h 40m`, `25m`: how long is left.
@@ -323,6 +327,11 @@ impl State {
             self.home.select_next(-1, folded);
             return true;
         }
+        // ⇧F before f: a shortcut without Shift also takes Shift.
+        if take(Modifiers::SHIFT, Key::F) {
+            self.toggle_done_group();
+            return true;
+        }
         if take(Modifiers::NONE, Key::F) {
             self.saved.home_fold = !folded;
             self.touch_saved();
@@ -405,6 +414,17 @@ impl State {
             return false;
         }
         true
+    }
+
+    /// Folds or unfolds In flight's "N done today" group (kept per repo);
+    /// unfolding it unfolds In flight too.
+    pub fn toggle_done_group(&mut self) {
+        self.home.done_open = !self.home.done_open;
+        self.saved.home_done_open = self.home.done_open;
+        if self.home.done_open {
+            self.saved.home_fold = false;
+        }
+        self.touch_saved();
     }
 
     /// Approvals are answered on the line (`approval_answer`).
@@ -1215,7 +1235,7 @@ pub fn hint_keys(
     if gestures {
         keys.extend(["l label", "⇧X close", "m seen", "⇧M all seen"]);
     }
-    keys.push("⇧Z parked");
+    keys.extend(["⇧Z parked", "⇧F done today"]);
     if first_responder {
         keys.extend(["⇧U revert", "t today's actions"]);
     }
@@ -1253,6 +1273,8 @@ impl App {
         let next_round: Vec<Line> = home.next_round().into_iter().cloned().collect();
         let (waiting, resolved, round_at) = (home.waiting(), home.resolved, home.round_at);
         let parked_open = home.parked_open;
+        let done_group: Vec<Line> = home.done_group().into_iter().cloned().collect();
+        let done_open = home.done_open;
         let strip_open = home.strip_open;
         let deep_count = home.count(Zone::Deep);
         let s = &self.state;
@@ -1394,15 +1416,11 @@ impl App {
             ui.add_space(6.0);
             ui.separator();
             let flight = &lines[3];
-            let live = flight.iter().filter(|l| !l.done()).count();
-            zone_header(ui, &t, live, "In flight", t.muted, |ui| {
+            // Done rows with a suggestion count: they still ask something.
+            zone_header(ui, &t, flight.len(), "In flight", t.muted, |ui| {
                 if counts.not_started > 0 {
                     ui.label(RichText::new(format!("· {} not started", counts.not_started)).small().color(t.muted))
                         .on_hover_text("Tasks a planner or a tracker gave Home that have no branch yet");
-                }
-                let done = flight.len() - live;
-                if done > 0 {
-                    ui.label(RichText::new(format!("· {done} done today")).small().color(t.muted));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button(RichText::new(if folded { "unfold (f)" } else { "fold (f)" }).small()).clicked() {
@@ -1419,10 +1437,30 @@ impl App {
                 });
             });
             if !folded {
-                if flight.is_empty() {
+                if flight.is_empty() && done_group.is_empty() {
                     ui.label(RichText::new("No work in flight.").color(t.muted));
                 }
                 zone(ui, Zone::Flight, &mut forms_out, &mut acts);
+                if !done_group.is_empty() {
+                    let arrow = if done_open { "▾" } else { "▸" };
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        let text = RichText::new(format!("{} done today {arrow}", done_group.len())).small();
+                        if ui
+                            .add(egui::Button::new(text.color(t.muted)).frame(false))
+                            .on_hover_text("Merged, closed or removed in the last day; nothing to do (⇧F)")
+                            .clicked()
+                        {
+                            acts.push(Act::DoneFold);
+                        }
+                    });
+                    if done_open {
+                        for l in &done_group {
+                            line_ui(ui, &ctx, l, Zone::Flight, false, &mut forms_out, &mut acts);
+                        }
+                    }
+                }
             }
             if !parked.is_empty() {
                 let color = if parked_need > 0 { t.yellow } else { t.muted };
@@ -1483,6 +1521,7 @@ impl App {
                 Act::ParkWhole(on) => s.home.park_whole = on,
                 Act::ParkedFold => s.home.parked_open = !s.home.parked_open,
                 Act::ParkedShow => s.home.parked_open = true,
+                Act::DoneFold => s.toggle_done_group(),
                 Act::Delegate(l) => s.delegate_line(&l),
                 Act::Pass(l) => s.pass_line(&l),
                 Act::TakeBack(l) => s.take_back(&l),
