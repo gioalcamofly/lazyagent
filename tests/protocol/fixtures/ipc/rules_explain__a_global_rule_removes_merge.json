@@ -12,90 +12,105 @@
           "failed": "pr.state == \"merged\"",
           "id": "closed.merged",
           "origin": "builtin",
+          "said": "The PR's state is merged",
           "value": "false"
         },
         {
           "failed": "pr.state == \"closed\"",
           "id": "closed.pr_closed",
           "origin": "builtin",
+          "said": "The PR's state is closed",
           "value": "false"
         },
         {
           "failed": "pr.merged_into != \"\"",
           "id": "closed.already_merged",
           "origin": "builtin",
+          "said": "There is a branch that already holds the head",
           "value": "false"
         },
         {
           "failed": "gesture.kind == \"close\"",
           "id": "closed.by_you",
           "origin": "builtin",
+          "said": "Your gesture is close",
           "value": "false"
         },
         {
           "failed": "gesture.kind == \"park\"",
           "id": "park",
           "origin": "builtin",
+          "said": "Your gesture is park",
           "value": "false"
         },
         {
           "failed": "items.count > 0",
           "id": "queue",
           "origin": "builtin",
+          "said": "There are open inbox items on the work item",
           "value": "false"
         },
         {
           "failed": "claim.active",
           "id": "claim",
           "origin": "builtin",
+          "said": "You passed it to the orchestrator",
           "value": "false"
         },
         {
           "failed": "hold.active",
           "id": "hold",
           "origin": "builtin",
+          "said": "The orchestrator holds it",
           "value": "false"
         },
         {
           "failed": "holder == \"orchestrator\"",
           "id": "held",
           "origin": "builtin",
+          "said": "Who holds a routed item here is orchestrator",
           "value": "false"
         },
         {
           "failed": "delegation.phase == \"on_it\"",
           "id": "delegated",
           "origin": "builtin",
+          "said": "The delegation's phase is on it",
           "value": "unknown"
         },
         {
           "failed": "not queue.enabled",
           "id": "approve",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "answer",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_failed",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_may_hang",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "needs_you",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
@@ -141,108 +156,126 @@
           "id": "merge",
           "line": 3,
           "origin": "global",
+          "said": "The branch is not docs-index",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "changes_requested",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "conflict_no_agent",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "ci_red_no_agent",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_finished",
           "origin": "builtin",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "gesture.kind == \"label\"",
           "id": "label",
           "origin": "builtin",
+          "said": "Your gesture is label",
           "value": "false"
         },
         {
           "failed": "agents.running > 0",
           "id": "agent_running",
           "origin": "builtin",
+          "said": "There are agents at work",
           "value": "false"
         },
         {
           "failed": "ci.state == \"running\"",
           "id": "ci_running",
           "origin": "builtin",
+          "said": "CI on the PR is running",
           "value": "false"
         },
         {
           "failed": "report.ball == \"others\"",
           "id": "reported_others",
           "origin": "builtin",
+          "said": "The agent's reported ball is others",
           "value": "false"
         },
         {
           "failed": "report.ball != \"\"",
           "id": "reported_ball",
           "origin": "builtin",
+          "said": "The agent's reported ball is not empty",
           "value": "false"
         },
         {
           "failed": "tracker.ball == \"you\"",
           "id": "tracker_you",
           "origin": "builtin",
+          "said": "The task's mapped ball is you",
           "value": "unknown"
         },
         {
           "failed": "tracker.ball == \"others\"",
           "id": "tracker_others",
           "origin": "builtin",
+          "said": "The task's mapped ball is others",
           "value": "unknown"
         },
         {
           "failed": "tracker.ball != \"you\"",
           "id": "tracker_ball",
           "origin": "builtin",
+          "said": "The task's mapped ball is not you",
           "value": "unknown"
         },
         {
           "failed": "pr.review in [\"review_required\", \"none\"]",
           "id": "no_reviewer",
           "origin": "builtin",
+          "said": "The PR's review decision is review required or none",
           "value": "false"
         },
         {
           "failed": "pr.review in [\"review_required\", \"none\"]",
           "id": "review_requested",
           "origin": "builtin",
+          "said": "The PR's review decision is review required or none",
           "value": "false"
         },
         {
           "failed": "agents.count > 0",
           "id": "agent_idle",
           "origin": "builtin",
+          "said": "There are agents",
           "value": "false"
         },
         {
           "failed": "item.restorable > 0",
           "id": "restorable",
           "origin": "builtin",
+          "said": "There are agents to restore",
           "value": "false"
         },
         {
           "failed": "item.idle > config.stalled_after",
           "id": "no_activity",
           "origin": "builtin",
+          "said": "The time since the last sign of work is over the stalled threshold",
           "value": "false"
         }
       ],

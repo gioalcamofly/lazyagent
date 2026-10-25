@@ -122,8 +122,23 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
                 assert!(!check.errors.is_empty() || case.contains("no_error"), "{case}");
                 continue;
             }
-            // The page and the Why view (R6), the CLI and MCP.
-            "rules_catalog" | "rules_explain" | "rules_allow" => continue,
+            // The page and the Why view (R6): decoded, not round-tripped
+            // (they read only part of the payload).
+            "rules_catalog" => {
+                let c: RulesCatalog = serde_json::from_value(result.clone()).unwrap();
+                assert!(!c.rules.is_empty() && !c.concepts.sections.is_empty(), "{case}");
+                assert!(c.rules.iter().all(|r| r.sentence.is_some() && r.zone.is_some()), "{case}");
+            }
+            "rules_explain" => {
+                let e: RulesExplain = serde_json::from_value(result.clone()).unwrap();
+                if case.ends_with("/merge") {
+                    let item = e.item_rule.expect("the Merge item's rule");
+                    assert_eq!(item.rule.id, "merge");
+                    assert!(!item.above.is_empty() && !item.facts.is_empty());
+                }
+            }
+            // The user's (CLI, the banner).
+            "rules_allow" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;

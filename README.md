@@ -215,7 +215,7 @@ They share the TUI's keys (`s`, `x`, `c`, `d`, `r`, `Shift+R`, `?`, `j`/`k` outs
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Desktop: copy / paste in a terminal (`Ctrl+C` copies a selection, else sends ^C) |
 | `Shift+drag`, `Shift+wheel` | Desktop: select and scroll even when the program uses the mouse |
 
-The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `f` fold, `?` the Home guide. **Guide:** [docs/guides/home.md](docs/guides/home.md) (zones, the ball, rounds, what the orchestrator may do, and habits that make Home work).
+The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `w` why (the rule that put the line there, the facts it read, the rules above it), `f` fold, `?` How lazyagent works (`F1` anywhere). **Guide:** [docs/guides/how-lazyagent-works.md](docs/guides/how-lazyagent-works.md) (zones, the ball, every state, verb and key, your rules, the facts; generated from the rules catalog).
 
 `?` in either shows the full list.
 
@@ -522,7 +522,7 @@ and_when = 'item.branch != "release" and tracker.linked'
 lazyagent rules check     # errors with file and line (exit 1), and what is in force instead
 lazyagent rules show      # the effective rules in order, and where each comes from
 lazyagent rules allow     # print the repo file and its hash; then: lazyagent rules allow <hash>
-lazyagent rules doc       # the built-in catalog as Markdown (--effective: with yours)
+lazyagent rules doc       # "How lazyagent works" as Markdown (--effective: with yours; --write: the repo's docs/guides copy)
 lazyagent status --why <branch>   # the rule behind a row: file, line, facts, the rules above it
 ```
 

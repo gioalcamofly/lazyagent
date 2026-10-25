@@ -45,6 +45,8 @@ pub enum View {
     /// The work items (home.rs): what the app opens on.
     Home,
     Worktrees,
+    /// "How lazyagent works" (how_it_works.rs): Help menu, F1, `?` on Home.
+    Guide,
 }
 
 /// Unix time in seconds.
@@ -192,6 +194,11 @@ pub struct State {
     pub orchestrator_actions: Option<Vec<lazyagent_proto::types::OrchestratorAction>>,
     /// The rule files' errors (feature `rules`): Home's error line.
     pub rules_errors: Vec<lazyagent_proto::types::RulesProblem>,
+    /// "How lazyagent works" (R6): where it goes back to, its filters, the
+    /// engine's catalog.
+    pub guide: crate::how_it_works::Guide,
+    /// The open "Why?" view (R6), drawn in place of Home's list.
+    pub why: Option<crate::why_view::WhyView>,
     /// The last gesture Home can take back (a 5 s Undo).
     pub undo: Option<crate::home_view::Undo>,
     /// Rows never looked at, marked seen now (once): no dots on a first launch.
@@ -207,7 +214,7 @@ pub struct State {
     /// Worktree → whether `get_pr_info` could fetch (false: no gh).
     pub pr_fetched: HashMap<String, bool>,
     /// `g` was pressed (a view switch follows: a / w).
-    pending_g: Option<Instant>,
+    pub(crate) pending_g: Option<Instant>,
     pub dialog: Option<crate::dialogs::Dialog>,
     dialog_seq: u64,
     pub jobs: Vec<Job>,
@@ -300,6 +307,8 @@ impl State {
             orchestrator: None,
             orchestrator_actions: None,
             rules_errors: vec![],
+            guide: Default::default(),
+            why: None,
             undo: None,
             seen_seeded: HashSet::new(),
             inbox_loaded: 0,
@@ -398,7 +407,7 @@ impl State {
     pub fn open_dialog(&mut self, kind: crate::dialogs::Kind) {
         use crate::dialogs::{Dialog, Kind};
         let target = self.selected.clone().unwrap_or_default();
-        if !matches!(kind, Kind::Create | Kind::Help | Kind::HomeHelp) && target.is_empty() {
+        if !matches!(kind, Kind::Create | Kind::Help) && target.is_empty() {
             return;
         }
         if kind == Kind::Remove && target == ORCHESTRATOR_KEY {
@@ -617,8 +626,13 @@ impl State {
 
     /// `status_list`'s parameters: with gestures, the done rows too (the
     /// tombstones Home shows dimmed for a day).
+    /// With rules, each row's verb and primary action (a user rule's).
     fn status_params(&self) -> serde_json::Value {
-        if self.gestures() { json!({"include_done": true}) } else { json!({}) }
+        let mut p = if self.gestures() { json!({"include_done": true}) } else { json!({}) };
+        if self.has("rules") {
+            p["fields"] = json!(["rule_id", "verb", "action"]);
+        }
+        p
     }
 
     pub(crate) fn fetch_inbox(&mut self) {
@@ -1083,7 +1097,17 @@ impl State {
             EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
             EngineEvent::ReviewReplied(r) => self.on_review_replied(&r, true),
             EngineEvent::StatusUpdated(u) => {
-                self.status_rows.insert(u.row.key.clone(), u.row);
+                let mut row = u.row;
+                // The event has no opt-in fields: keep the last ones while
+                // the rule and the state are the same.
+                if row.verb.is_none()
+                    && row.rule_id.is_none()
+                    && let Some(old) =
+                        self.status_rows.get(&row.key).filter(|o| o.rule == row.rule && o.state == row.state)
+                {
+                    (row.rule_id, row.verb, row.action) = (old.rule_id.clone(), old.verb.clone(), old.action.clone());
+                }
+                self.status_rows.insert(row.key.clone(), row);
                 self.inbox_gen += 1;
             }
             EngineEvent::StatusRemoved(r) => {
@@ -1285,10 +1309,16 @@ impl App {
         // text fields; otherwise they are the TUI's action keys.
         let outside = s.dialog.is_none() && s.ask.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
         let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+        // The page, from anywhere (a terminal does not need F1).
+        if s.dialog.is_none() && take(Modifiers::NONE, Key::F1) {
+            s.open_guide("overview");
+        }
         if outside {
             use crate::dialogs::Kind;
             let home = s.view == View::Home;
-            if home && s.home_key(&take) {
+            if s.view == View::Guide && s.guide_key(&take) {
+                // The page's own keys (how_it_works.rs).
+            } else if home && s.home_key(&take) {
                 // Home's own keys (home_view.rs).
             } else if take(Modifiers::NONE, Key::S) {
                 s.open_dialog(Kind::Spawn);
@@ -1400,8 +1430,8 @@ impl App {
                     s.saver.touch();
                 }
                 ui.separator();
-                if ui.button("Home guide  (? on Home)").clicked() {
-                    s.open_dialog(Kind::HomeHelp);
+                if ui.button("How lazyagent works  (F1)").clicked() {
+                    s.open_guide("overview");
                 }
                 if ui.button("Keyboard shortcuts  (?)").clicked() {
                     s.open_dialog(Kind::Help);
@@ -2220,6 +2250,7 @@ impl App {
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(8, 0)))
             .show(ui, |ui| match self.state.view {
                 View::Worktrees => self.center(ui, &ctx),
+                View::Guide => self.guide_view(ui),
                 View::Home if !self.state.seeded => self.link_overlay(ui),
                 View::Home => {
                     self.link_banner(ui);

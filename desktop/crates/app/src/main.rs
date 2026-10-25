@@ -13,8 +13,8 @@ mod diff_view;
 mod fonts;
 mod gpu;
 mod home;
-mod home_help;
 mod home_view;
+mod how_it_works;
 mod install;
 mod lifecycle;
 mod notes_view;
@@ -28,6 +28,7 @@ mod term_view;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod why_view;
 
 use std::path::PathBuf;
 use std::sync::mpsc;

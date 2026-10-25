@@ -445,7 +445,7 @@ _fact("pr.base", TEXT, "the PR's base branch", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("base_ref"))
 _fact("pr.head_sha", TEXT, "the PR's head commit", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("head_sha"))
-_fact("pr.merged_into", TEXT, "the branch the head is already in (empty: none)",
+_fact("pr.merged_into", TEXT, "the branch that already holds the head (empty: none)",
       "git (merged_into)", "per head", "free",
       row=lambda c: c.facts.merged_into or "")
 
@@ -461,7 +461,7 @@ _fact("ci.head", CI_HEAD, "Actions on the head", "Actions runs (I7)", "≤ actio
 
 _fact("queue.enabled", BOOL, "the inbox queue is on", "ActionableQueue", "static", "free",
       row=lambda c: c.facts.actionables is not None)
-_fact("items.count", NUM, "the work item's open inbox items", "ActionableQueue",
+_fact("items.count", NUM, "the open inbox items on the work item", "ActionableQueue",
       "per pass", "free", row=_items_count)
 _fact("items.top.kind", TEXT, "the top inbox item's kind", "ActionableQueue", "per pass",
       "free", row=_items_top("kind"))

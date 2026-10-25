@@ -247,9 +247,16 @@ impl Line {
         Some(text)
     }
 
-    /// The action an inbox line asks for, always an imperative.
+    /// The action an inbox line asks for, always an imperative: the
+    /// engine's (`status_list {fields}`, feature `rules`: a user rule's
+    /// verb) for a line with no item of a kind this table knows; else this
+    /// table, the fallback for older engines.
     pub fn verb(&self) -> &str {
+        let engine = self.row.as_ref().and_then(|r| r.verb.as_deref()).filter(|v| !v.is_empty());
         let Some(top) = &self.top else {
+            if let Some(v) = engine {
+                return v;
+            }
             return match self.row.as_ref() {
                 Some(r) if r.rule == 4 => "Merge",
                 Some(r) if r.state == "PR has no reviewer" => "Request reviewer",
@@ -272,8 +279,8 @@ impl Line {
             "decision" => "Decide",
             "report" => "Read",
             // An item rule's (the built-in Merge, a user rule): its own verb.
-            "rule" => top.verb.as_deref().filter(|v| !v.is_empty()).unwrap_or("Look"),
-            _ => "Look",
+            "rule" => top.verb.as_deref().filter(|v| !v.is_empty()).or(engine).unwrap_or("Look"),
+            _ => engine.unwrap_or("Look"),
         }
     }
 
