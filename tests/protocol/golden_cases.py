@@ -973,6 +973,16 @@ async def _():
     )
 
 
+@case("orchestrator_release/nothing_to_release")
+async def _():
+    return await _call(
+        _claims_engine(),
+        "orchestrator_release",
+        {"key": "repo:docs-index", "outcome": "done", "note": "already released",
+         "caller": "tok-orch"},
+    )
+
+
 @case("status_gesture/park_the_work_item_indefinitely")
 async def _():
     return await _call(
@@ -1057,6 +1067,16 @@ async def _():
         "status_report",
         {"note": "PR up: pick a reviewer", "needs_user": True,
          "outward": {"kind": "pr_create", "ref": "https://example.com/pull/15", "text": "opened"},
+         "caller": "tok-a2"},
+    )
+
+
+@case("status_report/background_until")
+async def _():
+    return await _call(
+        _worker_engine(),
+        "status_report",
+        {"note": "sampling in background until ~09:40", "ball": "agent", "until": "45m",
          "caller": "tok-a2"},
     )
 

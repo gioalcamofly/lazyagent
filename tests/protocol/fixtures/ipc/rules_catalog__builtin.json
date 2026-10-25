@@ -352,6 +352,18 @@
           "values": []
         },
         {
+          "cost": "free",
+          "freshness": "per pass",
+          "name": "agent.reported",
+          "phrase": "the agent's report says where the ball is (it works on)",
+          "scopes": [
+            "item"
+          ],
+          "source": "overlay",
+          "type": "bool",
+          "values": []
+        },
+        {
           "cost": "poll",
           "freshness": "\u2264 60 s",
           "name": "pr.exists",
@@ -922,6 +934,18 @@
           "source": "overlay",
           "type": "text",
           "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "per pass",
+          "name": "report.agent",
+          "phrase": "the agent that reported (empty: none)",
+          "scopes": [
+            "row"
+          ],
+          "source": "overlay",
+          "type": "text",
+          "values": []
         }
       ],
       "files": [
@@ -1091,10 +1115,10 @@
           "id": "done",
           "level": "deep",
           "rank": 6,
-          "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator.",
+          "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on.",
           "title": "Your turn",
           "verb": "Review",
-          "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agents.running == 0 and not pr.exists and not place.is_orchestrator"
+          "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agents.running == 0 and not pr.exists and not place.is_orchestrator and not agent.reported"
         },
         {
           "action": null,
@@ -1565,7 +1589,7 @@
             "state": "review: agent finished"
           },
           "verb": null,
-          "when": "not queue.enabled and agents.idle > 0 and agents.running == 0 and not pr.exists"
+          "when": "not queue.enabled and agents.idle > 0 and agents.running == 0 and not pr.exists and report.ball == \"\""
         },
         {
           "action": null,
@@ -1661,10 +1685,10 @@
           "origin": "builtin",
           "position": 24,
           "replaces": null,
-          "says": "",
+          "says": "Ball agent: it works on in the background (its turn is over).",
           "then": {
             "ball_expr": "report.ball",
-            "state_expr": "clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
+            "state_expr": "report.ball == \"agent\" ? clip(\"agent \" + report.agent + \" \u00b7 \" + (report.note == \"\" ? \"working\" : report.note), 8) : clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
           },
           "verb": null,
           "when": "report.ball != \"\""

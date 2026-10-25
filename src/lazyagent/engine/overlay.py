@@ -14,6 +14,10 @@ The rows themselves stay a projection (status.py); this store keeps only:
   note, and optionally a ball and ``needs_user``. The ball and
   ``needs_user`` clear once the agent has ended a turn and runs again, when
   it is sent input, or when it is gone; the note stays as the row's note.
+  The ball also lapses at the report's ``until`` (at most
+  :data:`MAX_REPORT_FOR`; ball ``agent``, background work, defaults to
+  :data:`REPORT_FOR`, the others to none). While it holds, the agent's
+  finished turn is not "done": it said it works on in the background.
 - **closed**, 24 h tombstones: the item became done (merged, PR closed,
   closed by the user) or its worktree went away. A removed item stays a
   ``done`` row for 24 h; then its timeline, gestures and seen marks go.
@@ -46,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -76,6 +81,10 @@ RELEASED_FOR = 86400.0
 GESTURE_KINDS = ("label", "park", "close")
 LABEL_BALLS = ("agent", "others", "stalled")
 REPORT_BALLS = ("agent", "others", "stalled")
+# A reported ball "agent" (background work) lapses this long after the
+# report, unless it says until; "others" / "stalled" have no default.
+REPORT_FOR = 2 * 3600.0
+MAX_REPORT_FOR = 8 * 3600.0
 CLOSE_HOW = ("done", "dropped")
 TIMELINE_KINDS = (
     "commit",
@@ -106,6 +115,41 @@ def one_line(text: str, limit: int) -> str:
     """``text`` on one line, at most ``limit`` characters (``…`` when cut)."""
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def default_until(ball: str | None, at: float) -> float | None:
+    """A report's until when it gives none: only background work lapses."""
+    return at + REPORT_FOR if ball == "agent" else None
+
+
+_DURATION = re.compile(r"(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?")
+
+
+def report_until(value: Any, now: float) -> float | None:
+    """A report's ``until``: a Unix time, or a duration from now ("45m",
+    "2h", "1h30m", "90s"); None (not given) is the default. At most
+    :data:`MAX_REPORT_FOR` ahead."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("until must be a Unix time or a duration such as \"45m\"")
+    if isinstance(value, (int, float)):
+        until = float(value)
+    elif isinstance(value, str):
+        m = _DURATION.fullmatch(value.strip())
+        if m is None or not any(m.groups()):
+            raise ValueError(
+                f"until {value!r}: a Unix time or a duration such as \"45m\", \"2h\", \"1h30m\""
+            )
+        h, mins, secs = (int(g or 0) for g in m.groups())
+        until = now + h * 3600 + mins * 60 + secs
+    else:
+        raise ValueError("until must be a Unix time or a duration such as \"45m\"")
+    if until <= now:
+        raise ValueError("until is already past")
+    if until - now > MAX_REPORT_FOR:
+        raise ValueError(f"until is at most {MAX_REPORT_FOR / 3600:g} h ahead")
+    return until
 
 
 def actor_of(by: str, agent_id: str = "") -> str:
@@ -180,6 +224,9 @@ class Overlay:
         self.spawned: dict[str, dict[str, Any]] = {}
         self.delegations: dict[str, dict[str, Any]] = {}
         self.orchestrator_report: dict[str, Any] | None = None
+        # key → the agent's turn its report was made in (status.turn); in
+        # memory only, so a loaded report falls back to ``turn_over``.
+        self._report_turns: dict[str, int] = {}
         self._saved: str | None = None
         self._handle: asyncio.TimerHandle | None = None
 
@@ -543,9 +590,11 @@ class Overlay:
         needs_user: bool,
         label: str,
         now: float,
+        until: float | None = None,
+        turn: int | None = None,
     ) -> dict[str, Any]:
         """An agent's ``status_report`` on its own work item (replacing its
-        previous one)."""
+        previous one), made in its turn ``turn``."""
         r = {
             "agent": agent_id,
             "worktree_path": worktree_path,
@@ -556,30 +605,54 @@ class Overlay:
             "at": now,
             # Its turn has ended since (then running again answers it).
             "turn_over": False,
+            "until": default_until(ball, now) if until is None else until,
         }
         self.reports[key] = r
+        if turn is None:
+            self._report_turns.pop(key, None)
+        else:
+            self._report_turns[key] = turn
         self.changed()
         return r
 
+    def working(self, key: str) -> dict[str, Any] | None:
+        """``key``'s report while its ball holds (the agent said where the
+        ball is: working on in the background, waiting on others, stalled)."""
+        r = self.reports.get(key)
+        return r if r is not None and r.get("ball") else None
+
     def expire_reports(self, now: float) -> None:
         """A report's ``needs_user`` and ball last until its agent has ended
-        a turn and runs again, or is gone."""
+        a turn and runs again, or is gone; the ball also lapses at the
+        report's ``until``."""
         if self._engine is None:
             return
         from lazyagent.engine.status import _RUNNING, TURN_OVER
 
-        for r in self.reports.values():
+        for key, r in self.reports.items():
             if not (r.get("needs_user") or r.get("ball")):
                 continue
             path, agent_id = r["worktree_path"], r["agent"]
             state = self._engine.agent_states(path).get(agent_id)
+            until = r.get("until")
+            if not isinstance(until, (int, float)):
+                until = default_until(r.get("ball"), r["at"])
+            if r.get("ball") and until is not None and now >= until:
+                # Past until: the engine's own derivation is back.
+                r["ball"] = None
+                self.changed()
+            turn = self._report_turns.get(key)
             if agent_id not in self._engine.agent_ids(path):
+                self._answered(r)
+            elif turn is not None and self._engine.status.turn(path, agent_id) > turn:
+                # A turn after the report's: it has not reported again.
                 self._answered(r)
             elif state is not None and state.status.value in TURN_OVER:
                 if not r.get("turn_over"):
                     r["turn_over"] = True
                     self.changed()
-            elif state is not None and state.status.value in _RUNNING and r.get("turn_over"):
+            elif turn is None and state is not None and state.status.value in _RUNNING \
+                    and r.get("turn_over"):
                 self._answered(r)
 
     def answer_report(self, worktree_path: str, agent_id: str) -> bool:

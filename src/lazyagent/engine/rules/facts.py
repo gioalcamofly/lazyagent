@@ -394,6 +394,9 @@ _fact("agent.detail", TEXT, "the agent's detail line", _REG, "on agent.* events"
       item=_agent("detail"))
 _fact("place.is_orchestrator", BOOL, "the orchestrator's own place", _REG, "static",
       "free", item=_is_orchestrator)
+_fact("agent.reported", BOOL, "the agent's report says where the ball is (it works on)",
+      _OV, "per pass", "free",
+      item=lambda c: c.agent is not None and c.place.reported == c.agent.agent_id)
 
 _fact("pr.exists", BOOL, "there is a PR", _PRP, "≤ 60 s", "poll",
       row=lambda c: c.facts.pr is not None, item=lambda c: c.place.pr is not None)
@@ -493,6 +496,8 @@ _fact("report.ball", TEXT, "the agent's reported ball (empty: none)", _OV, "per 
       "free", row=_report("ball"))
 _fact("report.note", TEXT, "the agent's report note (empty: none)", _OV, "per pass",
       "free", row=_report("note"))
+_fact("report.agent", TEXT, "the agent that reported (empty: none)", _OV, "per pass",
+      "free", row=_report("agent"))
 
 
 # ----------------------------------------------------------------------

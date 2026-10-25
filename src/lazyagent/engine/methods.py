@@ -24,6 +24,7 @@ from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
 from lazyagent.agent_providers import ResumeMode
 from lazyagent.engine import actions, approvals
 from lazyagent.engine import overlay as overlay_mod
+from lazyagent.engine.claims import NOTHING_TO_RELEASE
 from lazyagent.engine.events import ENGINE_RESTORED, REVIEW_REPLIED
 from lazyagent.engine.notes import MODES as NOTES_MODES
 from lazyagent.engine.notes import Notes, NotesConflict, NotesStore
@@ -1236,7 +1237,11 @@ class EngineMethods:
         """An agent reports on its own work item. Params: note (one line),
         ball (agent, others, stalled; optional), needs_user (bool), outward
         (optional ``{kind, ref, text}``: something it did outside the repo,
-        added to the item's timeline), caller (the agent's token).
+        added to the item's timeline), until (when the ball lapses: a Unix
+        time or a duration such as "45m"; at most 8 h; default 2 h for ball
+        agent, none for the others), caller
+        (the agent's token). While the ball holds, the agent's ended turn is
+        not "agent finished" (it works on in the background).
 
         With the orchestrator's token: only ``note``, what it is doing now
         (``status_list`` ``orchestrator.report``), tied to no work item."""
@@ -1246,10 +1251,10 @@ class EngineMethods:
             raise ValueError("note must be a string")
         if role == ORCHESTRATOR_BY:
             if params.get("ball") is not None or params.get("needs_user") \
-                    or params.get("outward") is not None:
+                    or params.get("outward") is not None or params.get("until") is not None:
                 raise ValueError(
                     "The orchestrator reports only a note (what it is doing now): ball, "
-                    "needs_user and outward are for a worker's own work item"
+                    "needs_user, outward and until are for a worker's own work item"
                 )
             if not note.strip():
                 raise ValueError("note is required: what you are doing now, in one line")
@@ -1278,6 +1283,7 @@ class EngineMethods:
             raise ValueError("Nothing to report: give a note, a ball, needs_user or outward")
         engine = self._engine
         now = engine.status.clock()
+        until = overlay_mod.report_until(params.get("until"), now)
         overlay = engine.overlay
         report = None
         if note.strip() or ball is not None or needs_user:
@@ -1286,6 +1292,7 @@ class EngineMethods:
                 key, path, agent_id,
                 note=note, ball=ball, needs_user=needs_user,
                 label=info.label if info is not None else "", now=now,
+                until=until, turn=engine.status.turn(path, agent_id),
             )
         entry = None
         if outward is not None:
@@ -1410,6 +1417,10 @@ class EngineMethods:
             raise ValueError("note must be a string")
         claim = self._engine.claims.release(key, outcome, note)
         self._engine.status.flush()
+        if claim is None:
+            # Already ended (released, lapsed, or its worktree went): the
+            # same release twice is not an error.
+            return {"key": key, "outcome": NOTHING_TO_RELEASE, "claim": None}
         if claim.kind == "hold":
             return {"key": key, "outcome": outcome, "claim": None, "hold": claim.to_dict()}
         return {"key": key, "outcome": outcome, "claim": claim.to_dict()}

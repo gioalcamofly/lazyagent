@@ -22,10 +22,16 @@ reads ``orchestrator · <note>`` in flight and never reaches Round, but a
 hold widens no mandate: questions and briefs still follow the first
 responder's routing. The engine holds on its own, for the orchestrator, the
 ``done`` and ``review`` items of agents it spawned (``[orchestrator]
-hold_spawned_ttl_min``, 60; 0 turns it off); a hold that expires comes back
-to the user as "orchestrator did not respond". ``orchestrator_release``
+hold_spawned_ttl_min``, 60; 0 turns it off), once per item occurrence and
+once per agent turn (a release is not undone by the same idle turn), and
+only while the worktree and the agent are there; a hold that expires comes
+back to the user as "orchestrator did not respond". ``orchestrator_release``
 ends a pass or a hold; its note stays on the row (``orchestrator: <note>``)
-and on the timeline.
+and on the timeline. Releasing what already ended is ``nothing_to_release``,
+not an error.
+
+A pass or a hold whose worktree goes ends quietly (nothing to return, no
+wake line); so does an automatic hold whose agent is stopped.
 
 While a pass or a hold lasts, only what is still the user's stays in the
 user's inbox: tool approvals, and questions and briefs the routing left to
@@ -73,6 +79,8 @@ NO_RESPONSE = "orchestrator did not respond"
 # orchestrator_release: done (nothing for the user), returned (back to the
 # user's Round with the note).
 OUTCOMES = ("done", "returned")
+# orchestrator_release on an item with no pass or hold (any more).
+NOTHING_TO_RELEASE = "nothing_to_release"
 # What a claim allows (§5c, the away column: the user handed it over,
 # shortened by [orchestrator] away_allow), plus marking its inbox items.
 # The never-alone list stays out (engine/orchestrator.py).
@@ -94,8 +102,9 @@ class Claim:
     # pass (the user's) · hold (the orchestrator's own)
     kind: str = "pass"
     note: str = ""
-    # An automatic hold hides only these items (their ids).
+    # An automatic hold hides only these items (their ids), of this agent.
     items: tuple[str, ...] = ()
+    agent: str = ""
 
     @property
     def auto(self) -> bool:
@@ -184,8 +193,10 @@ class Claims:
         self.active: dict[str, Claim] = {}
         self.holds: dict[str, Claim] = {}
         self.returned: dict[str, Returned] = {}
-        # Item occurrences already held once on their own (not again).
+        # Item occurrences already held once on their own (not again), and
+        # (key, agent, turn, kind): one hold per agent turn.
         self._auto_seen: set[str] = set()
+        self._auto_turns: set[tuple[str, str, int, str]] = set()
         self._wakes: list[_Wake] = []
         self._waking = False
         engine.actionables.add_detector(self.items)
@@ -255,7 +266,7 @@ class Claims:
     def hold(
         self, key: str, note: Any, *, ttl_s: Any = None, by: str = "orchestrator",
         items: tuple[str, ...] = (), wake: str | None = None,
-        row: dict[str, Any] | None = None,
+        row: dict[str, Any] | None = None, agent: str = "",
     ) -> Claim:
         """The orchestrator holds ``key`` itself for ``ttl_s`` seconds
         (:data:`HOLD_TTL` by default, at most :data:`MAX_HOLD_TTL`) while it
@@ -281,7 +292,7 @@ class Claims:
         now = self.clock()
         note = " ".join(note.split())[:HOLD_NOTE_CHARS]
         hold = Claim(key, row["worktree_path"], now, now + float(ttl_s), by,
-                     kind="hold", note=note, items=items)
+                     kind="hold", note=note, items=items, agent=agent)
         self.holds[key] = hold
         self.returned.pop(key, None)
         self._engine.events.emit(HOLD_CREATED, {"hold": hold.to_dict()})
@@ -296,12 +307,15 @@ class Claims:
 
     def auto_hold(self, items: Iterable[dict[str, Any]], now: float) -> None:
         """Hold for the orchestrator the finished work of the agents it
-        spawned (``done``, ``review``), once per occurrence."""
+        spawned (``done``, ``review``), once per occurrence and agent turn,
+        while the worktree and the agent are there."""
         ttl = self._engine.config.orchestrator.hold_spawned_ttl_min * 60
         if ttl <= 0:
             return
-        overlay = self._engine.overlay
+        engine = self._engine
+        overlay = engine.overlay
         alive: bool | None = None
+        paths: set[str] | None = None
         for item in items:
             key = item["work_item"]
             if item["kind"] not in AUTO_HOLD_KINDS or key is None:
@@ -313,20 +327,35 @@ class Claims:
             agent = item.get("agent_id")
             if not workers or (agent is not None and agent not in workers):
                 continue
-            if key in self.active or key in self.holds or key in overlay.kept:
+            if key in self.active or key in self.holds or key in overlay.kept \
+                    or key in overlay.closed:
+                continue
+            path = item["worktree_path"]
+            if paths is None:
+                paths = self._paths()
+            if path not in paths:
+                continue
+            # A stopped worker: nothing for the orchestrator to verify.
+            live = [a for a in (agent,) if a is not None] or workers
+            live = [a for a in live if a in engine.agent_ids(path)]
+            if not live:
+                continue
+            who = live[-1]
+            turn = (key, who, engine.status.turn(path, who), item["kind"])
+            if turn in self._auto_turns:
                 continue
             if alive is None:
                 alive = self.orchestrator_alive()
             if not alive:
                 return
             self._auto_seen.add(item["occurrence"])
-            who = agent or workers[-1]
+            self._auto_turns.add(turn)
             what = "agent finished" if item["kind"] == "done" else "changes requested"
             try:
                 self.hold(
                     key, f"checking agent {who}'s work", ttl_s=max(MIN_TTL, min(ttl, MAX_HOLD_TTL)),
-                    by="engine", items=(item["id"],),
-                    row={"worktree_path": item["worktree_path"], "ball": "you"},
+                    by="engine", items=(item["id"],), agent=who,
+                    row={"worktree_path": path, "ball": "you"},
                     wake=f"agent {who} (spawned by you) — {what}: {item['state']}",
                 )
             except ValueError as e:
@@ -361,17 +390,20 @@ class Claims:
         self._changed()
         return claim
 
-    def release(self, key: str, outcome: str, note: str = "") -> Claim:
+    def release(self, key: str, outcome: str, note: str = "") -> Claim | None:
         """The orchestrator ends its pass or hold: ``done``, or ``returned``
         to the user's Round with ``note``. The note shows on the row and on
-        the timeline either way."""
+        the timeline either way. None when nothing holds ``key`` (any more:
+        released, lapsed, its worktree gone); an unknown key is an error."""
         if outcome not in OUTCOMES:
             raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
         claim = self.active.pop(key, None)
         if claim is None:
             claim = self.holds.pop(key, None)
         if claim is None:
-            raise ValueError(f"{key} is not with the orchestrator (no pass or hold, or it lapsed)")
+            if self._engine.status.row(key) is None:
+                raise ValueError(f"No work item {key!r}")
+            return None
         note = " ".join(note.split())[:NOTE_CHARS]
         now = self.clock()
         self._wakes = [w for w in self._wakes if w.key != key]
@@ -409,18 +441,32 @@ class Claims:
             self._wakes.clear()
             return
         alive = self.orchestrator_alive()
-        keys = set(self._engine.status.live_keys())
+        paths = self._paths()
         for table in (self.active, self.holds):
             for key, claim in list(table.items()):
-                if not alive:
+                if claim.worktree_path is not None and claim.worktree_path not in paths:
+                    # The work item is gone (worktree removed): nothing to
+                    # return, nothing to wake the orchestrator for.
+                    self._drop(key, table)
+                elif claim.agent and claim.agent not in self._engine.agent_ids(
+                        claim.worktree_path or ""):
+                    # Its agent was stopped: nothing left to verify.
+                    self._drop(key, table)
+                elif not alive:
                     self._lapse(key, "orchestrator_gone", now, table)
                 elif now >= claim.until:
                     self._lapse(key, "expired", now, table)
-                elif keys and key not in keys:
-                    # The work item is gone (worktree removed): nothing to return.
-                    del table[key]
         if alive and self._wakes:
             self._wake()
+
+    def _paths(self) -> set[str]:
+        """The worktrees there now (the main checkout among them)."""
+        return {w.path for w in self._engine.worktrees if not w.is_bare}
+
+    def _drop(self, key: str, table: dict[str, Claim]) -> None:
+        del table[key]
+        self._wakes = [w for w in self._wakes if w.key != key]
+        self._engine.status.mark_dirty()
 
     def _lapse(self, key: str, reason: str, now: float,
                table: dict[str, Claim] | None = None) -> None:
@@ -444,7 +490,11 @@ class Claims:
         never in the middle of one."""
         if self._waking or not self._orchestrator_idle():
             return
-        wakes, self._wakes = self._wakes, []
+        # Only what still waits for it: a line whose pass or hold ended is moot.
+        wakes = [w for w in self._wakes if w.key in self.active or w.key in self.holds]
+        self._wakes = []
+        if not wakes:
+            return
         agent_ids = self._engine.agent_ids(ORCHESTRATOR_KEY)
         if not agent_ids:
             return
