@@ -194,6 +194,7 @@ async def test_jira_reads_qa_field_instead_of_the_status():
     ("tested", "tested"),
     ({"value": "Tested", "id": "1"}, "tested"),
     ([{"value": "Other"}, {"value": "Not required"}], "not_required"),
+    ([{"value": "Not required"}, {"value": "Tested"}], "tested"),
     ([], None),
     ({"value": "Other"}, None),
     (7, None),
@@ -209,13 +210,31 @@ def test_jira_qa_field_shapes(value, qa):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status_from", ["labels", "state"])
-async def test_github_issues_maps_labels_in_the_mapping_order(status_from):
+async def test_github_issues_takes_the_most_conservative_mapped_label(status_from):
     config = TrackerConfig("github_issues", True, options={"status_from": status_from})
-    config.qa = {"qa-failed": "failed", "qa-passed": "tested", "qa": "pending"}
+    # Mapping order must not matter: tested comes first here.
+    config.qa = {"qa-passed": "tested", "no-qa": "not_required", "qa": "pending",
+                 "qa-failed": "failed"}
     gh = FakeGh(issue(1, labels=("QA", "qa-passed")), issue(2, labels=("bug",)),
-                issue(3, labels=("qa", "qa-failed")))
-    tasks = await GithubIssues(config, "/tmp/repo", run=gh).fetch(["1", "2", "3"])
-    assert {t.key: t.qa for t in tasks} == {"1": "tested", "2": None, "3": "failed"}
+                issue(3, labels=("qa-passed", "qa-failed")), issue(4, labels=("no-qa", "qa-passed")),
+                issue(5, labels=("Qa-Passed",)))
+    tasks = await GithubIssues(config, "/tmp/repo", run=gh).fetch(["1", "2", "3", "4", "5"])
+    assert {t.key: t.qa for t in tasks} == {
+        "1": "pending", "2": None, "3": "failed", "4": "tested", "5": "tested"}
+
+
+@pytest.mark.parametrize("values, qa", [
+    (["tested", "failed"], "failed"),
+    (["not_required", "pending", "tested"], "pending"),
+    (["not_required", "tested"], "tested"),
+    ([None, "not_required"], "not_required"),
+    ([None], None),
+    ([], None),
+])
+def test_the_most_conservative_value_wins(values, qa):
+    from lazyagent.engine.trackers import conservative_qa
+
+    assert conservative_qa(values) == qa
 
 
 @pytest.mark.asyncio

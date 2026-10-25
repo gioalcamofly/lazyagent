@@ -21,8 +21,9 @@ category's name (``To Do``, ``In Progress``, ``Done``) is, the category's.
 QA (``tracker.qa``): the ``[jira.qa]`` mapping names statuses (the name,
 else its category's name); with ``qa_field = "customfield_10042"`` the QA
 value comes from that field instead (asked for in both calls), its value
-(text, a select option's ``value``, or the first mapped option of a
-multi-select) mapped by ``qa_field_values``.
+(text, a select option's ``value``, or a multi-select's options: the most
+conservative one mapped) mapped by ``qa_field_values``. The category is
+read only when the status name is unmapped, so one value maps at most.
 
 The changelog is not read: the hub's first-seen edge already turns a status
 change between two polls into an entry, and a leave-and-return inside one
@@ -53,6 +54,7 @@ from lazyagent.engine.trackers import (
     TrackerConfig,
     TrackerError,
     TrackerTask,
+    conservative_qa,
     credential,
 )
 
@@ -251,14 +253,13 @@ class Jira:
         config = self.config
         if config.qa_field:
             value = fields.get(config.qa_field)
+            found = []
             for option in value if isinstance(value, list) else [value]:
                 if isinstance(option, dict):
                     option = option.get("value", option.get("name"))
                 if isinstance(option, str):
-                    qa = config.qa_of(option, config.qa_field_values)
-                    if qa is not None:
-                        return qa
-            return None
+                    found.append(config.qa_of(option, config.qa_field_values))
+            return conservative_qa(found)
         status = fields.get("status")
         if not config.qa or not isinstance(status, dict):
             return None

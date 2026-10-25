@@ -13,8 +13,9 @@ that the ``[github_issues.status]`` mapping names (one mapped with a
 issue, else none. ``"state"``: ``open``
 or ``closed``.
 
-QA (``tracker.qa``): the first label, in the ``[github_issues.qa]``
-mapping's order, that the mapping names (whatever ``status_from`` says).
+QA (``tracker.qa``): the labels the ``[github_issues.qa]`` mapping names
+(whatever ``status_from`` says); with several, the most conservative
+(failed, pending, tested, not_required).
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from lazyagent.engine.trackers import (
     TrackerConfig,
     TrackerError,
     TrackerTask,
+    conservative_qa,
 )
 
 BATCH = 50
@@ -130,11 +132,7 @@ class GithubIssues:
         return "closed" if state.lower() == "closed" else ""
 
     def qa_of(self, labels: list[str]) -> str | None:
-        names = {label.casefold() for label in labels}
-        for name, qa in self.config.qa.items():
-            if name.casefold() in names:
-                return qa
-        return None
+        return conservative_qa(self.config.qa_of(label) for label in labels)
 
     def _task(
         self, number: int, url: str, title: str, state: str, updated: str | None,

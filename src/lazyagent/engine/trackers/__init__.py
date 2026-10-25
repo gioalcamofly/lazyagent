@@ -71,6 +71,15 @@ QA_UNKNOWN = "unknown"
 QA_FIELD = "qa_field"
 QA_FIELD_VALUES = "qa_field_values"
 _QA_FIELD_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# When several of an issue's values map (labels, a multi-select), the most
+# conservative wins: a stale "passed" never masks a "failed".
+QA_PRECEDENCE = ("failed", "pending", "tested", "not_required")
+
+
+def conservative_qa(values: Iterable[str | None]) -> str | None:
+    """The most conservative of ``values`` (None ones ignored)."""
+    found = {v for v in values if v in QA_PRECEDENCE}
+    return next((v for v in QA_PRECEDENCE if v in found), None)
 
 # models.ticket_id's pattern: the default key in a branch name.
 GENERIC_KEY = TICKET_PATTERN

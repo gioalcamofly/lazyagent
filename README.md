@@ -366,15 +366,17 @@ unknown, and an unknown never matches). Without one, nothing changes.
 # qa_field = "customfield_10042"
 # qa_field_values = { "Tested" = "tested", "Not required" = "not_required" }
 
-[github_issues.qa]               # issue labels → QA (the first one mapped, in this order)
+[github_issues.qa]               # issue labels → QA
 "qa-failed" = "failed"
 "qa-passed" = "tested"
 "no-qa"     = "not_required"
 "qa"        = "pending"
 ```
 
-`qa_field` takes the field's text, a select's option, or the first mapped
-option of a multi-select.
+`qa_field` takes the field's text, a select's option, or a multi-select's
+options. When an issue has several mapped labels (or options), the most
+conservative wins: `failed`, then `pending`, `tested`, `not_required`, so a
+stale "qa-passed" never hides "qa-failed".
 
 ### Feeding work items (a planner, a script)
 
