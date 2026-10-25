@@ -1,4 +1,11 @@
-"""Wheel build hook: the desktop app's binary inside a platform wheel.
+"""Wheel build hook: ``lazyagent/_version.py``, and the desktop app's binary
+inside a platform wheel.
+
+Every wheel gets ``lazyagent/_version.py`` (``__version__``, read instead of
+``importlib.metadata``, which costs most of the package's import). A wheel
+gets it from a temp file, never written into the tree: the platform wheels
+build from a read-only mount. An editable install reads the tree, so there
+it is written to ``src/lazyagent/_version.py`` (gitignored), when it can be.
 
 With ``LAZYAGENT_BUILD_DESKTOP=1`` a (non-editable) wheel build compiles
 ``desktop/`` with cargo and ships the binary as
@@ -16,8 +23,10 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
@@ -26,6 +35,7 @@ BUILD_ENV = "LAZYAGENT_BUILD_DESKTOP"
 PLATFORM_ENV = "LAZYAGENT_WHEEL_PLATFORM"
 BINARY = "lazyagent-desktop"
 WHEEL_PATH = f"lazyagent/bin/{BINARY}"
+VERSION_PATH = "lazyagent/_version.py"
 
 
 def wheel_platform(environ=os.environ) -> str:
@@ -43,7 +53,10 @@ def wheel_platform(environ=os.environ) -> str:
 class DesktopBuildHook(BuildHookInterface):
     PLUGIN_NAME = "custom"
 
+    _version_dir: str | None = None
+
     def initialize(self, version: str, build_data: dict) -> None:
+        self._version_file(version, build_data)
         if version == "editable" or os.environ.get(BUILD_ENV) != "1":
             return
         manifest = Path(self.root) / "desktop" / "Cargo.toml"
@@ -61,3 +74,23 @@ class DesktopBuildHook(BuildHookInterface):
         build_data["force_include"][str(binary)] = WHEEL_PATH
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{wheel_platform()}"
+
+    def _version_file(self, version: str, build_data: dict) -> None:
+        source = f'__version__ = "{self.metadata.version}"\n'
+        if version == "editable":
+            path = Path(self.root) / "src" / VERSION_PATH
+            try:
+                if not path.is_file() or path.read_text() != source:
+                    path.write_text(source)
+            except OSError:
+                pass  # lazyagent/__init__.py falls back to importlib.metadata
+            return
+        self._version_dir = tempfile.mkdtemp(prefix="lazyagent-version-")
+        path = Path(self._version_dir) / "_version.py"
+        path.write_text(source)
+        build_data["force_include"][str(path)] = VERSION_PATH
+
+    def finalize(self, version: str, build_data: dict, artifact_path: str) -> None:
+        if self._version_dir is not None:
+            shutil.rmtree(self._version_dir, ignore_errors=True)
+            self._version_dir = None
