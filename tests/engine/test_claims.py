@@ -168,8 +168,9 @@ async def test_the_orchestrator_releases_done_or_returned():
     assert [(d["key"], d["outcome"], d["note"]) for _, d in seen] == [
         (KEY, "done", ""), ("repo:fix", "returned", "needs a product call"),
     ]
-    with pytest.raises(ValueError, match="not with the orchestrator"):
-        await methods.orchestrator_release({"key": KEY, "outcome": "done", "caller": "tok-orch"})
+    # Released already: nothing to release, not an error.
+    again = await methods.orchestrator_release({"key": KEY, "outcome": "done", "caller": "tok-orch"})
+    assert again["outcome"] == "nothing_to_release"
 
 
 async def test_who_may_do_what():

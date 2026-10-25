@@ -1,0 +1,18 @@
+{
+  "case": "orchestrator_release/nothing_to_release",
+  "method": "orchestrator_release",
+  "params": {
+    "caller": "tok-orch",
+    "key": "repo:docs-index",
+    "note": "already released",
+    "outcome": "done"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "claim": null,
+      "key": "repo:docs-index",
+      "outcome": "nothing_to_release"
+    }
+  }
+}

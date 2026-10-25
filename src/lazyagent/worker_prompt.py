@@ -32,6 +32,8 @@ cannot go on without it, then end your turn.
 - When the ball moves (you wait on CI, a reviewer or QA; or the user must act), \
 call status_report with a one-line note; needs_user=true only when the user \
 must act.
+- If you end your turn while work continues in the background, call \
+status_report with ball='agent', a note and until.
 - After an action outside the repo (an issue-tracker comment, a PR, a PR \
 comment), report it: status_report(outward={kind, ref, text}).
 - An answer arrives as "Decision <id>: <choice> ...": follow it. Withdraw a \

@@ -1,0 +1,28 @@
+{
+  "case": "status_report/background_until",
+  "method": "status_report",
+  "params": {
+    "ball": "agent",
+    "caller": "tok-a2",
+    "note": "sampling in background until ~09:40",
+    "until": "45m"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "key": "repo:export-csv",
+      "outward": null,
+      "report": {
+        "agent": "a2",
+        "at": 1700000000.0,
+        "ball": "agent",
+        "label": "",
+        "needs_user": false,
+        "note": "sampling in background until ~09:40",
+        "turn_over": false,
+        "until": 1700002700.0,
+        "worktree_path": "/tmp/repo-export"
+      }
+    }
+  }
+}

@@ -577,6 +577,9 @@ class StatusProjection:
         self._rows: dict[str, dict[str, Any]] = {}
         self._seen: dict[str, _Seen] = {}
         self._since: dict[tuple[str, str], tuple[str, float]] = {}
+        # (path, agent) → [its turn, running now]: a turn starts when the
+        # agent runs after it ended the last one (see :meth:`turn`).
+        self._turns: dict[tuple[str, str], list[Any]] = {}
         # worktree path → when the engine last saw one of its agents change
         # status, start or go (not the first sighting when it starts).
         self._saw: dict[str, float] = {}
@@ -718,6 +721,12 @@ class StatusProjection:
         self.flush()
 
     def _on_event(self, event: EngineEvent) -> None:
+        if event.event == "agent.status":
+            data = event.data if isinstance(event.data, dict) else {}
+            path, agent_id = data.get("worktree_path"), data.get("agent_id")
+            if isinstance(path, str) and isinstance(agent_id, str):
+                # As it happens: a short run between two passes still counts.
+                self.saw_status(path, agent_id, data.get("status", ""))
         if event.event == "worktrees.changed":
             self._worktrees_changed()
         elif event.event == "pr_info.updated":
@@ -751,6 +760,24 @@ class StatusProjection:
         """The work item key of a worktree path."""
         wt = next((w for w in self._engine.worktrees if w.path == path), None)
         return work_item_key(repo_name(self._engine), wt) if wt is not None else None
+
+    def saw_status(self, path: str, agent_id: str, status: str) -> None:
+        turn = self._turns.setdefault((path, agent_id), [0, False])
+        if status in _RUNNING:
+            if not turn[1]:
+                turn[0], turn[1] = turn[0] + 1, True
+        elif status in TURN_OVER:
+            turn[1] = False
+
+    def turn(self, path: str, agent_id: str) -> int:
+        """Which turn ``agent_id`` is on (or last ended): it counts the
+        runs that followed an ended turn, from the agent.status events and
+        each pass. A report or an auto-hold made in one turn knows a new
+        run by it. In memory only: it starts again with the engine."""
+        state = self._engine.agent_states(path).get(agent_id)
+        if state is not None:
+            self.saw_status(path, agent_id, state.status.value)
+        return self._turns.get((path, agent_id), [0])[0]
 
     def input_sent(self, path: str, agent_id: str) -> None:
         """An agent got input: its report's ``needs_user`` / ball are
@@ -1017,6 +1044,8 @@ class StatusProjection:
             del self._derived[key]
         for slot in [s for s in self._since if s not in live_agents]:
             del self._since[slot]
+        for slot in [s for s in self._turns if s not in live_agents]:
+            del self._turns[slot]
         self._primed = True
         self._facts_by_key = facts_by_key
         self._engine.autodelegate.check(rows, visible_items, now)
@@ -1347,6 +1376,7 @@ class StatusProjection:
             if status == AgentStatus.NO_AGENT.value:
                 status = STARTING
             slot = (path, agent_id)
+            self.saw_status(path, agent_id, status)
             known = self._since.get(slot)
             if known is None or known[0] != status:
                 if known is not None or self._primed:

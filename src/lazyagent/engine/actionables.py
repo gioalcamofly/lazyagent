@@ -259,6 +259,9 @@ class Place:
     # Actions on the head: the PR's head with an open PR, else the branch's
     # (engine/actions.py); None when Actions has no run on the branch.
     ci: CiVerdict | None = None
+    # The agent whose status_report ball holds on the work item (overlay
+    # working): its finished turn is not "done", it works on.
+    reported: str | None = None
 
     @property
     def running(self) -> bool:
@@ -750,18 +753,22 @@ class ActionableQueue:
         # The live agents' labels, for the exit that may come next.
         self._labels = {}
         places = [Place(ORCHESTRATOR_KEY, None, self._agents(ORCHESTRATOR_KEY))]
+        overlay = getattr(engine, "overlay", None)
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
             pr = engine.get_pr_info(wt.path)
+            key = work_item_key(repo, wt)
+            report = overlay.working(key) if overlay is not None else None
             places.append(
                 Place(
                     wt.path,
-                    work_item_key(repo, wt),
+                    key,
                     self._agents(wt.path),
                     pr,
                     getattr(wt, "head", None),
                     ci_verdict(engine, wt.branch, pr),
+                    report["agent"] if report and report["worktree_path"] == wt.path else None,
                 )
             )
         # An exit is answered once an agent runs in its slot again.

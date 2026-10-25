@@ -6,8 +6,11 @@ One deliberate change since R1 (Q-R22): with the inbox queue on, Merge is
 an inbox item, so the row rule ``merge`` (4) no longer matches a row: the
 queue's item does (rule 2, tested with the projection), and with no item
 open (dismissed, parked) the row reads as the rules below ``merge`` say
-(``approved_ready`` when nothing else does). :func:`both` maps the
-oracle's answer for that one case; every other one must agree."""
+(``approved_ready`` when nothing else does). And one since (fix-auto-hold):
+a reported ball says the agent works on, so it is not ``changes_requested``
+(5) or ``agent_finished`` (6) while it holds, and a reported ball ``agent``
+reads ``agent <id> · <note>``. :func:`both` maps the oracle's answer for
+those cases; every other one must agree."""
 
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ import pytest
 from lazyagent.engine import actionables
 from lazyagent.engine.rules import builtin
 from lazyagent.engine.rules.facts import RowContext
-from lazyagent.engine.status import AgentFact, Facts, derive
+from lazyagent.engine.status import AgentFact, Facts, clip_words, derive
 from lazyagent.engine.trackers import TrackerFact
 from lazyagent.models import CiCheck, PrInfo
 from tests.engine.rules import oracle
@@ -151,6 +154,19 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
             # The park kept Merge's ball; now it keeps what is below Merge.
             old = replace(old, ball=catalog.evaluate(ctx, merge + 1).ball)
         assert new.rule != 4
+    ball = (facts.report or {}).get("ball") or ""
+    if ball and new != old:
+        # What a label or a park keeps comes from below them: compare there.
+        under = oracle.derive(replace(facts, gesture=None), NOW, last_change,
+                              stalled_hours=stalled_hours)
+        if under.rule in (5, 6) and under.state in ("changes requested",
+                                                    "review: agent finished"):
+            assert new.state not in ("changes requested", "review: agent finished")
+            return new, new
+        if under.rule == 12 and ball == "agent" and old.state == under.state:
+            agent = facts.report.get("agent") or ""
+            note = facts.report.get("note") or "working"
+            old = replace(old, state=clip_words(" ".join(f"agent {agent} · {note}".split()), 8))
     return new, old
 
 

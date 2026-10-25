@@ -450,7 +450,9 @@ async def orchestrator_release(key: str, outcome: str, note: str = "") -> dict:
         note: What you did, or what the user needs to decide (≤ 200 chars).
 
     Returns:
-        Object with key, outcome and the ended ``claim`` (or ``hold``).
+        Object with key, outcome and the ended ``claim`` (or ``hold``);
+        outcome ``nothing_to_release`` when nothing holds it any more
+        (released, lapsed, its worktree removed): not an error.
     """
     params = _add_caller({"key": key, "outcome": outcome, "note": note})
     return await _get_client().call("orchestrator_release", params)
@@ -951,6 +953,7 @@ async def status_report(
     ball: str | None = None,
     needs_user: bool = False,
     outward: dict | None = None,
+    until: str | float | None = None,
 ) -> dict:
     """Tell the user's inbox where your work item stands, in one line.
 
@@ -962,8 +965,9 @@ async def status_report(
     outside the repo (an issue-tracker comment, a PR, a PR comment):
     ``outward={"kind": "tracker" | "github_comment" | "pr_create", "ref":
     "<url or id>", "text": "<what>"}`` adds it to the item's timeline.
-    Not for progress chatter: the engine already sees commits, CI and your
-    status. For a choice that needs reading, use request_decision instead.
+    If you end your turn while work continues in the background, call
+    status_report with ball='agent', a note and until. Not for progress
+    chatter: the engine already sees commits, CI and your status. For a choice that needs reading, use request_decision instead.
 
     Only for your own work item (lazyagent's agent token); the note shows
     on the row with its age. The orchestrator: call it with only a ``note``
@@ -976,6 +980,11 @@ async def status_report(
         ball: "agent", "others" or "stalled"; omit to leave it to the engine.
         needs_user: True only when the user must do something.
         outward: Optional {kind, ref, text} of an action outside the repo.
+        until: When the ball lapses: a Unix time or a duration ("45m",
+            "2h"; at most 8 h, default 2 h). Past it, or once you run again
+            and end a turn without a new report, the engine reads your
+            status again (your finished turn reaches the orchestrator or
+            the user).
 
     Returns:
         Object with key (your work item; null for the orchestrator), report
@@ -986,6 +995,8 @@ async def status_report(
         params["ball"] = ball
     if outward is not None:
         params["outward"] = outward
+    if until is not None:
+        params["until"] = until
     return await _get_client().call("status_report", _add_caller(params))
 
 
