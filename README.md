@@ -590,6 +590,7 @@ uv run pytest
 | Tests | Run | Notes |
 |---|---|---|
 | Unit, integration, contract | `uv run pytest` | What CI runs |
+| Python matrix (3.10, 3.11, 3.12) | `UV_PROJECT_ENVIRONMENT=.venv-3.10 uv run --python 3.10 --group dev pytest`, and the same with 3.11 / 3.12 | What CI's `test` jobs run; a venv per version keeps `.venv` (3.12, from `.python-version`) as it is. `uvx vermin -t=3.10- --violations --eval-annotations src tests` checks nothing needs more than 3.10 |
 | Browser E2E (`e2e` marker) | `uv sync --group dev --group e2e`, then `uv run pytest -m e2e` | Playwright; local only, skipped without Playwright or a Chromium (Playwright's own, else system Chrome) |
 | Performance (`perf` marker) | `uv run pytest -m perf` | Deselected by default; checks the [ui-plan](docs/design/ui-plan.md) §7d budgets; local only |
 | Desktop app | `cd desktop && cargo test` | Real-engine tests use the repo's `.venv` (or `LAZYAGENT_PYTHON`) and are skipped without it; `cargo test -- --ignored` runs the benches. CI also runs `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` |
