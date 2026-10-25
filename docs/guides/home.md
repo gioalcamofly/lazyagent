@@ -21,6 +21,7 @@ The desktop app opens on **Home**. This is its guide; the same text is in the ap
 | `X` | Dismiss the line's item (this occurrence, for every client); Undo for 5 s |
 | `Z` | Park: 1 h, tomorrow 08:00, 1 week, until something changes, indefinitely (keys 1-5; W the whole work item); Undo for 5 s |
 | `⇧Z` | Show / hide Parked |
+| `⇧F` | Show / hide In flight's done rows ("8 done today") |
 | `⇧O` | Pass to the orchestrator; Undo for 5 s |
 | `U` | Take a pass or hold back, or clear your label, park, close or delegation |
 | `D` | Delegate to its agent (the branch's agent); Undo for 5 s |
@@ -79,7 +80,7 @@ An inbox line starts with what to do, always a verb: Approve, Answer, Decide, Fi
 - Now: an agent is blocked on you (a tool approval, a question). Shown at once.
 - Round: quick things that need you but block nobody (CI red with no agent on it, a conflict, a merge-ready PR, a PR with no reviewer, an item the orchestrator handed back). Delivered in rounds, see below; the header reads "3 round (+1 next)".
 - To sit down with: things that need reading (a decision brief, changes requested, a finished branch to review). Shown at once, outside the rounds, against your limit (deep_max).
-- In flight: everything whose ball is not yours, with who has it and since when. Done rows (merged, closed) stay a day, dimmed. "N not started" in its header counts the tasks a planner or a tracker gave Home that have no branch yet (see Projects, below).
+- In flight: everything whose ball is not yours, with who has it and since when. Done rows (merged, closed, worktree removed) stay a day, folded into one group at its end, "8 done today ▸" (a click or ⇧F opens it; Home remembers it per repo). A done row with a suggestion ("close PR #47: its head is in develop") stays in place, dimmed, and counts in the header. "N not started" in its header counts the tasks a planner or a tracker gave Home that have no branch yet (see Projects, below).
 - Parked: work items you parked, with their inbox items, folded until you open it (⇧Z). A parked line says when it comes back, or why it waits, and "needs you" when one of its items is still yours; the Round header then shows "1 parked needs you ▸". Items a planner holds in its own Waiting lane wait here too, as "waiting (board)" or "waiting: &lt;reason&gt;".
 
 ## The ball

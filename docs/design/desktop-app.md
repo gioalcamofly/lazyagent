@@ -601,6 +601,19 @@ What landed and why: [inbox-plan.md](inbox-plan.md) §8 "I4d". The user's guide:
 - A CI line's "Send the failures to its agent" is a delegation the engine follows when it has `delegation`; with an older engine it is a plain `send_agent_input`, as before.
 - Screenshots: [i4d-home-dark.png](desktop-screenshots/i4d-home-dark.png), [i4d-home-light.png](desktop-screenshots/i4d-home-light.png), [i4d-home-guide-light.png](desktop-screenshots/i4d-home-guide-light.png).
 
+### Home: In flight folds its done rows (2026-10-25)
+
+Done rows (merged, closed, worktree removed; kept 24 h since I4a) filled most of In flight and none can be acted on. Those without a suggestion now go into one group at the end of In flight, "8 done today ▸", folded by default; a done row with a suggestion ("close PR #47: its head is in develop") stays in place, dimmed. Desktop only: the engine's rows are unchanged.
+
+| Key | Action | Needs |
+|---|---|---|
+| `Shift+F` | Show / hide the done group (a click on its header too); unfolding it unfolds In flight | — |
+
+- The In flight count leaves out the folded rows and counts done rows with a suggestion; the old "· N done today" moved into the group's header.
+- j/k skip the group's rows while it is folded and walk into them when it is open; Tab never visits In flight. `f` still folds all of In flight, the group included.
+- The folded state is per repo, in the app's state file (`home_done_open`, folded when missing).
+- Screenshots: [home-done-fold-dark.png](desktop-screenshots/home-done-fold-dark.png), [home-done-fold-light.png](desktop-screenshots/home-done-fold-light.png), [home-done-fold-open-light.png](desktop-screenshots/home-done-fold-open-light.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

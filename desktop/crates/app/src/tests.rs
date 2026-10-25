@@ -623,6 +623,22 @@ fn marks_and_settings_survive_a_restart() {
     assert!(!state.saved.notify_on("done"));
     assert_eq!(state.saved.marks.dismissed.len(), 1);
     assert_eq!(state.theme.kind, ThemeKind::Light, "the saved theme, since no --theme was given");
+    assert!(!state.home.done_open, "In flight's done group starts folded");
+    // Unfolded, per repo: this repo's state file only.
+    let mut saved = state.saved.clone();
+    saved.home_done_open = true;
+    saver.touch();
+    saver.flush(&saved);
+    let (tx, _rx) = mpsc::channel();
+    let conn = Conn::new("/r/repo".into(), dir_env(&dir), tx, egui::Context::default());
+    assert!(State::new(conn, FontSet::bundled_only(), None).home.done_open);
+    let (tx, _rx) = mpsc::channel();
+    let conn = Conn::new("/r/other".into(), dir_env(&dir), tx, egui::Context::default());
+    assert!(!State::new(conn, FontSet::bundled_only(), None).home.done_open, "another repo keeps its own");
+}
+
+fn dir_env(dir: &tempfile::TempDir) -> Env {
+    Env::process().with("XDG_STATE_HOME", Some(dir.path().to_str().unwrap()))
 }
 
 #[test]
@@ -3145,9 +3161,14 @@ fn row_gestures_label_park_close_and_clear_through_the_engine() {
     old["rule"] = json!(1);
     tx.send(event("status.updated", json!({"row": old}))).unwrap();
     h.run_steps(2);
-    assert_eq!(home_names(&h, Zone::Flight), ["cart"]);
-    h.get_by_label("· 1 done today");
+    assert!(home_names(&h, Zone::Flight).is_empty());
+    let done: Vec<_> = h.state().state.home.done_group().iter().map(|l| l.name.clone()).collect();
+    assert_eq!(done, ["cart"]);
+    h.get_by_label("1 done today ▸");
     // No gestures on a done row.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::F);
+    h.run_steps(2);
+    h.state_mut().state.home.selected = Some("repo:cart".into());
     h.key_press(egui::Key::L);
     h.run_steps(1);
     assert!(h.state().state.home.labeling.is_none());
@@ -3945,6 +3966,156 @@ fn held_passed_and_released_rows_say_what_the_orchestrator_does() {
     h.get_by_label("orchestrator: needs a product call");
     h.get_by_label("· needs a product call");
     h.get_by_label("suggestion: close PR #14: its head is in develop (p opens the PR; closing it is yours)");
+}
+
+/// In flight's done rows: those with nothing to do fold into one "N done
+/// today" group at its end; a done row with a suggestion stays in place.
+fn done_fold_rows() -> Vec<serde_json::Value> {
+    let mut rows = vec![
+        status_row("cart", "in_flight", None, "agent", "working", 60.0),
+        status_row("search", "in_flight", None, "others", "review requested", 120.0),
+    ];
+    let mut docs = status_row("docs", "in_flight", None, "done", "already merged into develop", 300.0);
+    docs["suggestion"] = json!("close PR #47: its head is in develop");
+    rows.push(docs);
+    for (i, (b, st)) in [("gone-1", "merged"), ("gone-2", "closed"), ("gone-3", "worktree removed")].iter().enumerate()
+    {
+        rows.push(status_row(b, "in_flight", None, "done", st, 600.0 + i as f64 * 60.0));
+    }
+    for r in &mut rows {
+        if r["ball"] == "done" {
+            r["rule"] = json!(1);
+        }
+    }
+    rows
+}
+
+#[test]
+fn done_rows_fold_into_one_group_folded_by_default() {
+    let (app, tx) = engine_home(I4D);
+    let mut h = harness(app);
+    h.run_steps(2);
+    for r in done_fold_rows() {
+        tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    }
+    h.run_steps(2);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    // Folded by default: one header, none of its rows.
+    h.get_by_label("3 done today ▸");
+    assert!(h.query_by_label("gone-1").is_none());
+    assert!(h.query_by_label("· 3 done today").is_none(), "the count moved into the group's header");
+    // The count: cart, search and docs (a suggestion still asks something).
+    h.get_by_label("3");
+    assert!(h.query_by_label("6").is_none() && h.query_by_label("2").is_none());
+    // A done row with a suggestion stays visible, in place.
+    assert_eq!(home_names(&h, crate::home::Zone::Flight), ["cart", "search", "docs"]);
+    h.get_by_label("docs");
+    h.get_by_label("suggestion: close PR #47: its head is in develop (p opens the PR; closing it is yours)");
+    // j/k skip the folded rows.
+    h.key_press(egui::Key::Num4);
+    h.run_steps(1);
+    for _ in 0..5 {
+        h.key_press(egui::Key::J);
+        h.run_steps(1);
+    }
+    assert_eq!(h.state().state.home.selected.as_deref(), Some("repo:docs"));
+    // ⇧F unfolds it, kept in the repo's state; j enters its rows.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::F);
+    h.run_steps(2);
+    h.get_by_label("3 done today ▾");
+    h.get_by_label("gone-1");
+    assert!(h.state().state.saved.home_done_open);
+    h.key_press(egui::Key::J);
+    h.run_steps(1);
+    let first = h.state().state.home.done_group()[0].key.clone();
+    assert_eq!(h.state().state.home.selected.as_deref(), Some(first.as_str()));
+    for _ in 0..5 {
+        h.key_press(egui::Key::J);
+        h.run_steps(1);
+    }
+    let last = h.state().state.home.done_group()[2].key.clone();
+    assert_eq!(h.state().state.home.selected.as_deref(), Some(last.as_str()));
+    // A click folds it again; the cursor leaves its rows.
+    h.get_by_label("3 done today ▾").click();
+    h.run_steps(2);
+    h.get_by_label("3 done today ▸");
+    assert!(h.query_by_label("gone-1").is_none());
+    assert!(!h.state().state.saved.home_done_open);
+    h.key_press(egui::Key::K);
+    h.run_steps(1);
+    let at = h.state().state.home.selected.clone().unwrap();
+    assert!(!h.state().state.home.done_group().iter().any(|l| l.key == at), "{at}");
+    // A click unfolds it too, and f (In flight folded) still hides it all.
+    h.get_by_label("3 done today ▸").click();
+    h.run_steps(2);
+    h.get_by_label("gone-2");
+    h.key_press(egui::Key::F);
+    h.run_steps(2);
+    assert!(h.query_by_label("3 done today ▾").is_none() && h.query_by_label("gone-2").is_none());
+}
+
+/// docs/design/desktop-screenshots/home-done-fold-*.png: In flight with its
+/// done group folded (dark, light) and unfolded (light).
+#[test]
+fn home_done_fold_screenshots() {
+    let (tx, rx) = mpsc::channel();
+    let state_dir = tempfile::tempdir().unwrap().keep();
+    let env = Env::process().with("XDG_STATE_HOME", Some(state_dir.to_str().unwrap()));
+    let conn = Conn::new("/r/repo".into(), env, tx.clone(), egui::Context::default());
+    let mut state = State::new(conn, FontSet::bundled_only(), Some(ThemeKind::Dark));
+    state.capabilities = Some(I4D.iter().map(|c| c.to_string()).collect());
+    state.inbox_loaded = 3;
+    let seed: SidebarState = serde_json::from_value(json!({
+        "worktrees": [worktree("/r/repo", "main", vec![])], "orchestrator": {"agents": []},
+        "pr_info": {}, "git_statuses": {}, "view": null, "cursor": 1
+    }))
+    .unwrap();
+    tx.send(Msg::Link(Link::Connected)).unwrap();
+    tx.send(Msg::Seed(Box::new(seed), None)).unwrap();
+    let mut rows = done_fold_rows();
+    for (b, st) in [("gone-4", "merged"), ("gone-5", "merged"), ("gone-6", "closed by you")] {
+        let mut r = status_row(b, "in_flight", None, "done", st, 4000.0);
+        r["rule"] = json!(1);
+        rows.push(r);
+    }
+    let mut round = status_row("checkout", "inbox", Some("round"), "you", "CI red: tests", 900.0);
+    round["pr"] = json!({"number": 51, "state": "OPEN", "review": "", "ci": "red", "mergeable": "MERGEABLE"});
+    rows.push(round);
+    let mut h = Harness::builder()
+        .with_size([1100.0, 620.0])
+        .wgpu()
+        .build_ui_state(|ui, app: &mut App| app.draw(ui), App::new(state, rx, None));
+    h.run_steps(2);
+    for r in rows {
+        tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    }
+    h.run_steps(3);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.state_mut().state.home.selected = Some("repo:docs".into());
+    h.run_steps(3);
+    h.state_mut().state.toasts.clear();
+    h.run_steps(2);
+    h.get_by_label("6 done today ▸");
+    let out = std::env::temp_dir();
+    let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
+        Ok(image) => {
+            image.save(out.join(format!("lazyagent-desktop-{name}.png"))).unwrap();
+            true
+        }
+        Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+        Err(_) => false,
+    };
+    if !shot(&mut h, "home-done-fold-dark") {
+        return;
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().state.toggle_theme(&ctx);
+    h.run_steps(4);
+    shot(&mut h, "home-done-fold-light");
+    h.state_mut().state.toggle_done_group();
+    h.run_steps(4);
+    shot(&mut h, "home-done-fold-open-light");
 }
 
 /// Home with I4d's park menu, Parked group, held and passed rows and a
