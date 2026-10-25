@@ -231,6 +231,9 @@ class EngineMethods:
             "rules_explain": self.rules_explain,
             "rules_check": self.rules_check,
             "rules_allow": self.rules_allow,
+            "prompts_status": self.prompts_status,
+            "prompts_plan": self.prompts_plan,
+            "prompts_apply": self.prompts_apply,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -1028,6 +1031,72 @@ class EngineMethods:
         result = hub.allow(params.get("hash"))
         self._engine.status.mark_dirty()
         return result | hub.check_result()
+
+    # --- Prompts (lazyagent prompts): the user's agent prompt files ---
+
+    def _prompts_env(self) -> Any:
+        from lazyagent.prompts import Env
+
+        return Env.process(self._engine.repo_root or None)
+
+    @staticmethod
+    def _prompts_args(params: dict) -> tuple[Any, str, list[str]]:
+        targets = params.get("targets")
+        if targets is not None and not (isinstance(targets, str) or (
+                isinstance(targets, list) and all(isinstance(t, str) for t in targets))):
+            raise ValueError("targets must be a list of names, \"all\" or \"detected\"")
+        scope = params.get("scope", "global")
+        skills = params.get("skills") or []
+        if not isinstance(skills, list) or not all(isinstance(x, str) for x in skills):
+            raise ValueError("skills must be a list of names")
+        return targets, scope, skills
+
+    async def prompts_status(self, params: dict) -> Any:
+        """Each target's prompt files (installed, outdated, modified,
+        absent), the user's skills, and ``notice`` ("your prompts are
+        outdated") or null. Params: targets? (default all), scope?."""
+        from lazyagent import prompts
+
+        targets, scope, _ = self._prompts_args(params)
+        env = self._prompts_env()
+
+        def read() -> dict[str, Any]:
+            return prompts.status(env, targets or "all", scope) | {"notice": prompts.notice(env)}
+
+        return await asyncio.to_thread(read)
+
+    async def prompts_plan(self, params: dict) -> Any:
+        """What install or uninstall would change, file by file, with each
+        diff and the shas prompts_apply checks. Writes nothing. Params:
+        action (install | uninstall), targets? (default: the detected
+        CLIs), scope?, skills? (install: add a line to these)."""
+        from lazyagent import prompts
+
+        targets, scope, skills = self._prompts_args(params)
+        action = params.get("action", "install")
+        env = self._prompts_env()
+
+        def make() -> list[dict[str, Any]]:
+            return [c.to_json() for c in prompts.plan(env, action, targets, scope, skills)]
+
+        return {"version": env.version, "action": action, "changes": await asyncio.to_thread(make)}
+
+    async def prompts_apply(self, params: dict) -> Any:
+        """Write one file the user approved in prompts_plan. Params: id,
+        action, base_sha, new_sha (from the plan; refused when the file
+        changed since), follow_symlinks?, force? (a hand-edited block). A
+        backup is saved first. The user's only."""
+        from lazyagent import prompts
+
+        self._user_only(params, "prompts_apply")
+        for name in ("id", "action", "base_sha", "new_sha"):
+            if not isinstance(params.get(name), str) or not params[name]:
+                raise ValueError(f"{name} is required (from prompts_plan)")
+        env = self._prompts_env()
+        return await asyncio.to_thread(
+            prompts.apply, env, params["id"], params["action"], params["base_sha"],
+            params["new_sha"], follow_symlinks=params.get("follow_symlinks") is True,
+            force=params.get("force") is True)
 
     async def actionables_list(self, params: dict) -> Any:
         """The inbox queue (proposal 0013): what needs the user, Now first,

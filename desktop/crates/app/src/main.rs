@@ -22,6 +22,7 @@ mod notify;
 mod pacer;
 mod panes;
 mod persist;
+mod prompts_view;
 mod render;
 mod store;
 mod term_view;

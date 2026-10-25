@@ -1,0 +1,17 @@
+{
+  "case": "prompts_apply/error_changed_since_preview",
+  "method": "prompts_apply",
+  "params": {
+    "action": "install",
+    "base_sha": "0000000000000000000000000000000000000000000000000000000000000000",
+    "id": "claude:global:pointer",
+    "new_sha": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "~/.claude/CLAUDE.md changed since the preview: preview it again"
+    },
+    "id": "req-1"
+  }
+}

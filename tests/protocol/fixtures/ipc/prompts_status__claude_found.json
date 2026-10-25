@@ -1,0 +1,122 @@
+{
+  "case": "prompts_status/claude_found",
+  "method": "prompts_status",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "notice": null,
+      "scope": "global",
+      "targets": [
+        {
+          "binary": null,
+          "detected": true,
+          "dir": "/home/dev/.claude",
+          "files": [
+            {
+              "display": "~/.claude/skills/lazyagent/SKILL.md",
+              "id": "claude:global:skill",
+              "kind": "skill",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.claude/skills/lazyagent/SKILL.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            },
+            {
+              "display": "~/.claude/CLAUDE.md",
+              "id": "claude:global:pointer",
+              "kind": "pointer",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.claude/CLAUDE.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            }
+          ],
+          "name": "claude",
+          "note": "",
+          "reason": "~/.claude exists; `claude` not on PATH",
+          "skills": [
+            "planner"
+          ],
+          "state": "absent",
+          "title": "Claude Code"
+        },
+        {
+          "binary": null,
+          "detected": false,
+          "dir": "/home/dev/.codex",
+          "files": [
+            {
+              "display": "~/.codex/skills/lazyagent/SKILL.md",
+              "id": "codex:global:skill",
+              "kind": "skill",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.codex/skills/lazyagent/SKILL.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            },
+            {
+              "display": "~/.codex/AGENTS.md",
+              "id": "codex:global:pointer",
+              "kind": "pointer",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.codex/AGENTS.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            }
+          ],
+          "name": "codex",
+          "note": "",
+          "reason": "no ~/.codex; `codex` not on PATH",
+          "skills": [],
+          "state": "absent",
+          "title": "Codex"
+        },
+        {
+          "binary": null,
+          "detected": false,
+          "dir": "/home/dev/.gemini",
+          "files": [
+            {
+              "display": "~/.gemini/skills/lazyagent/SKILL.md",
+              "id": "gemini:global:skill",
+              "kind": "skill",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.gemini/skills/lazyagent/SKILL.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            },
+            {
+              "display": "~/.gemini/GEMINI.md",
+              "id": "gemini:global:pointer",
+              "kind": "pointer",
+              "note": "",
+              "outside": null,
+              "path": "/home/dev/.gemini/GEMINI.md",
+              "skill": null,
+              "state": "absent",
+              "version": null
+            }
+          ],
+          "name": "gemini",
+          "note": "",
+          "reason": "no ~/.gemini; `gemini` not on PATH",
+          "skills": [],
+          "state": "absent",
+          "title": "Gemini CLI"
+        }
+      ],
+      "version": "0.8.0"
+    }
+  }
+}

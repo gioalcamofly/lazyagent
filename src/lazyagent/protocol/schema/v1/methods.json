@@ -2072,6 +2072,133 @@
         "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}}
       }
     },
+    "prompts_targets": {
+      "description": "A list of target names (claude, codex, gemini), or \"all\" / \"detected\". Omitted: prompts_status all, prompts_plan the detected ones.",
+      "oneOf": [
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "null"}
+      ]
+    },
+    "prompts_file": {
+      "type": "object",
+      "required": ["id", "kind", "skill", "path", "display", "state", "version", "outside", "note"],
+      "properties": {
+        "id": {"type": "string", "description": "<target>:<scope>:skill | :pointer | :skill_line:<name>."},
+        "kind": {"type": "string", "enum": ["skill", "pointer", "skill_line"]},
+        "skill": {"type": ["string", "null"], "description": "skill_line: the user's skill."},
+        "path": {"type": "string"},
+        "display": {"type": "string", "description": "The path as shown (~/..., or relative to the repo)."},
+        "state": {"type": "string", "enum": ["absent", "installed", "outdated", "modified"]},
+        "version": {"type": ["string", "null"], "description": "The version its marker or stamp names."},
+        "outside": {"type": ["string", "null"], "description": "The real path, when it resolves outside its target dir (a symlink)."},
+        "note": {"type": "string"}
+      }
+    },
+    "prompts_change": {
+      "type": "object",
+      "required": ["id", "target", "scope", "kind", "skill", "path", "real_path", "display", "state", "action", "outside", "version", "note", "needs_force", "base_sha", "new_sha", "diff"],
+      "properties": {
+        "id": {"type": "string"},
+        "target": {"type": "string"},
+        "scope": {"type": "string", "enum": ["global", "repo"]},
+        "kind": {"type": "string", "enum": ["skill", "pointer", "skill_line"]},
+        "skill": {"type": ["string", "null"]},
+        "path": {"type": "string"},
+        "real_path": {"type": "string"},
+        "display": {"type": "string"},
+        "state": {"type": "string", "enum": ["absent", "installed", "outdated", "modified"]},
+        "action": {"type": "string", "enum": ["create", "update", "remove", "none", "blocked"], "description": "blocked: not touched (note says why)."},
+        "outside": {"type": ["string", "null"], "description": "prompts_apply needs follow_symlinks."},
+        "version": {"type": ["string", "null"]},
+        "note": {"type": "string"},
+        "needs_force": {"type": "boolean", "description": "A hand-edited block or skill: prompts_apply needs force."},
+        "base_sha": {"type": "string", "description": "sha256 of the file as planned, or \"absent\"."},
+        "new_sha": {"type": "string", "description": "sha256 of what it would hold, or \"absent\" (removed)."},
+        "diff": {"type": "string", "description": "Unified diff; empty for none / blocked."},
+        "written": {"type": "boolean", "description": "prompts_apply only."},
+        "backup": {"type": ["string", "null"], "description": "prompts_apply only: the copy saved first (null: the file was absent)."}
+      }
+    },
+    "prompts_status.params": {
+      "type": "object",
+      "description": "Feature prompts.",
+      "properties": {
+        "targets": {"$ref": "#/$defs/prompts_targets"},
+        "scope": {"type": "string", "enum": ["global", "repo"], "description": "Default global; repo: the engine's repo."}
+      }
+    },
+    "prompts_status.result": {
+      "type": "object",
+      "required": ["version", "scope", "targets", "notice"],
+      "properties": {
+        "version": {"type": "string"},
+        "scope": {"type": "string"},
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "title", "dir", "detected", "binary", "reason", "state", "note", "skills", "files"],
+            "properties": {
+              "name": {"type": "string"},
+              "title": {"type": "string"},
+              "dir": {"type": "string"},
+              "detected": {"type": "boolean", "description": "Its config dir exists."},
+              "binary": {"type": ["string", "null"]},
+              "reason": {"type": "string"},
+              "state": {"type": "string", "enum": ["absent", "installed", "outdated", "modified"]},
+              "note": {"type": "string"},
+              "skills": {"type": "array", "items": {"type": "string"}, "description": "The user's skills (for skill lines)."},
+              "files": {"type": "array", "items": {"$ref": "#/$defs/prompts_file"}}
+            }
+          }
+        },
+        "notice": {
+          "type": ["object", "null"],
+          "description": "\"Your prompts are outdated\" after an upgrade; null when nothing installed is outdated.",
+          "required": ["ids", "version", "text"],
+          "properties": {
+            "ids": {"type": "array", "items": {"type": "string"}},
+            "version": {"type": "string"},
+            "text": {"type": "string"}
+          }
+        }
+      }
+    },
+    "prompts_plan.params": {
+      "type": "object",
+      "description": "Feature prompts. Writes nothing.",
+      "properties": {
+        "action": {"type": "string", "enum": ["install", "uninstall"]},
+        "targets": {"$ref": "#/$defs/prompts_targets"},
+        "scope": {"type": "string", "enum": ["global", "repo"]},
+        "skills": {"type": "array", "items": {"type": "string"}, "description": "install: also add a line to these skills of the user's."}
+      }
+    },
+    "prompts_plan.result": {
+      "type": "object",
+      "required": ["version", "action", "changes"],
+      "properties": {
+        "version": {"type": "string"},
+        "action": {"type": "string"},
+        "changes": {"type": "array", "items": {"$ref": "#/$defs/prompts_change"}}
+      }
+    },
+    "prompts_apply.params": {
+      "type": "object",
+      "required": ["id", "action", "base_sha", "new_sha"],
+      "description": "Feature prompts. The user's only (no caller token). Refused when the file changed since prompts_plan.",
+      "properties": {
+        "id": {"type": "string"},
+        "action": {"type": "string", "enum": ["install", "uninstall"]},
+        "base_sha": {"type": "string"},
+        "new_sha": {"type": "string"},
+        "follow_symlinks": {"type": "boolean"},
+        "force": {"type": "boolean"},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "prompts_apply.result": {"$ref": "#/$defs/prompts_change"},
     "list_events.result": {
       "type": "object",
       "required": ["events", "cursor", "truncated"],
