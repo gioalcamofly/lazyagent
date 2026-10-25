@@ -812,7 +812,22 @@
           "required": ["count", "top"],
           "properties": {
             "count": {"type": "integer", "minimum": 1},
-            "top": {"type": "string", "description": "The first item's id, in the queue's order."}
+            "top": {"type": "string", "description": "The first item's id, in the queue's order."},
+            "items": {
+              "type": "array",
+              "description": "Every open item, top first (I4f): a deep item under a quicker top one still counts in counts.deep.",
+              "items": {
+                "type": "object",
+                "required": ["id", "kind", "level", "state", "since"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "kind": {"type": "string"},
+                  "level": {"enum": ["now", "round", "deep"]},
+                  "state": {"type": "string"},
+                  "since": {"type": "number", "description": "When it was first seen (Unix time); a PR item found with the PR info dates from the row's last sign of work."}
+                }
+              }
+            }
           }
         },
         "agents": {
@@ -871,6 +886,7 @@
           }
         },
         "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
+        "dirty": {"type": "integer", "description": "Stale rows only (I4f), once git status is known: the worktree's uncommitted files."},
         "changed_at": {"type": "number", "description": "When its facts last changed (Unix time): the row's age."},
         "fingerprint": {"type": "string", "description": "A hash of the facts that move it across a rule."},
         "class": {"enum": ["quick", "deep", null], "description": "Inbox rows only: deep when its level is deep (needs reading), else quick."},
@@ -1029,7 +1045,7 @@
           "properties": {
             "now": {"type": "integer"},
             "round": {"type": "integer"},
-            "deep": {"type": "integer", "description": "Rows in To sit down with."},
+            "deep": {"type": "integer", "description": "Inbox rows in To sit down with: level deep, or a deep item under a quicker top one (I4f)."},
             "deep_max": {"type": "integer", "description": "[inbox] deep_max: shown against deep, never enforced."},
             "in_flight": {"type": "integer"},
             "done": {"type": "integer"},
@@ -1795,7 +1811,20 @@
           }
         },
         "text": {"type": "string", "description": "The summary as an agent gets it on a delegation (at most 6000 characters)."},
-        "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there."}
+        "checks": {
+          "type": "array",
+          "description": "By key (I4f): the PR's failing checks that are not Actions runs (a commit status, another provider's check run): no log to read, only the link.",
+          "items": {
+            "type": "object",
+            "required": ["name", "provider", "url"],
+            "properties": {
+              "name": {"type": "string"},
+              "provider": {"type": "string", "description": "A known CI by its host (CircleCI, Buildkite, ...), 'a GitHub App (not Actions)', else the host."},
+              "url": {"type": "string"}
+            }
+          }
+        },
+        "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there. With no red Actions run but other red checks: 'no Actions log: check <name> from <provider>'."}
       }
     },
     "approval_answer.params": {
@@ -2043,7 +2072,8 @@
         "then": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["ball", "level", "state", "verb", "action", "item"]}]},
         "inherited_from": {"type": ["string", "null"], "description": "park, label: the rule below that gave the inherited field."},
         "item_rule": {"type": "object", "description": "queue matched on a rule's item (Merge): that rule (rules_rule), the facts it read, and above: the rules between the locked prefix and it, as above."},
-        "facts": {"type": "array", "items": {"type": "object", "required": ["name", "value", "unknown", "source", "freshness"]}, "description": "What the matched rule read."},
+        "facts": {"type": "array", "items": {"type": "object", "required": ["name", "value", "unknown", "source", "freshness"]}, "description": "What the matched rule read; each fact's shown (I4f) is its value for people: '2 d 6 h', '24 h', '3 h ago', 'unknown'."},
+        "answer": {"type": "string", "description": "I4f: one sentence for people, with the values it read: '“no activity”: the time since the last sign of work (2 d 6 h) is over the stalled threshold (24 h).'; for the queue, which item leads and what else is open."},
         "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "said": {"type": "string", "description": "R6: that condition in English (absent with value item or true)."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
         "items": {"type": "array", "description": "The row's open inbox items, top first."}
       }

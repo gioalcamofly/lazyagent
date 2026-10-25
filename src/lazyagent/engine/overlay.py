@@ -117,6 +117,25 @@ def one_line(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+# The engine's own entries a restart would add again: the facts it reads.
+REPEATABLE = ("ci", "review", "ball", "state")
+
+
+def _repeat(ring: list[dict[str, Any]], entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The entry ``entry`` repeats, if any: the same commit (by its ref),
+    or the newest entry of its kind by the same actor saying the same (a
+    CI red after a CI green is news; two CI reds in a row are not)."""
+    kind = entry["kind"]
+    if kind == "commit" and entry.get("ref"):
+        return next((e for e in ring if e["kind"] == "commit" and e.get("ref") == entry["ref"]), None)
+    if kind not in REPEATABLE:
+        return None
+    last = next((e for e in reversed(ring) if e["kind"] == kind), None)
+    if last is not None and last["actor"] == entry["actor"] and last["text"] == entry["text"]:
+        return last
+    return None
+
+
 def default_until(ball: str | None, at: float) -> float | None:
     """A report's until when it gives none: only background work lapses."""
     return at + REPORT_FOR if ball == "agent" else None
@@ -377,6 +396,12 @@ class Overlay:
             entry["ref"] = ref
         entry.update({k: v for k, v in extra.items() if v is not None})
         ring = self.timeline.setdefault(key, [])
+        same = _repeat(ring, entry)
+        if same is not None:
+            # An engine restart reads the facts again (the timeline is
+            # kept): the same commit, or a fact the item still has, is not
+            # news.
+            return same
         ring.append(entry)
         ring.sort(key=lambda e: e["at"])
         ring[:] = [e for e in ring if now - e["at"] < KEEP][-RING:]

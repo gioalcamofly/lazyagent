@@ -64,7 +64,7 @@ def test_concepts_are_checked():
     assert {k["where"] for k in c["keys"]} == set(doc.KEY_PLACES)
     # The page's own key and the Why? key are there.
     assert any(k["keys"] == "F1" for k in c["keys"])
-    assert any(k["keys"] == "W" and k["where"] == "home" for k in c["keys"])
+    assert any(k["keys"] == "w" and k["where"] == "home" for k in c["keys"])
     # Every built-in action's key reads as the desktop writes it.
     payload = doc.builtin_payload()
     assert payload["concepts"] == c

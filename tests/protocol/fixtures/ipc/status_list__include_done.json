@@ -59,6 +59,15 @@
           "level": "now",
           "needs_you": {
             "count": 1,
+            "items": [
+              {
+                "id": "Approval:/tmp/repo-login/a1",
+                "kind": "approval",
+                "level": "now",
+                "since": 1700000000.0,
+                "state": "approve: Bash"
+              }
+            ],
             "top": "Approval:/tmp/repo-login/a1"
           },
           "note": null,
@@ -95,6 +104,15 @@
           "level": "round",
           "needs_you": {
             "count": 1,
+            "items": [
+              {
+                "id": "Rule:merge:repo:docs-index",
+                "kind": "rule",
+                "level": "round",
+                "since": 1700000000.0,
+                "state": "merge: approved, CI green"
+              }
+            ],
             "top": "Rule:merge:repo:docs-index"
           },
           "note": null,

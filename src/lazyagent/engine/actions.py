@@ -16,6 +16,17 @@ head, the latest run of each workflow decides: ``failure`` or
 ``timed_out`` is red, not completed is running, the rest is green. A re-run
 (same id, a new attempt) is running again, and green once it passes.
 
+**A head of its own.** On a busy repo the latest 100 runs hold the newer
+runs of other branches, and a head's own runs get many of them (a label
+workflow per label, a long evals run beside a quick check), so its red runs
+can fall out of the window. Each open PR whose checks are red gets its own
+read, ``actions/runs?head_sha=<sha>`` (with an ETag; at most
+:data:`HEAD_PAGES` pages of 100), at most :data:`MAX_HEAD_FETCHES` a poll;
+its runs join the window's for the verdict (the latest run of each
+workflow on the head still decides). A red check that is not an Actions
+run (a commit status, another provider's check run) has no log to read:
+``ci_log_summary`` says so and names the check (:func:`other_checks`).
+
 The failed jobs of a red run (``/runs/{id}/jobs``, the failing step) are
 fetched once per run attempt, and its failed log (``gh run view <id>
 --log-failed``) only on demand: a delegation, Home's expanded row, a brief's
@@ -56,6 +67,10 @@ from lazyagent.models import PrInfo, WorkflowJob, WorkflowRun
 log = logging.getLogger(__name__)
 
 RUNS_PATH = "repos/{owner}/{repo}/actions/runs?per_page=100"
+HEAD_PATH = "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=100"
+# A red PR head's own runs: pages of 100 read, heads read per poll.
+HEAD_PAGES = 3
+MAX_HEAD_FETCHES = 5
 RED = ("failure", "timed_out")
 DEFAULT_POLL_S = 60
 # Every gh call of the hub (runs, jobs, logs) in a rolling minute.
@@ -147,6 +162,65 @@ def parse_runs(body: str) -> list[WorkflowRun]:
         ]
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"bad actions/runs response: {e}") from e
+
+
+def runs_total(body: str) -> int:
+    """``/actions/runs``'s ``total_count`` (0 when absent)."""
+    try:
+        return int(json.loads(body).get("total_count") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+# Check hosts that are not GitHub Actions, as people name them.
+PROVIDERS = {
+    "circleci.com": "CircleCI",
+    "buildkite.com": "Buildkite",
+    "travis-ci.com": "Travis CI",
+    "travis-ci.org": "Travis CI",
+    "dev.azure.com": "Azure Pipelines",
+    "gitlab.com": "GitLab CI",
+    "jenkins": "Jenkins",
+    "vercel.com": "Vercel",
+    "netlify.com": "Netlify",
+    "codecov.io": "Codecov",
+    "sonarcloud.io": "SonarCloud",
+}
+
+
+def provider_of(url: str) -> str:
+    """Who runs a check that is not an Actions run, from its URL: a known
+    CI by its host, a GitHub App's check run, else the host itself."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return "a commit status with no link"
+    for known, name in PROVIDERS.items():
+        if host == known or host.endswith("." + known) or known in host.split("."):
+            return name
+    if host == "github.com":
+        return "a GitHub App (not Actions)"
+    return host
+
+
+def other_checks(pr: PrInfo | None) -> list[dict[str, str]]:
+    """The PR's failing checks that are not Actions runs: no log to read."""
+    if pr is None:
+        return []
+    return [
+        {"name": c.name, "provider": provider_of(c.details_url), "url": c.details_url}
+        for c in pr.checks
+        if c.conclusion.upper() in ("FAILURE", "ERROR", "TIMED_OUT")
+        and "/actions/runs/" not in c.details_url
+    ]
+
+
+def no_log_text(checks: list[dict[str, str]]) -> str:
+    """``no Actions log: check e2e-suite from CircleCI``."""
+    return "no Actions log: " + "; ".join(
+        f"check {c['name']} from {c['provider']}" for c in checks
+    )
 
 
 def parse_jobs(body: str) -> tuple[WorkflowJob, ...]:
@@ -336,6 +410,12 @@ def red_runs(engine: Any, key: str) -> tuple[str, list[WorkflowRun]]:
     return wt.branch or key, list(v.red) if v is not None and v.state == "red" else []
 
 
+def _other_checks_of(engine: Any, key: str) -> list[dict[str, str]]:
+    path = engine.status.path_of(key)
+    pr = engine.get_pr_info(path) if path is not None else None
+    return other_checks(pr) if pr is not None and pr.state.upper() == "OPEN" else []
+
+
 async def log_summary(engine: Any, key: Any = None, run_id: Any = None) -> dict[str, Any]:
     """``ci_log_summary``: the failed-log summary of a work item's red runs
     on its head, or of one run."""
@@ -357,9 +437,13 @@ async def log_summary(engine: Any, key: Any = None, run_id: Any = None) -> dict[
         runs = [run]
     else:
         branch, runs = red_runs(engine, key)
+        checks = _other_checks_of(engine, key)
         if not runs:
-            return {"key": key, "runs": [], "jobs": [], "text": "",
-                    "error": f"no failed CI run on the head of {branch}"}
+            # A red that is not Actions': say whose it is, and link it.
+            error = no_log_text(checks) if checks else f"no failed CI run on the head of {branch}"
+            return {"key": key, "runs": [], "jobs": [], "text": "", "checks": checks,
+                    "error": error}
+        return {"key": key, **await hub.summary(runs), "checks": checks}
     return {"key": key, **await hub.summary(runs)}
 
 
@@ -386,6 +470,12 @@ class ActionsHub:
         self.read_heads = read_heads or _heads_reader(repo_root)
         self.clock = clock
         self.runs: list[WorkflowRun] = []
+        # A red PR head's own runs (sha → runs, its page 1 ETag): they join
+        # the window's for the verdict.
+        self.head_runs: OrderedDict[str, list[WorkflowRun]] = OrderedDict()
+        self.head_etags: dict[str, str] = {}
+        # branch → the head of its open PR whose checks are red.
+        self.red_heads: dict[str, str] = {}
         self.heads: dict[str, str] = {}
         self.tracked: frozenset[str] = frozenset()
         self.etag: str | None = None
@@ -461,10 +551,14 @@ class ActionsHub:
     def due(self, now: float) -> bool:
         return now - self.last_poll >= self.poll_s
 
-    async def poll(self, branches: Iterable[str], *, force: bool = False) -> bool:
+    async def poll(self, branches: Iterable[str], *, force: bool = False,
+                   red_heads: dict[str, str] | None = None) -> bool:
         """One poll when due (``force``: now); True when what the rows read
-        changed. Never two at once."""
+        changed. Never two at once. ``red_heads``: branch → the head of its
+        open PR whose checks are red, read on its own (module docstring)."""
         now = self.clock()
+        if red_heads is not None:
+            self.red_heads = {b: s for b, s in red_heads.items() if b and s}
         tracked = frozenset(b for b in branches if b)
         if tracked != self.tracked:
             # A new branch is looked at in this poll, not a minute later.
@@ -499,16 +593,62 @@ class ActionsHub:
                 self.error = None
             except (TrackerError, ValueError, OSError) as e:
                 self._failed(self.clock(), e)
+            changed |= await self._fetch_heads()
             changed |= await self._fetch_jobs()
         finally:
             self._polling = False
         return changed
 
+    async def _fetch_heads(self) -> bool:
+        """The runs of each red PR head (its own read, paginated)."""
+        wanted = [s for b, s in sorted(self.red_heads.items()) if b in self.tracked]
+        changed = False
+        for sha in [s for s in list(self.head_runs) if s not in wanted]:
+            del self.head_runs[sha]
+            self.head_etags.pop(sha, None)
+            changed = True
+        for sha in wanted[:MAX_HEAD_FETCHES]:
+            path = HEAD_PATH.replace("{sha}", sha)
+            try:
+                status, headers, body = await self._api(path, self.head_etags.get(sha))
+                if status == 304:
+                    continue
+                runs = parse_runs(body)
+                total = runs_total(body)
+                page = 1
+                while len(runs) < total and page < HEAD_PAGES:
+                    page += 1
+                    _, _, more = await self._api(f"{path}&page={page}")
+                    batch = parse_runs(more)
+                    if not batch:
+                        break
+                    runs += batch
+            except (TrackerError, ValueError, OSError) as e:
+                self._failed(self.clock(), e)
+                continue
+            if headers.get("etag"):
+                self.head_etags[sha] = headers["etag"]
+            if self.head_runs.get(sha) != runs:
+                _put(self.head_runs, sha, runs)
+                changed = True
+        return changed
+
+    def all_runs(self) -> list[WorkflowRun]:
+        """The window's runs and the red heads' own, one per run id (a
+        head's read is the newer)."""
+        if not self.head_runs:
+            return self.runs
+        by_id = {r.id: r for r in self.runs}
+        for runs in self.head_runs.values():
+            by_id.update((r.id, r) for r in runs)
+        return list(by_id.values())
+
     async def _fetch_jobs(self) -> bool:
         """The failed jobs of each fresh red run that has none yet."""
         wanted = []
+        runs = self.all_runs()
         for branch in sorted(self.tracked):
-            v = verdict(self.runs, branch, self.heads.get(branch))
+            v = verdict(runs, branch, self.red_heads.get(branch) or self.heads.get(branch))
             if v is not None:
                 wanted += [r for r in v.red if (r.id, r.attempt) not in self._jobs]
         changed = False
@@ -549,13 +689,13 @@ class ActionsHub:
         the failed jobs known so far."""
         if not branch or not self.enabled or branch not in self.tracked:
             return None
-        v = verdict(self.runs, branch, head or self.heads.get(branch))
+        v = verdict(self.all_runs(), branch, head or self.heads.get(branch))
         if v is None:
             return None
         return replace(v, runs=tuple(self._with_jobs(r) for r in v.runs))
 
     def find_run(self, run_id: int) -> WorkflowRun | None:
-        run = next((r for r in self.runs if r.id == run_id), None)
+        run = next((r for r in self.all_runs() if r.id == run_id), None)
         return self._with_jobs(run) if run is not None else None
 
     # --- The failed-log summary ---

@@ -653,6 +653,10 @@ pub struct StatusRow {
     pub verb: Option<String>,
     #[serde(default)]
     pub action: Option<String>,
+    /// Stale rows only (I4f): the worktree's uncommitted files, once git
+    /// status is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<u32>,
 }
 
 /// A feeder's project (`work_items_upsert {project}`).
@@ -725,6 +729,21 @@ pub struct NeedsYou {
     pub count: u32,
     /// The top actionable's id.
     pub top: String,
+    /// Every open item, top first (I4f engines; older ones: absent): a deep
+    /// item under a quicker top one shows in To sit down with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<NeedsYouItem>,
+}
+
+/// One open inbox item of a row (`needs_you.items`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NeedsYouItem {
+    pub id: String,
+    pub kind: String,
+    /// `now` · `round` · `deep`.
+    pub level: String,
+    pub state: String,
+    pub since: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1214,8 +1233,22 @@ pub struct CiLogSummary {
     pub jobs: Vec<CiLogJob>,
     #[serde(default)]
     pub text: String,
+    /// The PR's failing checks that are not Actions runs (I4f): no log,
+    /// only the link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<Vec<OtherCheck>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// A failing check that is not an Actions run: a commit status, another
+/// provider's check run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OtherCheck {
+    pub name: String,
+    pub provider: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1539,6 +1572,9 @@ pub struct RulesExplain {
     /// The queue matched on a rule's item (Merge): that rule.
     #[serde(default)]
     pub item_rule: Option<ExplainItemRule>,
+    /// One sentence for people, with the values it read (I4f engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1563,6 +1599,9 @@ pub struct ExplainFact {
     pub source: String,
     #[serde(default)]
     pub freshness: String,
+    /// Its value for people: "2 d 6 h", "24 h", "3 h ago" (I4f engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<String>,
 }
 
 /// A rule above the one that matched, and the first condition that was

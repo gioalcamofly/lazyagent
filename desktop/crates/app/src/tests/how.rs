@@ -214,13 +214,16 @@ fn w_on_a_merge_line_shows_the_rule_the_facts_and_the_rules_above_that_failed() 
         assert!(h.query_all_by_label(value).count() >= 1, "{fact} = {value}");
     }
     // The rules above it that did not match, and why (in English).
-    h.get_by_label_contains("Rules above merge that did not match · ");
+    // Folded: most questions never need them.
+    h.get_by_label_contains("Rules above merge that did not match · ").click();
+    h.run_steps(2);
     h.get_by_label("approve");
     assert!(h.query_all_by_label("The inbox queue is off").count() >= 1);
     // And how the line got there: the locked queue rule, its own rules above.
     h.get_by_label("queue");
     h.get_by_label("built-in, locked");
-    h.get_by_label_contains("Rules above queue that did not match · 5");
+    h.get_by_label_contains("Rules above queue that did not match · 5").click();
+    h.run_steps(2);
     h.get_by_label("The PR's state is merged");
     h.key_press(egui::Key::Escape);
     h.run_steps(2);

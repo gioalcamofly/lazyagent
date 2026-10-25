@@ -118,6 +118,7 @@
             {
               "freshness": "\u2264 60 s",
               "name": "ci.state",
+              "shown": "green",
               "source": "PR checks",
               "unknown": false,
               "value": "green"
@@ -125,6 +126,7 @@
             {
               "freshness": "on worktrees.changed",
               "name": "item.branch",
+              "shown": "docs-index",
               "source": "worktree scan",
               "unknown": false,
               "value": "docs-index"
@@ -132,6 +134,7 @@
             {
               "freshness": "\u2264 60 s",
               "name": "pr.mergeable",
+              "shown": "mergeable",
               "source": "PR poller",
               "unknown": false,
               "value": "mergeable"
@@ -139,6 +142,7 @@
             {
               "freshness": "\u2264 60 s",
               "name": "pr.review",
+              "shown": "approved",
               "source": "PR poller",
               "unknown": false,
               "value": "approved"
@@ -146,6 +150,7 @@
             {
               "freshness": "\u2264 60 s",
               "name": "pr.state",
+              "shown": "open",
               "source": "PR poller",
               "unknown": false,
               "value": "open"
@@ -279,10 +284,12 @@
           "value": "false"
         }
       ],
+      "answer": "\u201capproved, CI green\u201d: the inbox queue is on and the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable.",
       "facts": [
         {
           "freshness": "\u2264 60 s",
           "name": "ci.state",
+          "shown": "green",
           "source": "PR checks",
           "unknown": false,
           "value": "green"
@@ -290,6 +297,7 @@
         {
           "freshness": "\u2264 60 s",
           "name": "pr.mergeable",
+          "shown": "mergeable",
           "source": "PR poller",
           "unknown": false,
           "value": "mergeable"
@@ -297,6 +305,7 @@
         {
           "freshness": "\u2264 60 s",
           "name": "pr.review",
+          "shown": "approved",
           "source": "PR poller",
           "unknown": false,
           "value": "approved"
@@ -304,6 +313,7 @@
         {
           "freshness": "\u2264 60 s",
           "name": "pr.state",
+          "shown": "open",
           "source": "PR poller",
           "unknown": false,
           "value": "open"
@@ -311,6 +321,7 @@
         {
           "freshness": "static",
           "name": "queue.enabled",
+          "shown": "yes",
           "source": "ActionableQueue",
           "unknown": false,
           "value": true

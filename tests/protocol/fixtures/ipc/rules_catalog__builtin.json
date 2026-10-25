@@ -9,7 +9,7 @@
         {
           "id": "answer",
           "key": "Enter",
-          "label": "Opens the agent's terminal at its dialog"
+          "label": "Expands the line: approve (a) or deny (\u21e7D) a command there, type an answer to a question"
         },
         {
           "id": "expand",
@@ -54,7 +54,7 @@
         {
           "id": "close",
           "key": "Shift+X",
-          "label": "Close the work item (done / dropped)"
+          "label": "Close the work item (done / dropped) and stop its agent"
         },
         {
           "id": "take_back",
@@ -184,7 +184,7 @@
         "keys": [
           {
             "does": "Next / previous line",
-            "keys": "J K \u2193 \u2191",
+            "keys": "j k \u2193 \u2191",
             "where": "home"
           },
           {
@@ -198,7 +198,7 @@
             "where": "home"
           },
           {
-            "does": "Expand; open a brief; a Now line's terminal",
+            "does": "Expand (approve or answer there); open a brief",
             "keys": "Enter",
             "where": "home"
           },
@@ -208,8 +208,8 @@
             "where": "home"
           },
           {
-            "does": "On an approval: approve / deny",
-            "keys": "Y  N",
+            "does": "On an approval: approve / deny (deny waits 5 s for Undo)",
+            "keys": "a  \u21e7D",
             "where": "home"
           },
           {
@@ -219,42 +219,42 @@
           },
           {
             "does": "The decision view",
-            "keys": "V",
+            "keys": "v",
             "where": "home"
           },
           {
             "does": "Explain this / restore its agent and explain",
-            "keys": "Y  \u21e7Y",
+            "keys": "y  \u21e7Y",
             "where": "home"
           },
           {
             "does": "Why is this line here?",
-            "keys": "W",
+            "keys": "w",
             "where": "home"
           },
           {
             "does": "The agent's terminal",
-            "keys": "O",
+            "keys": "o",
             "where": "home"
           },
           {
             "does": "Its session notes",
-            "keys": "N",
+            "keys": "n",
             "where": "home"
           },
           {
             "does": "Its PR (or tracker task)",
-            "keys": "P",
+            "keys": "p",
             "where": "home"
           },
           {
             "does": "Dismiss the item (Undo 5 s)",
-            "keys": "X",
+            "keys": "x",
             "where": "home"
           },
           {
-            "does": "Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; W whole work item)",
-            "keys": "Z",
+            "does": "Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; w whole work item)",
+            "keys": "z",
             "where": "home"
           },
           {
@@ -274,17 +274,17 @@
           },
           {
             "does": "Take back a pass or hold; clear your label, park, close or delegation",
-            "keys": "U",
+            "keys": "u",
             "where": "home"
           },
           {
             "does": "Delegate to the branch's agent (Undo 5 s)",
-            "keys": "D",
+            "keys": "d",
             "where": "home"
           },
           {
             "does": "Label who has the ball",
-            "keys": "L",
+            "keys": "l",
             "where": "home"
           },
           {
@@ -294,7 +294,7 @@
           },
           {
             "does": "Mark seen / everything seen",
-            "keys": "M  \u21e7M",
+            "keys": "m  \u21e7M",
             "where": "home"
           },
           {
@@ -304,22 +304,22 @@
           },
           {
             "does": "The orchestrator's actions today",
-            "keys": "T",
+            "keys": "t",
             "where": "home"
           },
           {
-            "does": "Undo the last dismiss, park, delegate or pass",
+            "does": "Undo the last dismiss, park, delegate, pass or deny",
             "keys": "Ctrl+Z",
             "where": "home"
           },
           {
             "does": "Fold In flight",
-            "keys": "F",
+            "keys": "f",
             "where": "home"
           },
           {
             "does": "The worktrees / back to Home",
-            "keys": "G W  G H",
+            "keys": "g w  g h",
             "where": "home"
           },
           {
@@ -344,17 +344,17 @@
           },
           {
             "does": "Explain this / restore its agent and explain",
-            "keys": "Y  \u21e7Y",
+            "keys": "y  \u21e7Y",
             "where": "decision"
           },
           {
             "does": "Request a new brief",
-            "keys": "B",
+            "keys": "b",
             "where": "decision"
           },
           {
             "does": "The agent's terminal",
-            "keys": "O",
+            "keys": "o",
             "where": "decision"
           },
           {
@@ -512,11 +512,11 @@
                 "title": "Label  l"
               },
               {
-                "text": "Done or dropped. Never touches the worktree, branch or PR.",
+                "text": "Done or dropped; stops its agent. Never touches the worktree, branch or PR.",
                 "title": "Close  \u21e7X"
               },
               {
-                "text": "x, z, d and \u21e7O show Undo for 5 s (Ctrl+Z).",
+                "text": "x, z, d, \u21e7O and \u21e7D (deny) show Undo for 5 s (Ctrl+Z).",
                 "title": "Undo"
               }
             ],
@@ -1971,7 +1971,7 @@
         {
           "action": null,
           "and_when": null,
-          "ball_text": "agent",
+          "ball_text": "orchestrator",
           "file": null,
           "id": "claim",
           "item": false,
@@ -1996,7 +1996,7 @@
         {
           "action": null,
           "and_when": null,
-          "ball_text": "agent",
+          "ball_text": "orchestrator",
           "file": null,
           "id": "hold",
           "item": false,
@@ -2021,7 +2021,7 @@
         {
           "action": null,
           "and_when": null,
-          "ball_text": "agent",
+          "ball_text": "orchestrator",
           "file": null,
           "id": "held",
           "item": false,
