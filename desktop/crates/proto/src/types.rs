@@ -645,6 +645,14 @@ pub struct StatusRow {
     /// The item's newest timeline entry that is not a ball or state change.
     #[serde(default)]
     pub last_step: Option<LastStep>,
+    /// `status_list {fields}` only (feature `rules`, R6 reads them): the
+    /// catalog rule's id, the line's verb and primary action.
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    #[serde(default)]
+    pub verb: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 /// A feeder's project (`work_items_upsert {project}`).
@@ -1156,6 +1164,12 @@ pub struct Actionable {
     /// `actions`).
     #[serde(default)]
     pub run: Option<CiRun>,
+    /// A `rule` item's rule and verb (feature `rules`: the built-in Merge,
+    /// a user rule with ball you).
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    #[serde(default)]
+    pub verb: Option<String>,
 }
 
 /// A GitHub Actions run that went red on a branch's head (feature `actions`).
@@ -1266,6 +1280,31 @@ pub struct ActionableResolved {
     pub reason: String,
 }
 
+/// A rule file's error (feature `rules`): `rules_check`, `rules.errors`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RulesProblem {
+    /// `global` · `repo`.
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub rule: Option<String>,
+    pub message: String,
+    /// What is in force instead ("skipped; the built-in is in force").
+    #[serde(default)]
+    pub fallback: String,
+}
+
+/// `rules.errors`, and `rules_check`'s errors (the rest is not read here).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RulesErrors {
+    #[serde(default)]
+    pub errors: Vec<RulesProblem>,
+}
+
 /// The events the desktop app acts on; everything else is `Other` and
 /// ignored by design (§4c: unknown events are tolerated).
 #[derive(Debug, Clone, PartialEq)]
@@ -1301,6 +1340,7 @@ pub enum EngineEvent {
     DecisionCreated(Box<DecisionResult>),
     DecisionResolved(Box<DecisionResult>),
     DecisionExplain(Box<DecisionExplainResult>),
+    RulesErrors(RulesErrors),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -1338,6 +1378,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "decision.resolved",
     "decision.answered",
     "decision.explain",
+    "rules.errors",
 ];
 
 impl EngineEvent {
@@ -1376,6 +1417,7 @@ impl EngineEvent {
             // The orchestrator's answer (I4b) carries the same shape.
             "decision.resolved" | "decision.answered" => de(&event).map(|d| EngineEvent::DecisionResolved(Box::new(d))),
             "decision.explain" => de(&event).map(|d| EngineEvent::DecisionExplain(Box::new(d))),
+            "rules.errors" => de(&event).map(EngineEvent::RulesErrors),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

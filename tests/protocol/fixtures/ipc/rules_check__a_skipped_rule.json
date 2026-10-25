@@ -1,0 +1,40 @@
+{
+  "case": "rules_check/a_skipped_rule",
+  "method": "rules_check",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "errors": [
+        {
+          "fallback": "skipped",
+          "file": "/home/user/.config/lazyagent/rules.toml",
+          "line": 11,
+          "message": "rule qa_gate when: no fact 'tracker.qa'; did you mean 'tracker.ball'?",
+          "rule": "qa_gate",
+          "scope": "global"
+        }
+      ],
+      "files": [
+        {
+          "applied": "current",
+          "exists": true,
+          "hash": "01162512756fd5aa6b5e0305dae458dc025c148a6e5a77078bacabb278c5dce2",
+          "path": "/home/user/.config/lazyagent/rules.toml",
+          "rules": 2,
+          "scope": "global"
+        },
+        {
+          "allowed": false,
+          "applied": "none",
+          "exists": false,
+          "hash": null,
+          "path": "/tmp/repo/.lazyagent/rules.toml",
+          "rules": 0,
+          "scope": "repo"
+        }
+      ],
+      "warnings": []
+    }
+  }
+}

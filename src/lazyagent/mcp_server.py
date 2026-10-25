@@ -351,6 +351,54 @@ async def status_list(include_done: bool = False) -> dict:
 
 
 @mcp.tool()
+async def rules_explain(key: str) -> dict:
+    """Why a work item's row is in its state, from the engine's rules: the
+    rule that matched (built-in, or the user's global or repo rules.toml,
+    with its file and line), the facts it read (value, source), and for
+    each rule above it the first condition that was not true. An unknown
+    fact never matches.
+
+    When the user asks "why is X in Round?", "why no Merge on X?" or "why
+    is this stalled?", call this and answer from it; do not guess from the
+    PR or the logs.
+
+    Args:
+        key: The row's key from status_list (``repo:branch``), or the
+            branch name.
+
+    Returns:
+        Object with ``text`` (plain text, ready to show), ``rule``,
+        ``then`` (ball, level, state, verb), ``facts``, ``above`` and
+        ``items`` (the row's open inbox items; ``item_rule`` when the top
+        one is a rule's, like Merge).
+    """
+    from lazyagent.engine.rules.export import format_explain
+
+    result = await _get_client().call("rules_explain", {"key": key})
+    result["text"] = format_explain(result)
+    return result
+
+
+@mcp.tool()
+async def rules_catalog() -> dict:
+    """The engine's rules catalog: every fact a rule may read (type,
+    values, what it is, source, cost), every row rule in order with where
+    it comes from (built-in, the user's global or repo rules.toml) and
+    what it replaces, the inbox kinds, the actions with their keys, the
+    verbs, the rule files and their errors.
+
+    Use it to explain how lazyagent decides a row, or before helping the
+    user write a rule in rules.toml (you never write the file: the user
+    does, or accepts a proposal).
+
+    Returns:
+        Object with ``facts``, ``functions``, ``rules``, ``kinds``,
+        ``actions``, ``verbs``, ``files``, ``errors`` and ``warnings``.
+    """
+    return await _get_client().call("rules_catalog", {})
+
+
+@mcp.tool()
 async def actionables_list(include_hidden: bool = False) -> dict:
     """The user's inbox: what needs the user now, as the engine derives it
     (an agent waiting for approval or an answer, a failed / hung / exited

@@ -62,13 +62,47 @@ ID_RE = re.compile(r"^[a-z0-9_.-]{1,48}$")
 RULE_KEYS = frozenset({"id", "num", "locked", "says", "when", "then"})
 THEN_FIELDS = ("ball", "level", "state", "blocks_agent", "suggestion")
 THEN_KEYS = frozenset(
-    {*THEN_FIELDS, *(f"{f}_expr" for f in THEN_FIELDS), "inherit"}
+    {*THEN_FIELDS, *(f"{f}_expr" for f in THEN_FIELDS), "inherit", "verb", "action", "item"}
 )
 INHERITABLE = ("ball", "state")
 KIND_KEYS = frozenset(
     {"id", "level", "title", "rank", "blocks_agent", "detector", "says", "when",
-     "state", "state_expr"}
+     "state", "state_expr", "verb", "action"}
 )
+# The user actions (proposal 0014, "Actions"): id → (key, what it does).
+# Actions are code; a rule only names its row's primary one.
+ACTIONS: dict[str, tuple[str, str]] = {
+    "answer": ("Enter", "Opens the agent's terminal at its dialog"),
+    "expand": ("Enter", "Expands the line"),
+    "open_terminal": ("o", "The agent's terminal"),
+    "open_notes": ("n", "The agent's notes"),
+    "open_pr": ("p", "The PR (for Merge: merging is done there, by you)"),
+    "open_tracker": ("p", "The tracker task"),
+    "dismiss": ("x", "Dismiss this occurrence of the item"),
+    "park": ("z", "Park the item or the work item"),
+    "label": ("l", "Put a ball and a text on the row"),
+    "close": ("Shift+X", "Close the work item (done / dropped)"),
+    "take_back": ("u", "Take back a pass, or clear your gesture"),
+    "pass": ("Shift+O", "Pass to orchestrator"),
+    "delegate": ("d", "Send the item to the branch's agent"),
+    "decision_view": ("v", "Open the brief"),
+    "explain": ("y", "Explain this"),
+    "explain_restore": ("Shift+Y", "Explain this (restore)"),
+    "rebrief": ("b", "Request a new brief"),
+    "seen": ("m", "Mark seen"),
+    "all_seen": ("Shift+M", "Mark all seen"),
+    "revert": ("Shift+U", "Revert the orchestrator's decision"),
+    "why": ("w", "Why is this row in this state?"),
+    "fold": ("f", "Fold In flight"),
+    "fold_parked": ("Shift+Z", "Fold Parked"),
+}
+# The verb words the built-ins use; a user rule may add its own word.
+VERBS = (
+    "Approve", "Answer", "Merge", "Review", "Fix CI", "Sync", "Confirm", "Assign",
+    "Decide", "Read", "Relaunch", "Check agent", "Fix job", "Update task",
+    "Address review", "Resolve conflict", "Request reviewer", "Look",
+)
+VERB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 '-]{0,11}$")
 # The detectors whose candidates a kind's condition decides, and the scope
 # its facts are read in. The others are fed by events or by their own
 # stores (exits, jobs, tracker items, reports, briefs).
@@ -134,10 +168,72 @@ class Rule:
     inherit: tuple[str, ...] = ()
     locked: bool = False
     says: str = ""
+    # An inbox item (Q-R22): with the queue on, the condition makes an item
+    # ``Rule:<id>:<work item>`` and the row reaches the inbox through the
+    # locked ``queue`` rule; the row rule itself is then skipped.
+    item: bool = False
+    verb: str | None = None
+    action: str | None = None
+    # builtin · global · repo, and where the definition is.
+    origin: str = "builtin"
+    file: str | None = None
+    line: int | None = None
+    # The definition this one replaced (same id), if any.
+    base: Rule | None = None
+    # A condition added to the base's own (``and_when``).
+    and_when: Expr | None = None
     test: Any = field(init=False, repr=False)
+    cond: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.test = self.when.fn
+        if self.and_when is not None and self.base is not None:
+            self.cond = _kleene_and(self.base.cond, self.and_when.fn)
+        else:
+            self.cond = self.when.fn
+        self.test = _queue_gate(self.cond) if self.item else self.cond
+
+    @property
+    def facts(self) -> frozenset[str]:
+        """Every fact the rule reads: its condition and its outputs."""
+        names = set(self.when.facts)
+        if self.and_when is not None:
+            names |= self.and_when.facts
+        for out in self.outs.values():
+            if out.expr is not None:
+                names |= out.expr.facts
+        return frozenset(names)
+
+    def conditions(self) -> list[tuple[str, Any]]:
+        """The condition's top-level ``and`` terms (text, test), and_when's
+        last: what the explain trace walks."""
+        from lazyagent.engine.rules.lang import conjuncts
+
+        terms = conjuncts(self.when.source, SCOPES["row"])
+        if self.and_when is not None:
+            terms += conjuncts(self.and_when.source, SCOPES["row"])
+        return terms
+
+
+def _kleene_and(a: Any, b: Any) -> Any:
+    def fn(ctx: Any) -> Any:
+        x = a(ctx)
+        if x is False:
+            return False
+        y = b(ctx)
+        if y is False:
+            return False
+        return True if x is True and y is True else UNKNOWN
+
+    return fn
+
+
+def _queue_gate(cond: Any) -> Any:
+    def fn(ctx: Any) -> Any:
+        if ctx.fact("queue.enabled") is True:
+            return False
+        return cond(ctx)
+
+    return fn
 
 
 def _rule(raw: Mapping[str, Any], index: int) -> Rule:
@@ -176,8 +272,55 @@ def _rule(raw: Mapping[str, Any], index: int) -> Rule:
     for name in ("ball", "state"):
         if name not in outs and name not in inherit:
             raise CatalogError(f"{where}: then needs {name} (or {name}_expr, or inherit)")
-    return Rule(rid, num, when, outs, tuple(inherit), bool(raw.get("locked", False)),
-                str(raw.get("says", "")))
+    verb, action = _verb_action(where, then)
+    item = then.get("item", False)
+    if not isinstance(item, bool):
+        raise CatalogError(f"{where}: item must be true or false")
+    rule = Rule(rid, num, when, outs, tuple(inherit), bool(raw.get("locked", False)),
+                str(raw.get("says", "")), item, verb, action)
+    if item:
+        _check_item(where, rule)
+    return rule
+
+
+def _verb_action(where: str, then: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    verb, action = then.get("verb"), then.get("action")
+    if verb is not None and (not isinstance(verb, str)
+                             or (verb not in VERBS and not VERB_RE.match(verb))):
+        raise CatalogError(
+            f"{where}: verb is one word of at most 12 characters (letters, digits, "
+            f"spaces, ' and -), e.g. {', '.join(VERBS[:6])}"
+        )
+    if action is not None and action not in ACTIONS:
+        raise CatalogError(
+            f"{where}: no action {action!r}" + _close(action, ACTIONS)
+            + f" (one of {', '.join(ACTIONS)})"
+        )
+    return verb, action
+
+
+def _close(word: Any, choices: Any) -> str:
+    import difflib
+
+    close = difflib.get_close_matches(str(word), list(choices), n=1)
+    return f"; did you mean {close[0]!r}?" if close else ""
+
+
+# What an item rule cannot read: the queue it feeds, and the first
+# responder's state, which the queue's pass sees only after it.
+ITEM_FORBIDDEN = ("items.", "queue.", "claim.", "hold.", "holder", "delegation.")
+
+
+def _check_item(where: str, rule: Rule) -> None:
+    ball = rule.outs.get("ball")
+    if ball is None or ball.expr is not None or ball.value != "you" or rule.inherit:
+        raise CatalogError(f"{where}: an inbox item (item = true) needs ball = \"you\"")
+    bad = sorted(f for f in rule.facts if f.startswith(ITEM_FORBIDDEN))
+    if bad:
+        raise CatalogError(
+            f"{where}: an inbox item cannot read {', '.join(bad)} "
+            "(the queue's pass comes before them)"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -196,6 +339,8 @@ class KindRule:
     when: Expr | None
     state: Out | None
     says: str = ""
+    verb: str | None = None
+    action: str | None = None
 
     def matches(self, ctx: ItemContext) -> bool:
         return self.when is not None and self.when.fn(ctx) is True
@@ -247,8 +392,9 @@ def _kind(raw: Mapping[str, Any], index: int) -> KindRule:
         state = Out(raw["state"])
     if scope is not None and state is None:
         raise CatalogError(f"{where}: state or state_expr is required")
+    verb, action = _verb_action(where, raw)
     return KindRule(kid, level, title, rank, blocks, detector, when, state,
-                    str(raw.get("says", "")))
+                    str(raw.get("says", "")), verb, action)
 
 
 # ----------------------------------------------------------------------
@@ -271,7 +417,11 @@ class Catalog:
         self.rules = rules
         self.kinds = kinds
         self.kind = {k.id: k for k in kinds}
+        self.by_id = {r.id: r for r in rules}
         self._tests = [r.test for r in rules]
+        # Where the rules a user may move or replace start.
+        self.unlocked = next((i for i, r in enumerate(rules) if not r.locked), len(rules))
+        self.item_rules = [r for r in rules if r.item]
 
     # --- rows ---
 
@@ -291,8 +441,13 @@ class Catalog:
         i = self.match(ctx, start)
         if i < 0:
             return _derived()(0, "stalled", "no rule matched")
-        rule = self.rules[i]
-        below = self.evaluate(ctx, i + 1) if rule.inherit else None
+        return self.outputs(self.rules[i], ctx, i)
+
+    def outputs(self, rule: Rule, ctx: RowContext, i: int | None = None) -> Any:
+        """``rule``'s :class:`Derived` in ``ctx`` (its condition aside)."""
+        below = None
+        if rule.inherit:
+            below = self.evaluate(ctx, (self.rules.index(rule) if i is None else i) + 1)
         outs = rule.outs
         if below is not None and "ball" in rule.inherit:
             ball = below.ball
@@ -306,6 +461,8 @@ class Catalog:
             state = outs["state"].get(ctx)
             if state is UNKNOWN or state is None:
                 state = ""
+            elif rule.origin != "builtin":
+                state = _clip(state)
         level = outs["level"].get(ctx) if "level" in outs else None
         blocks = outs["blocks_agent"].get(ctx) if "blocks_agent" in outs else False
         suggestion = outs["suggestion"].get(ctx) if "suggestion" in outs else None
@@ -316,12 +473,128 @@ class Catalog:
             None if level is UNKNOWN else level,
             blocks is True,
             None if suggestion is UNKNOWN else suggestion,
+            rule.id,
         )
+
+    def first_item(self, ctx: RowContext) -> Rule | None:
+        """The item rule that is the first match below the locked prefix,
+        its queue gate aside, if any: the queue's pass makes its item. A
+        rule above it that matches (``before = "merge"``) keeps it away."""
+        for rule in self.rules[self.unlocked:]:
+            if (rule.cond if rule.item else rule.test)(ctx) is True:
+                return rule if rule.item else None
+        return None
+
+    # --- explain ---
+
+    def explain(self, ctx: RowContext) -> dict[str, Any]:
+        """The rule that matched, the facts it read, and for each rule above
+        it the first condition that was not true (``rules_explain``)."""
+        from lazyagent.engine.rules.facts import FACTS
+
+        i = self.match(ctx)
+        above = []
+        for rule in self.rules[: i if i >= 0 else len(self.rules)]:
+            entry = {"id": rule.id, "origin": rule.origin, **_failed(rule, ctx)}
+            if rule.file is not None:
+                # Yours: where it is, and what it saw.
+                entry |= {"file": rule.file, "line": rule.line,
+                          "facts": [fact_value(FACTS[n], ctx) for n in sorted(rule.facts)]}
+            above.append(entry)
+        result: dict[str, Any] = {"rule": None, "then": None, "facts": [], "above": above}
+        if i < 0:
+            return result
+        rule = self.rules[i]
+        derived = self.outputs(rule, ctx, i)
+        result["rule"] = describe(rule)
+        result["then"] = {
+            "ball": derived.ball, "level": derived.level, "state": derived.state,
+            "verb": rule.verb, "action": rule.action, "item": rule.item,
+        }
+        if rule.inherit:
+            below = self.match(ctx, i + 1)
+            result["inherited_from"] = self.rules[below].id if below >= 0 else None
+        result["facts"] = [fact_value(FACTS[n], ctx) for n in sorted(rule.facts)]
+        queue = ctx.facts.actionables or ()
+        item_rule = self.by_id.get(queue[0].get("rule_id") or "") if queue else None
+        if rule.id == "queue" and item_rule is not None:
+            # The top item is a rule's (Merge): that rule, and what it read.
+            result["item_rule"] = describe(item_rule) | {
+                "facts": [fact_value(FACTS[n], ctx) for n in sorted(item_rule.facts)]}
+        return result
 
     # --- kinds ---
 
     def kinds_of(self, detector: str) -> list[KindRule]:
         return [k for k in self.kinds if k.detector == detector]
+
+
+def _clip(text: str) -> str:
+    from lazyagent.engine.status import clip_words
+
+    return clip_words(text)
+
+
+def _failed(rule: Rule, ctx: RowContext) -> dict[str, Any]:
+    """The first top-level condition of ``rule`` that is not true."""
+    for text, test in rule.conditions():
+        value = test(ctx)
+        if value is not True:
+            return {"failed": text, "value": "unknown" if value is UNKNOWN else "false"}
+    if rule.item:
+        # True, but the queue makes the item: shown there, or dismissed or
+        # parked.
+        return {"failed": "an inbox item: the queue shows it (or it was dismissed or parked)",
+                "value": "item"}
+    return {"failed": "", "value": "true"}
+
+
+def plain(value: Any) -> Any:
+    """A fact's value as JSON: sets sorted, unknown as None."""
+    if value is UNKNOWN:
+        return None
+    if isinstance(value, (frozenset, set)):
+        return sorted(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def fact_value(fact: Any, ctx: Any) -> dict[str, Any]:
+    try:
+        value = ctx.fact(fact.name)
+    except Exception:  # a getter bug: the fact reads as unknown
+        value = UNKNOWN
+    return {
+        "name": fact.name,
+        "value": plain(value),
+        "unknown": value is UNKNOWN,
+        "source": fact.source,
+        "freshness": fact.freshness,
+    }
+
+
+def describe(rule: Rule) -> dict[str, Any]:
+    """A rule as rules_catalog and rules_explain show it."""
+    out: dict[str, Any] = {
+        "id": rule.id,
+        "num": rule.num,
+        "origin": rule.origin,
+        "file": rule.file,
+        "line": rule.line,
+        "locked": rule.locked,
+        "says": rule.says,
+        "when": " ".join(rule.when.source.split()),
+        "and_when": None if rule.and_when is None else " ".join(rule.and_when.source.split()),
+        "item": rule.item,
+        "verb": rule.verb,
+        "action": rule.action,
+        "replaces": None,
+    }
+    if rule.base is not None:
+        out["replaces"] = {"origin": rule.base.origin, "file": rule.base.file,
+                           "line": rule.base.line}
+    return out
 
 
 def load(text: str) -> Catalog:

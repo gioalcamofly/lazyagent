@@ -679,6 +679,112 @@ async def _():
     return await _call(_status_engine(), "status_list", {"include_done": True})
 
 
+# --- rules_* (proposal 0014 R2) --------------------------------------------
+
+GLOBAL_RULES = "/home/user/.config/lazyagent/rules.toml"
+REPO_RULES = "/tmp/repo/.lazyagent/rules.toml"
+# A global file: Merge only on a branch that is not docs-*, and a rule
+# whose fact does not exist (skipped, the built-in stays).
+GLOBAL_TEXT = """version = 1
+
+[[rule]]
+id = "merge"
+says = "No Merge on docs branches."
+and_when = 'item.branch != "docs-index"'
+
+[[rule]]
+id = "qa_gate"
+before = "merge"
+when = 'tracker.qa == "tested"'
+[rule.then]
+ball = "you"
+state = "merge: QA ok"
+"""
+REPO_TEXT = """version = 1
+
+[[rule]]
+id = "merge"
+and_when = 'pr.number > 0'
+"""
+
+
+def _rules_files(files: dict[str, str]):
+    """Serve the rule files from ``files`` (path → text), at fixed paths."""
+    from contextlib import ExitStack
+    from pathlib import Path
+
+    from lazyagent.engine.rules import hub
+
+    real_read, real_stat = hub._read, hub._stat
+
+    served = {GLOBAL_RULES, REPO_RULES}
+
+    def read(path):
+        return files.get(str(path)) if str(path) in served else real_read(path)
+
+    def stat(path):
+        if str(path) in served:
+            return (1, len(files[str(path)])) if str(path) in files else None
+        return real_stat(path)
+
+    stack = ExitStack()
+    stack.enter_context(patch.object(hub, "global_path", lambda: Path(GLOBAL_RULES)))
+    stack.enter_context(patch.object(hub, "_read", read))
+    stack.enter_context(patch.object(hub, "_stat", stat))
+    return stack
+
+
+@case("rules_catalog/builtin")
+async def _():
+    with _rules_files({}):
+        return await _call(_status_engine(), "rules_catalog", {})
+
+
+@case("rules_check/a_skipped_rule")
+async def _():
+    with _rules_files({GLOBAL_RULES: GLOBAL_TEXT}):
+        return await _call(_status_engine(), "rules_check", {})
+
+
+@case("rules_explain/merge")
+async def _():
+    with _rules_files({}):
+        return await _call(_status_engine(), "rules_explain", {"key": "repo:docs-index"})
+
+
+@case("rules_explain/a_global_rule_removes_merge")
+async def _():
+    with _rules_files({GLOBAL_RULES: GLOBAL_TEXT}):
+        return await _call(_status_engine(), "rules_explain", {"key": "docs-index"})
+
+
+@case("rules_explain/error_unknown_key")
+async def _():
+    with _rules_files({}):
+        return await _call(_status_engine(), "rules_explain", {"key": "nope"})
+
+
+@case("rules_allow/the_repo_file")
+async def _():
+    with _rules_files({REPO_RULES: REPO_TEXT}):
+        from lazyagent.engine.rules.hub import digest
+
+        return await _call(_status_engine(), "rules_allow",
+                           {"hash": digest(REPO_TEXT)[:12]})
+
+
+@case("rules_allow/error_changed")
+async def _():
+    with _rules_files({REPO_RULES: REPO_TEXT}):
+        return await _call(_status_engine(), "rules_allow", {"hash": "0" * 12})
+
+
+@case("status_list/fields")
+async def _():
+    with _rules_files({}):
+        return await _call(_status_engine(), "status_list", {"fields": ["rule_id", "verb", "action"]})
+
+
 # --- actionables_* -----------------------------------------------------------
 
 

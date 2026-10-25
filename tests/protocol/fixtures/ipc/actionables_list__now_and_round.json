@@ -10,7 +10,7 @@
         "deep_max": 5,
         "now": 1,
         "parked": 0,
-        "round": 0
+        "round": 1
       },
       "generated_at": 1700000000.0,
       "items": [
@@ -36,6 +36,35 @@
           "title": "Needs approval",
           "work_item": "repo:login-ttl",
           "worktree_path": "/tmp/repo-login"
+        },
+        {
+          "agent_id": null,
+          "blocks_agent": false,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "Approved, CI green and mergeable: merging is yours, on the PR.",
+          "exit_code": null,
+          "id": "Rule:merge:repo:docs-index",
+          "job_id": null,
+          "kind": "rule",
+          "label": "#14 Index the docs",
+          "level": "round",
+          "occurrence": "Rule:merge:repo:docs-index@1700000000.0",
+          "park": null,
+          "pr": {
+            "number": 14,
+            "title": "Index the docs",
+            "url": "https://example.com/pull/14"
+          },
+          "priority": "medium",
+          "rule_id": "merge",
+          "run": null,
+          "since": 1700000000.0,
+          "state": "merge: approved, CI green",
+          "title": "Merge",
+          "verb": "Merge",
+          "work_item": "repo:docs-index",
+          "worktree_path": "/tmp/repo-docs"
         }
       ]
     }

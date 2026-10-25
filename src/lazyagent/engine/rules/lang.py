@@ -214,6 +214,10 @@ class Node:
     value: Any = None  # a literal's value, a fact's or function's name, a comparison
     type: Type | None = None  # a literal's
     paren: bool = False
+    # The node's span in the source (parentheses included), for the
+    # explain trace.
+    start: int = 0
+    end: int = 0
 
 
 class _Parser:
@@ -247,7 +251,10 @@ class _Parser:
         self.nodes += 1
         if self.nodes > MAX_NODES:
             raise RuleError(f"expression has more than {MAX_NODES} parts", pos)
-        return Node(op, pos, args or [], **kw)
+        last = self.tokens[self.i - 1] if self.i else self.tokens[0]
+        args = args or []
+        start = min([pos, *(a.start for a in args)])
+        return Node(op, pos, args, start=start, end=last.pos + len(last.text), **kw)
 
     def enter(self, pos: int) -> None:
         self.depth += 1
@@ -333,8 +340,9 @@ class _Parser:
         if t.kind == "op" and t.text == "(":
             self.take()
             inner = self.choice()
-            self.expect("op", ")")
+            close = self.expect("op", ")")
             inner.paren = True
+            inner.start, inner.end = t.pos, close.pos + 1
             return inner
         if t.kind == "op" and t.text == "[":
             self.take()
@@ -702,6 +710,25 @@ class _Compiler:
             a, b = fns
             return f.returns, lambda ctx: impl(ctx, a(ctx), b(ctx))
         return f.returns, lambda ctx: impl(ctx, *(g(ctx) for g in fns))
+
+
+def conjuncts(source: str, env: Env) -> list[tuple[str, Fn]]:
+    """The top-level ``and`` terms of a condition, each with its text and
+    compiled test, in order: the explain trace names the first one that is
+    not true."""
+    tree = parse(source)
+    terms: list[Node] = []
+
+    def flatten(n: Node) -> None:
+        if n.op == "and" and not n.paren:
+            for a in n.args:
+                flatten(a)
+        else:
+            terms.append(n)
+
+    flatten(tree)
+    return [(" ".join(source[n.start:n.end].split()), _Compiler(env).compile(n)[1])
+            for n in terms]
 
 
 def compile_expr(source: str, env: Env, want: Type | str | None = None) -> Expr:

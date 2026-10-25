@@ -36,7 +36,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -152,6 +152,9 @@ REPORT = KINDS["report"]
 # A brief (decisions.py): deep unless it failed validation or says quick;
 # its level and blocks_agent are the item's own.
 DECISION = KINDS["decision"]
+# An item rule's item (proposal 0014 R2, Q-R22: the built-in Merge, a user
+# rule with ball you): its title, verb and state are the rule's.
+RULE = register_kind(Kind("rule", "round", "Rule", 5))
 
 
 @dataclass
@@ -180,6 +183,10 @@ class Item:
     decision_id: str | None = None
     # ci / ci_failed: the red Actions run on the head (actions.run_info).
     run: dict[str, Any] | None = None
+    # rule: the rule that makes it, its verb and its title.
+    rule_id: str | None = None
+    verb: str | None = None
+    title: str | None = None
 
     @property
     def occurrence(self) -> str:
@@ -194,7 +201,7 @@ class Item:
             "kind": self.kind,
             "level": level,
             "class": "deep" if level == "deep" else "quick",
-            "title": kind.title,
+            "title": self.title or kind.title,
             "label": self.label,
             "detail": self.detail,
             "state": self.state,
@@ -210,7 +217,7 @@ class Item:
             "park": park,
             "decision_id": self.decision_id,
             "run": self.run,
-        }
+        } | ({"rule_id": self.rule_id, "verb": self.verb} if self.rule_id is not None else {})
 
 
 def sort_key(item: dict[str, Any]) -> tuple:
@@ -605,7 +612,10 @@ class ActionableQueue:
     def __init__(self, engine: Engine, *, clock: Callable[[], float] | None = None) -> None:
         self._engine = engine
         self._clock = clock
-        self.detectors: list[Detector] = list(DEFAULT_DETECTORS)
+        self.detectors: list[Detector] = [*DEFAULT_DETECTORS, self._rule_items]
+        # The item rules' items, found by the status projection's pass over
+        # the rows (StatusProjection.compute) just before it flushes.
+        self.rule_items: list[Item] = []
         self.filters: list[Filter] = []
         self._path: Path | None = None
         # id → first seen, for the conditions that hold now.
@@ -640,6 +650,9 @@ class ActionableQueue:
     @clock.setter
     def clock(self, clock: Callable[[], float]) -> None:
         self._clock = clock
+
+    def _rule_items(self, snap: Snapshot) -> list[Item]:
+        return [replace(item) for item in self.rule_items]
 
     def add_detector(self, detector: Detector) -> None:
         if detector not in self.detectors:
@@ -851,6 +864,7 @@ class ActionableQueue:
     ) -> dict[str, Any]:
         """``actionables_list``: the visible items (and the parked ones with
         ``include_hidden``), sorted, with counts."""
+        self._prime()
         now = self.clock()
         visible = self._refresh(now)
         items = list(visible)
@@ -882,7 +896,15 @@ class ActionableQueue:
         parked or dismissed."""
         return self._items.get(item_id)
 
+    def _prime(self) -> None:
+        """The item rules' items come from the status projection's pass:
+        before its first one, run it (it flushes this queue)."""
+        status = getattr(self._engine, "status", None)
+        if status is not None and not getattr(status, "_primed", True):
+            status.flush()
+
     def get(self, item_id: str) -> dict[str, Any]:
+        self._prime()
         self._refresh(self.clock())
         item = self._items.get(item_id)
         if item is None or item.occurrence in self._dismissed:
@@ -896,6 +918,7 @@ class ActionableQueue:
         or unpark it. Returns the item (``park`` set while parked)."""
         if action not in MARK_ACTIONS:
             raise ValueError(f"action must be one of {', '.join(MARK_ACTIONS)}")
+        self._prime()
         now = self.clock()
         self._refresh(now)
         if action == "undismiss":

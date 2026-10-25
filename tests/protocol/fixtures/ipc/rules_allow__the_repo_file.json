@@ -1,0 +1,37 @@
+{
+  "case": "rules_allow/the_repo_file",
+  "method": "rules_allow",
+  "params": {
+    "hash": "f30c9cfd0b1e"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "allowed": true,
+      "errors": [],
+      "file": "/tmp/repo/.lazyagent/rules.toml",
+      "files": [
+        {
+          "applied": "none",
+          "exists": false,
+          "hash": null,
+          "path": "/home/user/.config/lazyagent/rules.toml",
+          "rules": 0,
+          "scope": "global"
+        },
+        {
+          "allowed": true,
+          "applied": "current",
+          "exists": true,
+          "hash": "f30c9cfd0b1ebb3b1fcc893ee70a20cf7715d51a86712fa95c70b34f2dfe1bb4",
+          "path": "/tmp/repo/.lazyagent/rules.toml",
+          "rules": 1,
+          "scope": "repo"
+        }
+      ],
+      "hash": "f30c9cfd0b1ebb3b1fcc893ee70a20cf7715d51a86712fa95c70b34f2dfe1bb4",
+      "repo": "/tmp/repo",
+      "warnings": []
+    }
+  }
+}

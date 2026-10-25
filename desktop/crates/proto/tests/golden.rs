@@ -116,6 +116,14 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             "decision_escalate" | "decision_explain" => continue,
             // External feeders' (MCP, a planner or a script).
             "work_items_upsert" | "work_items_close" => continue,
+            // Home reads only the errors (its error line); the rest is R6's.
+            "rules_check" => {
+                let check: RulesErrors = serde_json::from_value(result.clone()).unwrap();
+                assert!(!check.errors.is_empty() || case.contains("no_error"), "{case}");
+                continue;
+            }
+            // The page and the Why view (R6), the CLI and MCP.
+            "rules_catalog" | "rules_explain" | "rules_allow" => continue,
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -194,6 +202,8 @@ const IGNORED_EVENTS: &[&str] = &[
     "orchestrator.released",
     "orchestrator.lapsed",
     "orchestrator.hold",
+    // Home shows the errors (rules.errors); the catalog is read on demand (R6).
+    "rules.changed",
 ];
 
 #[test]

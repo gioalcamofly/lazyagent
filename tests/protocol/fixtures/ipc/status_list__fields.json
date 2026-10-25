@@ -1,0 +1,177 @@
+{
+  "case": "status_list/fields",
+  "method": "status_list",
+  "params": {
+    "fields": [
+      "rule_id",
+      "verb",
+      "action"
+    ]
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "counts": {
+        "auto_actions": 0,
+        "auto_reverted": 0,
+        "deep": 0,
+        "deep_max": 5,
+        "done": 1,
+        "in_flight": 1,
+        "not_started": 0,
+        "now": 1,
+        "parked": 0,
+        "parked_needs_you": 0,
+        "round": 1,
+        "stale": 0
+      },
+      "generated_at": 1700000000.0,
+      "orchestrator": {
+        "alive": false,
+        "queue": [],
+        "report": null
+      },
+      "presence": {
+        "effective": "away",
+        "mode": "auto",
+        "since": 1700000000.0
+      },
+      "rows": [
+        {
+          "action": "answer",
+          "activity_at": null,
+          "agents": [
+            {
+              "id": "a1",
+              "since": 1700000000.0,
+              "status": "waiting_for_approval"
+            }
+          ],
+          "ball": "you",
+          "blocks_agent": true,
+          "branch": "login-ttl",
+          "changed_at": 1700000000.0,
+          "claim": null,
+          "class": "quick",
+          "delegation": null,
+          "fingerprint": "51e6c20d2f4b",
+          "gesture": null,
+          "hold": null,
+          "holder": "user",
+          "key": "repo:login-ttl",
+          "last_event_at": null,
+          "last_step": null,
+          "level": "now",
+          "needs_you": {
+            "count": 1,
+            "top": "Approval:/tmp/repo-login/a1"
+          },
+          "note": null,
+          "pr": null,
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 2,
+          "rule_id": "queue",
+          "seen_at": null,
+          "stale": false,
+          "state": "approve: Bash",
+          "suggestion": null,
+          "title": "login-ttl",
+          "urls": [],
+          "verb": "Approve",
+          "worktree_path": "/tmp/repo-login",
+          "zone": "inbox"
+        },
+        {
+          "action": "open_pr",
+          "activity_at": null,
+          "agents": [],
+          "ball": "you",
+          "blocks_agent": false,
+          "branch": "docs-index",
+          "changed_at": 1700000000.0,
+          "claim": null,
+          "class": "quick",
+          "delegation": null,
+          "fingerprint": "4dce709c96f5",
+          "gesture": null,
+          "hold": null,
+          "holder": "user",
+          "key": "repo:docs-index",
+          "last_event_at": null,
+          "last_step": null,
+          "level": "round",
+          "needs_you": {
+            "count": 1,
+            "top": "Rule:merge:repo:docs-index"
+          },
+          "note": null,
+          "pr": {
+            "ci": "green",
+            "mergeable": "MERGEABLE",
+            "number": 14,
+            "review": "APPROVED",
+            "state": "OPEN"
+          },
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 2,
+          "rule_id": "queue",
+          "seen_at": null,
+          "stale": false,
+          "state": "merge: approved, CI green",
+          "suggestion": null,
+          "title": "Index the docs",
+          "urls": [
+            "https://example.com/pull/14"
+          ],
+          "verb": "Merge",
+          "worktree_path": "/tmp/repo-docs",
+          "zone": "inbox"
+        },
+        {
+          "action": null,
+          "activity_at": null,
+          "agents": [
+            {
+              "id": "a2",
+              "since": 1700000000.0,
+              "status": "running"
+            }
+          ],
+          "ball": "agent",
+          "blocks_agent": false,
+          "branch": "export-csv",
+          "changed_at": 1700000000.0,
+          "claim": null,
+          "class": null,
+          "delegation": null,
+          "fingerprint": "d95513a0e536",
+          "gesture": null,
+          "hold": null,
+          "holder": "agent",
+          "key": "repo:export-csv",
+          "last_event_at": null,
+          "last_step": null,
+          "level": null,
+          "needs_you": null,
+          "note": null,
+          "pr": null,
+          "priority": "medium",
+          "repo": "repo",
+          "rule": 9,
+          "rule_id": "agent_running",
+          "seen_at": null,
+          "stale": false,
+          "state": "working",
+          "suggestion": null,
+          "title": "export-csv",
+          "urls": [],
+          "verb": null,
+          "worktree_path": "/tmp/repo-export",
+          "zone": "in_flight"
+        }
+      ]
+    }
+  }
+}

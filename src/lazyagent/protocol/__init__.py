@@ -96,6 +96,12 @@ LEGACY_METHODS: tuple[str, ...] = (
     "approval_answer",
     "question_answer",
     "orchestrator_actions",
+    # The rules catalog, why a row is where it is, the user's rule files
+    # (proposal 0014 R2).
+    "rules_catalog",
+    "rules_explain",
+    "rules_check",
+    "rules_allow",
 )
 
 # The methods protocol v1 adds.
@@ -169,6 +175,8 @@ EVENTS: tuple[str, ...] = (
     "decision.answered",
     "decision.explain",
     "decision.resolved",
+    "rules.changed",
+    "rules.errors",
     "ui.command",
     "ui.view_changed",
 )

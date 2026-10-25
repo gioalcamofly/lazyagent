@@ -71,6 +71,8 @@ pub struct Top {
     pub decision_id: Option<String>,
     /// A CI item's red run on the head (feature `actions`).
     pub run: Option<CiRun>,
+    /// A `rule` item's verb (feature `rules`: Merge).
+    pub verb: Option<String>,
 }
 
 impl Top {
@@ -240,7 +242,7 @@ impl Line {
     }
 
     /// The action an inbox line asks for, always an imperative.
-    pub fn verb(&self) -> &'static str {
+    pub fn verb(&self) -> &str {
         let Some(top) = &self.top else {
             return match self.row.as_ref() {
                 Some(r) if r.rule == 4 => "Merge",
@@ -263,6 +265,8 @@ impl Line {
             "decision" if top.asks(self.brief.as_ref()) => "Answer",
             "decision" => "Decide",
             "report" => "Read",
+            // An item rule's (the built-in Merge, a user rule): its own verb.
+            "rule" => top.verb.as_deref().filter(|v| !v.is_empty()).unwrap_or("Look"),
             _ => "Look",
         }
     }
@@ -314,6 +318,7 @@ fn top_of(item: &Actionable) -> Top {
         since: item.since,
         decision_id: item.decision_id.clone(),
         run: item.run.clone(),
+        verb: item.verb.clone(),
     }
 }
 
@@ -495,6 +500,7 @@ pub fn fallback_lines(
         since: i.since,
         decision_id: None,
         run: None,
+        verb: None,
     };
     let mut by_place: HashMap<&str, Vec<&attention::Item>> = HashMap::new();
     for i in items {

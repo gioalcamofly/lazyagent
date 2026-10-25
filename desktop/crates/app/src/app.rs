@@ -190,6 +190,8 @@ pub struct State {
     pub orchestrator: Option<lazyagent_proto::types::OrchestratorStatus>,
     /// Its actions today (`orchestrator_actions`), once the strip is open.
     pub orchestrator_actions: Option<Vec<lazyagent_proto::types::OrchestratorAction>>,
+    /// The rule files' errors (feature `rules`): Home's error line.
+    pub rules_errors: Vec<lazyagent_proto::types::RulesProblem>,
     /// The last gesture Home can take back (a 5 s Undo).
     pub undo: Option<crate::home_view::Undo>,
     /// Rows never looked at, marked seen now (once): no dots on a first launch.
@@ -295,6 +297,7 @@ impl State {
             inbox_config: None,
             orchestrator: None,
             orchestrator_actions: None,
+            rules_errors: vec![],
             undo: None,
             seen_seeded: HashSet::new(),
             inbox_loaded: 0,
@@ -616,7 +619,7 @@ impl State {
         if self.gestures() { json!({"include_done": true}) } else { json!({}) }
     }
 
-    fn fetch_inbox(&mut self) {
+    pub(crate) fn fetch_inbox(&mut self) {
         if !self.engine_inbox() {
             return;
         }
@@ -643,6 +646,16 @@ impl State {
                 s.import_marks();
             }
         });
+        if self.has("rules") {
+            self.conn.request("rules_check", json!({}), |s, reply| {
+                if let Ok(check) = reply.and_then(|v| {
+                    serde_json::from_value::<lazyagent_proto::types::RulesErrors>(v)
+                        .map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+                }) {
+                    s.rules_errors = check.errors;
+                }
+            });
+        }
         if self.has("decisions") {
             self.conn.request("decisions_list", json!({}), |s, reply| {
                 if let Ok(list) = reply.and_then(|v| {
@@ -1092,6 +1105,7 @@ impl State {
                 }
             }
             EngineEvent::DecisionExplain(r) => self.on_explain(r.explain),
+            EngineEvent::RulesErrors(r) => self.rules_errors = r.errors,
             EngineEvent::DecisionCreated(d) | EngineEvent::DecisionResolved(d) => {
                 self.decisions.insert(d.decision.id.clone(), d.decision);
                 self.inbox_gen += 1;

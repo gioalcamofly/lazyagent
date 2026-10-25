@@ -34,6 +34,7 @@ from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.trackers import TrackerFact
 from lazyagent.engine.work_items import EXT_PREFIX
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
+from lazyagent.engine.rules.facts import RowContext
 from lazyagent.models import AgentStatus, PrInfo
 
 if TYPE_CHECKING:
@@ -89,11 +90,9 @@ _IDLE = frozenset(
 STATE_WORDS = 5
 # Not a §3 row: the user passed the item to the orchestrator (claims.py).
 CLAIM_RULE = 13
-CLAIM_STATE = "orchestrator · looking"
 # Not a §3 row either: the orchestrator holds a routed brief or question
 # (engine/orchestrator.py) and nothing else is the user's.
 HELD_RULE = 14
-HELD_STATE = "orchestrator · looking"
 # The orchestrator holds the item itself (orchestrator_hold, claims.py).
 HOLD_RULE = 15
 # The user delegated an inbox item to the branch's agent (delegation.py).
@@ -175,6 +174,9 @@ class Derived:
     blocks_agent: bool = False
     # A hint for the user (never done for them), e.g. "close the PR".
     suggestion: str | None = None
+    # The catalog rule's id (``status_list {fields}``, rules_explain): not
+    # part of the row's identity, so equal rows compare equal.
+    rule_id: str = field(default="", compare=False, repr=False)
 
 
 @dataclass
@@ -243,7 +245,8 @@ def park_text(until: Any, reason: str | None = None, now: float | None = None) -
     return "parked until " + until_text(until, now)
 
 
-def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float) -> Derived:
+def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float,
+           catalog: Any = None) -> Derived:
     """The ball, state and level of one work item (plan §3, first match
     wins), from the rules catalog (engine/rules, ``builtin.toml``). With the
     inbox queue, rule 2 is its open items and rules 3, 5 and 6 are kinds of
@@ -252,8 +255,9 @@ def derive(facts: Facts, now: float, last_change: float, *, stalled_hours: float
     the state a fresh fact (Q-B7). A linked tracker task, or the agent's
     reported ball, decides the ball only where the engine's own facts do not
     (Q-B20): after rule 9, before rule 10; the tracker's inbox items
-    (``tracker_status``) are the queue's."""
-    return _catalog().derive(facts, now, last_change, stalled_hours)
+    (``tracker_status``) are the queue's. ``catalog`` is the effective one
+    (the engine's rule files, engine/rules/hub.py); the built-in by default."""
+    return (catalog or _catalog()).derive(facts, now, last_change, stalled_hours)
 
 
 @functools.cache
@@ -264,10 +268,12 @@ def _catalog() -> Any:
     return builtin()
 
 
-def fingerprint(facts: Facts, derived: Derived) -> str:
+def fingerprint(facts: Facts, derived: Derived, user: list[Any] | None = None) -> str:
     """A hash of the facts that move a row across a rule boundary; free
     text (an agent's detail, the state) is left out, so a tool call does
-    not reset the row's age."""
+    not reset the row's age. ``user``: a user rule matched, its id and the
+    values of the facts it read (:func:`user_facts`), so a change of one of
+    them moves the age too; the built-ins' inputs stay as they were."""
     pr = facts.pr
     data = [
         derived.ball,
@@ -294,8 +300,27 @@ def fingerprint(facts: Facts, derived: Derived) -> str:
     report = facts.report
     if report is not None and (report.get("needs_user") or report.get("ball")):
         data.append(["report", report.get("needs_user"), report.get("ball"), report["at"]])
+    if user is not None:
+        data.append(["user_rule", *user])
     raw = json.dumps(data, sort_keys=True).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
+
+
+# Facts whose value moves on its own (the clock): never a fingerprint input.
+_CLOCK_KINDS = ("duration", "time")
+
+
+def user_facts(catalog: Any, ctx: Any, rule_id: str) -> list[Any] | None:
+    """``[rule id, [fact, value] ...]`` when a user rule decided the row."""
+    from lazyagent.engine.rules.catalog import plain
+    from lazyagent.engine.rules.facts import FACTS
+
+    rule = catalog.by_id.get(rule_id)
+    if rule is None or rule.origin == "builtin":
+        return None
+    values = [[n, plain(ctx.fact(n))] for n in sorted(rule.facts)
+              if FACTS[n].type.kind not in _CLOCK_KINDS]
+    return [rule_id, values]
 
 
 def public_gesture(gesture: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -569,6 +594,95 @@ class StatusProjection:
         self._unsubscribe: Callable[[], None] | None = None
         self._ticks = 0
         self._started = False
+        # key → the last pass's Derived (status_list {fields}).
+        self._derived: dict[str, Derived] = {}
+
+    @property
+    def catalog(self) -> Any:
+        """The effective rules catalog: the engine's rule files over the
+        built-ins."""
+        hub = getattr(self._engine, "rules", None)
+        return hub.catalog if hub is not None else _catalog()
+
+    def _rule_items(self, catalog: Any, base: list[Facts], now: float) -> list[Any]:
+        """The item rules' inbox items: per row, the item rule that is the
+        first match below the locked prefix (catalog.first_item)."""
+        from lazyagent.engine.actionables import RULE, Item
+
+        if not catalog.item_rules:
+            return []
+        hours = self._engine.config.status.stalled_hours
+        out = []
+        for facts in base:
+            seen = self._seen.get(facts.key)
+            last_change = seen.changed_at if seen is not None else self._seed(facts, now)
+            # The queue on, with nothing open yet: what the row would be.
+            ctx = RowContext(replace(facts, actionables=()), now, last_change, hours)
+            rule = catalog.first_item(ctx)
+            if rule is None:
+                continue
+            d = catalog.outputs(rule, ctx)
+            pr = facts.pr
+            out.append(Item(
+                f"Rule:{rule.id}:{facts.key}",
+                RULE.name,
+                d.state,
+                label=f"#{pr.number} {pr.title}" if pr is not None else facts.branch or facts.key,
+                detail=rule.says,
+                work_item=facts.key,
+                worktree_path=facts.worktree_path,
+                pr={"number": pr.number, "title": pr.title, "url": pr.url}
+                if pr is not None else None,
+                level=d.level or "round",
+                blocks_agent=d.blocks_agent,
+                rule_id=rule.id,
+                verb=rule.verb,
+                title=rule.verb or "Rule",
+            ))
+        return out
+
+    def explain(self, key: str) -> dict[str, Any] | None:
+        """``rules_explain``: why ``key``'s row is what the last pass made it."""
+        facts = self._facts_by_key.get(key)
+        if facts is None:
+            self.flush()
+            facts = self._facts_by_key.get(key)
+            if facts is None:
+                return None
+        now = self.clock()
+        seen = self._seen.get(key)
+        last_change = seen.changed_at if seen is not None else now
+        ctx = RowContext(facts, now, last_change, self._engine.config.status.stalled_hours)
+        out = self.catalog.explain(ctx)
+        out["key"] = key
+        out["items"] = [
+            {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
+            for i in facts.actionables or ()
+        ]
+        return out
+
+    def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
+        """The opt-in row fields (Q-R20): rule_id, verb, action. A row the
+        queue decides takes its top item's."""
+        catalog = catalog or self.catalog
+        derived = self._derived.get(key)
+        rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
+        out: dict[str, Any] = {"rule_id": rule.id if rule is not None else None,
+                               "verb": None, "action": None}
+        if rule is None:
+            return out
+        out["verb"], out["action"] = rule.verb, rule.action
+        facts = self._facts_by_key.get(key)
+        if rule.id == "queue" and facts is not None and facts.actionables:
+            top = facts.actionables[0]
+            kind = catalog.kind.get(top["kind"])
+            if top.get("rule_id"):
+                item_rule = catalog.by_id.get(top["rule_id"])
+                out["verb"] = top.get("verb")
+                out["action"] = item_rule.action if item_rule is not None else None
+            elif kind is not None:
+                out["verb"], out["action"] = kind.verb, kind.action
+        return out
 
     # --- Lifecycle ---
 
@@ -597,6 +711,10 @@ class StatusProjection:
             self._refresh_commit_times()
         self._poll_trackers()
         self._poll_actions()
+        hub = getattr(self._engine, "rules", None)
+        if hub is not None:
+            # A rule file edited by hand (or allowed) applies on this pass.
+            hub.check()
         self.flush()
 
     def _on_event(self, event: EngineEvent) -> None:
@@ -823,17 +941,12 @@ class StatusProjection:
         rows: dict[str, dict[str, Any]] = {}
         facts_by_key: dict[str, Facts] = {}
         live_agents: set[tuple[str, str]] = set()
-        queue: dict[str, list[dict[str, Any]]] = {}
-        visible_items = self._engine.actionables.flush(now)
-        claims.auto_hold(visible_items, now)
-        delegations.check(now)
-        for item in visible_items:
-            if item["work_item"] is not None:
-                queue.setdefault(item["work_item"], []).append(item)
+        catalog = self.catalog
         notes_ids = self._restorable_notes()
+        # First the facts the queue does not decide, and the item rules'
+        # items from them (the built-in Merge, a user rule with ball you).
+        base: list[Facts] = []
         for facts in self._facts(now):
-            key = facts.key
-            items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
             gesture = overlay.gesture(facts, now)
             if gesture is None or gesture["kind"] == "label":
                 # The feeder's Waiting lane parks it; the user's park or
@@ -842,23 +955,38 @@ class StatusProjection:
                 gesture = work_items.waiting_gesture(record, facts, now) or gesture
             facts = replace(
                 facts,
+                gesture=gesture,
+                report=overlay.reports.get(facts.key),
+                released=overlay.released_note(facts.key, now),
+                spawned_by=overlay.spawned_by(facts.key),
+            )
+            base.append(replace(facts, activity_at=self._activity(facts, notes_ids, now)))
+        self._engine.actionables.rule_items = self._rule_items(catalog, base, now)
+        queue: dict[str, list[dict[str, Any]]] = {}
+        visible_items = self._engine.actionables.flush(now)
+        claims.auto_hold(visible_items, now)
+        delegations.check(now)
+        for item in visible_items:
+            if item["work_item"] is not None:
+                queue.setdefault(item["work_item"], []).append(item)
+        for facts in base:
+            key = facts.key
+            items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
+            facts = replace(
+                facts,
                 actionables=tuple(items),
                 claim=claims.get(key),
                 hold=claims.get_hold(key),
                 delegation=delegations.get(key),
-                gesture=gesture,
-                report=overlay.reports.get(key),
                 holder="orchestrator" if self._engine.first_responder.held(key) else None,
-                released=overlay.released_note(key, now),
-                spawned_by=overlay.spawned_by(key),
             )
-            facts = replace(facts, activity_at=self._activity(facts, notes_ids, now))
             facts_by_key[facts.key] = facts
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
-            derived = derive(facts, now, last_change, stalled_hours=config.stalled_hours)
-            fp = fingerprint(facts, derived)
+            ctx = RowContext(facts, now, last_change, config.stalled_hours)
+            derived = catalog.evaluate(ctx)
+            fp = fingerprint(facts, derived, user_facts(catalog, ctx, derived.rule_id))
             if seen is None:
                 seen = self._seen[facts.key] = _Seen(fp, last_change)
             elif seen.fingerprint != fp:
@@ -875,6 +1003,7 @@ class StatusProjection:
                 and now - changed_at > config.stale_days * 86400
             )
             rows[facts.key] = build_row(facts, derived, changed_at, fp, stale=stale)
+            self._derived[facts.key] = derived
         self._projects(rows, now)
         self._track(rows, facts_by_key, now)
         self._close(rows, now)
@@ -884,6 +1013,8 @@ class StatusProjection:
             row["last_step"] = last_step(overlay.timeline.get(key, ()))
         for key in [k for k in self._seen if k not in rows]:
             del self._seen[key]
+        for key in [k for k in self._derived if k not in rows]:
+            del self._derived[key]
         for slot in [s for s in self._since if s not in live_agents]:
             del self._since[slot]
         self._primed = True

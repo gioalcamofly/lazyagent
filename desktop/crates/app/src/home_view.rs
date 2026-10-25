@@ -20,8 +20,8 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, CiLogSummary, Decision, InboxConfig, Presence, StatusGestureResult, StatusRow,
-    StatusTimeline, TimelineEntry,
+    Actionable, ActionableResult, CiLogSummary, Decision, InboxConfig, Presence, RulesProblem, StatusGestureResult,
+    StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -1063,6 +1063,46 @@ fn ci_log(ui: &mut Ui, t: &Theme, summary: &CiLogSummary) {
     }
 }
 
+/// A rule file as the error line names it: the repo's by its path in the
+/// repo, the global one as such.
+fn rules_file_name(p: &RulesProblem) -> String {
+    match (p.scope.as_deref(), p.file.as_deref()) {
+        (Some("repo"), _) => ".lazyagent/rules.toml".to_string(),
+        (Some("global"), _) => "your global rules.toml".to_string(),
+        (_, Some(f)) => f.rsplit('/').next().unwrap_or(f).to_string(),
+        _ => "rules.toml".to_string(),
+    }
+}
+
+/// One rule file error, in full: file, line, rule, what happened, what is
+/// in force instead.
+pub fn rules_problem_text(p: &RulesProblem) -> String {
+    let mut text = rules_file_name(p);
+    if let Some(line) = p.line {
+        text.push_str(&format!(", line {line}"));
+    }
+    text.push_str(": ");
+    let mut message = p.message.as_str();
+    if let Some(rule) = &p.rule {
+        text.push_str(&format!("rule {rule}: "));
+        message = message.strip_prefix(&format!("rule {rule}")).unwrap_or(message).trim_start_matches([':', ' ']);
+    }
+    text.push_str(message);
+    if !p.fallback.is_empty() {
+        text.push_str(&format!(" — {}", p.fallback));
+    }
+    text
+}
+
+/// Home's line while the rule files have errors (`rules.errors`): how many,
+/// and the first one named by its rule, file and line.
+pub fn rules_error_line(errors: &[RulesProblem]) -> Option<String> {
+    let first = errors.first()?;
+    let n = errors.len();
+    let count = if n == 1 { "1 error".to_string() } else { format!("{n} errors") };
+    Some(format!("Rules: {count} · {}", rules_problem_text(first)))
+}
+
 fn ball_color(t: &Theme, ball: &str) -> Color32 {
     // No red outside Now: the in-flight list stays calm.
     match ball {
@@ -1237,6 +1277,8 @@ impl App {
             questions: s.inline_questions(),
             close_stop: s.has(F_CLOSE_STOP),
         };
+        let rules_line = rules_error_line(&s.rules_errors);
+        let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
         let presence = s.presence.clone();
         let orchestrator = s.orchestrator.clone();
         let actions = s.orchestrator_actions.clone();
@@ -1266,6 +1308,12 @@ impl App {
         });
         egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(CONTENT_MAX));
+            if let Some(text) = &rules_line {
+                // Under the top bar while a rule file has errors; each one in
+                // full on hover (the page that lists them is R6's).
+                ui.add(egui::Label::new(RichText::new(text).color(t.red)).truncate())
+                    .on_hover_text(rules_all.join("\n"));
+            }
             if ctx.first_responder {
                 orchestrator_strip(ui, &ctx, presence.as_ref(), counts, orchestrator.as_ref(), actions.as_deref(), strip_open, &mut acts);
             }

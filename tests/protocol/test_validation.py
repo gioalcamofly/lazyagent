@@ -155,6 +155,12 @@ EVENT_SAMPLES = {
         "asked_at": 1.0, "sent_at": 1.5, "text": "A backs off.", "by": "agent:a1",
         "answered_at": 2.0, "truncated": False,
     }},
+    "rules.changed": {"files": [{"scope": "global", "path": "/c/rules.toml", "exists": True,
+                                 "hash": "ab" * 32, "applied": "current", "rules": 2}],
+                      "rules": 38},
+    "rules.errors": {"errors": [{"scope": "global", "file": "/c/rules.toml", "line": 7,
+                                 "rule": "merge", "message": "rule merge when: no fact 'x'",
+                                 "fallback": "skipped; the built-in is in force"}]},
     "ui.command": {"command": "focus_agent", "worktree_path": "/r", "agent_id": None},
     "ui.view_changed": {
         "worktree_path": "/r", "orchestrator": False, "agent_id": "a1", "focus": "agent",

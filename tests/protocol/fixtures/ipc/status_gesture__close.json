@@ -41,7 +41,10 @@
         "last_event_at": 1700000000.0,
         "last_step": null,
         "level": null,
-        "needs_you": null,
+        "needs_you": {
+          "count": 1,
+          "top": "Rule:merge:repo:docs-index"
+        },
         "note": null,
         "pr": {
           "ci": "green",
