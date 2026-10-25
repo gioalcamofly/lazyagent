@@ -216,7 +216,7 @@ fn w_on_a_merge_line_shows_the_rule_the_facts_and_the_rules_above_that_failed() 
     // The rules above it that did not match, and why (in English).
     h.get_by_label_contains("Rules above merge that did not match · ");
     h.get_by_label("approve");
-    assert!(h.query_all_by_label("Not: the inbox queue is on").count() >= 1);
+    assert!(h.query_all_by_label("The inbox queue is off").count() >= 1);
     // And how the line got there: the locked queue rule, its own rules above.
     h.get_by_label("queue");
     h.get_by_label("built-in, locked");

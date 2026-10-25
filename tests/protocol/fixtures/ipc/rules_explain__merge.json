@@ -26,7 +26,7 @@
           "failed": "pr.merged_into != \"\"",
           "id": "closed.already_merged",
           "origin": "builtin",
-          "said": "The branch the head is already in is set",
+          "said": "There is a branch that already holds the head",
           "value": "false"
         },
         {
@@ -80,35 +80,35 @@
             "failed": "not queue.enabled",
             "id": "approve",
             "origin": "builtin",
-            "said": "Not: the inbox queue is on",
+            "said": "The inbox queue is off",
             "value": "false"
           },
           {
             "failed": "not queue.enabled",
             "id": "answer",
             "origin": "builtin",
-            "said": "Not: the inbox queue is on",
+            "said": "The inbox queue is off",
             "value": "false"
           },
           {
             "failed": "not queue.enabled",
             "id": "agent_failed",
             "origin": "builtin",
-            "said": "Not: the inbox queue is on",
+            "said": "The inbox queue is off",
             "value": "false"
           },
           {
             "failed": "not queue.enabled",
             "id": "agent_may_hang",
             "origin": "builtin",
-            "said": "Not: the inbox queue is on",
+            "said": "The inbox queue is off",
             "value": "false"
           },
           {
             "failed": "not queue.enabled",
             "id": "needs_you",
             "origin": "builtin",
-            "said": "Not: the inbox queue is on",
+            "said": "The inbox queue is off",
             "value": "false"
           }
         ],

@@ -126,7 +126,11 @@ def _cmp(n: Node) -> str:
     op = n.value
     subject = _value(left)
     if right.op == "lit" and right.value == "" and op in ("==", "!="):
-        return f"{subject} is {'empty' if op == '==' else 'set'}"
+        # "the first failing check" → "there is a / no first failing check";
+        # "the agent's report note" → "… is (not) empty".
+        if subject.startswith("the ") and "'s " not in subject:
+            return f"there is {'no' if op == '==' else 'a'} {subject.removeprefix('the ')}"
+        return f"{subject} is {'empty' if op == '==' else 'not empty'}"
     if right.op == "lit" and right.value == 0 and right.type is not None and right.type.kind == "num":
         if op == ">":
             return f"there are {subject.removeprefix('the ')}"
@@ -152,6 +156,27 @@ def _cmp(n: Node) -> str:
     return f"{subject} is {_NUM.get(op, op)} {_value(right)}"
 
 
+_NEGATIONS = ((" is on", " is off"), (" is a ", " is no "), (" is ", " is not "), (" are ", " are not "))
+_VERBS = ((" holds ", " does not hold "), (" failed", " did not fail"), (" passed ", " did not pass "),
+          (" reported ", " did not report "), (" says ", " does not say "))
+
+
+def negate(clause: str) -> str:
+    """A boolean fact's phrase, negated: "the inbox queue is on" → "the
+    inbox queue is off", "there is a PR" → "there is no PR"."""
+    for old, new in _NEGATIONS:
+        if old in clause:
+            return clause.replace(old, new, 1)
+    for article in ("a ", "an "):
+        if clause.startswith(article):
+            # "an open inbox item blocks an agent" → "no open inbox item …"
+            return "no " + clause.removeprefix(article)
+    for old, new in _VERBS:
+        if old in clause:
+            return clause.replace(old, new, 1)
+    return f"not {clause}"
+
+
 def _sentence(n: Node) -> str:
     if n.op == "and":
         return " and ".join(_sentence(a) for a in n.args)
@@ -161,7 +186,7 @@ def _sentence(n: Node) -> str:
     if n.op == "not":
         inner = n.args[0]
         if inner.op == "fact":
-            return f"not: {_phrase(inner.value)}"
+            return negate(_phrase(inner.value))
         return f"not ({_sentence(inner)})"
     if n.op == "cmp":
         return _cmp(n)

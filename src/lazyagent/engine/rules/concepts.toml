@@ -126,7 +126,7 @@ version = 1
 [[rule]]
 id = "merge"
 says = "Merge only after QA."
-and_when = 'tracker.status == "QA passed"'
+and_when = 'tracker.qa == "tested"'
 '''
 
 [[section]]

@@ -16,8 +16,8 @@ source spells. A getter returns :data:`UNKNOWN` when the fact is not there
 absence (no gesture, no report) is a value. Facts are memoised per context,
 so a pass reads each one once per row.
 
-The facts that later phases bring (``tracker.qa``, ``ci.failing_tests``,
-``ci.unrelated`` …) join this list with their phases (docs/design/
+The facts that later phases bring (``ci.failing_tests``, ``ci.unrelated``
+…) join this list with their phases (docs/design/
 rules-plan.md); rules cannot define facts.
 """
 
@@ -41,6 +41,7 @@ from lazyagent.engine.rules.lang import (
     enum,
     set_of,
 )
+from lazyagent.engine.trackers import QA_VALUES
 from lazyagent.models import AgentStatus
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ PR_REVIEW = enum("pr_review", ("approved", "changes_requested", "review_required
 PR_MERGEABLE = enum("pr_mergeable", ("mergeable", "conflicting", "unknown"))
 CI_STATE = enum("ci_state", ("green", "red", "running", "none"))
 CI_HEAD = enum("ci_head", ("green", "red", "running", "moved", "none"))
+TRACKER_QA = enum("tracker_qa", QA_VALUES)
 GESTURE_KIND = enum("gesture_kind", ("label", "park", "close", "none"))
 
 _PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
@@ -269,6 +271,31 @@ def _tracker(attr: str) -> Getter:
     return get
 
 
+def _feeder_fact(c: RowContext, name: str) -> Any:
+    feeder = c.facts.feeder
+    facts = feeder.get("facts") if feeder is not None else None
+    return facts.get(name, UNKNOWN) if facts else UNKNOWN
+
+
+def _tracker_linked(c: RowContext) -> bool:
+    return c.facts.tracker is not None or bool((c.facts.feeder or {}).get("facts"))
+
+
+def _tracker_status(c: RowContext) -> Any:
+    """The adapter's, else a feeder's (Q-R15: the adapter wins)."""
+    t = c.facts.tracker
+    if t is not None:
+        return t.status
+    return _feeder_fact(c, "tracker.status")
+
+
+def _tracker_qa(c: RowContext) -> Any:
+    t = c.facts.tracker
+    if t is not None and t.qa is not None:
+        return t.qa
+    return _feeder_fact(c, "tracker.qa")
+
+
 def _delegation(key: str) -> Getter:
     def get(c: RowContext) -> Any:
         d = c.facts.delegation
@@ -418,7 +445,7 @@ _fact("pr.base", TEXT, "the PR's base branch", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("base_ref"))
 _fact("pr.head_sha", TEXT, "the PR's head commit", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("head_sha"))
-_fact("pr.merged_into", TEXT, "the branch the head is already in (empty: none)",
+_fact("pr.merged_into", TEXT, "the branch that already holds the head (empty: none)",
       "git (merged_into)", "per head", "free",
       row=lambda c: c.facts.merged_into or "")
 
@@ -434,7 +461,7 @@ _fact("ci.head", CI_HEAD, "Actions on the head", "Actions runs (I7)", "≤ actio
 
 _fact("queue.enabled", BOOL, "the inbox queue is on", "ActionableQueue", "static", "free",
       row=lambda c: c.facts.actionables is not None)
-_fact("items.count", NUM, "the work item's open inbox items", "ActionableQueue",
+_fact("items.count", NUM, "the open inbox items on the work item", "ActionableQueue",
       "per pass", "free", row=_items_count)
 _fact("items.top.kind", TEXT, "the top inbox item's kind", "ActionableQueue", "per pass",
       "free", row=_items_top("kind"))
@@ -445,10 +472,14 @@ _fact("items.top.state", TEXT, "the top inbox item's state", "ActionableQueue",
 _fact("items.blocks_agent", BOOL, "an open inbox item blocks an agent", "ActionableQueue",
       "per pass", "free", row=_items_blocks)
 
-_fact("tracker.linked", BOOL, "a tracker task is linked", "tracker hub", "poll_s", "poll",
-      row=lambda c: c.facts.tracker is not None)
-_fact("tracker.status", TEXT, "the task's status", "tracker adapter", "poll_s", "poll",
-      row=_tracker("status"))
+_fact("tracker.linked", BOOL, "a tracker task is linked",
+      "tracker hub, else a feeder's facts", "poll_s", "poll", row=_tracker_linked)
+_fact("tracker.status", TEXT, "the task's status",
+      "tracker adapter, else a feeder's facts", "poll_s", "poll", row=_tracker_status)
+_fact("tracker.qa", TRACKER_QA,
+      "the task's QA (unknown: no task, or nothing maps it)",
+      "tracker adapter [<adapter>.qa] mapping, else a feeder's facts", "poll_s", "poll",
+      row=_tracker_qa)
 _fact("tracker.state", TEXT, "the task's mapped state", "tracker adapter mapping",
       "poll_s", "poll", row=_tracker("state"))
 _fact("tracker.ball", BALL, "the task's mapped ball", "tracker adapter mapping",

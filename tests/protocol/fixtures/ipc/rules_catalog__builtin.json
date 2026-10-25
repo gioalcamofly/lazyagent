@@ -601,7 +601,7 @@
           {
             "caption": "",
             "cards": [],
-            "example": "# $XDG_CONFIG_HOME/lazyagent/rules.toml\nversion = 1\n\n[[rule]]\nid = \"merge\"\nsays = \"Merge only after QA.\"\nand_when = 'tracker.status == \"QA passed\"'",
+            "example": "# $XDG_CONFIG_HOME/lazyagent/rules.toml\nversion = 1\n\n[[rule]]\nid = \"merge\"\nsays = \"Merge only after QA.\"\nand_when = 'tracker.qa == \"tested\"'",
             "generated": "rules",
             "id": "rules",
             "intro": "Rules are data. Your global rules.toml and a repo's .lazyagent/rules.toml can add, replace or narrow the built-ins. A bad rule is skipped and the built-in stays.",
@@ -1022,7 +1022,7 @@
           "cost": "free",
           "freshness": "per head",
           "name": "pr.merged_into",
-          "phrase": "the branch the head is already in (empty: none)",
+          "phrase": "the branch that already holds the head (empty: none)",
           "scopes": [
             "row"
           ],
@@ -1107,7 +1107,7 @@
           "cost": "free",
           "freshness": "per pass",
           "name": "items.count",
-          "phrase": "the work item's open inbox items",
+          "phrase": "the open inbox items on the work item",
           "scopes": [
             "row"
           ],
@@ -1175,7 +1175,7 @@
           "scopes": [
             "row"
           ],
-          "source": "tracker hub",
+          "source": "tracker hub, else a feeder's facts",
           "type": "bool",
           "values": []
         },
@@ -1187,9 +1187,26 @@
           "scopes": [
             "row"
           ],
-          "source": "tracker adapter",
+          "source": "tracker adapter, else a feeder's facts",
           "type": "text",
           "values": []
+        },
+        {
+          "cost": "poll",
+          "freshness": "poll_s",
+          "name": "tracker.qa",
+          "phrase": "the task's QA (unknown: no task, or nothing maps it)",
+          "scopes": [
+            "row"
+          ],
+          "source": "tracker adapter [<adapter>.qa] mapping, else a feeder's facts",
+          "type": "enum tracker_qa",
+          "values": [
+            "tested",
+            "not_required",
+            "pending",
+            "failed"
+          ]
         },
         {
           "cost": "poll",
@@ -1624,7 +1641,7 @@
           "level": "round",
           "rank": 5,
           "says": "A fresh red Actions run on the head of a branch with no PR (I7).",
-          "sentence": "Not: there is a PR and Actions on the head is red and there are no agents at work",
+          "sentence": "There is no PR and Actions on the head is red and there are no agents at work",
           "state_text": "CI red: \u2039the first failing check\u203a",
           "title": "CI failed",
           "verb": "Fix CI",
@@ -1672,7 +1689,7 @@
           "level": "deep",
           "rank": 6,
           "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on.",
-          "sentence": "The agent's status is completed, waiting or interrupted and there are no agents at work and not: there is a PR and not: the orchestrator's own place and not: the agent's report says where the ball is",
+          "sentence": "The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is",
           "state_text": "review: agent finished",
           "title": "Your turn",
           "verb": "Review",
@@ -1810,8 +1827,8 @@
           "queue_off": false,
           "replaces": null,
           "says": "Closing the PR stays the user's (never alone).",
-          "sentence": "The PR's state is open and the branch the head is already in is set",
-          "state_text": "already merged into \u2039the branch the head is already in\u203a",
+          "sentence": "The PR's state is open and there is a branch that already holds the head",
+          "state_text": "already merged into \u2039the branch that already holds the head\u203a",
           "then": {
             "ball": "done",
             "state_expr": "\"already merged into \" + pr.merged_into",
@@ -1888,7 +1905,7 @@
           "queue_off": false,
           "replaces": null,
           "says": "The work item's open inbox items, top first.",
-          "sentence": "There are work item's open inbox items",
+          "sentence": "There are open inbox items on the work item",
           "state_text": "\u2039the top inbox item's state\u203a",
           "then": {
             "ball": "you",
@@ -2015,7 +2032,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and the agents' statuses include waiting for approval",
+          "sentence": "The inbox queue is off and the agents' statuses include waiting for approval",
           "state_text": "approve: \u2039the agent's detail\u203a",
           "then": {
             "ball": "you",
@@ -2042,7 +2059,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and the agents' statuses include waiting for user",
+          "sentence": "The inbox queue is off and the agents' statuses include waiting for user",
           "state_text": "answer: \u2039the agent's detail\u203a",
           "then": {
             "ball": "you",
@@ -2069,7 +2086,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and the agents' statuses include failed",
+          "sentence": "The inbox queue is off and the agents' statuses include failed",
           "state_text": "agent failed",
           "then": {
             "ball": "you",
@@ -2095,7 +2112,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and the agents' statuses include possibly hanged",
+          "sentence": "The inbox queue is off and the agents' statuses include possibly hanged",
           "state_text": "agent may hang",
           "then": {
             "ball": "you",
@@ -2121,7 +2138,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and the agent reported it needs you",
+          "sentence": "The inbox queue is off and the agent reported it needs you",
           "state_text": "needs you: \u2039the agent's report note\u203a",
           "then": {
             "ball": "you",
@@ -2173,7 +2190,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "The PR's state is open and not: the inbox queue is on and the PR's review decision is changes requested",
+          "sentence": "The PR's state is open and the inbox queue is off and the PR's review decision is changes requested",
           "state_text": "changes requested",
           "then": {
             "ball": "you",
@@ -2199,7 +2216,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "The PR's state is open and not: the inbox queue is on and there are no agents at work and the PR's mergeability is conflicting",
+          "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting",
           "state_text": "conflict with base",
           "then": {
             "ball": "you",
@@ -2225,7 +2242,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "The PR's state is open and not: the inbox queue is on and there are no agents at work and CI on the PR is red",
+          "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red",
           "state_text": "CI red: \u2039the first failing check\u203a",
           "then": {
             "ball": "you",
@@ -2251,7 +2268,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "Not: the inbox queue is on and there are agents whose turn is over and there are no agents at work and not: there is a PR and the agent's reported ball is empty",
+          "sentence": "The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty",
           "state_text": "review: agent finished",
           "then": {
             "ball": "you",
@@ -2379,7 +2396,7 @@
           "queue_off": false,
           "replaces": null,
           "says": "Ball agent: it works on in the background (its turn is over).",
-          "sentence": "The agent's reported ball is set",
+          "sentence": "The agent's reported ball is not empty",
           "state_text": "agent \u2039the agent that reported\u203a \u00b7 (working / \u2039the agent's report note\u203a) / reported: \u2039the agent's reported ball\u203a / \u2039the agent's report note\u203a",
           "then": {
             "ball_expr": "report.ball",
@@ -2404,7 +2421,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "Without the queue: the level while the task's entered-status item is open.",
-          "sentence": "The task's mapped ball is you and the task's mapped level is known and not: the inbox queue is on",
+          "sentence": "The task's mapped ball is you and the task's mapped level is known and the inbox queue is off",
           "state_text": "\u2039the task's mapped state\u203a",
           "then": {
             "ball": "you",

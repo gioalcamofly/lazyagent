@@ -148,7 +148,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Relaunch** | agent failed | The agent's status is failed |  |
 | **Relaunch** | agent exited | (exits) |  |
 | **Fix CI** | CI red: ‹the first failing check› | The PR's state is open and the PR's checks are red on its head and there are no agents at work | `d` Send the item to the branch's agent |
-| **Fix CI** | CI red: ‹the first failing check› | Not: there is a PR and Actions on the head is red and there are no agents at work | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check› | There is no PR and Actions on the head is red and there are no agents at work | `d` Send the item to the branch's agent |
 | **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and there are no agents at work | `d` Send the item to the branch's agent |
 | **Fix job** | job failed | (jobs) |  |
 | **Update task** | Tracker | (tracker) | `p` The tracker task |
@@ -161,14 +161,14 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | verb | state | when | key |
 |---|---|---|---|
 | **Address review** | changes requested | The PR's state is open and the PR's review decision is changes requested | `d` Send the item to the branch's agent |
-| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and not: there is a PR and not: the orchestrator's own place and not: the agent's report says where the ball is |  |
+| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is |  |
 | **Decide** | Decide | (decision) | `v` Open the brief |
 
 ### Inbox (the top item decides)
 
 | verb | state | when | key |
 |---|---|---|---|
-| you | ‹the top inbox item's state› | There are work item's open inbox items |  |
+| you | ‹the top inbox item's state› | There are open inbox items on the work item |  |
 
 ### In flight
 
@@ -182,7 +182,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | agent | fixing CI / starting / working | There are agents at work |  |
 | agent | CI running | The PR's state is open and CI on the PR is running |  |
 | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |  |
-| ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is set |  |
+| ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |  |
 | others | ‹the task's mapped state› | The task's mapped ball is others |  |
 | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |  |
 | others | (PR open / review requested)(, CI green) | The PR's state is open and the PR's review decision is review required or none |  |
@@ -205,7 +205,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 |---|---|---|---|
 | done | merged | The PR's state is merged |  |
 | done | PR closed | The PR's state is closed |  |
-| done | already merged into ‹the branch the head is already in› | The PR's state is open and the branch the head is already in is set |  |
+| done | already merged into ‹the branch that already holds the head› | The PR's state is open and there is a branch that already holds the head |  |
 | done | dropped by you / closed by you | Your gesture is close |  |
 
 ### All rules, in order
@@ -216,30 +216,30 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 |---|---|---|---|---|
 | 1 | `closed.merged` (locked) | done | merged | The PR's state is merged |
 | 2 | `closed.pr_closed` (locked) | done | PR closed | The PR's state is closed |
-| 3 | `closed.already_merged` (locked) | done | already merged into ‹the branch the head is already in› | The PR's state is open and the branch the head is already in is set |
+| 3 | `closed.already_merged` (locked) | done | already merged into ‹the branch that already holds the head› | The PR's state is open and there is a branch that already holds the head |
 | 4 | `closed.by_you` (locked) | done | dropped by you / closed by you | Your gesture is close |
 | 5 | `park` (locked) | (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park |
-| 6 | `queue` (locked) | you | ‹the top inbox item's state› | There are work item's open inbox items |
+| 6 | `queue` (locked) | you | ‹the top inbox item's state› | There are open inbox items on the work item |
 | 7 | `claim` (locked) | agent | orchestrator · looking | You passed it to the orchestrator |
 | 8 | `hold` (locked) | agent | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |
 | 9 | `held` (locked) | agent | orchestrator · looking | Who holds a routed item here is orchestrator |
 | 10 | `delegated` (locked) | agent | agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |
-| 11 | `approve` *queue off* | you | approve: ‹the agent's detail› | Not: the inbox queue is on and the agents' statuses include waiting for approval |
-| 12 | `answer` *queue off* | you | answer: ‹the agent's detail› | Not: the inbox queue is on and the agents' statuses include waiting for user |
-| 13 | `agent_failed` *queue off* | you | agent failed | Not: the inbox queue is on and the agents' statuses include failed |
-| 14 | `agent_may_hang` *queue off* | you | agent may hang | Not: the inbox queue is on and the agents' statuses include possibly hanged |
-| 15 | `needs_you` *queue off* | you | needs you: ‹the agent's report note› | Not: the inbox queue is on and the agent reported it needs you |
+| 11 | `approve` *queue off* | you | approve: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for approval |
+| 12 | `answer` *queue off* | you | answer: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for user |
+| 13 | `agent_failed` *queue off* | you | agent failed | The inbox queue is off and the agents' statuses include failed |
+| 14 | `agent_may_hang` *queue off* | you | agent may hang | The inbox queue is off and the agents' statuses include possibly hanged |
+| 15 | `needs_you` *queue off* | you | needs you: ‹the agent's report note› | The inbox queue is off and the agent reported it needs you |
 | 16 | `merge` | you | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable |
-| 17 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and not: the inbox queue is on and the PR's review decision is changes requested |
-| 18 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and not: the inbox queue is on and there are no agents at work and the PR's mergeability is conflicting |
-| 19 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and not: the inbox queue is on and there are no agents at work and CI on the PR is red |
-| 20 | `agent_finished` *queue off* | you | review: agent finished | Not: the inbox queue is on and there are agents whose turn is over and there are no agents at work and not: there is a PR and the agent's reported ball is empty |
+| 17 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and the inbox queue is off and the PR's review decision is changes requested |
+| 18 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting |
+| 19 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red |
+| 20 | `agent_finished` *queue off* | you | review: agent finished | The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty |
 | 21 | `label` | ‹your label's ball› | (the state below) | Your gesture is label |
 | 22 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
 | 23 | `ci_running` | agent | CI running | The PR's state is open and CI on the PR is running |
 | 24 | `reported_others` | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |
-| 25 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is set |
-| 26 | `tracker_you` *queue off* | you | ‹the task's mapped state› | The task's mapped ball is you and the task's mapped level is known and not: the inbox queue is on |
+| 25 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |
+| 26 | `tracker_you` *queue off* | you | ‹the task's mapped state› | The task's mapped ball is you and the task's mapped level is known and the inbox queue is off |
 | 27 | `tracker_others` | others | ‹the task's mapped state› | The task's mapped ball is others |
 | 28 | `tracker_ball` | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |
 | 29 | `no_reviewer` | you | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |
@@ -379,7 +379,7 @@ version = 1
 [[rule]]
 id = "merge"
 says = "Merge only after QA."
-and_when = 'tracker.status == "QA passed"'
+and_when = 'tracker.qa == "tested"'
 ```
 
 - No rules of yours: the built-ins apply.
@@ -416,19 +416,20 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `pr.number` | the PR's number | num | PR poller | ≤ 60 s | poll |
 | `pr.base` | the PR's base branch | text | PR poller | ≤ 60 s | poll |
 | `pr.head_sha` | the PR's head commit | text | PR poller | ≤ 60 s | poll |
-| `pr.merged_into` | the branch the head is already in (empty: none) | text | git (merged_into) | per head | free |
+| `pr.merged_into` | the branch that already holds the head (empty: none) | text | git (merged_into) | per head | free |
 | `ci.state` | CI on the PR | enum ci_state (green, red, running, none) | PR checks | ≤ 60 s | poll |
 | `ci.first_failing` | the first failing check (empty: none) | text | Actions runs on the head, else PR checks | ≤ 60 s | poll |
 | `ci.pr_red` | the PR's checks are red on its head | bool | PR checks, made precise by Actions | ≤ actions_poll_s | poll |
 | `ci.head` | Actions on the head | enum ci_head (green, red, running, moved, none) | Actions runs (I7) | ≤ actions_poll_s | poll |
 | `queue.enabled` | the inbox queue is on | bool | ActionableQueue | static | free |
-| `items.count` | the work item's open inbox items | num | ActionableQueue | per pass | free |
+| `items.count` | the open inbox items on the work item | num | ActionableQueue | per pass | free |
 | `items.top.kind` | the top inbox item's kind | text | ActionableQueue | per pass | free |
 | `items.top.level` | the top inbox item's level | enum level (now, round, deep) | ActionableQueue | per pass | free |
 | `items.top.state` | the top inbox item's state | text | ActionableQueue | per pass | free |
 | `items.blocks_agent` | an open inbox item blocks an agent | bool | ActionableQueue | per pass | free |
-| `tracker.linked` | a tracker task is linked | bool | tracker hub | poll_s | poll |
-| `tracker.status` | the task's status | text | tracker adapter | poll_s | poll |
+| `tracker.linked` | a tracker task is linked | bool | tracker hub, else a feeder's facts | poll_s | poll |
+| `tracker.status` | the task's status | text | tracker adapter, else a feeder's facts | poll_s | poll |
+| `tracker.qa` | the task's QA (unknown: no task, or nothing maps it) | enum tracker_qa (tested, not_required, pending, failed) | tracker adapter [<adapter>.qa] mapping, else a feeder's facts | poll_s | poll |
 | `tracker.state` | the task's mapped state | text | tracker adapter mapping | poll_s | poll |
 | `tracker.ball` | the task's mapped ball | enum ball (you, agent, others, stalled, done) | tracker adapter mapping | poll_s | poll |
 | `tracker.level` | the task's mapped level | enum level (now, round, deep) | tracker adapter mapping | poll_s | poll |

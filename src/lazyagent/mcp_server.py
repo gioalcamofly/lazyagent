@@ -1115,6 +1115,7 @@ async def work_items_upsert(
     depends_on: list[str] | None = None,
     waiting: dict | None = None,
     expires_at: float | None = None,
+    facts: dict | None = None,
 ) -> dict:
     """Tell lazyagent about a task you track elsewhere (a planner's board, an
     issue tracker), so the user's Home shows it. For feeders: a planner or a
@@ -1146,6 +1147,10 @@ async def work_items_upsert(
             (<source>)" until ``until`` (a Unix time, "tomorrow" or a park
             event) or your next call without it.
         expires_at: Unix time after which lazyagent forgets it.
+        facts: Tracker facts for a tracker lazyagent has no adapter for,
+            read by the user's rules: {"tracker.qa": "tested" |
+            "not_required" | "pending" | "failed", "tracker.status": "<raw
+            status>"}. Other names are refused; an adapter's value wins.
 
     Returns:
         Object with ``item``, ``created`` and ``key`` (its row, or null while
@@ -1156,7 +1161,7 @@ async def work_items_upsert(
     }
     for name, value in (("ticket", ticket), ("branch", branch), ("project", project),
                         ("depends_on", depends_on), ("waiting", waiting),
-                        ("expires_at", expires_at)):
+                        ("expires_at", expires_at), ("facts", facts)):
         if value is not None:
             params[name] = value
     return await _get_client().call("work_items_upsert", _add_caller(params))

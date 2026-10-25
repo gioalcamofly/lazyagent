@@ -866,7 +866,8 @@
             "status": {"type": "string", "description": "The tracker's raw status (empty: none)."},
             "state": {"type": "string", "description": "The mapped state text, else the raw status: shown beside the engine's state."},
             "at": {"type": "number", "description": "When it was last read (Unix time)."},
-            "stale": {"type": "boolean", "description": "The tracker failed since: the value is the last good one."}
+            "stale": {"type": "boolean", "description": "The tracker failed since: the value is the last good one."},
+            "qa": {"enum": ["tested", "not_required", "pending", "failed"], "description": "The task's QA value from the [<adapter>.qa] mapping (the tracker.qa fact); absent when unknown."}
           }
         },
         "stale": {"type": "boolean", "description": "Nothing but a branch, unchanged for [status] stale_days: hidden unless include_done."},
@@ -934,7 +935,17 @@
         "expires_at": {"type": ["number", "null"]},
         "created_at": {"type": "number"},
         "updated_at": {"type": "number"},
-        "startable": {"type": "boolean", "description": "not_started_items only: its project continues while review and every dependency is merged or in review."}
+        "startable": {"type": "boolean", "description": "not_started_items only: its project continues while review and every dependency is merged or in review."},
+        "facts": {"$ref": "#/$defs/work_item_facts", "description": "The tracker facts the feeder gave; absent when none."}
+      }
+    },
+    "work_item_facts": {
+      "type": "object",
+      "description": "Tracker facts from a feeder, for a tracker with no adapter (proposal 0014, Q-R15): the rules read them as tracker.*; an adapter's value for the same row wins. Null or \"unknown\": the fact stays unknown.",
+      "additionalProperties": false,
+      "properties": {
+        "tracker.qa": {"enum": ["tested", "not_required", "pending", "failed", "unknown", null]},
+        "tracker.status": {"type": ["string", "null"], "description": "The task's raw status, at most 80 characters."}
       }
     },
     "work_items_upsert.params": {
@@ -955,6 +966,7 @@
           "oneOf": [{"type": "null"}, {"type": "object", "properties": {"reason": {"type": ["string", "null"]}, "until": {"oneOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}], "description": "A Unix time, tomorrow, or a park event; none: until the feeder clears it."}}}]
         },
         "expires_at": {"type": ["number", "null"]},
+        "facts": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/work_item_facts"}], "description": "Left out: none (an upsert replaces them)."},
         "caller": {"$ref": "#/$defs/notes_caller"}
       }
     },

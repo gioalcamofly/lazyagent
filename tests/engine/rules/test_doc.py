@@ -75,10 +75,17 @@ def test_concepts_are_checked():
     ('pr.state == "open" and ci.state in ["green", "none"]',
      "The PR's state is open and CI on the PR is green or none"),
     ("agents.running == 0", "There are no agents at work"),
-    ("items.count > 0", "There are work item's open inbox items"),
-    ('pr.merged_into != ""', "The branch the head is already in is set"),
+    ("items.count > 0", "There are open inbox items on the work item"),
+    ('pr.merged_into != ""', "There is a branch that already holds the head"),
+    ('ci.first_failing == ""', "There is no first failing check"),
+    ('report.note != ""', "The agent's report note is not empty"),
+    ("not pr.exists", "There is no PR"),
+    ("not claim.active", "You did not pass it to the orchestrator"),
+    ("not place.is_orchestrator", "Not the orchestrator's own place"),
+    ("not items.blocks_agent", "No open inbox item blocks an agent"),
+    ("not gesture.waiting", "No feeder's Waiting lane"),
     ('not queue.enabled and "failed" in agents.statuses',
-     "Not: the inbox queue is on and the agents' statuses include failed"),
+     "The inbox queue is off and the agents' statuses include failed"),
     ("item.idle > 10m", "The time since the last sign of work is over 10m"),
     ("known(tracker.level)", "The task's mapped level is known"),
     ("true", "Always"),
@@ -178,5 +185,5 @@ def test_why_names_the_rules_above_a_merge_items_rule_in_english():
     assert item["id"] == "merge"
     above = {a["id"]: a for a in item["above"]}
     assert above["approve"] == {"id": "approve", "origin": "builtin", "failed": "not queue.enabled",
-                                "said": "Not: the inbox queue is on", "value": "false"}
+                                "said": "The inbox queue is off", "value": "false"}
     assert all(a["said"] for a in result["above"])

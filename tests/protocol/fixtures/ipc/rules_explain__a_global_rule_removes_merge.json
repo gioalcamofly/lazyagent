@@ -26,7 +26,7 @@
           "failed": "pr.merged_into != \"\"",
           "id": "closed.already_merged",
           "origin": "builtin",
-          "said": "The branch the head is already in is set",
+          "said": "There is a branch that already holds the head",
           "value": "false"
         },
         {
@@ -47,7 +47,7 @@
           "failed": "items.count > 0",
           "id": "queue",
           "origin": "builtin",
-          "said": "There are work item's open inbox items",
+          "said": "There are open inbox items on the work item",
           "value": "false"
         },
         {
@@ -82,35 +82,35 @@
           "failed": "not queue.enabled",
           "id": "approve",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "answer",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_failed",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_may_hang",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "needs_you",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
@@ -163,28 +163,28 @@
           "failed": "not queue.enabled",
           "id": "changes_requested",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "conflict_no_agent",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "ci_red_no_agent",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
           "failed": "not queue.enabled",
           "id": "agent_finished",
           "origin": "builtin",
-          "said": "Not: the inbox queue is on",
+          "said": "The inbox queue is off",
           "value": "false"
         },
         {
@@ -219,7 +219,7 @@
           "failed": "report.ball != \"\"",
           "id": "reported_ball",
           "origin": "builtin",
-          "said": "The agent's reported ball is set",
+          "said": "The agent's reported ball is not empty",
           "value": "false"
         },
         {

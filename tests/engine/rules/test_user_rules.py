@@ -177,7 +177,7 @@ def test_a_rule_with_an_unknown_fact_is_skipped_and_the_builtin_stays_in_force()
 id = "merge"
 when = '''
 pr.state == "open" and pr.review == "approved"
-and tracker.qa in ["tested", "not_required"]
+and tracker.signed_off in ["yes"]
 '''
 [rule.then]
 ball = "you"
@@ -195,7 +195,7 @@ state = "loaded"
     assert cat.by_id["fine"].origin == "global", "the other rules of the file load"
     [e] = errors
     assert (e["rule"], e["line"], e["fallback"]) == ("merge", 7, "skipped; the built-in is in force")
-    assert "no fact 'tracker.qa'" in e["message"] and "(at " not in e["message"]
+    assert "no fact 'tracker.signed_off'" in e["message"] and "(at " not in e["message"]
 
 
 def test_an_overridden_global_rule_stays_when_the_repo_rule_is_bad():
@@ -418,7 +418,7 @@ def test_why_on_a_merge_row_shows_the_item_rule_and_its_facts():
 
 
 def test_a_bad_global_rule_reaches_rules_check_and_the_builtin_stays():
-    text = rule("merge", 'tracker.qa == "tested"', ball="you", state="merge: QA ok")
+    text = rule("merge", 'tracker.signed_off == "yes"', ball="you", state="merge: QA ok")
     engine = _status_engine()
     with _rules_files({GLOBAL_RULES: "version = 1\n\n" + text}):
         check = asyncio.run(_call(engine, "rules_check", {}))[2]["result"]
@@ -549,9 +549,11 @@ def test_the_readme_examples_do_what_the_readme_says():
     section = readme.split("### Your rules (rules.toml)")[1].split("\n### ")[0]
     blocks = re.findall(r"```toml\n(.*?)```", section, re.S)
     assert len(blocks) == 2
-    _, errors, _ = catalog_of(("global", blocks[0]))
-    assert {e["rule"] for e in errors} == {"merge", "waiting_for_qa"}
-    assert all("no fact 'tracker.qa'" in e["message"] for e in errors)
-    assert errors[0]["fallback"] == "skipped; the built-in is in force"
+    cat, errors, warnings = catalog_of(("global", blocks[0]))
+    assert errors == [] and warnings == []
+    assert cat.by_id["merge"].origin == "global"
+    order = ids(cat)
+    assert order.index("merge") < order.index("waiting_for_qa") < order.index("qa_failed")
+    # Its Merge gate end to end: tests/engine/trackers/test_tracker_qa.py.
     cat, errors, _ = catalog_of(("repo", blocks[1]))
     assert errors == [] and cat.by_id["merge"].and_when is not None

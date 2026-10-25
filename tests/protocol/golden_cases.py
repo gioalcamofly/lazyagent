@@ -695,7 +695,7 @@ and_when = 'item.branch != "docs-index"'
 [[rule]]
 id = "qa_gate"
 before = "merge"
-when = 'tracker.qa == "tested"'
+when = 'tracker.signed_off == "yes"'
 [rule.then]
 ball = "you"
 state = "merge: QA ok"
