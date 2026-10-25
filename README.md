@@ -321,7 +321,8 @@ The engine can read the status of the issue linked from a branch name and the
 issues assigned to you, read-only, and show them in `lazyagent status` (and the
 inbox). Nothing changes until an adapter is enabled in
 `~/.config/lazyagent/trackers.toml` (`$XDG_CONFIG_HOME`). A repo's
-`.lazyagent/trackers.toml` may override only the `[<adapter>.status]` tables.
+`.lazyagent/trackers.toml` may override only the `[<adapter>.status]` and
+`[<adapter>.qa]` tables.
 
 | Adapter | Branch key | Credentials | Status |
 |---|---|---|---|
@@ -350,6 +351,31 @@ and clears it when the issue leaves. The token (an
 [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens))
 is never written by lazyagent and is sent only to `base_url`.
 
+**QA.** A `[<adapter>.qa]` table gives your rules the `tracker.qa` fact
+(`tested` · `not_required` · `pending` · `failed`; anything not mapped is
+unknown, and an unknown never matches). Without one, nothing changes.
+
+```toml
+[jira.qa]                        # Jira status name (or its category) → QA
+"QA passed"     = "tested"
+"Ready to ship" = "tested"
+"No QA"         = "not_required"
+"In QA"         = "pending"
+"QA failed"     = "failed"
+# or read a field instead of the status:
+# qa_field = "customfield_10042"
+# qa_field_values = { "Tested" = "tested", "Not required" = "not_required" }
+
+[github_issues.qa]               # issue labels → QA (the first one mapped, in this order)
+"qa-failed" = "failed"
+"qa-passed" = "tested"
+"no-qa"     = "not_required"
+"qa"        = "pending"
+```
+
+`qa_field` takes the field's text, a select's option, or the first mapped
+option of a multi-select.
+
 ### Feeding work items (a planner, a script)
 
 Anything that tracks work elsewhere (a planner with its own board, a
@@ -372,6 +398,11 @@ the same names). lazyagent never starts a task on its own: it shows them.
   "waiting (<source>)" or "waiting: <reason>", until `until` (a time,
   `tomorrow`, or a park event) or your next upsert without it. The user's own
   park or unpark wins until you send a different `waiting`.
+- **Tracker facts.** For a tracker lazyagent has no adapter for,
+  `facts: {"tracker.qa": "tested", "tracker.status": "Ready to ship"}`
+  gives your rules `tracker.qa` and `tracker.status` on the linked row
+  (and makes `tracker.linked` true). No other names are accepted; when an
+  adapter also reads the row's task, the adapter's value wins.
 - **Projects.** `project: {id, title, policy?}` groups In flight;
   `depends_on` shows "waits on <title>". With
   `policy.continue_while_review = true`, the engine wakes the orchestrator
@@ -393,6 +424,9 @@ work_items_upsert(
 work_items_upsert(url="https://tracker.example.com/browse/SHOP-14",
                   title="Refunds", source="board",
                   waiting={"reason": "design review"})
+work_items_upsert(url="https://tracker.example.com/browse/SHOP-15",
+                  title="Gift cards", source="planner",
+                  facts={"tracker.qa": "not_required"})
 work_items_close(url="https://tracker.example.com/browse/SHOP-11")
 ```
 
@@ -421,7 +455,8 @@ you (`ball = "you"`) is an inbox item you can dismiss or park; so is the
 built-in Merge.
 
 A team whose "ready to merge" means "approved, CI green, and QA tested it or
-it needs none":
+it needs none" (`tracker.qa` comes from the trackers' `[<adapter>.qa]`
+mapping, or a feeder's `facts`):
 
 ```toml
 # ~/.config/lazyagent/rules.toml
@@ -432,7 +467,7 @@ id = "merge"                     # replaces the built-in "merge"
 says = "Merge when approved, CI is fine and QA is done."
 when = '''
 pr.state == "open" and pr.review == "approved" and pr.mergeable == "mergeable"
-and ci.state in ["green", "none"]
+and ci.state in ["green", "none"]  # R4 adds: or red only for unrelated reasons (ci.unrelated)
 and tracker.qa in ["tested", "not_required"]
 '''
 [rule.then]
@@ -452,12 +487,25 @@ and tracker.qa not in ["tested", "not_required", "failed"]
 [rule.then]
 ball = "others"
 state = "approved · waiting for QA"
+
+[[rule]]
+id = "qa_failed"
+after = "waiting_for_qa"
+when = 'pr.state == "open" and tracker.qa == "failed"'
+[rule.then]
+ball = "you"
+level = "round"
+verb = "Review"
+action = "open_tracker"
+state = "returned by QA"
 ```
 
-`tracker.qa` comes with a later version (the trackers' QA mapping); until
-then `lazyagent rules check` reports it as an unknown fact, skips both
-rules, and the built-in Merge stays in force. What works today, narrowing
-the built-in for one repo:
+A branch with no tracker task, or whose status is not mapped, has an unknown
+`tracker.qa`: neither `merge` nor `waiting_for_qa` matches it, and the
+built-ins below decide (approved and green with no QA known reads
+"approved, CI green", stalled). A team where some branches have no task adds
+`or not tracker.linked` to the QA condition. Narrowing the built-in for one
+repo:
 
 ```toml
 # <repo>/.lazyagent/rules.toml
