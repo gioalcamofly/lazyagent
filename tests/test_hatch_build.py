@@ -89,7 +89,11 @@ def test_platform_tag_override(tmp_path, cargo, monkeypatch):
 def test_editable_builds_never_compile(cargo, monkeypatch):
     """`uv sync` / `pip install -e` stay pure even with the variable set."""
     monkeypatch.setenv(hatch_build.BUILD_ENV, "1")
-    hook = hatch_build.DesktopBuildHook(str(ROOT), {}, None, None, "", "wheel")
+    import importlib.metadata
+    from types import SimpleNamespace
+
+    metadata = SimpleNamespace(version=importlib.metadata.version("lazyagent"))
+    hook = hatch_build.DesktopBuildHook(str(ROOT), {}, None, metadata, "", "wheel")
     build_data = {"force_include": {}, "pure_python": True}
     hook.initialize("editable", build_data)
     assert build_data == {"force_include": {}, "pure_python": True}
@@ -192,3 +196,31 @@ def test_version_without_the_file(tmp_path):
     path, version = out.stdout.split()
     assert path == str(package / "__init__.py")
     assert version == importlib.metadata.version("lazyagent")
+
+
+def test_a_wheel_builds_from_a_read_only_tree(tmp_path, cargo, monkeypatch):
+    # The platform wheels build from a read-only mount: the version file
+    # goes into the wheel, never into the tree.
+    import shutil
+
+    monkeypatch.delenv(hatch_build.BUILD_ENV, raising=False)
+    tree = tmp_path / "tree"
+    for name in ("pyproject.toml", "hatch_build.py", "README.md", "LICENSE"):
+        (tree / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / name, tree / name)
+    package = tree / "src" / "lazyagent"
+    package.mkdir(parents=True)
+    shutil.copy(ROOT / "src" / "lazyagent" / "__init__.py", package)
+    for path in (package, package.parent, tree):
+        path.chmod(0o555)
+    try:
+        (wheel,) = WheelBuilder(str(tree)).build(directory=str(tmp_path / "dist"),
+                                                 versions=["standard"])
+    finally:
+        for path in (tree, package.parent, package):
+            path.chmod(0o755)
+    assert not (package / "_version.py").exists()
+    with zipfile.ZipFile(wheel) as zf:
+        names = zf.namelist()
+        assert names.count("lazyagent/_version.py") == 1
+        assert zf.read("lazyagent/_version.py").decode().startswith('__version__ = "')

@@ -29,5 +29,5 @@ STATUS.md
 # Rust
 target/
 
-# Written by the build (pyproject: tool.hatch.build.hooks.version)
+# Written by editable installs (hatch_build.py)
 src/lazyagent/_version.py
