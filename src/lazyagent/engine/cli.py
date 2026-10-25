@@ -599,7 +599,21 @@ def status_main(argv: list[str] | None = None) -> int:
         print(format_explain(result), flush=True)
     else:
         print(format_table(result), flush=True)
+        _prompts_notice(root)
     return 0
+
+
+def _prompts_notice(root: str) -> None:
+    """One line under the table when the installed agent prompts are
+    older than this lazyagent (lazyagent prompts status)."""
+    from lazyagent import prompts
+
+    try:
+        notice = prompts.notice(prompts.Env.process(root))
+    except (OSError, ValueError):
+        return
+    if notice:
+        print(f"\n{notice['text']}", flush=True)
 
 
 # ----------------------------------------------------------------------

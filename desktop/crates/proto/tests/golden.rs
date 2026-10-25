@@ -139,6 +139,21 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             }
             // The user's (CLI, the banner).
             "rules_allow" => continue,
+            // The Prompts page: decoded (it reads only part of the payload).
+            "prompts_status" => {
+                let st: PromptsStatus = serde_json::from_value(result.clone()).unwrap();
+                assert_eq!(st.targets.len(), 3, "{case}");
+                assert!(st.targets[0].detected && !st.targets[0].files.is_empty(), "{case}");
+            }
+            "prompts_plan" => {
+                let plan: PromptsPlan = serde_json::from_value(result.clone()).unwrap();
+                assert!(plan.changes.iter().all(|c| !c.base_sha.is_empty() && !c.new_sha.is_empty()), "{case}");
+                assert!(plan.changes.iter().any(|c| !c.diff.is_empty()), "{case}");
+            }
+            "prompts_apply" => {
+                let c: PromptsChange = serde_json::from_value(result.clone()).unwrap();
+                assert_eq!(c.action, "create", "{case}");
+            }
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -206,6 +221,9 @@ const METHODS_USED: &[&str] = &[
     "approval_answer",
     "question_answer",
     "orchestrator_actions",
+    "prompts_status",
+    "prompts_plan",
+    "prompts_apply",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.

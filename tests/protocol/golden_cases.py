@@ -785,6 +785,74 @@ async def _():
         return await _call(_status_engine(), "status_list", {"fields": ["rule_id", "verb", "action"]})
 
 
+# --- prompts_* ---------------------------------------------------------------
+
+GOLDEN_HOME = "/home/dev"
+
+
+def _prompts_home():
+    """A fake HOME with Claude Code's dir (CLAUDE.md and one skill) for the
+    engine's prompts methods; paths in the response read /home/dev."""
+    from contextlib import ExitStack
+
+    from lazyagent import prompts
+    from lazyagent.engine.methods import EngineMethods
+
+    home = Path(tempfile.mkdtemp(prefix="golden-home-"))
+    (home / ".claude" / "skills" / "planner").mkdir(parents=True)
+    (home / ".claude" / "CLAUDE.md").write_text("# Mine\n")
+    (home / ".claude" / "skills" / "planner" / "SKILL.md").write_text("---\nname: planner\n---\nPlan.\n")
+    env = prompts.Env(home, {"XDG_STATE_HOME": str(home / "state")}, None, "0.8.0", lambda b: None)
+    stack = ExitStack()
+    stack.enter_context(patch.object(EngineMethods, "_prompts_env", lambda self: env))
+    return stack, env
+
+
+def _homeless(result, home):
+    return json.loads(json.dumps(result).replace(str(home), GOLDEN_HOME))
+
+
+@case("prompts_status/claude_found")
+async def _():
+    stack, env = _prompts_home()
+    with stack:
+        method, params, response = await _call(_make_engine(), "prompts_status", {})
+    return method, params, _homeless(response, env.home)
+
+
+@case("prompts_plan/install_with_a_skill")
+async def _():
+    stack, env = _prompts_home()
+    with stack:
+        method, params, response = await _call(
+            _make_engine(), "prompts_plan", {"action": "install", "skills": ["planner"]})
+    return method, params, _homeless(response, env.home)
+
+
+@case("prompts_apply/create_the_skill")
+async def _():
+    from lazyagent import prompts
+
+    stack, env = _prompts_home()
+    with stack:
+        c = prompts.change_for(env, "claude:global:skill", "install")
+        method, params, response = await _call(
+            _make_engine(), "prompts_apply",
+            {"id": c.id, "action": "install", "base_sha": c.base_sha, "new_sha": c.new_sha})
+    return method, params, _homeless(response, env.home)
+
+
+@case("prompts_apply/error_changed_since_preview")
+async def _():
+    stack, env = _prompts_home()
+    with stack:
+        method, params, response = await _call(
+            _make_engine(), "prompts_apply",
+            {"id": "claude:global:pointer", "action": "install", "base_sha": "0" * 64,
+             "new_sha": "0" * 64})
+    return method, params, _homeless(response, env.home)
+
+
 # --- actionables_* -----------------------------------------------------------
 
 

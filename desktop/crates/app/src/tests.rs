@@ -5588,3 +5588,6 @@ mod how;
 
 // Home fixes from the second UX review (I4f).
 mod i4f;
+
+// "Prompts…": the agent prompts page and its screenshots.
+mod prompts;

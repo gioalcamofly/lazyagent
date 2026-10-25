@@ -1746,6 +1746,88 @@ impl EngineEvent {
     }
 }
 
+/// `prompts_status` (feature `prompts`): the user's agent prompt files per
+/// target (Claude Code, Codex, Gemini CLI), and the outdated notice. Read
+/// by the Prompts page; fields it does not show are left out.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptsStatus {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub targets: Vec<PromptsTarget>,
+    #[serde(default)]
+    pub notice: Option<PromptsNotice>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptsNotice {
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptsTarget {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detected: bool,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<PromptsFile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptsFile {
+    #[serde(default)]
+    pub display: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub outside: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptsChange {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub display: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub outside: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub needs_force: bool,
+    pub base_sha: String,
+    pub new_sha: String,
+    #[serde(default)]
+    pub diff: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromptsPlan {
+    #[serde(default)]
+    pub changes: Vec<PromptsChange>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

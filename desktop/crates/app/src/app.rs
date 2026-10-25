@@ -252,6 +252,8 @@ pub struct State {
     pub last_copied: Option<String>,
     /// Updates and restarts (lifecycle.rs).
     pub life: crate::lifecycle::Lifecycle,
+    /// "Prompts…": lazyagent's guidance in the user's agent prompts.
+    pub prompts: crate::prompts_view::Prompts,
     /// `hello.detached`: whether the engine can be stopped from here.
     pub engine_detached: Option<bool>,
     /// `hello.source_commit`: the code the engine runs.
@@ -364,6 +366,7 @@ impl State {
             url_to_open: None,
             last_copied: None,
             life: Default::default(),
+            prompts: Default::default(),
             engine_detached: None,
             engine_commit: None,
             restart_result: None,
@@ -933,6 +936,7 @@ impl State {
                 self.engine_detached = hello.detached;
                 self.engine_commit = hello.source_commit;
                 self.lifecycle_connected();
+                self.fetch_prompts_notice();
                 self.fetch_review_replies();
             }
             Msg::Seed(state, config) => {
@@ -1309,7 +1313,8 @@ impl App {
         }
         // Single letters belong to a terminal that has the keyboard, and to
         // text fields; otherwise they are the TUI's action keys.
-        let outside = s.dialog.is_none() && s.ask.is_none() && !s.terminal_focused && !ctx.text_edit_focused();
+        let outside =
+            s.dialog.is_none() && s.ask.is_none() && !s.prompts.open && !s.terminal_focused && !ctx.text_edit_focused();
         let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         // The page, from anywhere (a terminal does not need F1).
         if s.dialog.is_none() && take(Modifiers::NONE, Key::F1) {
@@ -1421,6 +1426,15 @@ impl App {
                 if ui.button("Stop the selected agent…  (x)").clicked() {
                     s.open_dialog(Kind::Stop);
                 }
+                ui.separator();
+                let prompts = s.has(crate::prompts_view::FEATURE);
+                if ui
+                    .add_enabled(prompts, egui::Button::new("Prompts…"))
+                    .on_disabled_hover_text("This engine is too old: restart it (File → Restart…)")
+                    .clicked()
+                {
+                    s.open_prompts();
+                }
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Check for updates…").clicked() {
@@ -1443,6 +1457,14 @@ impl App {
                 }
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(text) = s.prompts.notice.clone()
+                    && ui
+                        .button(RichText::new("Prompts outdated").small().color(t.yellow))
+                        .on_hover_text(format!("{text} (or Agents → Prompts…)"))
+                        .clicked()
+                {
+                    s.open_prompts();
+                }
                 if s.life.info.as_ref().is_some_and(|i| i.actionable())
                     && ui
                         .button(RichText::new("Update available").small().color(t.accent))
@@ -2265,6 +2287,7 @@ impl App {
             });
         crate::dialogs::show(&ctx, &mut self.state);
         crate::lifecycle::show(&ctx, &mut self.state);
+        crate::prompts_view::show(&ctx, &mut self.state);
         self.diff_dialogs(&ctx);
         self.state.pending_reviews();
         self.state.pending_asks();
