@@ -51,7 +51,8 @@ def test_importing_protocol_loads_no_textual_or_app_modules():
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.split()
-    unexpected = [m for m in out if m != "lazyagent" and not m.startswith("lazyagent.protocol")]
+    unexpected = [m for m in out if m not in ("lazyagent", "lazyagent._version")
+                  and not m.startswith("lazyagent.protocol")]
     assert unexpected == []
 
 
