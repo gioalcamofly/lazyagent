@@ -10,6 +10,8 @@
   items, from its engine (proposal 0013); ``--why``: the rule behind a row.
 - ``lazyagent rules {check,show,allow,doc} [repo]``: your rule files
   (proposal 0014).
+- ``lazyagent prompts {install,status,uninstall,diff}``: lazyagent's guidance
+  in your agent CLIs' prompts (:mod:`lazyagent.prompts.cli`).
 - ``lazyagent host …``: the TUI in a web page (experimental).
 - ``lazyagent mcp``: the MCP server (``python -m lazyagent.mcp_server``).
 - ``lazyagent desktop [repo]``: the native desktop app (:mod:`lazyagent.desktop`).
@@ -28,7 +30,7 @@ import sys
 
 from lazyagent import __version__
 
-SUBCOMMANDS = ("engine", "status", "rules", "host", "mcp", "desktop", "update")
+SUBCOMMANDS = ("engine", "status", "rules", "prompts", "host", "mcp", "desktop", "update")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
         "(the engine that owns the agents); lazyagent status [repo] [--json] "
         "[--all] [--why KEY] (every branch: who has the ball, its state and age); "
         "lazyagent rules {check,show,allow,doc} [repo] (your rules.toml); "
+        "lazyagent prompts {install,status,uninstall,diff} (lazyagent's guidance in "
+        "your agent prompts); "
         "lazyagent host [repo] (the web "
         "UI, experimental); lazyagent desktop [repo] (the native desktop "
         "app); lazyagent update {check,apply} (a newer lazyagent); lazyagent "
@@ -81,6 +85,10 @@ def main(argv: list[str] | None = None) -> None:
         from lazyagent.engine.cli import rules_main
 
         sys.exit(rules_main(argv[1:]))
+    if argv[:1] == ["prompts"]:
+        from lazyagent.prompts.cli import main as prompts_main
+
+        sys.exit(prompts_main(argv[1:]))
     if argv[:1] == ["host"]:
         from lazyagent.host.cli import main as host_main
 

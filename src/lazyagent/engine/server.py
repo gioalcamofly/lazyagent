@@ -161,6 +161,9 @@ FEATURES: tuple[str, ...] = (
     # files, status_list fields, the built-in Merge as an inbox item (kind
     # rule).
     "rules",
+    # The user's agent prompt files (lazyagent prompts): prompts_status
+    # (with its outdated notice), prompts_plan, prompts_apply.
+    "prompts",
 )
 
 STREAM_RESIZED = "stream.resized"

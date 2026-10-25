@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `lazyagent prompts install|status|uninstall|diff`: lazyagent's guidance in
+  your agent CLIs' prompts (a generated `lazyagent` skill and a short pointer
+  in `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` or `~/.gemini/GEMINI.md`;
+  optional lines in skills you pick), each file's diff approved before it is
+  written, with backups and version-stamped markers. Desktop: Agents →
+  Prompts…; "Prompts outdated" after an upgrade
+
 ### Changed
 - The worktree list shows a ticket ID from the branch name for any project key
   (`TASK-123`, `ENG-42`), not only for one hard-coded prefix

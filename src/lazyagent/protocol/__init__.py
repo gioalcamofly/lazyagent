@@ -102,6 +102,10 @@ LEGACY_METHODS: tuple[str, ...] = (
     "rules_explain",
     "rules_check",
     "rules_allow",
+    # The user's agent prompt files (lazyagent prompts).
+    "prompts_status",
+    "prompts_plan",
+    "prompts_apply",
 )
 
 # The methods protocol v1 adds.

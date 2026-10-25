@@ -5562,3 +5562,6 @@ fn a_rule_item_shows_its_rules_verb() {
 
 // "How lazyagent works", the Why? view and their screenshots (R6).
 mod how;
+
+// "Prompts…": the agent prompts page and its screenshots.
+mod prompts;

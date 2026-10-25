@@ -628,6 +628,32 @@ are errors, naming the rule, its file and line. The MCP tools
 `rules_explain` and `rules_catalog` let the orchestrator answer "why is X
 in Round?" from the engine.
 
+### Agent prompts (lazyagent prompts)
+
+The agents lazyagent starts get a short preamble; your own sessions and
+skills do not. `lazyagent prompts install` adds lazyagent's guidance to your
+agent CLIs: a **lazyagent skill** (status reports, decision briefs, notes,
+working under an orchestrator, how rules and Why? work), rendered for the
+installed version, and a short **pointer** to it at the end of your
+instructions file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+`~/.gemini/GEMINI.md`), for the CLIs it finds. `--skills a,b` also adds one
+line to skills of yours (an orchestrator or planner skill).
+
+```sh
+lazyagent prompts status      # per target: installed, outdated, modified or absent
+lazyagent prompts diff        # what install would change
+lazyagent prompts install     # each file's diff, then y / n / q (--dry-run, --yes)
+lazyagent prompts uninstall   # remove it again, file by file
+```
+
+Nothing is written without your approval of each file's diff; a file that
+changed since its diff was shown is refused. Blocks sit between
+version-stamped markers, so an update replaces only the block and a block you
+edited is shown, not overwritten. Every write is atomic and backed up first
+under `$XDG_STATE_HOME/lazyagent/prompts/backups`. `--scope repo` writes the
+repo's `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` instead (never the default). In
+the desktop: Agents → Prompts…. Details: [docs/guides/agent-prompts.md](docs/guides/agent-prompts.md).
+
 ### Environment variables
 
 | Variable | Effect |

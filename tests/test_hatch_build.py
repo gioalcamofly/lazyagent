@@ -54,6 +54,9 @@ def test_pure_wheel_without_the_variable(tmp_path, cargo, monkeypatch):
     with zipfile.ZipFile(wheel) as zf:
         assert hatch_build.WHEEL_PATH not in zf.namelist()
         assert "Root-Is-Purelib: true" in zf.read(_wheel_file(zf)).decode()
+        # lazyagent prompts renders from these.
+        for name in ("skill.md", "pointer.md", "skill_line.md"):
+            assert f"lazyagent/prompts/templates/{name}" in zf.namelist()
     assert not cargo.exists()
 
 
