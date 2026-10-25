@@ -532,6 +532,13 @@ def _build_claude_runtime_context(
         }
         mcp_config_path.write_text(json.dumps(mcp_config), encoding="utf-8")
         metadata["mcp_config_path"] = str(mcp_config_path)
+        duplicates = lazyagent_mcpjson_servers(worktree_path)
+        if duplicates:
+            # The repo's own lazyagent server (.mcp.json) would be a second
+            # copy of the tools above, tokenless, one more process tree per
+            # agent. Rejected by name: the repo's other servers still run
+            # (--strict-mcp-config would drop them and the user's too).
+            hooks_settings["disabledMcpjsonServers"] = duplicates
 
     settings_path.write_text(json.dumps(hooks_settings), encoding="utf-8")
 
@@ -542,6 +549,37 @@ def _build_claude_runtime_context(
         env_overrides=env_overrides,
         metadata=metadata,
     )
+
+
+def _runs_lazyagent_mcp(server: object) -> bool:
+    """Whether an MCP server entry starts lazyagent's MCP server:
+    ``python -m lazyagent.mcp_server`` or ``lazyagent mcp``, through any
+    wrapper (``uv run``, ``uvx``)."""
+    if not isinstance(server, dict):
+        return False
+    command = server.get("command")
+    args = server.get("args")
+    words = [command] if isinstance(command, str) else []
+    if isinstance(args, list):
+        words += [a for a in args if isinstance(a, str)]
+    if any("lazyagent.mcp_server" in w for w in words):
+        return True
+    return any(
+        Path(w).name == "lazyagent" and nxt == "mcp" for w, nxt in zip(words, words[1:])
+    )
+
+
+def lazyagent_mcpjson_servers(worktree_path: str) -> list[str]:
+    """The servers of the worktree's ``.mcp.json`` that run lazyagent's MCP
+    server, by name; [] when there is no such file or it does not parse."""
+    try:
+        data = json.loads((Path(worktree_path) / ".mcp.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    return sorted(name for name, server in servers.items() if _runs_lazyagent_mcp(server))
 
 
 def _notes_hook_script() -> str:

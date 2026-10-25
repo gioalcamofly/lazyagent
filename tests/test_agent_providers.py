@@ -20,6 +20,7 @@ from lazyagent.agent_providers import (
     SOCKET_ENV,
     agent_session_name,
     get_agent_provider,
+    lazyagent_mcpjson_servers,
     normalize_provider_name,
 )
 
@@ -569,3 +570,47 @@ class TestClaudeNotesHook:
             "/tmp/wt", notes_path=self.NOTES
         )
         assert NOTES_PATH_ENV not in context.env_overrides
+
+
+class TestClaudeDuplicateMcp:
+    """The repo's own lazyagent server (.mcp.json) is rejected in spawned
+    agents: they get the engine's, with the agent token."""
+
+    def _settings(self, tmp_path, servers, socket_path="/tmp/test.sock"):
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+        context = get_agent_provider("claude").build_runtime_context(
+            str(tmp_path), socket_path=socket_path
+        )
+        return json.loads(Path(context.metadata["settings_path"]).read_text())
+
+    def test_only_lazyagent_servers_are_disabled(self, tmp_path):
+        settings = self._settings(tmp_path, {
+            "lazyagent": {"command": "uv", "args": ["run", "--quiet", "python", "-m",
+                                                    "lazyagent.mcp_server"]},
+            "la2": {"command": "/venv/bin/lazyagent", "args": ["mcp"]},
+            "la3": {"command": "uvx", "args": ["lazyagent", "mcp"]},
+            "tracker": {"command": "npx", "args": ["tracker-mcp"]},
+            "http": {"type": "http", "url": "https://example.com/mcp"},
+        })
+        assert settings["disabledMcpjsonServers"] == ["la2", "la3", "lazyagent"]
+
+    def test_no_lazyagent_server_no_key(self, tmp_path):
+        settings = self._settings(tmp_path, {"tracker": {"command": "tracker-mcp"}})
+        assert "disabledMcpjsonServers" not in settings
+
+    def test_without_engine_mcp_nothing_is_disabled(self, tmp_path):
+        settings = self._settings(
+            tmp_path, {"lazyagent": {"command": "lazyagent", "args": ["mcp"]}}, socket_path=None
+        )
+        assert "disabledMcpjsonServers" not in settings
+
+    def test_bad_or_missing_mcp_json(self, tmp_path):
+        assert lazyagent_mcpjson_servers(str(tmp_path)) == []
+        (tmp_path / ".mcp.json").write_text("{not json")
+        assert lazyagent_mcpjson_servers(str(tmp_path)) == []
+        (tmp_path / ".mcp.json").write_text('{"mcpServers": []}')
+        assert lazyagent_mcpjson_servers(str(tmp_path)) == []
+
+    def test_this_repos_mcp_json_is_caught(self):
+        root = Path(__file__).resolve().parents[1]
+        assert lazyagent_mcpjson_servers(str(root)) == ["lazyagent"]
