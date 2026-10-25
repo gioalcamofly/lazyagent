@@ -103,6 +103,8 @@ def format_explain(result: dict[str, Any]) -> str:
     if rule is None:
         out.append("  no rule matched (stalled: no rule matched)")
         return "\n".join(out)
+    if result.get("answer"):
+        out.append(f"  {result['answer']}")
     out.append(f"  rule   {rule['id']}  ({_where(rule)})")
     if rule.get("replaces"):
         out.append(f"         replaces the {_where(rule['replaces'] | {'locked': False})} one")

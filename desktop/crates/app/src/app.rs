@@ -745,6 +745,8 @@ impl State {
             }
         }
         self.home.tick(now);
+        // A deny whose Undo time is over goes to the agent.
+        self.tick_deny(now);
     }
 
     /// An item the user never looked at (`seen_at` null) is seen now, once:

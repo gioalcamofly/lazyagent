@@ -4865,7 +4865,7 @@ fn send_ask(tx: &mpsc::Sender<Msg>, key: &str, kind: &str, detail: &str) {
 }
 
 #[test]
-fn an_approval_is_answered_on_its_line_with_y_and_n() {
+fn an_approval_is_answered_on_its_line_with_a_and_shift_d() {
     let (mut h, tx, calls) = i4e_home(|m, _| match m {
         "status_timeline" => Some(json!({"key": "repo:cart", "since": null, "seen_at": null, "entries": []})),
         _ => None,
@@ -4878,19 +4878,38 @@ fn an_approval_is_answered_on_its_line_with_y_and_n() {
     h.run_steps(2);
     assert_eq!(h.state().state.view, crate::app::View::Home, "answered here, not in the terminal");
     h.get_by_label("rm -rf build/ && npm run build -- --prod");
-    h.get_by_label("Approve  (y)");
-    h.get_by_label("Deny  (n)");
-    assert!(crate::home_view::hint_keys(true, true, true, true, true).contains("y approve · n deny"));
-    h.key_press(egui::Key::Y);
+    h.get_by_label("Approve  (a)");
+    h.get_by_label("Deny  (⇧D)");
+    // The bar names this line's keys only.
+    let bar = text_of(&h.get_by_label_contains("? all keys"));
+    assert!(bar.starts_with("a approve · ⇧D deny"), "{bar}");
+    h.key_press(egui::Key::A);
     h.run_steps(2);
     assert_eq!(calls_of(&calls, "approval_answer"), [json!({"id": "Approval:/r/repo-cart/a1", "allow": true})]);
-    assert!(calls_of(&calls, "decision_explain_request").is_empty(), "y approves here, it does not explain");
     send_ask(&tx, "cart", "approval", "npm publish");
     h.run_steps(2);
-    h.key_press(egui::Key::N);
+    // ⇧D waits 5 s for its Undo before the agent gets the deny.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "approval_answer").len(), 1, "not sent yet");
+    h.get_by_label_contains("Denying cart");
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    h.run_steps(2);
+    h.state_mut().state.tick_deny(crate::app::unix_now() + 10.0);
+    assert_eq!(calls_of(&calls, "approval_answer").len(), 1, "undone: never sent");
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
+    h.run_steps(2);
+    h.state_mut().state.tick_deny(crate::app::unix_now() + 6.0);
     h.run_steps(2);
     assert_eq!(calls_of(&calls, "approval_answer")[1], json!({"id": "Approval:/r/repo-cart/a1", "allow": false}));
-    assert!(!h.state().state.notes_open, "n denies, it does not open the notes");
+    // y and n mean one thing on every line: explain and notes.
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "approval_answer").len(), 2, "y never approves: it explains");
+    h.key_press(egui::Key::N);
+    h.run_steps(2);
+    assert_eq!(calls_of(&calls, "approval_answer").len(), 2, "n never denies");
+    assert!(h.state().state.notes_open, "n opens the notes");
 }
 
 #[test]
@@ -4910,7 +4929,7 @@ fn an_approval_whose_prompt_is_gone_says_so() {
     h.run_steps(2);
     send_ask(&tx, "cart", "approval", "npm test");
     h.run_steps(3);
-    h.key_press(egui::Key::Y);
+    h.key_press(egui::Key::A);
     h.run_steps(2);
     assert!(
         h.state().state.toasts.iter().any(|t| t.text.contains("not on agent a1's screen")),
@@ -5047,11 +5066,14 @@ fn the_hint_bar_is_pinned_to_the_bottom_with_shifted_keys() {
             .unwrap();
     }
     h.run_steps(3);
-    let bar = h.get_by_label_contains("⇧X close");
+    // The selected line's keys only, on one line, then "? all keys".
+    let bar = h.get_by_label_contains("? all keys");
     let text = text_of(&bar);
-    for key in ["⇧X", "⇧U", "⇧O", "⇧Z", "⇧M"] {
+    for key in ["⇧X close", "o terminal", "n notes"] {
         assert!(text.contains(key), "{key} in {text}");
     }
+    assert!(text.split(" · ").count() <= crate::home_view::BAR_KEYS + 1, "{text}");
+    assert!(!text.contains("⇧U") && !text.contains("⇧M"), "not this line's: {text}");
     let bottom = bar.rect().max.y;
     assert!(bottom > 880.0 - 60.0, "the bar stays at the bottom with a long list: {bottom}");
 }
@@ -5193,7 +5215,8 @@ fn a_working_line_reads_its_age_and_report_and_held_lines_their_last_step() {
         tx.send(event("status.updated", json!({"row": r}))).unwrap();
     }
     h.run_steps(3);
-    h.get_by_label("working · 12m · tests pass; opening the PR");
+    // Its report, and its age once, in the age column.
+    h.get_by_label("working · tests pass; opening the PR");
     assert!(h.query_by_label_contains("notes_append").is_none(), "never a tool name");
     h.get_by_label("verifying tests · 50m left");
     h.get_by_label("last step: CI green (4m ago)");
@@ -5456,7 +5479,7 @@ fn home_i4e_screenshots() {
         h.run_steps(2);
         h.get_by_label("Round (+1 next)");
         h.get_by_label("1 parked needs you ▸");
-        h.get_by_label("Approve  (y)");
+        h.get_by_label("Approve  (a)");
         // The list stops at CONTENT_MAX: the age sits near its state.
         let left = h.get_by_label("In flight").rect().min.x;
         let age = h.get_all_by_label("11m").map(|n| n.rect().max.x).fold(0.0_f32, f32::max);
@@ -5562,6 +5585,9 @@ fn a_rule_item_shows_its_rules_verb() {
 
 // "How lazyagent works", the Why? view and their screenshots (R6).
 mod how;
+
+// Home fixes from the second UX review (I4f).
+mod i4f;
 
 // "Prompts…": the agent prompts page and its screenshots.
 mod prompts;

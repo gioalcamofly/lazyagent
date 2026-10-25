@@ -5,6 +5,11 @@
 //! condition that was not true. A Merge line matched the queue: its top
 //! item comes from the `merge` rule, shown first with its own facts and the
 //! rules above it.
+//!
+//! I4f: the view answers the user first, in one sentence with the values
+//! as people read them ("2 d 6 h", "24 h"), then the open items and which
+//! one leads; the rules above that did not match are folded, the unknown
+//! ones (the suspicious ones) first.
 
 use eframe::egui::{self, CornerRadius, Key, Modifiers, RichText, Stroke, Ui};
 use lazyagent_proto::types::{CatalogRule, ExplainAbove, ExplainFact, RulesExplain};
@@ -74,6 +79,10 @@ fn value_text(f: &ExplainFact) -> String {
     if f.unknown {
         return "unknown".into();
     }
+    if let Some(shown) = f.shown.as_deref().filter(|s| !s.is_empty()) {
+        // The engine's words for people: "2 d 6 h", not 197132.43.
+        return shown.to_string();
+    }
     match &f.value {
         Value::String(s) if s.is_empty() => "\"\"".into(),
         Value::String(s) => s.clone(),
@@ -120,7 +129,53 @@ impl App {
     }
 }
 
+/// The open items of the line, top first, and which one leads.
+fn items(ui: &mut Ui, t: &Theme, items: &[Value]) {
+    if items.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new(format!("Its open inbox items · {}", items.len())).small().strong().color(t.muted));
+    for (i, item) in items.iter().enumerate() {
+        let state = item["state"].as_str().unwrap_or("").replace('_', " ");
+        let kind = item["kind"].as_str().unwrap_or("?").replace('_', " ");
+        let level = item["level"].as_str().unwrap_or("");
+        let where_ = if level == "deep" {
+            "To sit down with"
+        } else if level == "now" {
+            "Now"
+        } else {
+            "Round"
+        };
+        ui.horizontal_wrapped(|ui| {
+            let lead = if i == 0 { "leads" } else { "" };
+            ui.label(RichText::new(format!("{:>2}.", i + 1)).monospace().small().color(t.muted));
+            ui.label(RichText::new(&state).color(t.text));
+            ui.label(RichText::new(format!("· {kind} · {where_}")).small().color(t.muted));
+            if !lead.is_empty() {
+                ui.label(RichText::new(lead).small().strong().color(t.accent));
+            }
+        });
+    }
+}
+
+/// The answer for people, on top: one sentence with its values.
+fn answer(ui: &mut Ui, t: &Theme, e: &RulesExplain) {
+    let Some(text) = e.answer.as_deref().filter(|a| !a.is_empty()) else { return };
+    ui.add_space(6.0);
+    egui::Frame::new()
+        .fill(t.panel)
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(text).size(15.0).color(t.text)).wrap());
+        });
+}
+
 fn explained(ui: &mut Ui, t: &Theme, e: &RulesExplain, catalog: &lazyagent_proto::types::RulesCatalog) {
+    answer(ui, t, e);
+    items(ui, t, &e.items);
     let Some(rule) = &e.rule else {
         ui.label(RichText::new("No rule matched: the line is stalled.").color(t.yellow));
         above(ui, t, "Rules that did not match", &e.above);
@@ -237,14 +292,42 @@ fn facts(ui: &mut Ui, t: &Theme, title: &str, facts: &[ExplainFact]) {
     });
 }
 
+/// The rules above that did not match: the unknown ones (and the user's
+/// own) first, as they are the suspicious ones.
+pub fn above_order(rules: &[ExplainAbove]) -> Vec<&ExplainAbove> {
+    let mut v: Vec<&ExplainAbove> = rules.iter().collect();
+    v.sort_by_key(|a| match (a.value.as_str(), a.file.is_some()) {
+        ("unknown", _) => 0,
+        (_, true) => 1,
+        ("item", _) => 2,
+        _ => 3,
+    });
+    v
+}
+
+/// Folded by default (most questions never need them): the header says
+/// how many, and how many of them are unknown.
 fn above(ui: &mut Ui, t: &Theme, title: &str, rules: &[ExplainAbove]) {
     if rules.is_empty() {
         return;
     }
     ui.add_space(6.0);
-    ui.label(RichText::new(format!("{title} · {}", rules.len())).small().strong().color(t.muted));
+    let unknown = rules.iter().filter(|a| a.value == "unknown").count();
+    let head = if unknown > 0 {
+        format!("{title} · {} ({unknown} unknown)", rules.len())
+    } else {
+        format!("{title} · {}", rules.len())
+    };
+    let colour = if unknown > 0 { t.yellow } else { t.muted };
+    egui::CollapsingHeader::new(RichText::new(head).small().strong().color(colour))
+        .id_salt(("why-above", title))
+        .default_open(false)
+        .show(ui, |ui| above_grid(ui, t, rules));
+}
+
+fn above_grid(ui: &mut Ui, t: &Theme, rules: &[ExplainAbove]) {
     egui::Grid::new(ui.next_auto_id()).num_columns(3).striped(true).spacing([14.0, 3.0]).show(ui, |ui| {
-        for a in rules {
+        for a in above_order(rules) {
             let mut id = RichText::new(&a.id).monospace().small().color(t.text);
             if a.file.is_some() {
                 id = id.color(t.accent);

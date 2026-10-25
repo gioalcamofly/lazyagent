@@ -43,6 +43,15 @@
         "level": null,
         "needs_you": {
           "count": 1,
+          "items": [
+            {
+              "id": "Rule:merge:repo:docs-index",
+              "kind": "rule",
+              "level": "round",
+              "since": 1700000000.0,
+              "state": "merge: approved, CI green"
+            }
+          ],
           "top": "Rule:merge:repo:docs-index"
         },
         "note": null,

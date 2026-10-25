@@ -73,8 +73,8 @@ caption = "The park menu: until when, for this item or the whole work item."
 cards = [
   { title = "Park  z", text = "1 h, tomorrow, a week, until something changes, indefinitely." },
   { title = "Label  l", text = "Who has the ball and why: others · QA." },
-  { title = "Close  ⇧X", text = "Done or dropped. Never touches the worktree, branch or PR." },
-  { title = "Undo", text = "x, z, d and ⇧O show Undo for 5 s (Ctrl+Z)." },
+  { title = "Close  ⇧X", text = "Done or dropped; stops its agent. Never touches the worktree, branch or PR." },
+  { title = "Undo", text = "x, z, d, ⇧O and ⇧D (deny) show Undo for 5 s (Ctrl+Z)." },
 ]
 
 [[section]]
@@ -240,10 +240,11 @@ text = "Facts and ages. Dimmed: done, or the next round."
 
 # --- Keys -------------------------------------------------------------------
 # `where`: home, decision, page (this page), why (the Why? view). The
-# desktop's hint bar must name only keys listed here (a desktop test).
+# desktop's hint bar must name only keys listed here (a desktop test). A
+# letter is written as it is typed: x is x, ⇧X is Shift+x.
 
 [[key]]
-keys = "J K ↓ ↑"
+keys = "j k ↓ ↑"
 where = "home"
 does = "Next / previous line"
 
@@ -260,7 +261,7 @@ does = "Jump to Now, Round, To sit down with, In flight (on a brief: pick an opt
 [[key]]
 keys = "Enter"
 where = "home"
-does = "Expand; open a brief; a Now line's terminal"
+does = "Expand (approve or answer there); open a brief"
 
 [[key]]
 keys = "Esc"
@@ -268,9 +269,9 @@ where = "home"
 does = "Close the form, else collapse"
 
 [[key]]
-keys = "Y  N"
+keys = "a  ⇧D"
 where = "home"
-does = "On an approval: approve / deny"
+does = "On an approval: approve / deny (deny waits 5 s for Undo)"
 
 [[key]]
 keys = "Ctrl+Enter"
@@ -278,44 +279,44 @@ where = "home"
 does = "On an expanded brief: answer"
 
 [[key]]
-keys = "V"
+keys = "v"
 where = "home"
 does = "The decision view"
 
 [[key]]
-keys = "Y  ⇧Y"
+keys = "y  ⇧Y"
 where = "home"
 does = "Explain this / restore its agent and explain"
 
 [[key]]
-keys = "W"
+keys = "w"
 where = "home"
 does = "Why is this line here?"
 
 [[key]]
-keys = "O"
+keys = "o"
 where = "home"
 does = "The agent's terminal"
 
 [[key]]
-keys = "N"
+keys = "n"
 where = "home"
 does = "Its session notes"
 
 [[key]]
-keys = "P"
+keys = "p"
 where = "home"
 does = "Its PR (or tracker task)"
 
 [[key]]
-keys = "X"
+keys = "x"
 where = "home"
 does = "Dismiss the item (Undo 5 s)"
 
 [[key]]
-keys = "Z"
+keys = "z"
 where = "home"
-does = "Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; W whole work item)"
+does = "Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; w whole work item)"
 
 [[key]]
 keys = "⇧Z"
@@ -333,17 +334,17 @@ where = "home"
 does = "Pass to the orchestrator (Undo 5 s)"
 
 [[key]]
-keys = "U"
+keys = "u"
 where = "home"
 does = "Take back a pass or hold; clear your label, park, close or delegation"
 
 [[key]]
-keys = "D"
+keys = "d"
 where = "home"
 does = "Delegate to the branch's agent (Undo 5 s)"
 
 [[key]]
-keys = "L"
+keys = "l"
 where = "home"
 does = "Label who has the ball"
 
@@ -353,7 +354,7 @@ where = "home"
 does = "Close the work item and stop its agent (asks first)"
 
 [[key]]
-keys = "M  ⇧M"
+keys = "m  ⇧M"
 where = "home"
 does = "Mark seen / everything seen"
 
@@ -363,22 +364,22 @@ where = "home"
 does = "Revert the orchestrator's decision (asks first)"
 
 [[key]]
-keys = "T"
+keys = "t"
 where = "home"
 does = "The orchestrator's actions today"
 
 [[key]]
 keys = "Ctrl+Z"
 where = "home"
-does = "Undo the last dismiss, park, delegate or pass"
+does = "Undo the last dismiss, park, delegate, pass or deny"
 
 [[key]]
-keys = "F"
+keys = "f"
 where = "home"
 does = "Fold In flight"
 
 [[key]]
-keys = "G W  G H"
+keys = "g w  g h"
 where = "home"
 does = "The worktrees / back to Home"
 
@@ -403,17 +404,17 @@ where = "decision"
 does = "Next / previous evidence tab"
 
 [[key]]
-keys = "Y  ⇧Y"
+keys = "y  ⇧Y"
 where = "decision"
 does = "Explain this / restore its agent and explain"
 
 [[key]]
-keys = "B"
+keys = "b"
 where = "decision"
 does = "Request a new brief"
 
 [[key]]
-keys = "O"
+keys = "o"
 where = "decision"
 does = "The agent's terminal"
 

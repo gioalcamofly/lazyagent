@@ -20,6 +20,12 @@
 //!
 //! Done rows with nothing to do fold into one "N done today" group at the
 //! end of In flight (`Shift+F`, kept per repo).
+//!
+//! I4f: `a` approves and `⇧D` denies (a deny waits [`UNDO_FOR`] for its
+//! Undo before it is sent); `y` is always explain and `n` always notes. The
+//! key bar names only the selected line's keys, and "? all keys". A deep
+//! item under a quicker top one shows as a ghost line in To sit down with;
+//! stale rows fold into "N stale" at the very end of In flight.
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
@@ -94,6 +100,9 @@ pub enum UndoAct {
     Unpark(String),
     /// `status_gesture undo {what}`: park (the work item), delegate, pass.
     Gesture(String, &'static str),
+    /// A deny not sent yet (the approval item's id, its command): Undo
+    /// keeps it from being sent; past [`UNDO_FOR`] it goes.
+    Deny(String, String),
 }
 
 /// The stalled kinds auto-delegation offers (Q-B33), with their labels.
@@ -146,7 +155,11 @@ enum Act {
     RevertAction(String),
     ParkedShow,
     DoneFold,
+    StaleFold,
     Why(Line),
+    RestoreDelegate(Line),
+    SpawnDelegate(Line),
+    StartOrchestrator,
 }
 
 /// `1h 40m`, `25m`: how long is left.
@@ -348,6 +361,7 @@ impl State {
         let Some(line) = self.home.current(folded) else { return false };
         let kind = line.top.as_ref().map(|t| t.kind.clone()).unwrap_or_default();
         let approval = kind == "approval" && self.inline_approvals();
+        let after_g = self.pending_g.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1));
         if take(Modifiers::NONE, Key::Enter) {
             let asks = line.top.as_ref().is_some_and(|t| t.asks(line.brief.as_ref()));
             let brief = line.top.as_ref().is_some_and(|t| t.kind == "decision" && t.decision_id.is_some());
@@ -364,10 +378,16 @@ impl State {
             } else {
                 self.toggle_line(&line.key);
             }
-        } else if approval && take(Modifiers::NONE, Key::Y) {
+        } else if approval && !after_g && take(Modifiers::NONE, Key::A) {
+            // (g a is Home: the g came first.)
             self.answer_approval(&line, true);
-        } else if approval && take(Modifiers::NONE, Key::N) {
-            self.answer_approval(&line, false);
+        } else if take(Modifiers::SHIFT, Key::D) {
+            // ⇧D before d: a shortcut without Shift also takes Shift.
+            if approval {
+                self.answer_approval(&line, false);
+            } else {
+                self.toast(Severity::Info, "⇧D denies an approval: this line has none.");
+            }
         } else if take(Modifiers::NONE, Key::V) {
             if !self.decision_view_on() {
                 self.toast(Severity::Info, "This engine has no decision view: expand the line (Enter).");
@@ -412,9 +432,7 @@ impl State {
             self.take_back(&line);
         } else if take(Modifiers::NONE, Key::M) {
             self.seen_line(&line);
-        } else if !self.pending_g.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1))
-            && take(Modifiers::NONE, Key::W)
-        {
+        } else if !after_g && take(Modifiers::NONE, Key::W) {
             // (g w is the worktrees: the g came first.)
             self.open_why(&line);
         } else if self.first_responder() && take(Modifiers::NONE, Key::T) {
@@ -454,17 +472,35 @@ impl State {
         (self.decision_view_on() || self.has("first_responder")).then_some(d)
     }
 
-    /// `y` / `n` on an approval line: the agent's permission prompt gets the
-    /// answer, only while it is on screen (the engine checks).
+    /// `a` / `⇧D` on an approval line: the agent's permission prompt gets
+    /// the answer, only while it is on screen (the engine checks). A deny
+    /// waits [`UNDO_FOR`] for its Undo first: the agent cannot take it back.
     pub fn answer_approval(&mut self, line: &Line, allow: bool) {
         let Some(top) = line.top.clone().filter(|t| t.kind == "approval") else { return };
         if !self.inline_approvals() {
             self.toast(Severity::Info, "This engine cannot answer approvals from Home: open the terminal (o).");
             return;
         }
+        if !allow {
+            let text = format!("Denying {}: {}", line.name, top.detail);
+            self.set_undo(text, UndoAct::Deny(top.id.clone(), top.detail.clone()));
+            return;
+        }
+        self.send_approval(top.id.clone(), top.detail.clone(), true);
+    }
+
+    /// The deny whose Undo time is over goes to the agent now.
+    pub fn tick_deny(&mut self, now: f64) {
+        if let Some(Undo { act: UndoAct::Deny(id, detail), at, .. }) = self.undo.clone()
+            && now - at >= UNDO_FOR
+        {
+            self.undo = None;
+            self.send_approval(id, detail, false);
+        }
+    }
+
+    fn send_approval(&mut self, id: String, detail: String, allow: bool) {
         let what = if allow { "Approved" } else { "Denied" };
-        let id = top.id.clone();
-        let detail = top.detail.clone();
         self.conn.request("approval_answer", json!({"id": id, "allow": allow}), move |s, reply| match reply {
             Ok(_) => {
                 s.actionables.remove(&id);
@@ -573,8 +609,12 @@ impl State {
         }
     }
 
-    /// Offers to take the gesture back for [`UNDO_FOR`] seconds.
+    /// Offers to take the gesture back for [`UNDO_FOR`] seconds. A deny
+    /// still waiting goes first: a new Undo never drops it.
     fn set_undo(&mut self, text: String, act: UndoAct) {
+        if let Some(Undo { act: UndoAct::Deny(id, detail), .. }) = self.undo.take() {
+            self.send_approval(id, detail, false);
+        }
         self.undo = Some(Undo { text, act, at: unix_now() });
     }
 
@@ -585,6 +625,11 @@ impl State {
             UndoAct::Undismiss(id) => ("actionables_mark", json!({"id": id, "action": "undismiss"})),
             UndoAct::Unpark(id) => ("actionables_mark", json!({"id": id, "action": "unpark"})),
             UndoAct::Gesture(key, what) => ("status_gesture", json!({"key": key, "kind": "undo", "what": what})),
+            UndoAct::Deny(..) => {
+                // Never sent: nothing to ask the engine.
+                self.toast(Severity::Info, "Not denied: the command still waits for you.");
+                return;
+            }
         };
         self.conn.request(method, params, move |s, reply| match reply {
             Ok(v) => {
@@ -855,6 +900,52 @@ impl State {
         self.gesture(&line.key, params, "Not closed");
     }
 
+    /// Who `d` hands the line's item to: its live agent, else a restorable
+    /// one (restored first), else a new one (spawned first).
+    pub fn delegate_target(&self, line: &Line) -> DelegateTo {
+        if line.row.as_ref().is_some_and(|r| !r.agents.is_empty()) {
+            return DelegateTo::Agent;
+        }
+        match line.place.as_deref().and_then(|p| self.restorable.iter().find(|r| r.worktree_path == p)) {
+            Some(r) => DelegateTo::Restore(r.id.clone()),
+            None => DelegateTo::Spawn,
+        }
+    }
+
+    /// `d` on a line with no live agent: restore its agent, or start one,
+    /// then delegate (the engine sends the line once its first turn ends).
+    pub fn delegate_after_start(&mut self, line: &Line) {
+        let Some(place) = line.place.clone() else {
+            self.toast(Severity::Info, "Nothing to delegate to: this item has no worktree.");
+            return;
+        };
+        let key = line.key.clone();
+        let then = move |s: &mut State, what: &str, reply: Result<Value, lazyagent_proto::ClientError>| match reply {
+            Ok(_) => match s.home.lines.get(&key).cloned() {
+                // The row may not list the new agent yet: the engine checks.
+                Some(line) => s.send_delegate(&line),
+                None => s.toast(Severity::Info, format!("{what}; the item is gone, nothing delegated.")),
+            },
+            Err(e) => s.toast(Severity::Error, format!("{what} failed: {e}")),
+        };
+        match self.delegate_target(line) {
+            DelegateTo::Agent => self.delegate_line(line),
+            DelegateTo::Restore(id) => {
+                let params = json!({"ids": [id], "env": self.env_json()});
+                self.conn.request("restore_agents", params, move |s, reply| then(s, "Agent restored", reply));
+            }
+            DelegateTo::Spawn => {
+                let params = json!({"worktree_path": place, "skip_permissions": false, "env": self.env_json()});
+                self.conn.request("spawn_agent", params, move |s, reply| {
+                    if let Ok(v) = &reply {
+                        s.spawned(&place, v);
+                    }
+                    then(s, "Agent started", reply)
+                });
+            }
+        }
+    }
+
     /// `d`: the line's inbox item to the branch's agent (`status_gesture
     /// delegate to: agent`); the engine keeps the delegation and the row.
     pub fn delegate_line(&mut self, line: &Line) {
@@ -870,6 +961,22 @@ impl State {
             self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
             return;
         }
+        if self.delegate_target(line) != DelegateTo::Agent {
+            // No agent runs there: the buttons offer to restore or start one.
+            let how = match self.delegate_target(line) {
+                DelegateTo::Restore(_) => "Restore agent and delegate",
+                _ => "Spawn an agent for this",
+            };
+            self.toast(Severity::Info, format!("No agent runs there: use \"{how}\" in the expanded line."));
+            self.home.expanded = Some(line.key.clone());
+            return;
+        }
+        self.send_delegate(line);
+    }
+
+    /// The delegation itself (`status_gesture delegate`), with its Undo.
+    fn send_delegate(&mut self, line: &Line) {
+        let Some(top) = line.top.clone() else { return };
         let mut params = json!({"key": line.key, "kind": "delegate", "to": "agent", "item": top.id});
         // With CI tracking the engine writes the failures itself (failed
         // jobs, steps, the last lines of their logs).
@@ -1039,6 +1146,17 @@ impl State {
     }
 }
 
+/// Who a delegation goes to (`State::delegate_target`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DelegateTo {
+    /// Its live agent.
+    Agent,
+    /// No live agent: this restorable entry, restored first.
+    Restore(String),
+    /// Nobody: a new agent, started first.
+    Spawn,
+}
+
 /// Settings → Auto-delegation (per repo, Q-B33): which stalled kinds the
 /// engine delegates on its own, and to whom. `.lazyagent.toml` stays the
 /// source of truth; the engine writes it.
@@ -1075,10 +1193,19 @@ pub fn auto_delegation_menu(ui: &mut Ui, s: &mut State) {
     }
 }
 
-/// A red run's failed jobs: "job · step", then the last lines of its log.
-fn ci_log(ui: &mut Ui, t: &Theme, summary: &CiLogSummary) {
+/// A red run's failed jobs: "job · step", then the last lines of its log;
+/// a red check that is not Actions' by its name, provider and link.
+fn ci_log(ui: &mut Ui, t: &Theme, summary: &CiLogSummary, acts: &mut Vec<Act>) {
     if let Some(e) = &summary.error {
         ui.label(RichText::new(e).small().color(t.yellow));
+    }
+    for check in summary.checks.iter().flatten() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} · {}", check.name, check.provider)).small().strong().color(t.text));
+            if !check.url.is_empty() && ui.small_button("open the check").on_hover_text(&check.url).clicked() {
+                acts.push(Act::Pr(check.url.clone()));
+            }
+        });
     }
     for job in &summary.jobs {
         let head = if job.step.is_empty() { job.name.clone() } else { format!("{} · {}", job.name, job.step) };
@@ -1087,7 +1214,7 @@ fn ci_log(ui: &mut Ui, t: &Theme, summary: &CiLogSummary) {
             ui.label(RichText::new(job.lines.join("\n")).small().monospace().color(t.text));
         }
     }
-    if summary.jobs.is_empty() && summary.error.is_none() {
+    if summary.jobs.is_empty() && summary.error.is_none() && summary.checks.as_ref().is_none_or(|c| c.is_empty()) {
         ui.label(RichText::new("No failed job log to show.").small().color(t.muted));
     }
 }
@@ -1225,7 +1352,7 @@ fn zone_header(ui: &mut Ui, t: &Theme, count: usize, title: &str, color: Color32
     ui.add_space(2.0);
 }
 
-/// Home's keys, as the footer lists them (the guide says the same).
+/// Every key the key bar may name (the page lists each one; a test checks).
 pub fn hint_keys(
     gestures: bool,
     delegation: bool,
@@ -1235,7 +1362,7 @@ pub fn hint_keys(
 ) -> String {
     let mut keys = vec!["Enter open", "1-4 zones", "Tab next for you", "Esc collapse"];
     if approval {
-        keys.extend(["y approve", "n deny"]);
+        keys.extend(["a approve", "⇧D deny"]);
     }
     keys.extend(["o terminal", "n notes", "p PR", "x dismiss", "z park", "⇧O pass", "u take back"]);
     if delegation {
@@ -1253,6 +1380,70 @@ pub fn hint_keys(
     }
     keys.extend(["w why", "f fold", "Ctrl+Z undo", "? how it works"]);
     keys.join(" · ")
+}
+
+/// The most keys the bar names for one line (then "? all keys").
+pub const BAR_KEYS: usize = 8;
+
+/// The key bar for the selected line: only the keys that do something on
+/// it, at most [`BAR_KEYS`], then "? all keys" (the page lists them all).
+pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
+    let mut keys: Vec<&str> = vec![];
+    match line {
+        None => keys.extend(["1-4 zones", "Tab next for you"]),
+        Some(l) => {
+            let kind = l.top.as_ref().map(|t| t.kind.as_str()).unwrap_or("");
+            let has_row = l.row.is_some() && !l.done();
+            match (l.zone, kind) {
+                (_, "approval") if c.approvals => keys.extend(["a approve", "⇧D deny", "Enter expand", "o terminal"]),
+                (_, "question") => keys.extend(["Enter answer", "o terminal"]),
+                (_, "decision") if c.decision_view => keys.extend(["Enter open", "v decision view"]),
+                (Zone::Parked, _) => keys.extend(["Enter expand", "u unpark", "o terminal"]),
+                (Zone::Flight, _) => keys.extend(["Enter expand", "o terminal", "n notes"]),
+                _ if l.verb() == "Merge" => keys.extend(["p PR", "Enter expand"]),
+                _ => keys.extend(["Enter expand", "o terminal"]),
+            }
+            if l.top.as_ref().is_some_and(|t| t.is_ci()) && l.url.is_some() {
+                keys.push("p PR");
+            }
+            if c.delegation && l.top.as_ref().is_some_and(|t| !home::NOT_DELEGABLE.contains(&t.kind.as_str())) {
+                keys.push("d delegate");
+            }
+            if l.top.is_some() {
+                keys.extend(["x dismiss", "z park"]);
+            } else if c.gestures && has_row && l.zone == Zone::Flight {
+                keys.extend(["l label", "z park"]);
+            }
+            if c.decision_view && l.zone != Zone::Flight {
+                keys.push("y explain");
+            }
+            if l.zone == Zone::Flight && has_row && c.pass {
+                keys.push("⇧O pass");
+            }
+            if c.gestures && has_row {
+                keys.push("⇧X close");
+            }
+            if c.why && l.row.is_some() {
+                keys.push("w why");
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|k| seen.insert(*k));
+    keys.truncate(BAR_KEYS);
+    keys.push("? all keys");
+    keys.join(" · ")
+}
+
+/// What the key bar knows of the engine.
+#[derive(Clone, Copy, Default)]
+pub struct KeysCtx {
+    pub approvals: bool,
+    pub decision_view: bool,
+    pub delegation: bool,
+    pub gestures: bool,
+    pub pass: bool,
+    pub why: bool,
 }
 
 impl App {
@@ -1289,7 +1480,10 @@ impl App {
         let done_group: Vec<Line> = home.done_group().into_iter().cloned().collect();
         let done_open = home.done_open;
         let strip_open = home.strip_open;
-        let deep_count = home.count(Zone::Deep);
+        let deep_count = home.deep_count();
+        let ghosts: Vec<Line> = home.deep_ghosts().into_iter().cloned().collect();
+        let stale_group: Vec<Line> = home.stale_group().into_iter().cloned().collect();
+        let stale_open = home.stale_open;
         let s = &self.state;
         let counts = s.status_counts;
         let ctx = LineCtx {
@@ -1312,17 +1506,23 @@ impl App {
             questions: s.inline_questions(),
             close_stop: s.has(F_CLOSE_STOP),
             why: s.has("rules"),
+            restorable: s.restorable.iter().map(|r| r.worktree_path.clone()).collect(),
         };
+        let keys_ctx = KeysCtx {
+            approvals: ctx.approvals,
+            decision_view: ctx.decision_view,
+            delegation: ctx.delegation,
+            gestures: ctx.gestures,
+            pass: ctx.pass.is_ok(),
+            why: ctx.why,
+        };
+        let selected_line = selected.as_ref().and_then(|k| s.home.lines.get(k)).cloned();
         let rules_line = rules_error_line(&s.rules_errors);
         let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
         let presence = s.presence.clone();
         let orchestrator = s.orchestrator.clone();
         let actions = s.orchestrator_actions.clone();
         let undo = s.undo.clone().filter(|u| now - u.at < UNDO_FOR);
-        let approval_selected = selected
-            .as_ref()
-            .and_then(|k| s.home.lines.get(k))
-            .is_some_and(|l| ctx.approvals && l.top.as_ref().is_some_and(|t| t.kind == "approval"));
         let mut acts: Vec<Act> = vec![];
         let mut forms_out = forms.clone();
         // The keys and the Undo stay at the bottom of Home, whatever scrolls.
@@ -1338,9 +1538,11 @@ impl App {
                 });
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
             }
-            let keys =
-                hint_keys(ctx.gestures, ctx.delegation, ctx.first_responder, ctx.decision_view, approval_selected);
-            ui.add(egui::Label::new(RichText::new(keys).small().color(t.muted)).wrap());
+            // One line of its own: the selected line's keys, never a wall.
+            let keys = line_keys(&keys_ctx, selected_line.as_ref());
+            let all = hint_keys(ctx.gestures, ctx.delegation, ctx.first_responder, ctx.decision_view, ctx.approvals);
+            ui.add(egui::Label::new(RichText::new(keys).small().color(t.muted)).truncate())
+                .on_hover_text(all.replace(" · ", "\n"));
         });
         egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(CONTENT_MAX));
@@ -1422,10 +1624,13 @@ impl App {
                         ui.label(RichText::new(format!("· of {max}, for a focus block")).small().color(t.muted));
                     }
                 });
-                if lines[2].is_empty() {
+                if lines[2].is_empty() && ghosts.is_empty() {
                     ui.label(RichText::new("Nothing to sit down with.").color(t.muted));
                 }
                 zone(ui, Zone::Deep, &mut forms_out, &mut acts);
+                for l in &ghosts {
+                    ghost_ui(ui, &ctx, l, &mut acts);
+                }
             }
             ui.add_space(6.0);
             ui.separator();
@@ -1471,6 +1676,33 @@ impl App {
                     });
                     if done_open {
                         for l in &done_group {
+                            line_ui(ui, &ctx, l, Zone::Flight, false, &mut forms_out, &mut acts);
+                        }
+                    }
+                }
+                if !stale_group.is_empty() {
+                    // Never gone without a trace: worktrees nothing moved in
+                    // for days, with what they would lose.
+                    let arrow = if stale_open { "▾" } else { "▸" };
+                    let dirty: u32 = stale_group.iter().filter_map(|l| l.row.as_ref()?.dirty).sum();
+                    let mut text = format!("{} stale {arrow}", stale_group.len());
+                    if dirty > 0 {
+                        text = format!("{} stale · {dirty} uncommitted files {arrow}", stale_group.len());
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        let color = if dirty > 0 { t.yellow } else { t.muted };
+                        if ui
+                            .add(egui::Button::new(RichText::new(text).small().color(color)).frame(false))
+                            .on_hover_text("Only a branch, unchanged for [status] stale_days: no agent, no PR")
+                            .clicked()
+                        {
+                            acts.push(Act::StaleFold);
+                        }
+                    });
+                    if stale_open {
+                        for l in &stale_group {
                             line_ui(ui, &ctx, l, Zone::Flight, false, &mut forms_out, &mut acts);
                         }
                     }
@@ -1536,6 +1768,15 @@ impl App {
                 Act::ParkedFold => s.home.parked_open = !s.home.parked_open,
                 Act::ParkedShow => s.home.parked_open = true,
                 Act::DoneFold => s.toggle_done_group(),
+                Act::StaleFold => {
+                    s.home.stale_open = !s.home.stale_open;
+                    if s.home.stale_open {
+                        s.saved.home_fold = false;
+                        s.touch_saved();
+                    }
+                }
+                Act::RestoreDelegate(l) | Act::SpawnDelegate(l) => s.delegate_after_start(&l),
+                Act::StartOrchestrator => s.spawn_agent(None),
                 Act::Delegate(l) => s.delegate_line(&l),
                 Act::Pass(l) => s.pass_line(&l),
                 Act::TakeBack(l) => s.take_back(&l),
@@ -1619,6 +1860,8 @@ struct LineCtx<'a> {
     close_stop: bool,
     /// The engine explains its lines (feature `rules`): Why?.
     why: bool,
+    /// The worktrees with a restorable agent: "Restore agent and delegate".
+    restorable: std::collections::HashSet<String>,
 }
 
 /// "Presence: auto (present)": the toggle, as one menu.
@@ -1661,6 +1904,14 @@ fn orchestrator_strip(
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new("Orchestrator").strong().color(t.cyan));
+            if orch.is_some_and(|o| !o.alive)
+                && ui
+                    .button(RichText::new("Start the orchestrator").small())
+                    .on_hover_text("Spawn it in the main checkout")
+                    .clicked()
+            {
+                acts.push(Act::StartOrchestrator);
+            }
             let doing = match orch {
                 Some(o) if !o.alive => "not running".to_string(),
                 Some(o) => match &o.report {
@@ -1738,7 +1989,7 @@ fn orchestrator_strip(
 /// the orchestrator).
 fn ball_text(c: &LineCtx, l: &Line, shown: Zone) -> (String, String, Color32) {
     let t = c.t;
-    let state = l.working(c.now).unwrap_or_else(|| humanize(&l.state));
+    let state = l.working().unwrap_or_else(|| humanize(&l.state));
     match (&l.claim, l.hold()) {
         (Some(claim), _) => ("orchestrator".into(), format!("looking · {} left", left(claim.until - c.now)), t.cyan),
         (None, Some(hold)) => {
@@ -1814,8 +2065,17 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     let age = c.now - l.top.as_ref().map(|t| t.since).unwrap_or(l.changed_at);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(age)).small().color(t.muted));
-                        if l.more > 0 {
-                            ui.label(RichText::new(format!("{} items", l.more + 1)).small().color(t.muted));
+                        // "+ changes requested": what is behind the top item.
+                        if let Some(more) = l.more_text() {
+                            let r = ui.add(
+                                egui::Label::new(
+                                    RichText::new(home::middle_ellipsis(&more, 40)).small().color(t.muted),
+                                )
+                                .sense(Sense::hover()),
+                            );
+                            if more.chars().count() > 40 {
+                                r.on_hover_text(more);
+                            }
                         }
                         if next {
                             ui.label(RichText::new("next round").small().color(t.muted));
@@ -1935,7 +2195,56 @@ fn park_until_text(g: &Value, now: f64) -> String {
 
 fn timeline_line(e: &TimelineEntry, now: f64) -> String {
     let actor = if e.actor == "engine" { String::new() } else { format!(" · {}", e.actor) };
-    format!("{} ago  {}  {}{actor}", home::age(now - e.at), e.kind, e.text)
+    let text = if e.kind == "ball" { ball_words(&e.text) } else { e.text.clone() };
+    let kind = if e.kind == "ball" { "now" } else { e.kind.as_str() };
+    format!("{} ago  {kind}  {text}{actor}", home::age(now - e.at),)
+}
+
+/// A ball change in words: "stalled → agent: working" → "with the agent
+/// (was stalled): working".
+pub fn ball_words(text: &str) -> String {
+    let Some((move_, state)) = text.split_once(": ") else { return text.to_string() };
+    let Some((from, to)) = move_.split_once(" → ") else { return text.to_string() };
+    let who = |b: &str| match b {
+        "you" => "yours".to_string(),
+        "agent" => "with the agent".to_string(),
+        "others" => "with others".to_string(),
+        "stalled" => "stalled".to_string(),
+        "done" => "done".to_string(),
+        other => other.to_string(),
+    };
+    format!("{} (was {}): {state}", who(to), who(from))
+}
+
+/// A deep item under a quicker line, in To sit down with: dimmed, its verb
+/// and state, and where the line itself is; a click opens that line.
+fn ghost_ui(ui: &mut Ui, c: &LineCtx, l: &Line, acts: &mut Vec<Act>) {
+    let t = c.t;
+    let Some(item) = l.deep_under() else { return };
+    let r = egui::Frame::new().inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.multiply_opacity(0.7);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
+            cell(ui, 10.0, RichText::new("↳").color(t.muted));
+            cell(ui, 112.0, RichText::new(home::kind_verb(&item.kind)).strong().color(t.purple));
+            priority_cell(ui, t, &l.priority);
+            name_cell(ui, name_w, &l.name);
+            let where_ = if l.zone == Zone::Now { "Now" } else { "the Round" };
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(home::age(c.now - item.since)).small().color(t.muted));
+                ui.label(RichText::new(format!("under its {} in {where_}", l.verb())).small().color(t.muted));
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(format!("· {}", home::item_words(item)))).truncate());
+                });
+            });
+        });
+    });
+    if r.response.interact(Sense::click()).on_hover_text("Open its line: every item is listed there").clicked() {
+        acts.push(Act::Select(l.key.clone()));
+        acts.push(Act::Toggle(l.key.clone()));
+    }
 }
 
 /// The brief: its options (1-4 pick one when it can be answered here,
@@ -2081,12 +2390,30 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             }
             _ => {}
         }
+        // Every open item, and which one leads the line.
+        if l.items().len() > 1 {
+            ui.label(RichText::new("Its items").small().strong().color(t.muted));
+            for (i, item) in l.items().iter().enumerate() {
+                let mut text = format!("{}. {} · {}", i + 1, home::kind_verb(&item.kind), home::item_words(item));
+                if i == 0 {
+                    text.push_str(" · leads the line");
+                } else if item.level == "deep" {
+                    text.push_str(" · also in To sit down with");
+                }
+                text.push_str(&format!(" · {}", home::age(c.now - item.since)));
+                ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
+            }
+        }
         if kind == "approval" && c.approvals {
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Approve  (y)").color(t.green)).clicked() {
+                if ui.button(RichText::new("Approve  (a)").color(t.green)).clicked() {
                     acts.push(Act::Approve(l.clone(), true));
                 }
-                if ui.button(RichText::new("Deny  (n)").color(t.red)).clicked() {
+                if ui
+                    .button(RichText::new("Deny  (⇧D)").color(t.red))
+                    .on_hover_text("Sent after 5 s, unless you undo it")
+                    .clicked()
+                {
                     acts.push(Act::Approve(l.clone(), false));
                 }
                 ui.label(
@@ -2276,13 +2603,14 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             }
         }
         if c.actions
-            && let Some(run) = l.top.as_ref().filter(|t| t.is_ci()).and_then(|t| t.run.as_ref())
+            && let Some(top) = l.top.as_ref().filter(|t| t.is_ci())
         {
             ui.add_space(2.0);
             ui.label(RichText::new("Failed log").small().strong().color(t.muted));
-            let wanted = (run.id, run.attempt);
+            // With no Actions run the engine says whose red it is (0, 0).
+            let wanted = top.run.as_ref().map(|r| (r.id, r.attempt)).unwrap_or((0, 0));
             match c.ci_logs.get(&l.key) {
-                Some((r, Some(summary))) if *r == wanted => ci_log(ui, t, summary),
+                Some((r, Some(summary))) if *r == wanted => ci_log(ui, t, summary, acts),
                 Some((r, None)) if *r == wanted => {
                     ui.label(RichText::new("…").small().color(t.muted));
                 }
@@ -2309,16 +2637,43 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         }
         // The actions: the first few as buttons, the rest under "More…".
         let mut buttons: Vec<Button> = vec![];
+        if l.verb() == "Merge"
+            && let Some(url) = &l.url
+        {
+            // Merging is done on the PR, by you: its button comes first.
+            let mut b = button("Open PR to merge  (p)", Act::Pr(url.clone()));
+            b.hover = Some("Merging happens on the PR page");
+            buttons.push(b);
+        }
         if l.place.is_some() {
             buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
         }
-        let delegable = c.delegation
-            && l.top.as_ref().is_some_and(|t| !matches!(t.kind.as_str(), "approval" | "question" | "decision" | "delegation"))
-            && l.row.as_ref().is_some_and(|r| !r.agents.is_empty());
         let ci = l.top.as_ref().is_some_and(|t| t.is_ci());
-        if ci || delegable {
-            // One name for one action: with CI, the failures go with it.
-            let mut b = button("Delegate to its agent  (d)", if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) });
+        let delegable_kind = l.top.as_ref().is_some_and(|t| !home::NOT_DELEGABLE.contains(&t.kind.as_str()));
+        let live = match &l.row {
+            Some(r) => !r.agents.is_empty(),
+            // The client's own queue: its CI line sends the failures to
+            // the worktree's agent, and says so when there is none.
+            None => true,
+        };
+        if c.delegation && delegable_kind && l.row.is_some() && !l.done() {
+            // Only an agent that runs can be delegated to; else restore it,
+            // or start one, first.
+            let restorable = l.place.as_ref().is_some_and(|p| c.restorable.contains(p));
+            let mut b = match (live, restorable) {
+                (true, _) => button("Delegate to its agent  (d)", if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) }),
+                (false, true) => button("Restore agent and delegate", Act::RestoreDelegate(l.clone())),
+                (false, false) => button("Spawn an agent for this", Act::SpawnDelegate(l.clone())),
+            };
+            b.hover = Some(if live {
+                "It comes back if the fact still holds"
+            } else {
+                "No agent runs here: it starts one, then hands it the item once its first turn ends"
+            });
+            buttons.push(b);
+        } else if ci && !c.delegation && live {
+            // Older engines: the failures go to the agent as a prompt.
+            let mut b = button("Delegate to its agent  (d)", Act::SendCi(l.clone()));
             b.hover = Some("It comes back if the fact still holds");
             buttons.push(b);
         }
@@ -2345,7 +2700,9 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         if l.place.is_some() {
             buttons.push(button("Notes  (n)", Act::Notes(l.clone())));
         }
-        if let Some(url) = &l.url {
+        if let Some(url) = &l.url
+            && l.verb() != "Merge"
+        {
             buttons.push(button("PR  (p)", Act::Pr(url.clone())));
         }
         if row_gestures {
@@ -2387,13 +2744,14 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             {
                 acts.push(Act::Why(l.clone()));
             }
-            if let Err(why) = c.pass
-                && l.row.is_some()
-                && !l.done()
-            {
-                ui.label(RichText::new(why).small().color(t.muted));
-            }
         });
+        if let Err(why) = c.pass
+            && l.row.is_some()
+            && !l.done()
+        {
+            // On a line of its own: wrapped, never cut.
+            ui.add(egui::Label::new(RichText::new(why).small().color(t.muted)).wrap());
+        }
         if forms.parking.as_deref() == Some(&l.key) {
             let whole = forms.park_whole || l.top.is_none();
             egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {

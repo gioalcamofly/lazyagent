@@ -115,9 +115,15 @@ def _duration(seconds: float) -> str:
     return f"{int(seconds)}s"
 
 
-def _value(n: Node) -> str:
+# fact name → its value as people read it, while sentence(values=...) runs:
+# "the time since the last sign of work (2 d 6 h)".
+_VALUES: dict[str, str] = {}
+
+
+def _value(n: Node, with_value: bool = False) -> str:
     if n.op == "fact":
-        return _phrase(n.value)
+        shown = _VALUES.get(n.value) if with_value else None
+        return f"{_phrase(n.value)} ({shown})" if shown else _phrase(n.value)
     if n.op in ("lit", "list"):
         return _lit(n)
     return template_of(n)
@@ -155,10 +161,12 @@ def _cmp(n: Node) -> str:
         return f"{subject} is not {_value(right)}"
     if op == "subset":
         return f"{subject} are all in {_value(right)}"
+    # An ordered comparison says the values it compared (sentence(values=)).
+    subject, other = _value(left, True), _value(right, True)
     if left.op == "fact" and FACTS.get(left.value) is not None and str(FACTS[left.value].type) == "duration":
         word = {">": "over", ">=": "at least", "<": "under", "<=": "at most"}[op]
-        return f"{subject} is {word} {_value(right)}"
-    return f"{subject} is {_NUM.get(op, op)} {_value(right)}"
+        return f"{subject} is {word} {other}"
+    return f"{subject} is {_NUM.get(op, op)} {other}"
 
 
 _NEGATIONS = ((" is on", " is off"), (" is a ", " is no "), (" is ", " is not "), (" are ", " are not "))
@@ -205,14 +213,93 @@ def _sentence(n: Node) -> str:
     return template_of(n)
 
 
-def sentence(when: str, and_when: str | None = None) -> str:
+def sentence(when: str, and_when: str | None = None, values: dict[str, str] | None = None) -> str:
     """A condition in English, from the facts' phrases:
     ``pr.state == "open" and ci.state in ["green", "none"]`` → "the PR's
-    state is open and CI on the PR is green or none"."""
-    text = _sentence(parse(when))
-    if and_when:
-        text += " and " + _sentence(parse(and_when))
+    state is open and CI on the PR is green or none". With ``values`` (fact
+    → shown), each compared fact says its value: "the time since the last
+    sign of work (2 d 6 h) is over the stalled threshold (24 h)"."""
+    _VALUES.clear()
+    _VALUES.update(values or {})
+    try:
+        text = _sentence(parse(when))
+        if and_when:
+            text += " and " + _sentence(parse(and_when))
+    finally:
+        _VALUES.clear()
     return text[:1].upper() + text[1:]
+
+
+def human_duration(seconds: float) -> str:
+    """Seconds as people say them: ``45 s``, ``12 min``, ``24 h``, ``1 h
+    30 min``, ``2 d 6 h``; never raw seconds."""
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s} s"
+    m = s // 60
+    if m < 60:
+        return f"{m} min"
+    h, m = divmod(m, 60)
+    if h < 48:
+        return f"{h} h {m} min" if m else f"{h} h"
+    d, h = divmod(h, 24)
+    return f"{d} d {h} h" if h else f"{d} d"
+
+
+def shown(fact_type: str, value: Any, now: float) -> str:
+    """A fact's value for people (the Why? view, its answer): durations as
+    ``2 d 6 h``, times as ``3 h ago``, words without underscores, sets
+    joined, unknown as such."""
+    if value is None:
+        return "unknown"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if fact_type == "duration" and isinstance(value, (int, float)):
+        return human_duration(value)
+    if fact_type == "time" and isinstance(value, (int, float)):
+        return f"{human_duration(now - value)} ago" if value <= now else f"in {human_duration(value - now)}"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) or "none"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, str):
+        return value.replace("_", " ") if value else "empty"
+    return str(value)
+
+
+def answer(result: dict[str, Any]) -> str:
+    """``rules_explain``'s one sentence for people: what the row reads and
+    why, with the values it read: "“no activity”: the time since the last
+    sign of work (2 d 6 h) is over the stalled threshold (24 h)." For the
+    queue, which item leads and what else is open."""
+    rule, then = result.get("rule"), result.get("then") or {}
+    if rule is None:
+        return "No rule matched: the row keeps the engine's defaults."
+    items = result.get("items") or []
+    state = then.get("state") or ""
+    if rule["id"] == "queue" and items:
+        top = f"“{items[0].get('state') or items[0].get('kind')}”"
+        item_rule = result.get("item_rule")
+        if item_rule is not None:
+            values = {f["name"]: f["shown"] for f in item_rule.get("facts", []) if "shown" in f}
+            text = f"{top}: " + _lower(sentence(item_rule["when"], item_rule.get("and_when"), values))
+        else:
+            text = f"{top} leads: it is the first of the open inbox items"
+        if len(items) > 1:
+            rest = ", ".join(str(i.get("state") or i.get("kind")) for i in items[1:])
+            text += f"; also open: {rest}"
+        return text + "."
+    values = {f["name"]: f["shown"] for f in result.get("facts", []) if "shown" in f}
+    try:
+        why = sentence(rule["when"], rule.get("and_when"), values)
+    except Exception:  # noqa: BLE001 - a term the sentence maker does not know: its source
+        why = rule["when"]
+    return f"“{state}”: {_lower(why)}." if state else f"{why}."
+
+
+def _lower(text: str) -> str:
+    # "The PR's state…" inside a sentence; "CI on the PR…" keeps its case.
+    return text[:1].lower() + text[1:] if text[:2].istitle() and not text[:2].isupper() else text
 
 
 def template_of(n: Node) -> str:
@@ -296,8 +383,16 @@ def state_text(rule: dict[str, Any]) -> str:
     return ""
 
 
+# The rules where the orchestrator has the item (a pass, its hold, a routed
+# brief or question): the row's ball is "agent" (it is not yours), the
+# screen and this page say "orchestrator" (status.holder_of).
+ORCHESTRATOR_RULES = frozenset({"claim", "hold", "held"})
+
+
 def ball_text(rule: dict[str, Any]) -> str:
     then = rule["then"]
+    if rule.get("id") in ORCHESTRATOR_RULES and then.get("ball") == "agent":
+        return "orchestrator"
     if then.get("ball"):
         return then["ball"]
     if then.get("ball_expr"):

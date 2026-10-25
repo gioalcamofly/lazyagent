@@ -101,7 +101,9 @@ def test_a_returned_label_yields_a_round_item_and_leaving_clears_it():
         "tracker:github_issues:123:qa-returned"
     )
     assert listing(engine)["counts"]["round"] == 1
-    assert row["needs_you"] == {"count": 1, "top": "tracker:github_issues:123:qa-returned"}
+    assert (row["needs_you"]["count"], row["needs_you"]["top"]) == (
+        1, "tracker:github_issues:123:qa-returned"
+    )
     [item] = engine.actionables.list()["items"]
     assert (item["kind"], item["level"], item["state"], item["work_item"]) == (
         "tracker_status", "round", "returned by QA", "repo:fix-123-login",

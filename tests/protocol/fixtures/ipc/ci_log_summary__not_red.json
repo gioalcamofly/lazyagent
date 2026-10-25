@@ -7,6 +7,7 @@
   "response": {
     "id": "req-1",
     "result": {
+      "checks": [],
       "error": "no failed CI run on the head of docs-index",
       "jobs": [],
       "key": "repo:docs-index",

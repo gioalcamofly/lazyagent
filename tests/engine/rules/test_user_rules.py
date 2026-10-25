@@ -527,7 +527,9 @@ def test_cli_status_why_formats_rules_explain(monkeypatch, capsys):
     assert cli.status_main(["/tmp/repo", "--why", "docs-index"]) == 0
     assert calls == [("rules_explain", {"key": "docs-index"})]
     out = capsys.readouterr().out
-    assert out.startswith("repo:docs-index\n  rule   queue")
+    # The answer for people first, then the rule.
+    assert out.startswith("repo:docs-index\n  “merge: approved, CI green”: the PR")
+    assert "\n  rule   queue" in out
     assert "item   from rule merge" in out
 
 

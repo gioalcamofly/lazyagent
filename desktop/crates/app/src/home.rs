@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lazyagent_proto::types::{Actionable, CiRun, Claim, Decision, PrInfo, StatusRow};
+use lazyagent_proto::types::{Actionable, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow};
 
 use crate::attention::{self, Kind};
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -185,6 +185,39 @@ impl Line {
         self.done() && self.row.as_ref().is_none_or(|r| r.suggestion.is_none())
     }
 
+    /// Nothing but a branch, unchanged for days: In flight's folded "N
+    /// stale" group (never hidden without a trace).
+    pub fn stale(&self) -> bool {
+        self.row.as_ref().is_some_and(|r| r.stale) && !self.done()
+    }
+
+    /// The row's open inbox items, top first (I4f engines; else none).
+    pub fn items(&self) -> &[NeedsYouItem] {
+        self.row.as_ref().and_then(|r| r.needs_you.as_ref()).map(|n| n.items.as_slice()).unwrap_or(&[])
+    }
+
+    /// What the items behind the top one are: "+ changes requested" (or
+    /// "2 items" from an engine that does not list them).
+    pub fn more_text(&self) -> Option<String> {
+        if self.more == 0 {
+            return None;
+        }
+        let rest: Vec<String> = self.items().iter().skip(1).map(item_words).collect();
+        if rest.is_empty() {
+            return Some(format!("{} items", self.more + 1));
+        }
+        Some(format!("+ {}", rest.join(", ")))
+    }
+
+    /// A deep item under this line's quicker top one (a changes requested
+    /// under a red CI): it shows in To sit down with too, as a ghost line.
+    pub fn deep_under(&self) -> Option<&NeedsYouItem> {
+        if !matches!(self.zone, Zone::Now | Zone::Round) {
+            return None;
+        }
+        self.items().iter().skip(1).find(|i| i.level == "deep")
+    }
+
     /// A routed question the orchestrator is on (first responder).
     pub fn looking(&self) -> bool {
         self.row.as_ref().and_then(|r| r.holder.as_deref()) == Some("orchestrator")
@@ -228,10 +261,11 @@ impl Line {
         note.by.starts_with("agent:").then_some(note.text.as_str())
     }
 
-    /// A running agent's line: "working · 12m · <its last report>", never
-    /// its tool calls ("Bash done"). None when no agent runs or the row
-    /// says something more specific (fixing CI, a delegation).
-    pub fn working(&self, now: f64) -> Option<String> {
+    /// A running agent's line: "working · <its last report, else its notes'
+    /// line>", never its tool calls ("Bash done"); the age is the line's
+    /// own column. None when no agent runs or the row says something more
+    /// specific (fixing CI, a delegation).
+    pub fn working(&self) -> Option<String> {
         let agent = self.running_agent()?;
         let rule9 = self.row.as_ref().is_some_and(|r| r.rule == 9) && self.state != "fixing CI";
         if !rule9 || self.zone != Zone::Flight {
@@ -240,11 +274,13 @@ impl Line {
         if agent.status == "starting" {
             return Some("starting".into());
         }
-        let mut text = format!("working · {}", age(now - agent.since));
-        if let Some(report) = self.report() {
-            text.push_str(&format!(" · {}", middle_ellipsis(report, REPORT_CHARS)));
-        }
-        Some(text)
+        let said = self
+            .report()
+            .or_else(|| self.row.as_ref()?.note.as_ref().filter(|n| n.by == "notes").map(|n| n.text.as_str()));
+        Some(match said {
+            Some(text) => format!("working · {}", middle_ellipsis(text, REPORT_CHARS)),
+            None => "working".into(),
+        })
     }
 
     /// The action an inbox line asks for, always an imperative: the
@@ -264,23 +300,13 @@ impl Line {
             };
         };
         match top.kind.as_str() {
-            "approval" => "Approve",
-            "question" => "Answer",
-            "done" => "Review",
-            "ci" | "ci_failed" => "Fix CI",
-            "review" => "Address review",
-            "conflict" => "Resolve conflict",
-            "hanged" => "Check agent",
-            "failed" | "exited" => "Relaunch",
-            "job" => "Fix job",
-            "delegation" => "Decide",
-            "tracker_status" => "Update task",
             "decision" if top.asks(self.brief.as_ref()) => "Answer",
-            "decision" => "Decide",
-            "report" => "Read",
             // An item rule's (the built-in Merge, a user rule): its own verb.
             "rule" => top.verb.as_deref().filter(|v| !v.is_empty()).or(engine).unwrap_or("Look"),
-            _ => engine.unwrap_or("Look"),
+            k => match kind_verb(k) {
+                "Look" => engine.unwrap_or("Look"),
+                v => v,
+            },
         }
     }
 
@@ -305,6 +331,30 @@ impl Line {
             .as_ref()
             .and_then(|t| t.agent_id.clone())
             .or_else(|| self.row.as_ref().and_then(|r| r.agents.first().map(|a| a.id.clone())))
+    }
+}
+
+/// The items that are answered, never delegated.
+pub const NOT_DELEGABLE: [&str; 4] = ["approval", "question", "decision", "delegation"];
+
+/// The verb of an inbox item's kind, always an imperative ("Look" for one
+/// this table does not know).
+pub fn kind_verb(kind: &str) -> &'static str {
+    match kind {
+        "approval" => "Approve",
+        "question" => "Answer",
+        "done" => "Review",
+        "ci" | "ci_failed" => "Fix CI",
+        "review" => "Address review",
+        "conflict" => "Resolve conflict",
+        "hanged" => "Check agent",
+        "failed" | "exited" => "Relaunch",
+        "job" => "Fix job",
+        "delegation" => "Decide",
+        "tracker_status" => "Update task",
+        "decision" => "Decide",
+        "report" => "Read",
+        _ => "Look",
     }
 }
 
@@ -345,10 +395,19 @@ fn decided_on(decisions: &BTreeMap<String, Decision>, key: &str, now: f64) -> Op
         .cloned()
 }
 
-/// `branch #12`, the way the engine's table names an item.
+/// An item's state in a few words: "changes requested", "CI red: tests".
+pub fn item_words(item: &NeedsYouItem) -> String {
+    let text = if item.state.is_empty() { item.kind.replace('_', " ") } else { item.state.clone() };
+    text.replace('_', " ")
+}
+
+/// `branch #12`, the way the engine's table names an item; a detached
+/// head by its worktree's directory, not `@6bf0c804d69b`.
 pub fn row_name(row: &StatusRow) -> String {
-    let mut name =
-        row.branch.clone().unwrap_or_else(|| row.key.split_once(':').map(|x| x.1).unwrap_or(&row.key).into());
+    let mut name = row.branch.clone().unwrap_or_else(|| match row.worktree_path.as_deref() {
+        Some(p) if !store::basename(p).is_empty() => store::basename(p).to_string(),
+        _ => row.key.split_once(':').map(|x| x.1).unwrap_or(&row.key).into(),
+    });
     if let Some(pr) = &row.pr {
         name.push_str(&format!(" #{}", pr.number));
     }
@@ -365,7 +424,8 @@ pub fn engine_lines(
 ) -> Vec<Line> {
     let mut out = vec![];
     for row in rows.values() {
-        if row.stale || (row.ball == "done" && now - row.changed_at >= DONE_FOR) {
+        // Stale rows stay, folded at the end of In flight (Home::stale_group).
+        if row.ball == "done" && now - row.changed_at >= DONE_FOR {
             continue;
         }
         let zone = match row.zone.as_str() {
@@ -385,6 +445,22 @@ pub fn engine_lines(
         if !row.waits_on.is_empty() && row.ball != "done" {
             let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
             state.push_str(&format!(" · waits on {}", titles.join(", ")));
+        }
+        // Parked: until when, and what still needs the user there.
+        if zone == Zone::Parked
+            && row.holder.as_deref() != Some("orchestrator")
+            && let Some(first) = row.needs_you.as_ref().and_then(|n| n.items.first())
+        {
+            state.push_str(&format!(" · needs you: {}", item_words(first)));
+        }
+        // Stale: what would be lost with the worktree.
+        if row.stale {
+            match row.dirty {
+                Some(0) => state.push_str(" · no uncommitted files"),
+                Some(1) => state.push_str(" · 1 uncommitted file"),
+                Some(n) => state.push_str(&format!(" · {n} uncommitted files")),
+                None => {}
+            }
         }
         out.push(Line {
             key: row.key.clone(),
@@ -652,6 +728,8 @@ pub struct Home {
     /// In flight's "N done today" group is unfolded (folded by default;
     /// kept per repo in `Saved::home_done_open`).
     pub done_open: bool,
+    /// In flight's "N stale" group is unfolded (folded by default).
+    pub stale_open: bool,
     /// The close choices (done / dropped) are open on this line.
     pub closing: Option<String>,
     /// The label form is open on this line.
@@ -770,15 +848,40 @@ impl Home {
         self.next.iter().filter_map(|k| self.lines.get(k)).collect()
     }
 
-    /// The lines of a zone, in order; In flight without its done group.
+    /// The lines of a zone, in order; In flight without its done and stale
+    /// groups.
     pub fn shown_in(&self, zone: Zone) -> Vec<&Line> {
         let lines = self.order[zone as usize].iter().filter_map(|k| self.lines.get(k));
-        if zone == Zone::Flight { group_by_project(lines.filter(|l| !l.folds()).collect()) } else { lines.collect() }
+        if zone == Zone::Flight {
+            group_by_project(lines.filter(|l| !l.folds() && !l.stale()).collect())
+        } else {
+            lines.collect()
+        }
     }
 
     /// In flight's done rows with no suggestion: one group at its end.
     pub fn done_group(&self) -> Vec<&Line> {
         self.order[Zone::Flight as usize].iter().filter_map(|k| self.lines.get(k)).filter(|l| l.folds()).collect()
+    }
+
+    /// In flight's stale rows: one folded group at its very end.
+    pub fn stale_group(&self) -> Vec<&Line> {
+        self.order[Zone::Flight as usize].iter().filter_map(|k| self.lines.get(k)).filter(|l| l.stale()).collect()
+    }
+
+    /// The inbox lines with a deep item under their top one, drawn as ghost
+    /// lines in To sit down with (they open the line itself).
+    pub fn deep_ghosts(&self) -> Vec<&Line> {
+        let mut v: Vec<&Line> = self.shown_in(Zone::Now);
+        v.extend(self.shown_in(Zone::Round));
+        v.extend(self.next_round());
+        v.into_iter().filter(|l| l.deep_under().is_some()).collect()
+    }
+
+    /// To sit down with as the engine counts it: its lines and the deep
+    /// items under quicker ones.
+    pub fn deep_count(&self) -> usize {
+        self.count(Zone::Deep) + self.lines.values().filter(|l| l.deep_under().is_some()).count()
     }
 
     /// The selectable lines, top to bottom.
@@ -791,6 +894,9 @@ impl Home {
             v.extend(self.shown_in(Zone::Flight));
             if self.done_open {
                 v.extend(self.done_group());
+            }
+            if self.stale_open {
+                v.extend(self.stale_group());
             }
         }
         if self.parked_open {
@@ -989,7 +1095,8 @@ mod tests {
     #[test]
     fn a_work_item_shows_once_with_its_top_item() {
         let mut r = row("cart", "inbox", Some("now"), "you", 1.0);
-        r.needs_you = Some(lazyagent_proto::types::NeedsYou { count: 3, top: "Approval:/w/shop-cart/a1".into() });
+        r.needs_you =
+            Some(lazyagent_proto::types::NeedsYou { count: 3, top: "Approval:/w/shop-cart/a1".into(), items: vec![] });
         let item: Actionable = serde_json::from_value(json!({
             "id": "Approval:/w/shop-cart/a1", "occurrence": "x@1", "kind": "approval", "level": "now",
             "title": "Needs approval", "label": "Agent a1", "detail": "npm test", "state": "approve: npm test",
@@ -1054,7 +1161,7 @@ mod tests {
     #[test]
     fn a_brief_decides_its_verb_and_the_orchestrators_decision_finds_its_row() {
         let mut r = row("hook", "inbox", Some("deep"), "you", 1.0);
-        r.needs_you = Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Decision:d1".into() });
+        r.needs_you = Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Decision:d1".into(), items: vec![] });
         let item: Actionable = serde_json::from_value(json!({
             "id": "Decision:d1", "occurrence": "d1@1", "kind": "decision", "level": "deep", "title": "Decide",
             "label": "Retries?", "detail": "brief by agent a2", "state": "decide: Retries?", "work_item": "shop:hook",
@@ -1102,7 +1209,8 @@ mod tests {
         h.ready = true;
         assert_eq!(keys(&h, Zone::Round), ["a"]);
         rows[0] = row("a", "parked", None, "you", 3.0);
-        rows[0].needs_you = Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Ci:/w/shop-a:1".into() });
+        rows[0].needs_you =
+            Some(lazyagent_proto::types::NeedsYou { count: 1, top: "Ci:/w/shop-a:1".into(), items: vec![] });
         h.update(lines(&rows), 101.0);
         assert_eq!((keys(&h, Zone::Parked), h.resolved), (vec!["a".to_string()], 0));
         assert!(h.lines["shop:a"].parked_needs_you());
@@ -1193,17 +1301,20 @@ mod tests {
         r.agents = serde_json::from_value(json!([{"id": "a1", "status": "running", "since": 100.0}])).unwrap();
         r.state = "Bash done".into();
         let mut l = lines(&[r.clone()])[0].clone();
-        assert_eq!(l.working(820.0).as_deref(), Some("working · 12m"));
+        // The age is the line's own column: never twice.
+        assert_eq!(l.working().as_deref(), Some("working"));
         r.note = Some(
             serde_json::from_value(json!({"text": "tests pass; opening the PR", "by": "agent:a1", "at": 700.0}))
                 .unwrap(),
         );
         l = lines(&[r.clone()])[0].clone();
-        assert_eq!(l.working(820.0).as_deref(), Some("working · 12m · tests pass; opening the PR"));
+        assert_eq!(l.working().as_deref(), Some("working · tests pass; opening the PR"));
         r.note = Some(serde_json::from_value(json!({"text": "Pending item", "by": "notes", "at": 700.0})).unwrap());
-        assert_eq!(lines(&[r.clone()])[0].working(820.0).as_deref(), Some("working · 12m"), "notes are not a report");
+        assert_eq!(lines(&[r.clone()])[0].working().as_deref(), Some("working · Pending item"), "else its notes' line");
+        r.note = Some(serde_json::from_value(json!({"text": "released", "by": "orchestrator", "at": 700.0})).unwrap());
+        assert_eq!(lines(&[r.clone()])[0].working().as_deref(), Some("working"), "not the orchestrator's note");
         r.rule = 16;
-        assert!(lines(&[r])[0].working(820.0).is_none(), "a delegation says more");
+        assert!(lines(&[r])[0].working().is_none(), "a delegation says more");
         let mut nobody = row("pdf", "inbox", Some("round"), "you", 1.0);
         nobody.state = "PR has no reviewer".into();
         nobody.rule = 10;

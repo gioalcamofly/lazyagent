@@ -108,6 +108,8 @@ _PARK_TEXT = {
     "human_review": "a review",
     "change": "something changes",
 }
+# The fields of each open inbox item a row lists (``needs_you.items``).
+ITEM_FIELDS = ("id", "kind", "level", "state", "since")
 # The branches an open PR's head may already be in ("already merged").
 MERGED_INTO = ("develop", "main")
 
@@ -199,6 +201,9 @@ class Derived:
 class _Seen:
     fingerprint: str
     changed_at: float
+    # The row had PR info on its last pass: PR info that comes later is
+    # the engine learning a fact (its poller's first answer), not a change.
+    pr: bool = False
 
 
 def ci_state(pr: PrInfo | None) -> str:
@@ -255,7 +260,7 @@ def park_text(until: Any, reason: str | None = None, now: float | None = None) -
     if reason:
         return clip_words(f"parked: {reason}")
     if until == "indefinite":
-        return "parked"
+        return "parked indefinitely"
     if isinstance(until, str):
         return f"parked until {_PARK_TEXT.get(until, until)}"
     return "parked until " + until_text(until, now)
@@ -436,7 +441,13 @@ def build_row(
         "state": derived.state,
         "rule": derived.rule,
         "blocks_agent": derived.blocks_agent,
-        "needs_you": {"count": len(facts.actionables), "top": facts.actionables[0]["id"]}
+        "needs_you": {
+            "count": len(facts.actionables),
+            "top": facts.actionables[0]["id"],
+            # Every open item, top first: a deep one under a quicker top
+            # still counts in To sit down with (has_deep).
+            "items": [{k: i.get(k) for k in ITEM_FIELDS} for i in facts.actionables],
+        }
         if facts.actionables
         else None,
         "agents": [
@@ -553,6 +564,17 @@ def sort_key(row: dict[str, Any]) -> tuple:
     return (zone, BALL_ORDER.get(row["ball"], 9), priority, -row["changed_at"], 0, row["key"])
 
 
+def has_deep(row: dict[str, Any]) -> bool:
+    """An inbox row whose level is deep, or with a deep item under a
+    quicker top one (a changes requested under a red CI)."""
+    if row["zone"] != "inbox":
+        return False
+    if row["level"] == "deep":
+        return True
+    items = (row.get("needs_you") or {}).get("items") or ()
+    return any(i.get("level") == "deep" for i in items)
+
+
 def visible(row: dict[str, Any], include_done: bool) -> bool:
     return include_done or not (row["ball"] == "done" or row["stale"])
 
@@ -570,7 +592,7 @@ def summarize(
     counts = {
         "now": sum(r["level"] == "now" for r in rows),
         "round": sum(r["level"] == "round" for r in rows),
-        "deep": sum(r["level"] == "deep" for r in rows),
+        "deep": sum(has_deep(r) for r in rows),
         "in_flight": sum(
             r["zone"] == "in_flight" and r["ball"] != "done" and not r["stale"]
             for r in rows
@@ -605,6 +627,8 @@ class StatusProjection:
         self._saw: dict[str, float] = {}
         self._primed = False
         self._commit_times: dict[str, float] = {}
+        # A detached head's commit time, by sha (read once each).
+        self._head_times: dict[str, float] = {}
         # (key, head) → the branch that head is already in, or None.
         self._merged: dict[tuple[str, str], str | None] = {}
         self._facts_by_key: dict[str, Facts] = {}
@@ -694,6 +718,10 @@ class StatusProjection:
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
             for i in facts.actionables or ()
         ]
+        from lazyagent.engine.rules.doc import answer
+
+        # One sentence for people, above the rules' detail (the Why? view).
+        out["answer"] = answer(out)
         return out
 
     def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
@@ -846,10 +874,18 @@ class StatusProjection:
             # The PR poller finds out whether gh works (its first tick).
             return
         targets = set(self.merge_targets()) | {"main", "master"}
-        branches = [wt.branch for wt in self._members() if wt.branch and wt.branch not in targets]
+        members = [wt for wt in self._members() if wt.branch and wt.branch not in targets]
+        branches = [wt.branch for wt in members]
+        # Open PRs whose checks are red: their heads are read on their own
+        # (a busy repo's latest runs may not hold them).
+        red_heads = {}
+        for wt in members:
+            pr = self._engine.get_pr_info(wt.path)
+            if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
+                red_heads[wt.branch] = pr.head_sha
 
         async def poll() -> None:
-            if await hub.poll(branches):
+            if await hub.poll(branches, red_heads=red_heads):
                 self.mark_dirty()
 
         self._spawn(poll())
@@ -879,6 +915,12 @@ class StatusProjection:
 
         async def refresh() -> None:
             times = await asyncio.to_thread(read)
+            # A detached worktree has no branch: its head commit's time.
+            heads = {wt.head for wt in self._members() if not wt.branch and getattr(wt, "head", None)}
+            for head in heads - self._head_times.keys():
+                at = await asyncio.to_thread(commit_time, repo_root, head)
+                if at is not None:
+                    self._head_times[head] = at
             if times != self._commit_times:
                 self._commit_times = dict(times)
                 self.mark_dirty()
@@ -1045,6 +1087,15 @@ class StatusProjection:
             base.append(evolve(facts, activity_at=self._activity(facts, notes_ids, now)))
         contexts: list[RowContext] = []
         self._engine.actionables.rule_items = self._rule_items(catalog, base, now, contexts)
+        # Rows whose PR info the engine reads for the first time (its start,
+        # the poller's first answer): their PR items were found, not seen
+        # happen, and date from the last sign of work, never from now.
+        self._engine.actionables.found_at = {
+            f.key: f.activity_at
+            for f in base
+            if f.activity_at is not None and f.pr is not None
+            and not getattr(self._seen.get(f.key), "pr", False)
+        }
         queue: dict[str, list[dict[str, Any]]] = {}
         visible_items = self._engine.actionables.flush(now)
         claims.auto_hold(visible_items, now)
@@ -1087,12 +1138,20 @@ class StatusProjection:
             if seen is None:
                 seen = self._seen[facts.key] = _Seen(fp, last_change)
             elif seen.fingerprint != fp:
-                seen.fingerprint, seen.changed_at = fp, now
+                # PR info read for the first time is the engine learning, not
+                # the item changing: it dates from the last sign of work.
+                learned = not seen.pr and facts.pr is not None and facts.activity_at is not None
+                seen.fingerprint = fp
+                seen.changed_at = min(facts.activity_at, now) if learned else now
+            seen.pr = facts.pr is not None
             changed_at = seen.changed_at
             if derived.ball == "stalled" and facts.activity_at is not None:
                 # A stalled row's age is how long nothing happened, not when
                 # the engine last noticed a fact (its start, PR info coming).
                 changed_at = min(facts.activity_at, now)
+            if derived.rule == PARK_RULE and isinstance((facts.gesture or {}).get("at"), (int, float)):
+                # Parked: since the user parked it.
+                changed_at = min(facts.gesture["at"], now)
             stale = (
                 not facts.agents
                 and facts.pr is None
@@ -1100,6 +1159,12 @@ class StatusProjection:
                 and now - changed_at > config.stale_days * 86400
             )
             rows[facts.key] = build_row(facts, derived, changed_at, fp, stale=stale)
+            if stale:
+                # Stale rows fold at the end of In flight: what would be lost.
+                statuses = getattr(self._engine, "git_statuses", None) or {}
+                git_status = statuses.get(facts.worktree_path or "")
+                if git_status is not None:
+                    rows[facts.key]["dirty"] = git_status.dirty_count
             self._derived[facts.key] = derived
         self._projects(rows, now)
         self._track(rows, facts_by_key, now)
@@ -1343,11 +1408,14 @@ class StatusProjection:
         responder.mailbox.flush()
 
     def _seed(self, facts: Facts, now: float) -> float:
-        """When a row first seen last changed: its branch's last commit, or
-        its agents' last status change, whichever is later; else now."""
+        """When a row first seen last changed: its branch's last commit, its
+        agents' last status change or its last sign of work, whichever is
+        later; else now."""
         times = [a.since for a in facts.agents]
         if facts.commit_time is not None:
             times.append(facts.commit_time)
+        if facts.activity_at is not None:
+            times.append(facts.activity_at)
         return min(max(times), now) if times else now
 
     def _restorable_notes(self) -> dict[str, list[str]]:
@@ -1420,7 +1488,8 @@ class StatusProjection:
                     worktree_path=wt.path,
                     agents=agents,
                     pr=pr,
-                    commit_time=self._commit_times.get(branch) if branch else None,
+                    commit_time=self._commit_times.get(branch) if branch
+                    else self._head_times.get(head or ""),
                     restorable=restorable.get(wt.path, 0),
                     note=self._note(wt.path, agents),
                     tracker=engine.trackers.fact(branch),
@@ -1499,6 +1568,23 @@ def project_wake_text(project: str, record: dict[str, Any], allowed: bool) -> st
     return head + " The user is present: propose it to them; do not start it alone."
 
 
+def commit_time(repo_root: str, sha: str) -> float | None:
+    """``sha``'s committer time; None when git cannot tell."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_root, "show", "-s", "--format=%ct", sha],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    try:
+        return float(out.stdout.strip()) if out.returncode == 0 else None
+    except ValueError:
+        return None
+
+
 def merged_into(repo_root: str, head: str, targets: Iterable[str]) -> str | None:
     """The first of ``targets`` (its remote-tracking ref, else the local
     branch) that already contains ``head``; None when none does or git
@@ -1543,7 +1629,10 @@ def format_age(seconds: float) -> str:
 
 
 def item_name(row: dict[str, Any]) -> str:
-    name = row["branch"] or row["key"].partition(":")[2]
+    # A detached head reads as its worktree's directory, not "@6bf0c804d69b".
+    path = row.get("worktree_path")
+    name = row["branch"] or (os.path.basename(path.rstrip("/")) if path else "") \
+        or row["key"].partition(":")[2]
     if row.get("pr"):
         name += f" #{row['pr']['number']}"
     return name

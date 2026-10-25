@@ -73,7 +73,7 @@ KIND_KEYS = frozenset(
 # The user actions (proposal 0014, "Actions"): id → (key, what it does).
 # Actions are code; a rule only names its row's primary one.
 ACTIONS: dict[str, tuple[str, str]] = {
-    "answer": ("Enter", "Opens the agent's terminal at its dialog"),
+    "answer": ("Enter", "Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question"),
     "expand": ("Enter", "Expands the line"),
     "open_terminal": ("o", "The agent's terminal"),
     "open_notes": ("n", "The agent's notes"),
@@ -82,7 +82,7 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "dismiss": ("x", "Dismiss this occurrence of the item"),
     "park": ("z", "Park the item or the work item"),
     "label": ("l", "Put a ball and a text on the row"),
-    "close": ("Shift+X", "Close the work item (done / dropped)"),
+    "close": ("Shift+X", "Close the work item (done / dropped) and stop its agent"),
     "take_back": ("u", "Take back a pass, or clear your gesture"),
     "pass": ("Shift+O", "Pass to orchestrator"),
     "delegate": ("d", "Send the item to the branch's agent"),
@@ -606,16 +606,21 @@ def plain(value: Any) -> Any:
 
 
 def fact_value(fact: Any, ctx: Any) -> dict[str, Any]:
+    from lazyagent.engine.rules.doc import shown
+
     try:
         value = ctx.fact(fact.name)
     except Exception:  # a getter bug: the fact reads as unknown
         value = UNKNOWN
+    raw = plain(value)
     return {
         "name": fact.name,
-        "value": plain(value),
+        "value": raw,
         "unknown": value is UNKNOWN,
         "source": fact.source,
         "freshness": fact.freshness,
+        # For people: "2 d 6 h", "24 h", "3 h ago" (the Why? view).
+        "shown": shown(fact.type.kind, raw, getattr(ctx, "now", 0.0)),
     }
 
 

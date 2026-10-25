@@ -461,7 +461,11 @@ def test_status_rows_take_needs_you_from_the_queue():
     assert (feat["zone"], feat["level"], feat["state"], feat["rule"]) == (
         "inbox", "now", "approve: Bash", 2,
     )
-    assert feat["needs_you"] == {"count": 2, "top": f"Approval:{FEAT}/a1"}
+    assert (feat["needs_you"]["count"], feat["needs_you"]["top"]) == (2, f"Approval:{FEAT}/a1")
+    # Every open item, top first.
+    assert [(i["kind"], i["level"]) for i in feat["needs_you"]["items"]] == [
+        ("approval", "now"), ("ci", "round"),
+    ]
     assert feat["blocks_agent"] is True
     assert rows["repo:fix-typo"]["needs_you"] is None
 

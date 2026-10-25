@@ -220,6 +220,11 @@ class Item:
         } | ({"rule_id": self.rule_id, "verb": self.verb} if self.rule_id is not None else {})
 
 
+# The kinds read from the PR info (and the item rules on it, the built-in
+# Merge): found with it, not seen happen, when the engine first reads it.
+FOUND_KINDS = frozenset({"ci", "review", "conflict", "rule"})
+
+
 def sort_key(item: dict[str, Any]) -> tuple:
     """Level; blocks a live agent; priority; oldest first (Q-B8)."""
     kind = KINDS.get(item["kind"])
@@ -620,6 +625,9 @@ class ActionableQueue:
         # The item rules' items, found by the status projection's pass over
         # the rows (StatusProjection.compute) just before it flushes.
         self.rule_items: list[Item] = []
+        # work item → its last sign of work, for rows whose PR info the
+        # projection reads for the first time (StatusProjection.compute).
+        self.found_at: dict[str, float] = {}
         self.filters: list[Filter] = []
         self._path: Path | None = None
         # id → first seen, for the conditions that hold now.
@@ -807,7 +815,12 @@ class ActionableQueue:
         for item_id, item in found.items():
             at = self._since.get(item_id)
             if at is None:
-                at = self._carried.pop(item_id, now)
+                at = self._carried.pop(item_id, None)
+            if at is None:
+                # A PR item found with the PR info (the engine's start, the
+                # poller's first answer) dates from the last sign of work.
+                work = self.found_at.get(item.work_item or "") if item.kind in FOUND_KINDS else None
+                at = min(work, now) if work is not None else now
             item.since = since[item_id] = at
         self._since = since
         self._items = found

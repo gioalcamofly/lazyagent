@@ -337,13 +337,25 @@ fn cards<'a>(ui: &mut Ui, t: &Theme, items: impl Iterator<Item = (&'a str, &'a s
     }
 }
 
+/// A screenshot as a picture, never as live UI: a matte around it, a
+/// shadow, a "screenshot" tag, and a dimmed copy (its buttons do nothing).
 fn screenshot(ui: &mut Ui, t: &Theme, texture: Option<&egui::TextureHandle>, caption: &str, width: f32) {
     let Some(tex) = texture else { return };
     let size = tex.size_vec2();
-    let scale = (width / size.x).min(1.0);
-    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).show(ui, |ui| {
-        ui.add(egui::Image::from_texture((tex.id(), size * scale)));
-    });
+    let scale = ((width - 24.0) / size.x).min(1.0);
+    let r = egui::Frame::new()
+        .fill(t.panel)
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(10))
+        .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(80) })
+        .show(ui, |ui| {
+            ui.add(egui::Image::from_texture((tex.id(), size * scale)).tint(Color32::from_white_alpha(225)));
+        });
+    // The tag over its top right corner says what it is.
+    let tag = egui::Rect::from_min_size(r.response.rect.right_top() + vec2(-92.0, 4.0), vec2(84.0, 18.0));
+    ui.painter().rect_filled(tag, CornerRadius::same(4), t.surface);
+    ui.painter().text(tag.center(), Align2::CENTER_CENTER, "screenshot", FontId::proportional(11.0), t.muted);
     ui.label(RichText::new(caption).small().italics().color(t.muted));
 }
 
@@ -558,9 +570,14 @@ fn action_cell(catalog: &RulesCatalog, action: Option<&str>) -> String {
 /// One table per zone: the inbox items and the rules that lead there.
 fn states(ui: &mut Ui, t: &Theme, catalog: &RulesCatalog, concepts: &Concepts, width: f32) {
     let rules: Vec<&CatalogRule> = catalog.rules.iter().filter(|r| !r.queue_off).collect();
-    let (verb_w, key_w) = (120.0, 150.0);
-    let state_w = ((width - verb_w - key_w) * 0.38).max(140.0);
-    let when_w = (width - verb_w - key_w - state_w - 40.0).max(160.0);
+    // The four columns fit the page at any width (the key column was cut
+    // at 1100 px): the grid's spacing and the header's indent are taken
+    // out first, and no column has a minimum that overflows.
+    let avail = (width - 3.0 * 10.0 - 28.0).max(420.0);
+    let verb_w = 110.0;
+    let key_w = (avail * 0.22).clamp(110.0, 170.0);
+    let state_w = (avail - verb_w - key_w) * 0.38;
+    let when_w = avail - verb_w - key_w - state_w;
     for zone in ["now", "round", "deep", "inbox", "flight", "parked", "done"] {
         let kinds: Vec<_> = catalog.kinds.iter().filter(|k| k.level == zone).collect();
         let zr: Vec<_> = rules.iter().filter(|r| r.zone.as_deref() == Some(zone)).collect();
@@ -829,14 +846,14 @@ mod tests {
     fn the_hint_bar_names_only_keys_the_page_lists() {
         let bar = crate::home_view::hint_keys(true, true, true, true, true);
         let keys = &builtin().concepts.keys;
-        for key in ["⇧X", "⇧U", "⇧O", "⇧Z", "⇧F", "⇧M", "⇧Y"] {
+        for key in ["⇧X", "⇧U", "⇧O", "⇧Z", "⇧F", "⇧M", "⇧Y", "⇧D"] {
             assert!(bar.contains(key), "the hint bar lacks {key}");
             assert!(keys.iter().any(|k| k.keys.contains(key)), "the page lacks {key}");
         }
-        // Every single key the bar names ("x dismiss", "w why") is on the page.
+        // Every single key the bar names ("x dismiss", "w why") is on the
+        // page, written as it is typed (x, not X).
         for hint in bar.split(" · ") {
-            let raw = hint.split_whitespace().next().unwrap();
-            let key = if raw.chars().count() == 1 { raw.to_uppercase() } else { raw.to_string() };
+            let key = hint.split_whitespace().next().unwrap().to_string();
             assert!(
                 keys.iter()
                     .any(|k| (k.place == "home" && k.keys.split_whitespace().any(|x| x == key)) || k.keys == key),

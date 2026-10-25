@@ -67,12 +67,21 @@ class FakeGh:
         self.logs: dict[int, str] = {}
         self.calls: list[list[str]] = []
         self.queue: list[tuple[int, str, str] | Exception] = []
+        # sha → its own runs (``actions/runs?head_sha=``), in pages of
+        # ``per_page``, ETag ``"h-<sha[:4]>"``.
+        self.head_runs: dict[str, list[dict[str, Any]]] = {}
+        self.per_page = 100
 
     def set_runs(self, runs: list[dict[str, Any]], etag: str) -> None:
         self.runs, self.etag = runs, etag
 
     def runs_calls(self) -> list[list[str]]:
-        return [c for c in self.calls if any("actions/runs?" in a for a in c)]
+        """The repo's window calls (not a head's own)."""
+        return [c for c in self.calls
+                if any("actions/runs?" in a and "head_sha=" not in a for a in c)]
+
+    def head_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if any("head_sha=" in a for a in c)]
 
     async def __call__(self, args: list[str]) -> tuple[int, str, str]:
         self.calls.append(list(args))
@@ -87,6 +96,16 @@ class FakeGh:
                 return 1, "", "failed to get run log: not found"
             return 0, log, ""
         path = args[-1]
+        if "head_sha=" in path:
+            sha = path.split("head_sha=")[1].split("&")[0]
+            runs = self.head_runs.get(sha, [])
+            page = int(path.split("page=")[-1]) if "&page=" in path else 1
+            etag = f'"h-{sha[:4]}-{len(runs)}"'
+            sent = next((a.split(": ", 1)[1] for a in args if a.startswith("If-None-Match")), None)
+            if sent == etag:
+                return http(304, "", {"ETag": etag})
+            chunk = runs[(page - 1) * self.per_page: page * self.per_page]
+            return http(200, {"total_count": len(runs), "workflow_runs": chunk}, {"ETag": etag})
         if "actions/runs?" in path:
             sent = next((a.split(": ", 1)[1] for a in args if a.startswith("If-None-Match")), None)
             if sent == self.etag:

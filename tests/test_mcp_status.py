@@ -152,7 +152,7 @@ async def test_rules_explain_and_rules_catalog_answer_from_the_engine(engine, mo
     result = await mcp_server.rules_explain("feat")
     assert result["key"].endswith(":feat")
     assert result["rule"]["origin"] == "builtin"
-    assert result["text"].splitlines()[1].startswith("  rule   ")
+    assert result["text"].splitlines()[2].startswith("  rule   ")
 
     catalog = await mcp_server.rules_catalog()
     assert [r["id"] for r in catalog["rules"]][:1] == ["closed.merged"]
