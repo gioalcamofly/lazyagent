@@ -1770,7 +1770,9 @@ class EngineMethods:
         ticket key), branch?, project? {id, title, policy?
         {continue_while_review}}, depends_on? [url], waiting? {reason?,
         until?} (parks its row; left out, it clears), expires_at? (Unix
-        time). Optional fields left out go back to their defaults."""
+        time), facts? {"tracker.qa"?, "tracker.status"?} (tracker facts for
+        the rules; an adapter's win). Optional fields left out go back to
+        their defaults."""
         engine = self._engine
         self._caller(params)
         record, created = engine.work_items.upsert(params, engine.status.clock())

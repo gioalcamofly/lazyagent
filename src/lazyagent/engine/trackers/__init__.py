@@ -10,13 +10,14 @@ only the keys of live rows (plus the assigned tasks, if on), batched, every
 ``poll_s`` at rest and at once for a new key, under a per-adapter cap on
 calls per minute, backing off on 429; on an error the last good value is
 kept (and marked stale). It maps each task's raw status to ``{ball, state,
-level}`` and opens an inbox item when a task *enters* a status mapped with a
+level}`` (and, with a ``[<adapter>.qa]`` mapping, to a QA value: the
+``tracker.qa`` fact of proposal 0014) and opens an inbox item when a task *enters* a status mapped with a
 ``level`` (dedupe ``tracker:<adapter>:<key>:<status>``), resolving it when
 the task leaves; the inbox queue shows them (``tracker_status``).
 
 Config: ``$XDG_CONFIG_HOME/lazyagent/trackers.toml``, one table per adapter;
 a repo's ``.lazyagent/trackers.toml`` may change only the ``[<adapter>.status]``
-mappings. Credentials are named there by reference (``token_env``,
+and ``[<adapter>.qa]`` mappings. Credentials are named there by reference (``token_env``,
 ``keyring``), never stored by lazyagent.
 """
 
@@ -61,6 +62,15 @@ BACKOFF_MAX = 3600.0
 BALLS = ("you", "agent", "others", "stalled", "done")
 PRIORITIES = ("high", "medium", "low")
 LEVELS = ("now", "round")
+# ``tracker.qa``'s values; a mapping may also name ``unknown`` (the same as
+# leaving the name out).
+QA_VALUES = ("tested", "not_required", "pending", "failed")
+QA_UNKNOWN = "unknown"
+# Keys of ``[<adapter>.qa]`` that are not names: an adapter that reads QA
+# from a field of its own (Jira) takes the field and its value mapping.
+QA_FIELD = "qa_field"
+QA_FIELD_VALUES = "qa_field_values"
+_QA_FIELD_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
 # models.ticket_id's pattern: the default key in a branch name.
 GENERIC_KEY = TICKET_PATTERN
@@ -77,6 +87,9 @@ class TrackerTask:
     etag: str | None = None
     # high, medium or low, when the adapter can tell (optional).
     priority: str | None = None
+    # One of QA_VALUES, from the adapter's ``[<adapter>.qa]`` mapping; None:
+    # unknown (no mapping, or nothing mapped).
+    qa: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,12 @@ class TrackerConfig:
     assigned_to_me: bool = True
     key_pattern: str | None = None
     status: dict[str, StatusRule] = field(default_factory=dict)
+    # ``[<adapter>.qa]``: a name (status, label) → a QA value, in file order.
+    qa: dict[str, str] = field(default_factory=dict)
+    # Jira: read QA from this field instead of the status, its values mapped
+    # by ``qa_field_values``.
+    qa_field: str | None = None
+    qa_field_values: dict[str, str] = field(default_factory=dict)
     # The adapter's own keys (status_from, base_url, token_env, ...).
     options: dict[str, Any] = field(default_factory=dict)
 
@@ -108,6 +127,20 @@ class TrackerConfig:
         for name, rule in self.status.items():
             if name.casefold() == folded:
                 return rule
+        return None
+
+    def qa_of(self, name: str, table: dict[str, str] | None = None) -> str | None:
+        """The QA value a name maps to (``[<adapter>.qa]``, or ``table``):
+        exact, else ignoring case; None: unknown."""
+        table = self.qa if table is None else table
+        if not name:
+            return None
+        if name in table:
+            return table[name]
+        folded = name.casefold()
+        for key, value in table.items():
+            if key.casefold() == folded:
+                return value
         return None
 
 
@@ -218,7 +251,45 @@ def _status_rules(data: object) -> dict[str, StatusRule]:
     return rules
 
 
-_SHARED = {"enabled", "poll_s", "max_calls_per_min", "assigned_to_me", "key_pattern", "status"}
+def _qa_values(name: str, data: object) -> dict[str, str]:
+    """A name → QA value table: a bad entry is skipped (with a warning);
+    ``unknown`` entries are dropped (unmapped is unknown)."""
+    out: dict[str, str] = {}
+    if not isinstance(data, dict):
+        return out
+    for key, value in data.items():
+        if value == QA_UNKNOWN:
+            continue
+        if value not in QA_VALUES:
+            log.warning(
+                "tracker %s: qa %r = %r is not one of %s", name, key, value,
+                ", ".join((*QA_VALUES, QA_UNKNOWN)),
+            )
+            continue
+        out[str(key)] = value
+    return out
+
+
+def _apply_qa(config: TrackerConfig, data: object) -> None:
+    """``[<adapter>.qa]`` onto ``config``: names on top of the mapping so
+    far; ``qa_field`` / ``qa_field_values`` replace."""
+    if not isinstance(data, dict):
+        return
+    names = {k: v for k, v in data.items() if k not in (QA_FIELD, QA_FIELD_VALUES)}
+    config.qa.update(_qa_values(config.name, names))
+    qa_field = data.get(QA_FIELD)
+    if qa_field is not None:
+        if isinstance(qa_field, str) and _QA_FIELD_RE.fullmatch(qa_field):
+            config.qa_field = qa_field
+        else:
+            log.warning("tracker %s: bad qa_field %r", config.name, qa_field)
+    if QA_FIELD_VALUES in data:
+        config.qa_field_values = _qa_values(config.name, data[QA_FIELD_VALUES])
+
+
+_SHARED = {
+    "enabled", "poll_s", "max_calls_per_min", "assigned_to_me", "key_pattern", "status", "qa",
+}
 
 
 def _tracker_config(name: str, data: dict[str, Any]) -> TrackerConfig:
@@ -237,13 +308,14 @@ def _tracker_config(name: str, data: dict[str, Any]) -> TrackerConfig:
         except re.error:
             log.warning("tracker %s: bad key_pattern %r", name, pattern)
     config.status = _status_rules(data.get("status"))
+    _apply_qa(config, data.get("qa"))
     config.options = {k: v for k, v in data.items() if k not in _SHARED}
     return config
 
 
 def load_trackers(repo_root: str | Path | None = None) -> list[TrackerConfig]:
-    """The enabled adapters' configs: global, with the repo's status
-    mappings on top (a repo can neither enable an adapter nor name a
+    """The enabled adapters' configs: global, with the repo's status and
+    QA mappings on top (a repo can neither enable an adapter nor name a
     credential)."""
     data = _read_toml(config_dir() / TRACKERS_FILENAME)
     repo = _read_toml(Path(repo_root) / REPO_DIR / TRACKERS_FILENAME) if repo_root else {}
@@ -257,6 +329,7 @@ def load_trackers(repo_root: str | Path | None = None) -> list[TrackerConfig]:
         repo_table = repo.get(name)
         if isinstance(repo_table, dict):
             config.status.update(_status_rules(repo_table.get("status")))
+            _apply_qa(config, repo_table.get("qa"))
         configs.append(config)
     return configs
 
@@ -305,6 +378,8 @@ class TrackerFact:
     at: float
     stale: bool
     priority: str | None = None
+    # The task's QA value (``[<adapter>.qa]``); None: unknown.
+    qa: str | None = None
 
 
 @dataclass(frozen=True)
@@ -462,6 +537,7 @@ class TrackerHub:
                 at=at,
                 stale=feed.error is not None and feed.error_at >= at,
                 priority=task.priority if task.priority in PRIORITIES else None,
+                qa=task.qa if task.qa in QA_VALUES else None,
             )
         return None
 

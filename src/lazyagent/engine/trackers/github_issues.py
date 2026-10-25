@@ -12,6 +12,9 @@ that the ``[github_issues.status]`` mapping names (one mapped with a
 ``level`` first, then in the mapping's order), else ``closed`` for a closed
 issue, else none. ``"state"``: ``open``
 or ``closed``.
+
+QA (``tracker.qa``): the first label, in the ``[github_issues.qa]``
+mapping's order, that the mapping names (whatever ``status_from`` says).
 """
 
 from __future__ import annotations
@@ -126,6 +129,13 @@ class GithubIssues:
             return found[0]
         return "closed" if state.lower() == "closed" else ""
 
+    def qa_of(self, labels: list[str]) -> str | None:
+        names = {label.casefold() for label in labels}
+        for name, qa in self.config.qa.items():
+            if name.casefold() in names:
+                return qa
+        return None
+
     def _task(
         self, number: int, url: str, title: str, state: str, updated: str | None,
         labels: list[str], assignees: list[str],
@@ -137,6 +147,7 @@ class GithubIssues:
             status_raw=self.status_of(state, labels),
             assignee=assignees[0] if assignees else None,
             updated_at=_timestamp(updated),
+            qa=self.qa_of(labels),
         )
 
     # --- fetch ---

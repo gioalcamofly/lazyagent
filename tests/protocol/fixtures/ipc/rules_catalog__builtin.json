@@ -646,7 +646,7 @@
           "scopes": [
             "row"
           ],
-          "source": "tracker hub",
+          "source": "tracker hub, else a feeder's facts",
           "type": "bool",
           "values": []
         },
@@ -658,9 +658,26 @@
           "scopes": [
             "row"
           ],
-          "source": "tracker adapter",
+          "source": "tracker adapter, else a feeder's facts",
           "type": "text",
           "values": []
+        },
+        {
+          "cost": "poll",
+          "freshness": "poll_s",
+          "name": "tracker.qa",
+          "phrase": "the task's QA (unknown: no task, or nothing maps it)",
+          "scopes": [
+            "row"
+          ],
+          "source": "tracker adapter [<adapter>.qa] mapping, else a feeder's facts",
+          "type": "enum tracker_qa",
+          "values": [
+            "tested",
+            "not_required",
+            "pending",
+            "failed"
+          ]
         },
         {
           "cost": "poll",
