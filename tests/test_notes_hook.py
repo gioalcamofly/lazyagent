@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ import pytest
 from lazyagent.agent_providers import NOTES_PATH_ENV
 from lazyagent.engine.notes import NotesStore
 from lazyagent.notes_hook import DIFF_LIMIT
+from tests.bench import factor
 
 SCRIPT = Path(__file__).parents[1] / "src" / "lazyagent" / "notes_hook.py"
 
@@ -197,15 +199,50 @@ def test_the_seen_file_is_private(store, notes):
     assert [p.name for p in store.root.iterdir() if p.name.startswith(".")] == []
 
 
-def test_it_starts_fast(store, notes):
-    """Run on every prompt: a cold interpreter, no lazyagent imports."""
+HOOK_RUNS = 7
+HOOK_ROUNDS = 5
+# A cold interpreter running the hook, in seconds; or how many times a bare
+# interpreter's start (python -c pass, timed alongside) it may take. Today
+# ~22 ms, 1.5-2x a bare start, and 1.6x at load 30 on 20 cores; one heavy
+# import (textual: ~170 ms, 14x) fails both.
+HOOK_BUDGET = 0.15
+HOOK_RATIO = 3.0
+
+
+def test_it_starts_fast(store, notes, capsys):
+    """Run on every prompt: a cold interpreter, no lazyagent imports.
+
+    Robust under load (see tests/bench.py): the median of HOOK_RUNS per
+    round, up to HOOK_ROUNDS rounds. A round passes under HOOK_BUDGET (times
+    the CI factor), or under HOOK_RATIO times a bare interpreter timed in
+    the same round: a loaded machine slows both alike."""
     store.append(notes, "Decisions", "use sqlite", by="user")
-    best = float("inf")
-    for _ in range(3):
+
+    def timed(fn) -> float:
         started = time.perf_counter()
-        _run(PROMPT, store, notes)
-        best = min(best, time.perf_counter() - started)
-    assert best < 0.15
+        fn()
+        return time.perf_counter() - started
+
+    def bare() -> None:
+        subprocess.run([sys.executable, "-c", "pass"], check=True, timeout=10)
+
+    scale = factor()
+    rounds = []
+    for _ in range(HOOK_ROUNDS):
+        hook, base = [], []
+        for _ in range(HOOK_RUNS):
+            hook.append(timed(lambda: _run(PROMPT, store, notes)))
+            base.append(timed(bare))
+        rounds.append((statistics.median(hook), statistics.median(base)))
+        took, start = rounds[-1]
+        if took < HOOK_BUDGET * scale or took < HOOK_RATIO * start:
+            break
+    with capsys.disabled():
+        print("\nBENCH notes hook, median of %d: %s (hook/bare ms), budget %.0f ms or %gx"
+              % (HOOK_RUNS, ", ".join(f"{h * 1e3:.0f}/{b * 1e3:.0f}" for h, b in rounds),
+                 HOOK_BUDGET * scale * 1e3, HOOK_RATIO))
+    took, start = rounds[-1]
+    assert took < HOOK_BUDGET * scale or took < HOOK_RATIO * start, rounds
     source = SCRIPT.read_text()
     assert "lazyagent" not in "".join(
         line for line in source.splitlines() if line.startswith(("import", "from"))

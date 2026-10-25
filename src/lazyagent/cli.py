@@ -26,6 +26,8 @@ import argparse
 import os
 import sys
 
+from lazyagent import __version__
+
 SUBCOMMANDS = ("engine", "status", "rules", "host", "mcp", "desktop", "update")
 
 
@@ -49,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to git repository (default: auto-detect from cwd)",
     )
+    parser.add_argument("--version", action="version", version=f"lazyagent {__version__}")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--remote",

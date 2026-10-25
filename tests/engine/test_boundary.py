@@ -108,6 +108,7 @@ def test_the_client_needs_only_the_protocol_and_the_runtime_dir():
         m
         in (
             "lazyagent",
+            "lazyagent._version",
             "lazyagent.engine",
             "lazyagent.engine.client",
             "lazyagent.engine.runtime",

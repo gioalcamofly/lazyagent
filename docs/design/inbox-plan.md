@@ -685,6 +685,30 @@ Q-B34. Workers get no system prompt today; only the orchestrator does (`orchestr
 - Schemas: `status_report.params.until`, `status_report.result.report.until`, `orchestrator_release.result.outcome` (`x-known-values` with `nothing_to_release`). Golden fixtures: new `status_report/background_until`, `orchestrator_release/nothing_to_release`; updated `status_report/needs_user_and_outward` (the report's `until`, null) and `rules_catalog/builtin` (the new facts, the `done` kind's `when`). Desktop: no change (`proto` decodes the fixtures as before).
 - Tests: `tests/engine/test_auto_hold.py` (the report suppresses done and the auto-hold; `others` / `stalled` too, with no default expiry; a reviewer's changes requested still surfaces; lapse at `until` and by default; a fresh turn without a report lets it fire, with one it keeps working; a short run seen only by events; `until` parsing; release not re-triggered by the same idle; removed worktree and stopped worker: no hold, no wake; release idempotency).
 
+**perf-quick-wins** (`perf-quick-wins`; four fixes from a performance review of an hour of real use, engine and CLI only):
+
+- **One lazyagent MCP server per agent.** A spawned Claude agent got the engine's `lazyagent_app` and, from the repo's `.mcp.json`, a second `lazyagent` (a `uv run` wrapper and its python): the same tools without the agent's token. The engine now reads the worktree's `.mcp.json` and puts the names of the servers that run `lazyagent.mcp_server` or `lazyagent mcp` (through any wrapper) in `disabledMcpjsonServers` in the agent's `--settings` file (`agent_providers.lazyagent_mcpjson_servers`).
+  - Why not `--strict-mcp-config`: it also drops the repo's other servers and the user's. `disabledMcpjsonServers` rejects project servers by name only; checked against Claude Code 2.1.310 in an isolated HOME (the stream-json `init` lists `tracker` and `lazyagent_app`, not `lazyagent`). Not touched: a user-scope `lazyagent` (settings cannot turn it off for one session; the README says `/mcp disable`).
+  - Codex and Gemini: nothing to do. Their agents get a temp `CODEX_HOME` / `GEMINI_CLI_HOME` holding only `lazyagent_app`, and neither reads `.mcp.json`.
+  - This repo's `.mcp.json` runs `.venv/bin/python -m lazyagent.mcp_server` instead of `uv run`: one process, not two. Portable for this project: Claude Code starts project servers in the project root (checked from a subdirectory too), lazyagent is POSIX-only (no `Scripts\python.exe` case), and the venv is what `uv sync --group dev` makes. The cost: a dependency change needs `uv sync` before the server sees it (`uv run` synced on each start).
+  - Measured with a throwaway engine on a temp repo (isolated HOME and XDG dirs), one Claude agent, the repo's `.mcp.json` a `lazyagent` server: lazyagent MCP RSS per agent **147 MB (3 processes: 58 + 31 + 58) → 58 MB (1)**.
+- **status_list reuses a fresh pass.** `StatusProjection.fresh()`: the last pass's rows while the projection runs, no recompute is pending (`mark_dirty`'s timer), the overlay and the work items did not change (a `version` each, bumped by `changed()`), and the pass is under `COALESCE` (1 s) old: the delay a change already waits for. Otherwise a pass, as before. The orchestrator's day counts change the overlay once a day (the first `status_list` after midnight passes again).
+  - The pass itself: `_since` by worktree path (it was scanned whole for every row), worktree heads by path in `_track`, the orchestrator's held keys once per pass (`held()` scanned every decision for every row; briefs are kept 30 days), Facts copies without `dataclasses.replace`'s `__init__` (`status.evolve`), and a row with nothing open, claimed or held is evaluated on the context `_rule_items` made for it (the same facts), with `Catalog.match` starting from what `first_item` found on it.
+  - Rows are byte-identical: no golden fixture changed. Tests check the cached output against a pass, `evolve` against `replace`, and a match after `first_item` against a fresh one (2000 random rows).
+  - Numbers (`tests/engine/status_bench.py`: every row an agent, every other one an open PR, one answered brief each; median, this laptop):
+
+    | | before | after |
+    |---|---|---|
+    | `status_list` again, nothing changed, 60 rows | 5.04 ms | 0.040 ms |
+    | `status_list` again, nothing changed, 300 rows | 29.9 ms | 0.185 ms |
+    | a pass, 60 rows | 4.95 ms | 3.14 ms |
+    | a pass, 300 rows | 29.0 ms | 14.5 ms (2.0x) |
+    | a pass, 300 rows, no briefs | 25.5 ms | 14.4 ms (1.8x) |
+
+  - Not done: `WorkItems.link` scans every record for every row (feeders' tasks); an index there is the next step if feeders grow.
+- **`__version__` without importlib.metadata.** hatch's `version` build hook writes `lazyagent/_version.py` on every build, editable installs included (gitignored); `importlib.metadata` stays the fallback for a tree no build ran in. `lazyagent --version` is new. Tests install a wheel and an editable tree into fresh venvs and check `__version__`, the dist metadata and `--version`. `import lazyagent`: **51 → 19 ms** wall (a bare interpreter: 12-17 ms); `-X importtime` cumulative 30 → 0.2 ms. The MCP server's start stays ~450 ms: the `mcp` package is most of it.
+- **Timing tests under load.** `test_it_starts_fast` takes the median of 7 runs per round, up to 5 rounds; a round passes under 150 ms (times the CI factor) or under 3x a bare interpreter timed in the same round. At load 30 on 20 cores the hook took ~185 ms, 1.6x bare (the old best-of-3 under 150 ms failed); a hook importing textual takes 14x and fails every round. `tests/bench.py` holds what the timing tests share: the CI factor and an allowance per round, the larger of it and how slow the machine runs right now (a fixed workload against its idle time). The rules bench and the new status benchmarks use it.
+
 ---
 
 ## 9. Open questions (answered 2026-10-23)

@@ -110,3 +110,85 @@ def test_platform_defaults_to_manylinux_on_linux(monkeypatch):
 
 def _wheel_file(zf: zipfile.ZipFile) -> str:
     return next(n for n in zf.namelist() if n.endswith(".dist-info/WHEEL"))
+
+
+def test_wheel_carries_the_version_file(tmp_path, cargo, monkeypatch):
+    # lazyagent/__init__.py reads it instead of importlib.metadata.
+    monkeypatch.delenv(hatch_build.BUILD_ENV, raising=False)
+    wheel = _build(tmp_path / "dist")
+    with zipfile.ZipFile(wheel) as zf:
+        source = zf.read("lazyagent/_version.py").decode()
+        (meta,) = [n for n in zf.namelist() if n.endswith(".dist-info/METADATA")]
+        version = next(
+            line.split(": ", 1)[1] for line in zf.read(meta).decode().splitlines()
+            if line.startswith("Version: ")
+        )
+    namespace: dict = {}
+    exec(source, namespace)
+    assert namespace["__version__"] == version
+
+
+def _install(target: str, venv: Path) -> Path:
+    """``target`` (a wheel, or ``-e`` and a tree) into a fresh venv, without
+    its dependencies: the version needs none of them."""
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not on PATH")
+    env = {**os.environ, "UV_NO_CONFIG": "1"}
+    env.pop("VIRTUAL_ENV", None)
+    subprocess.run([uv, "venv", "-q", "--python", sys.executable, str(venv)],
+                   check=True, env=env)
+    python = venv / "bin" / "python"
+    subprocess.run([uv, "pip", "install", "-q", "--no-deps", "--python", str(python),
+                    *target.split(" ")], check=True, env=env)
+    return venv
+
+
+@pytest.mark.parametrize("target", ["standard", "editable"])
+def test_installed_version(tmp_path, cargo, monkeypatch, target):
+    import re
+    import subprocess
+
+    monkeypatch.delenv(hatch_build.BUILD_ENV, raising=False)
+    if target == "standard":
+        install = _build(tmp_path / "dist").as_posix()
+    else:
+        # uv builds it (hatchling's editable wheels need the editables package).
+        install = f"-e {ROOT}"
+    venv = _install(install, tmp_path / "venv")
+    expected = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(),
+                         re.M).group(1)
+    out = subprocess.run(
+        [str(venv / "bin" / "python"), "-I", "-c",
+         "import lazyagent, importlib.metadata as m, sys; from lazyagent import cli;"
+         "print(lazyagent.__file__, lazyagent.__version__, m.version('lazyagent'));"
+         "sys.argv = ['lazyagent', '--version']; cli.main()"],
+        capture_output=True, text=True, cwd=tmp_path,
+    )
+    path, *versions = out.stdout.split()
+    assert versions == [expected, expected, "lazyagent", expected], out.stderr
+    assert out.returncode == 0
+    # The wheel's own copy, or the tree's.
+    assert Path(path).is_relative_to(ROOT / "src") == (target == "editable")
+
+
+def test_version_without_the_file(tmp_path):
+    # A source tree no build ran in: importlib.metadata, as before.
+    import importlib.metadata
+    import shutil
+    import subprocess
+
+    package = tmp_path / "lazyagent"
+    package.mkdir()
+    shutil.copy(ROOT / "src" / "lazyagent" / "__init__.py", package)
+    out = subprocess.run(
+        [sys.executable, "-c", "import lazyagent; print(lazyagent.__file__, lazyagent.__version__)"],
+        capture_output=True, text=True, cwd=tmp_path, check=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    path, version = out.stdout.split()
+    assert path == str(package / "__init__.py")
+    assert version == importlib.metadata.version("lazyagent")

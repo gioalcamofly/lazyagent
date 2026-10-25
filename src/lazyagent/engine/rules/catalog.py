@@ -432,6 +432,19 @@ class Catalog:
     def match(self, ctx: RowContext, start: int = 0) -> int:
         """The index of the first rule from ``start`` whose condition is true."""
         tests = self._tests
+        first = getattr(ctx, "first", None)
+        if first is not None and start <= self.unlocked:
+            # first_item already ran the rules below the locked prefix on
+            # these facts: none was true before its index (an item rule's
+            # test is its condition behind the queue gate, so never true
+            # when the condition is not).
+            for i in range(start, self.unlocked):
+                if tests[i](ctx) is True:
+                    return i
+            at, item = first
+            if at < 0 or not item:
+                return at
+            start = at  # an item rule's gate decides; on from there
         for i in range(start, len(tests)):
             if tests[i](ctx) is True:
                 return i
@@ -480,9 +493,12 @@ class Catalog:
         """The item rule that is the first match below the locked prefix,
         its queue gate aside, if any: the queue's pass makes its item. A
         rule above it that matches (``before = "merge"``) keeps it away."""
-        for rule in self.rules[self.unlocked:]:
+        for i in range(self.unlocked, len(self.rules)):
+            rule = self.rules[i]
             if (rule.cond if rule.item else rule.test)(ctx) is True:
+                ctx.first = (i, rule.item)
                 return rule if rule.item else None
+        ctx.first = (-1, False)
         return None
 
     # --- explain ---
