@@ -14,12 +14,12 @@ the record only."""
 from __future__ import annotations
 
 import gc
-import os
 import random
 import statistics
 import time
 
 from lazyagent.engine.status import derive
+from tests.bench import factor
 from tests.engine.rules import oracle
 from tests.engine.rules.test_oracle import NOW, random_facts
 
@@ -27,13 +27,6 @@ ROWS = 100
 RUNS = 31
 ROUNDS = 5
 BUDGET = 0.002
-
-
-def factor() -> float:
-    given = os.environ.get("LAZYAGENT_BENCH_FACTOR")
-    if given:
-        return float(given)
-    return 5.0 if os.environ.get("CI") else 1.0
 
 
 def median_pass(fn, rows) -> float:
