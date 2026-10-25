@@ -31,6 +31,11 @@ feeder said and shows it.
   With ``policy.continue_while_review`` the status projection wakes the
   orchestrator once when a task of the project becomes startable
   (status.py); the DAG and the next-task choice stay outside the engine.
+- **Facts.** ``facts {"tracker.qa"?, "tracker.status"?}`` (proposal 0014,
+  Q-R15): tracker facts for a tracker with no adapter, read by the rules of
+  the linked row. Only the names of :data:`FEEDER_FACTS`; a null (or
+  ``"unknown"`` QA) leaves that fact unknown. An adapter's value for the
+  same row wins (rules/facts.py).
 
 Kept in ``$XDG_STATE_HOME/lazyagent/work_items/<repo hash>.json`` (0600,
 atomic) by the engine that owns the repo, written at most once per
@@ -51,6 +56,7 @@ from typing import TYPE_CHECKING, Any
 from lazyagent.engine.notes import _atomic_write
 from lazyagent.engine.overlay import one_line
 from lazyagent.engine.runtime import repo_digest, state_dir
+from lazyagent.engine.trackers import QA_UNKNOWN, QA_VALUES
 from lazyagent.models import ticket_id
 
 if TYPE_CHECKING:
@@ -75,6 +81,12 @@ BRANCH_CHARS = 200
 PROJECT_ID_CHARS = 64
 PROJECT_TITLE_CHARS = 80
 REASON_CHARS = 60
+STATUS_CHARS = 80
+# The facts a feeder may give (name → allowed values; None: text).
+FEEDER_FACTS: dict[str, tuple[str, ...] | None] = {
+    "tracker.qa": QA_VALUES,
+    "tracker.status": None,
+}
 SOURCE_RE = re.compile(r"[A-Za-z0-9_.-]{1,32}")
 
 # The key prefix of a work item that has no branch yet.
@@ -132,6 +144,36 @@ def _project(value: Any) -> dict[str, Any] | None:
         if type(cwr) is not bool:
             raise ValueError("project.policy.continue_while_review must be a boolean")
         out["policy"] = {"continue_while_review": cwr}
+    return out
+
+
+def _facts(value: Any) -> dict[str, str]:
+    """``{name: value}`` → the facts kept (unknown ones left out)."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("facts must be an object such as {\"tracker.qa\": \"tested\"}")
+    out: dict[str, str] = {}
+    for name, fact in value.items():
+        if name not in FEEDER_FACTS:
+            raise ValueError(
+                f"facts: no fact {name!r} a feeder can give (one of "
+                + ", ".join(FEEDER_FACTS) + ")"
+            )
+        allowed = FEEDER_FACTS[name]
+        if fact is None or (allowed is not None and fact == QA_UNKNOWN):
+            continue
+        if allowed is not None:
+            if fact not in allowed:
+                raise ValueError(
+                    f"facts: {name} is never {fact!r}; one of "
+                    + ", ".join((*allowed, QA_UNKNOWN))
+                )
+            out[name] = fact
+        else:
+            text = _text(fact, f"facts.{name}", STATUS_CHARS)
+            if text is not None:
+                out[name] = text
     return out
 
 
@@ -304,6 +346,7 @@ class WorkItems:
                 raise ValueError("expires_at is in the past")
             expires_at = float(expires_at)
         waiting = _waiting(params.get("waiting"), now)
+        facts = _facts(params.get("facts"))
 
         before = self.records.get(url)
         if before is None:
@@ -337,6 +380,8 @@ class WorkItems:
             "created_at": before["created_at"] if before is not None else now,
             "updated_at": now,
         }
+        if facts:
+            record["facts"] = facts
         if project is not None:
             known = self.projects.get(project["id"], {})
             policy = project.get("policy", known.get("policy"))
@@ -478,9 +523,10 @@ class WorkItems:
         return gesture
 
     def public(self, record: dict[str, Any]) -> dict[str, Any]:
-        """A record as the methods and rows show it."""
+        """A record as the methods and rows show it (``facts`` only when
+        it has some)."""
         waiting = record.get("waiting")
-        return {
+        out = {
             "url": record["url"],
             "title": record["title"],
             "source": record["source"],
@@ -499,3 +545,7 @@ class WorkItems:
             "created_at": record["created_at"],
             "updated_at": record["updated_at"],
         }
+        facts = record.get("facts")
+        if isinstance(facts, dict) and facts:
+            out["facts"] = {k: v for k, v in facts.items() if k in FEEDER_FACTS}
+        return out

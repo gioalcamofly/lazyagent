@@ -483,6 +483,8 @@ def build_row(
             "at": tracker.at,
             "stale": tracker.stale,
         }
+        if tracker.qa is not None:
+            row["tracker"]["qa"] = tracker.qa
     return row
 
 

@@ -18,6 +18,13 @@ deprecated on Jira Cloud), asking only for the fields shown:
 
 The status is ``fields.status.name``; when that name is not mapped but its
 category's name (``To Do``, ``In Progress``, ``Done``) is, the category's.
+QA (``tracker.qa``): the ``[jira.qa]`` mapping names statuses (the name,
+else its category's name); with ``qa_field = "customfield_10042"`` the QA
+value comes from that field instead (asked for in both calls), its value
+(text, a select option's ``value``, or a multi-select's options: the most
+conservative one mapped) mapped by ``qa_field_values``. The category is
+read only when the status name is unmapped, so one value maps at most.
+
 The changelog is not read: the hub's first-seen edge already turns a status
 change between two polls into an entry, and a leave-and-return inside one
 ``poll_s`` counts as one stay.
@@ -47,6 +54,7 @@ from lazyagent.engine.trackers import (
     TrackerConfig,
     TrackerError,
     TrackerTask,
+    conservative_qa,
     credential,
 )
 
@@ -169,6 +177,7 @@ class Jira:
             jql.strip() if isinstance(jql, str) and jql.strip() else DEFAULT_JQL_ASSIGNED
         )
         projects = config.options.get("projects")
+        self.fields = FIELDS + (f",{config.qa_field}" if config.qa_field else "")
         self.projects = (
             {p.upper() for p in projects if isinstance(p, str)}
             if isinstance(projects, list)
@@ -193,7 +202,7 @@ class Jira:
         return "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode()
 
     async def _search(self, jql: str, token: str | None, size: int) -> dict:
-        query = {"jql": jql, "fields": FIELDS, "maxResults": str(size)}
+        query = {"jql": jql, "fields": self.fields, "maxResults": str(size)}
         if token:
             query["nextPageToken"] = token
         url = f"{self.base_url}{SEARCH_PATH}?{urllib.parse.urlencode(query)}"
@@ -240,6 +249,28 @@ class Jira:
             return category
         return name
 
+    def qa_of(self, fields: dict) -> str | None:
+        config = self.config
+        if config.qa_field:
+            value = fields.get(config.qa_field)
+            found = []
+            for option in value if isinstance(value, list) else [value]:
+                if isinstance(option, dict):
+                    option = option.get("value", option.get("name"))
+                if isinstance(option, str):
+                    found.append(config.qa_of(option, config.qa_field_values))
+            return conservative_qa(found)
+        status = fields.get("status")
+        if not config.qa or not isinstance(status, dict):
+            return None
+        name = status.get("name")
+        qa = config.qa_of(name) if isinstance(name, str) else None
+        category = status.get("statusCategory")
+        category = category.get("name") if isinstance(category, dict) else None
+        if qa is None and isinstance(category, str):
+            qa = config.qa_of(category)
+        return qa
+
     def _task(self, issue: object) -> TrackerTask | None:
         if not isinstance(issue, dict) or not isinstance(issue.get("key"), str):
             return None
@@ -254,6 +285,7 @@ class Jira:
             status_raw=self.status_of(fields.get("status")),
             assignee=assignee if isinstance(assignee, str) else None,
             updated_at=_timestamp(fields.get("updated")),
+            qa=self.qa_of(fields),
         )
 
     # --- fetch ---
