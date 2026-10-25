@@ -198,6 +198,8 @@ def test_every_kind_has_its_fixed_level():
         "decision": "deep",
         # Its default: an item carries the tracker mapping's level.
         "tracker_status": "round",
+        # An item rule's (the built-in Merge): the rule gives its level.
+        "rule": "round",
     }
     assert {k for k, v in KINDS.items() if v.blocks_agent} == {"approval", "question"}
 

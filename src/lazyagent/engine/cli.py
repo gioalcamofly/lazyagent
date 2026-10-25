@@ -546,6 +546,12 @@ def build_status_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also merged, closed and stale branches",
     )
+    parser.add_argument(
+        "--why",
+        metavar="KEY",
+        help="Why this row (a key or a branch) is in its state: the rule, its "
+        "file and line, the facts it read, the rules above that did not match",
+    )
     return parser
 
 
@@ -569,12 +575,14 @@ def status_main(argv: list[str] | None = None) -> int:
     if socket is None:
         error(f"no engine running for {root} (start one: lazyagent engine start)")
         return NOT_RUNNING
+    method, params = (("rules_explain", {"key": args.why}) if args.why
+                      else ("status_list", {"include_done": args.all}))
     try:
-        result = asyncio.run(_request(socket, "status_list", include_done=args.all))
+        result = asyncio.run(_request(socket, method, **params))
     except RequestError as e:
         if e.code == "UNKNOWN_METHOD":
             error(
-                "this engine predates status_list; restart it "
+                f"this engine predates {method}; restart it "
                 "(lazyagent engine restart --restore)"
             )
         else:
@@ -585,8 +593,145 @@ def status_main(argv: list[str] | None = None) -> int:
         return 1
     if args.json:
         print(json.dumps(result))
+    elif args.why:
+        from lazyagent.engine.rules.export import format_explain
+
+        print(format_explain(result), flush=True)
     else:
         print(format_table(result), flush=True)
+    return 0
+
+
+# ----------------------------------------------------------------------
+# lazyagent rules
+# ----------------------------------------------------------------------
+
+
+def build_rules_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lazyagent rules",
+        description="Your rules (rules.toml): the global file "
+        "($XDG_CONFIG_HOME/lazyagent/rules.toml) and the repo's "
+        "(.lazyagent/rules.toml, applied once you allow its hash).",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="{check,show,allow,doc}")
+
+    def command(name: str, help: str) -> argparse.ArgumentParser:
+        sub = commands.add_parser(name, help=help, description=help)
+        sub.add_argument("repo", nargs="?", default=None,
+                         help="Path to git repository (default: auto-detect from cwd)")
+        return sub
+
+    check = command("check", "Validate the rule files (exit 1 on errors)")
+    check.add_argument("--json", action="store_true", help="Print rules_check's JSON")
+    show = command("show", "The effective rules, in order, and where each comes from")
+    show.add_argument("--json", action="store_true", help="Print rules_catalog's JSON")
+    allow = command("allow", "Allow the repo's .lazyagent/rules.toml at its current hash")
+    allow.add_argument("hash", nargs="?", default=None,
+                       help="The hash `rules check` shows (12+ characters); without it, "
+                       "the file and its hash are printed")
+    doc = command("doc", "The rules catalog as Markdown (the built-ins by default)")
+    doc.add_argument("--effective", action="store_true",
+                     help="With your rules (the files as they apply now)")
+    return parser
+
+
+def _rules_hub(root: str) -> Any:
+    from lazyagent.engine.rules.hub import RulesHub
+
+    return RulesHub(root)
+
+
+def _problem_line(p: dict[str, Any]) -> str:
+    where = p.get("file") or "rules"
+    if p.get("line"):
+        where += f":{p['line']}"
+    return f"{where}: {p['message']} ({p['fallback']})"
+
+
+def rules_main(argv: list[str] | None = None) -> int:
+    """``lazyagent rules``: check, show, allow and doc. They read the files
+    themselves (no engine needed); allow also tells a running engine."""
+    from lazyagent.worktree_manager import WorktreeManagerError
+
+    parser = build_rules_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 2
+
+    def error(message: str) -> None:
+        print(f"lazyagent rules: {message}", file=sys.stderr, flush=True)
+
+    try:
+        root = launcher.resolve_repo_root(args.repo)
+    except WorktreeManagerError as e:
+        error(str(e))
+        return 1
+    hub = _rules_hub(root)
+    if args.command == "check":
+        result = hub.check_result()
+        if args.json:
+            print(json.dumps(result))
+        else:
+            for f in result["files"]:
+                state = "absent" if not f["exists"] else f["applied"].replace("_", " ")
+                extra = ""
+                if f["scope"] == "repo" and f["exists"]:
+                    extra = " · allowed" if f.get("allowed") else (
+                        f" · not allowed (lazyagent rules allow {f['hash'][:12]})")
+                print(f"{f['scope']:6} {f['path']}: {state}, {f['rules']} rules{extra}")
+            for p in result["errors"]:
+                print("error   " + _problem_line(p))
+            for p in result["warnings"]:
+                print("warning " + _problem_line(p))
+            if not result["errors"]:
+                print("no errors")
+        return 1 if result["errors"] else 0
+    if args.command == "show":
+        from lazyagent.engine.rules.export import catalog_payload, format_rules
+
+        payload = catalog_payload(hub.catalog, hub.check_result())
+        print(json.dumps(payload) if args.json else format_rules(payload), flush=True)
+        return 0
+    if args.command == "doc":
+        from lazyagent.engine.rules import builtin
+        from lazyagent.engine.rules.export import markdown
+
+        print(markdown(hub.catalog if args.effective else builtin()), end="", flush=True)
+        return 0
+    return _rules_allow(hub, root, args.hash, error)
+
+
+def _rules_allow(hub: Any, root: str, hash_: str | None, error: Any) -> int:
+    from lazyagent.engine.client import RequestError
+    from lazyagent.engine.rules.hub import MIN_HASH, digest, repo_path
+
+    path = repo_path(root)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        error(f"no {path}")
+        return 1
+    if hash_ is None:
+        print(text, end="" if text.endswith("\n") else "\n")
+        print(f"\n{path}: hash {digest(text)[:MIN_HASH]}. Read it; to apply it: "
+              f"lazyagent rules allow {digest(text)[:MIN_HASH]}")
+        return 0
+    socket = launcher.find(root)
+    try:
+        if socket is not None:
+            result = asyncio.run(_request(socket, "rules_allow", hash=hash_))
+        else:
+            result = hub.allow(hash_)
+    except (ValueError, RequestError) as e:
+        error(getattr(e, "message", None) or str(e))
+        return 1
+    except (OSError, ConnectionError) as e:
+        error(f"could not reach the engine: {e}")
+        return 1
+    print(f"allowed {result['file']} at {result['hash'][:MIN_HASH]}"
+          + ("" if socket is not None else " (no engine running: it applies on its start)"))
     return 0
 
 

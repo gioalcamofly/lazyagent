@@ -5356,3 +5356,70 @@ fn home_i4e_screenshots() {
         }
     }
 }
+
+// --- Home, rules (proposal 0014 R2): the error line -------------------------
+
+#[test]
+fn home_names_a_broken_rule_by_its_file_and_line() {
+    let problem = json!({"scope": "global", "file": "/home/u/.config/lazyagent/rules.toml", "line": 12,
+                         "rule": "merge", "message": "rule merge when: no fact 'tracker.qa'",
+                         "fallback": "skipped; the built-in is in force"});
+    let mut caps = I4E.to_vec();
+    caps.push("rules");
+    let (app, tx) = engine_home(&caps);
+    let mut h = harness(app);
+    let answer = problem.clone();
+    let calls = fake_engine(&h, move |m, _| {
+        (m == "rules_check").then(|| json!({"errors": [answer.clone()], "warnings": [], "files": []}))
+    });
+    h.state_mut().state.fetch_inbox();
+    h.run_steps(3);
+    assert_eq!(calls_of(&calls, "rules_check").len(), 1);
+    let text = "Rules: 1 error · your global rules.toml, line 12: rule merge: when: no fact 'tracker.qa' — skipped; \
+                the built-in is in force";
+    h.get_by_label(text);
+    // A second error in the repo's file: counted, the first still named.
+    let repo = json!({"scope": "repo", "file": "/r/repo/.lazyagent/rules.toml", "line": null, "rule": null,
+                      "message": "not allowed yet: check it, then lazyagent rules allow 0123456789ab",
+                      "fallback": "not applied"});
+    tx.send(event("rules.errors", json!({"errors": [problem, repo]}))).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label(text).is_none());
+    h.get_by_label(&text.replace("1 error", "2 errors"));
+    // Fixed: the line goes.
+    tx.send(event("rules.errors", json!({"errors": []}))).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Rules:").is_none());
+}
+
+#[test]
+fn without_the_rules_feature_home_does_not_ask() {
+    let (app, _tx) = engine_home(I4E);
+    let h = harness(app);
+    let calls = fake_engine(&h, |_, _| None);
+    let mut h = h;
+    h.state_mut().state.fetch_inbox();
+    h.run_steps(2);
+    assert!(calls_of(&calls, "rules_check").is_empty());
+}
+
+#[test]
+fn a_rule_item_shows_its_rules_verb() {
+    let (mut h, tx, _calls) = i4e_home(|_, _| None);
+    h.run_steps(2);
+    let item = json!({"id": "Rule:merge:repo:docs", "occurrence": "Rule:merge:repo:docs@1", "kind": "rule",
+                      "level": "round", "title": "Merge", "label": "#14 Index the docs", "detail": "",
+                      "state": "merge: approved, CI green", "work_item": "repo:docs", "worktree_path": "/r/repo-docs",
+                      "agent_id": null, "pr": {"number": 14, "title": "Index the docs", "url": "https://example.com/pull/14"},
+                      "job_id": null, "exit_code": null, "blocks_agent": false, "priority": "medium",
+                      "since": crate::app::unix_now() - 60.0, "park": null, "rule_id": "merge", "verb": "Merge"});
+    let mut row = inbox_row("docs", "round", "Rule:merge:repo:docs", "merge: approved, CI green");
+    row["rule"] = json!(2);
+    tx.send(event("actionable.created", json!({"item": item}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    h.run_steps(3);
+    h.state_mut().state.home.cut(crate::app::unix_now());
+    h.run_steps(2);
+    let lines = h.state().state.home.shown_in(crate::home::Zone::Round);
+    assert_eq!(lines.iter().map(|l| l.verb().to_string()).collect::<Vec<_>>(), ["Merge"]);
+}

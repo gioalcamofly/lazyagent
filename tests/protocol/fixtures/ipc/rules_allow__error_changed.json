@@ -1,0 +1,14 @@
+{
+  "case": "rules_allow/error_changed",
+  "method": "rules_allow",
+  "params": {
+    "hash": "000000000000"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": ".lazyagent/rules.toml is at f30c9cfd0b1e, not 000000000000: it changed; check it again (lazyagent rules check)"
+    },
+    "id": "req-1"
+  }
+}

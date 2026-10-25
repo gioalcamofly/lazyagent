@@ -92,6 +92,7 @@ from lazyagent.engine.notes import (
 )
 from lazyagent.engine.reviews import ReviewStore, reviews_path
 from lazyagent.engine.scheduler import Scheduler
+from lazyagent.engine.rules.hub import RulesHub
 from lazyagent.engine.status import TICK as STATUS_TICK
 from lazyagent.engine.status import StatusProjection
 from lazyagent.engine.actions import ActionsHub
@@ -289,6 +290,8 @@ class Engine:
         # Work items from external feeders (work_items_upsert).
         self.work_items = WorkItems(self)
         self.status = StatusProjection(self)
+        # The rule files (proposal 0014 R2): the catalog the rows use.
+        self.rules = RulesHub(lambda: self.repo_root, self.events.emit)
         # Inbox items take their work item's priority.
         self.actionables.filters.append(self.status.prioritize)
         # Pass to orchestrator (claims on work items): rows and queue read it.

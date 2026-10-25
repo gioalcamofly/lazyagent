@@ -801,7 +801,10 @@
         "ball": {"enum": ["you", "agent", "others", "stalled", "done"]},
         "priority": {"enum": ["high", "medium", "low"]},
         "state": {"type": "string", "description": "A fact in at most five words, e.g. 'review requested, CI green'."},
-        "rule": {"type": "integer", "description": "The derivation rule that matched (inbox-plan.md §3)."},
+        "rule": {"type": "integer", "description": "The derivation rule that matched (inbox-plan.md §3); 0: a user rule of its own (not a replaced built-in)."},
+        "rule_id": {"type": ["string", "null"], "description": "status_list fields only (feature rules): the catalog rule's id."},
+        "verb": {"type": ["string", "null"], "description": "status_list fields only: the line's verb (Merge, Fix CI, ...), null when no rule gives one."},
+        "action": {"type": ["string", "null"], "description": "status_list fields only: the primary action's id (rules_catalog actions)."},
         "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
         "needs_you": {
           "type": ["object", "null"],
@@ -999,6 +1002,7 @@
       "properties": {
         "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
         "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
+        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
       }
     },
@@ -1062,11 +1066,13 @@
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions)."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions)."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
         "run": {"anyOf": [{"$ref": "#/$defs/ci_run"}, {"type": "null"}], "description": "ci / ci_failed: the fresh red Actions run on the head (feature actions); null otherwise."},
+        "rule_id": {"type": "string", "description": "kind rule only (feature rules): the item rule that makes it, e.g. merge. Its id is Rule:<rule id>:<work item>."},
+        "verb": {"type": ["string", "null"], "description": "kind rule only: the rule's verb."},
         "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
         "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>', the job's title, or the tracker task's title."},
         "detail": {"type": "string", "description": "tracker_status: the task's URL."},
@@ -1917,6 +1923,133 @@
           ],
           "description": "Status values or group names (idle, blocked, finished, not_running)."
         }
+      }
+    },
+    "rules_problem": {
+      "type": "object",
+      "description": "A rule file error or warning.",
+      "required": ["scope", "file", "line", "rule", "message", "fallback"],
+      "properties": {
+        "scope": {"enum": ["global", "repo", null]},
+        "file": {"type": ["string", "null"], "description": "The file's path."},
+        "line": {"type": ["integer", "null"], "description": "1-based; null when the file as a whole is at fault."},
+        "rule": {"type": ["string", "null"], "description": "The rule id, when one rule is at fault."},
+        "message": {"type": "string"},
+        "fallback": {"type": "string", "description": "What is in force instead, e.g. 'skipped; the built-in is in force', 'the last good version is in force'."},
+        "pending": {"type": "string", "description": "repo file not allowed at this content hash: the hash to allow."}
+      }
+    },
+    "rules_file": {
+      "type": "object",
+      "required": ["scope", "path", "exists", "hash", "applied", "rules"],
+      "properties": {
+        "scope": {"enum": ["global", "repo"]},
+        "path": {"type": "string"},
+        "exists": {"type": "boolean"},
+        "hash": {"type": ["string", "null"], "description": "sha256 of the file's content."},
+        "allowed": {"type": "boolean", "description": "repo only: the user allowed this hash."},
+        "applied": {"enum": ["current", "last_good", "last_allowed", "none"]},
+        "rules": {"type": "integer", "description": "Rule tables in the applied version."}
+      }
+    },
+    "rules_rule": {
+      "type": "object",
+      "required": ["id", "num", "origin", "file", "line", "locked", "says", "when", "and_when", "item", "verb", "action", "replaces"],
+      "properties": {
+        "id": {"type": "string"},
+        "num": {"type": "integer", "description": "The row's rule integer; 0 for a user rule of its own."},
+        "origin": {"enum": ["builtin", "global", "repo"]},
+        "file": {"type": ["string", "null"]},
+        "line": {"type": ["integer", "null"]},
+        "locked": {"type": "boolean"},
+        "says": {"type": "string"},
+        "when": {"type": "string"},
+        "and_when": {"type": ["string", "null"]},
+        "item": {"type": "boolean", "description": "An inbox item rule (with the queue on, the row reaches the inbox through queue)."},
+        "verb": {"type": ["string", "null"]},
+        "action": {"type": ["string", "null"]},
+        "replaces": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["origin", "file", "line"], "properties": {"origin": {"type": "string"}, "file": {"type": ["string", "null"]}, "line": {"type": ["integer", "null"]}}}]},
+        "position": {"type": "integer"},
+        "then": {"type": "object", "description": "ball, level, state, blocks_agent, suggestion (or <field>_expr), inherit."}
+      }
+    },
+    "rules_check.params": {
+      "type": "object",
+      "description": "Feature rules.",
+      "properties": {
+        "repo": {"type": ["string", "null"], "description": "The engine's repo (name or root); others are refused."}
+      }
+    },
+    "rules_check.result": {
+      "type": "object",
+      "required": ["errors", "warnings", "files"],
+      "properties": {
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}}
+      }
+    },
+    "rules_catalog.params": {"$ref": "#/$defs/rules_check.params"},
+    "rules_catalog.result": {
+      "type": "object",
+      "required": ["facts", "functions", "rules", "kinds", "actions", "verbs", "concepts", "files", "errors", "warnings"],
+      "properties": {
+        "facts": {"type": "array", "items": {"type": "object", "required": ["name", "type", "values", "phrase", "source", "freshness", "cost", "scopes"]}},
+        "functions": {"type": "array", "items": {"type": "object", "required": ["name", "doc"]}},
+        "rules": {"type": "array", "items": {"$ref": "#/$defs/rules_rule"}, "description": "The effective row rules, first match wins."},
+        "kinds": {"type": "array", "items": {"type": "object", "required": ["id", "level", "title", "detector"]}},
+        "actions": {"type": "array", "items": {"type": "object", "required": ["id", "key", "label"]}},
+        "verbs": {"type": "array", "items": {"type": "string"}},
+        "concepts": {"type": "array", "description": "The page's concepts text (R6); empty for now."},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}},
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}}
+      }
+    },
+    "rules_explain.params": {
+      "type": "object",
+      "required": ["key"],
+      "description": "Feature rules.",
+      "properties": {
+        "key": {"type": "string", "description": "A status_list row key, or a branch name."}
+      }
+    },
+    "rules_explain.result": {
+      "type": "object",
+      "required": ["key", "rule", "then", "facts", "above", "items"],
+      "properties": {
+        "key": {"type": "string"},
+        "rule": {"oneOf": [{"$ref": "#/$defs/rules_rule"}, {"type": "null"}]},
+        "then": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["ball", "level", "state", "verb", "action", "item"]}]},
+        "inherited_from": {"type": ["string", "null"], "description": "park, label: the rule below that gave the inherited field."},
+        "item_rule": {"type": "object", "description": "queue matched on a rule's item (Merge): that rule (rules_rule) and the facts it read."},
+        "facts": {"type": "array", "items": {"type": "object", "required": ["name", "value", "unknown", "source", "freshness"]}, "description": "What the matched rule read."},
+        "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
+        "items": {"type": "array", "description": "The row's open inbox items, top first."}
+      }
+    },
+    "rules_allow.params": {
+      "type": "object",
+      "required": ["hash"],
+      "description": "Feature rules. The user's only (no caller token).",
+      "properties": {
+        "repo": {"type": ["string", "null"]},
+        "hash": {"type": "string", "minLength": 12, "description": "The repo file's content hash (rules_check files), or its first 12+ characters."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "rules_allow.result": {
+      "type": "object",
+      "description": "rules_check's result, and what was allowed.",
+      "required": ["repo", "file", "hash", "allowed", "errors", "warnings", "files"],
+      "properties": {
+        "repo": {"type": "string"},
+        "file": {"type": "string"},
+        "hash": {"type": "string"},
+        "allowed": {"type": "boolean"},
+        "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}}
       }
     },
     "list_events.result": {

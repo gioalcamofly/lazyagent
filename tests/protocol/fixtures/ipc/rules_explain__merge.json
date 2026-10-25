@@ -1,0 +1,152 @@
+{
+  "case": "rules_explain/merge",
+  "method": "rules_explain",
+  "params": {
+    "key": "repo:docs-index"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "above": [
+        {
+          "failed": "pr.state == \"merged\"",
+          "id": "closed.merged",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "pr.state == \"closed\"",
+          "id": "closed.pr_closed",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "pr.merged_into != \"\"",
+          "id": "closed.already_merged",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "gesture.kind == \"close\"",
+          "id": "closed.by_you",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "gesture.kind == \"park\"",
+          "id": "park",
+          "origin": "builtin",
+          "value": "false"
+        }
+      ],
+      "facts": [
+        {
+          "freshness": "per pass",
+          "name": "items.blocks_agent",
+          "source": "ActionableQueue",
+          "unknown": false,
+          "value": false
+        },
+        {
+          "freshness": "per pass",
+          "name": "items.count",
+          "source": "ActionableQueue",
+          "unknown": false,
+          "value": 1
+        },
+        {
+          "freshness": "per pass",
+          "name": "items.top.level",
+          "source": "ActionableQueue",
+          "unknown": false,
+          "value": "round"
+        },
+        {
+          "freshness": "per pass",
+          "name": "items.top.state",
+          "source": "ActionableQueue",
+          "unknown": false,
+          "value": "merge: approved, CI green"
+        }
+      ],
+      "item_rule": {
+        "action": "open_pr",
+        "and_when": null,
+        "facts": [
+          {
+            "freshness": "\u2264 60 s",
+            "name": "ci.state",
+            "source": "PR checks",
+            "unknown": false,
+            "value": "green"
+          },
+          {
+            "freshness": "\u2264 60 s",
+            "name": "pr.mergeable",
+            "source": "PR poller",
+            "unknown": false,
+            "value": "mergeable"
+          },
+          {
+            "freshness": "\u2264 60 s",
+            "name": "pr.review",
+            "source": "PR poller",
+            "unknown": false,
+            "value": "approved"
+          },
+          {
+            "freshness": "\u2264 60 s",
+            "name": "pr.state",
+            "source": "PR poller",
+            "unknown": false,
+            "value": "open"
+          }
+        ],
+        "file": null,
+        "id": "merge",
+        "item": true,
+        "line": null,
+        "locked": false,
+        "num": 4,
+        "origin": "builtin",
+        "replaces": null,
+        "says": "Approved, CI green and mergeable: merging is yours, on the PR.",
+        "verb": "Merge",
+        "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\""
+      },
+      "items": [
+        {
+          "id": "Rule:merge:repo:docs-index",
+          "kind": "rule",
+          "level": "round",
+          "rule_id": "merge",
+          "state": "merge: approved, CI green"
+        }
+      ],
+      "key": "repo:docs-index",
+      "rule": {
+        "action": null,
+        "and_when": null,
+        "file": null,
+        "id": "queue",
+        "item": false,
+        "line": null,
+        "locked": true,
+        "num": 2,
+        "origin": "builtin",
+        "replaces": null,
+        "says": "The work item's open inbox items, top first.",
+        "verb": null,
+        "when": "items.count > 0"
+      },
+      "then": {
+        "action": null,
+        "ball": "you",
+        "item": false,
+        "level": "round",
+        "state": "merge: approved, CI green",
+        "verb": null
+      }
+    }
+  }
+}

@@ -324,6 +324,23 @@
         "key": {"type": "string"}
       }
     },
+    "rules.changed": {
+      "type": "object",
+      "description": "Feature rules: the effective rules catalog changed (a rule file edited, allowed, or its last good version taken).",
+      "required": ["files", "rules"],
+      "properties": {
+        "files": {"type": "array", "items": {"$ref": "methods.json#/$defs/rules_file"}},
+        "rules": {"type": "integer", "description": "Row rules in the effective catalog."}
+      }
+    },
+    "rules.errors": {
+      "type": "object",
+      "description": "Feature rules: the rule files' errors changed (an empty list: none left).",
+      "required": ["errors"],
+      "properties": {
+        "errors": {"type": "array", "items": {"$ref": "methods.json#/$defs/rules_problem"}}
+      }
+    },
     "status.timeline": {
       "type": "object",
       "description": "A fact was added to a work item's timeline (feature gestures).",

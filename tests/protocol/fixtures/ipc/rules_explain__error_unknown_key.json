@@ -1,0 +1,14 @@
+{
+  "case": "rules_explain/error_unknown_key",
+  "method": "rules_explain",
+  "params": {
+    "key": "nope"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "No work item 'nope' (status_list keys, or a branch name)"
+    },
+    "id": "req-1"
+  }
+}

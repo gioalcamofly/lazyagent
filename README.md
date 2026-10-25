@@ -396,6 +396,93 @@ work_items_upsert(url="https://tracker.example.com/browse/SHOP-14",
 work_items_close(url="https://tracker.example.com/browse/SHOP-11")
 ```
 
+### Your rules (rules.toml)
+
+Every Home row is decided by a catalog of rules over facts the engine
+computes (`pr.review`, `ci.state`, `agents.running`, `tracker.linked`, …):
+first match wins, and an unknown fact never matches. The built-in catalog
+is today's behaviour; your own files can replace, narrow, add, move or turn
+off rules. Rules are data: a small expression language with no functions of
+your own, no loops, no I/O and caps (2000 characters, depth 32, 256 parts
+per expression; 200 rules and 256 KB per file).
+
+| File | Applies |
+|---|---|
+| `~/.config/lazyagent/rules.toml` (`$XDG_CONFIG_HOME`) | always: it is yours |
+| `<repo>/.lazyagent/rules.toml` | only once you allow its content hash; a changed file stays on its last allowed version until you allow it again |
+
+Order: a locked prefix (merged and closed rows, your park, the inbox queue,
+the orchestrator's pass, hold and delegation) that no file can replace or
+precede, then the repo's new rules, the global new rules, then the
+built-ins. A rule with a built-in's `id` replaces it in place; `and_when`
+adds a condition to the rule it replaces; `before` / `after` move a rule;
+`disabled = true` turns a non-locked one off. A rule that puts the ball with
+you (`ball = "you"`) is an inbox item you can dismiss or park; so is the
+built-in Merge.
+
+A team whose "ready to merge" means "approved, CI green, and QA tested it or
+it needs none":
+
+```toml
+# ~/.config/lazyagent/rules.toml
+version = 1
+
+[[rule]]
+id = "merge"                     # replaces the built-in "merge"
+says = "Merge when approved, CI is fine and QA is done."
+when = '''
+pr.state == "open" and pr.review == "approved" and pr.mergeable == "mergeable"
+and ci.state in ["green", "none"]
+and tracker.qa in ["tested", "not_required"]
+'''
+[rule.then]
+ball = "you"
+level = "round"
+verb = "Merge"
+action = "open_pr"
+state = "merge: approved, QA ok"
+
+[[rule]]
+id = "waiting_for_qa"            # without it, such a PR would fall through to the rules below
+after = "merge"
+when = '''
+pr.state == "open" and pr.review == "approved"
+and tracker.qa not in ["tested", "not_required", "failed"]
+'''
+[rule.then]
+ball = "others"
+state = "approved · waiting for QA"
+```
+
+`tracker.qa` comes with a later version (the trackers' QA mapping); until
+then `lazyagent rules check` reports it as an unknown fact, skips both
+rules, and the built-in Merge stays in force. What works today, narrowing
+the built-in for one repo:
+
+```toml
+# <repo>/.lazyagent/rules.toml
+version = 1
+
+[[rule]]
+id = "merge"
+and_when = 'item.branch != "release" and tracker.linked'
+```
+
+```sh
+lazyagent rules check     # errors with file and line (exit 1), and what is in force instead
+lazyagent rules show      # the effective rules in order, and where each comes from
+lazyagent rules allow     # print the repo file and its hash; then: lazyagent rules allow <hash>
+lazyagent rules doc       # the built-in catalog as Markdown (--effective: with yours)
+lazyagent status --why <branch>   # the rule behind a row: file, line, facts, the rules above it
+```
+
+The engine re-reads the files when they change. A file that does not parse
+keeps its last good version (also across restarts); a bad rule is skipped
+alone and what it replaced stays in force. Home shows one line while there
+are errors, naming the rule, its file and line. The MCP tools
+`rules_explain` and `rules_catalog` let the orchestrator answer "why is X
+in Round?" from the engine.
+
 ### Environment variables
 
 | Variable | Effect |

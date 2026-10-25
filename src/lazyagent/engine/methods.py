@@ -162,6 +162,10 @@ class SpawnCaps:
             self._spawns.remove(reserved)
 
 
+# status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
+ROW_FIELDS = ("rule_id", "verb", "action")
+
+
 class EngineMethods:
     """The legacy method set, as plain coroutines over an :class:`Engine`."""
 
@@ -222,6 +226,10 @@ class EngineMethods:
             "approval_answer": self.approval_answer,
             "question_answer": self.question_answer,
             "orchestrator_actions": self.orchestrator_actions,
+            "rules_catalog": self.rules_catalog,
+            "rules_explain": self.rules_explain,
+            "rules_check": self.rules_check,
+            "rules_allow": self.rules_allow,
         }
 
     def _caller(self, params: dict) -> tuple[str, tuple[str, str] | None]:
@@ -951,7 +959,74 @@ class EngineMethods:
             role = "unknown"
         # The 0013 gate's metric: how often the table is asked for, by whom.
         diag.event(log, "status.list", by=role)
-        return self._engine.status.list(repo=repo or None, include_done=include_done)
+        fields = params.get("fields")
+        if fields is not None and (not isinstance(fields, list)
+                                   or any(f not in ROW_FIELDS for f in fields)):
+            raise ValueError(f"fields must be a list of {', '.join(ROW_FIELDS)}")
+        status = self._engine.status
+        result = status.list(repo=repo or None, include_done=include_done)
+        if fields:
+            # Opt-in (Q-R20): the rows without fields stay as they were.
+            catalog = status.catalog
+            for row in result["rows"]:
+                extra = status.fields_of(row["key"], catalog)
+                row.update({f: extra[f] for f in fields})
+        return result
+
+    # --- Rules (proposal 0014 R2) ---
+
+    async def rules_catalog(self, params: dict) -> Any:
+        """The effective rules catalog: every fact (type, values, phrase,
+        source, freshness, cost), every row rule in order (where it comes
+        from, what it replaces), the inbox kinds, the actions and verbs,
+        the files and their errors. Params: repo? (its name or root)."""
+        from lazyagent.engine.rules.export import catalog_payload
+
+        if params.get("repo") is not None:
+            self._repo(params)
+        hub = self._engine.rules
+        return catalog_payload(hub.catalog, hub.check_result())
+
+    async def rules_explain(self, params: dict) -> Any:
+        """Why a row is in its state: the rule that matched (its file and
+        line), the facts it read, and for each rule above it the first
+        condition that was not true. Params: key (a status_list row key, or
+        the branch name)."""
+        from lazyagent.engine.status import repo_name
+
+        key = params.get("key")
+        if not isinstance(key, str) or not key:
+            raise ValueError("key is required (a status_list row key)")
+        status = self._engine.status
+        if status.facts(key) is None:
+            status.flush()
+        if status.facts(key) is None and status.facts(f"{repo_name(self._engine)}:{key}"):
+            key = f"{repo_name(self._engine)}:{key}"
+        out = status.explain(key)
+        if out is None:
+            raise ValueError(f"No work item {key!r} (status_list keys, or a branch name)")
+        return out
+
+    async def rules_check(self, params: dict) -> Any:
+        """The rule files' errors and warnings, re-read now. Params: repo?."""
+        if params.get("repo") is not None:
+            self._repo(params)
+        hub = self._engine.rules
+        if hub.check():
+            self._engine.status.mark_dirty()
+        return hub.check_result()
+
+    async def rules_allow(self, params: dict) -> Any:
+        """Allow the repo's .lazyagent/rules.toml at this content hash (Q-R5):
+        its rules apply from now on, until the file changes. Params: repo?,
+        hash (from rules_check; at least 12 characters). The user's only."""
+        self._user_only(params, "rules_allow")
+        if params.get("repo") is not None:
+            self._repo(params)
+        hub = self._engine.rules
+        result = hub.allow(params.get("hash"))
+        self._engine.status.mark_dirty()
+        return result | hub.check_result()
 
     async def actionables_list(self, params: dict) -> Any:
         """The inbox queue (proposal 0013): what needs the user, Now first,

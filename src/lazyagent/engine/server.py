@@ -156,6 +156,11 @@ FEATURES: tuple[str, ...] = (
     # The orchestrator's status_report note, status_list orchestrator
     # {alive, report, queue}, orchestrator_actions, row last_step.
     "orchestrator_activity",
+    # The rules catalog (proposal 0014 R2): rules_catalog, rules_explain,
+    # rules_check, rules_allow, rules.changed, rules.errors, the user's rule
+    # files, status_list fields, the built-in Merge as an inbox item (kind
+    # rule).
+    "rules",
 )
 
 STREAM_RESIZED = "stream.resized"

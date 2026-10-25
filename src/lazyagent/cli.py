@@ -6,8 +6,10 @@
   agents running. ``--embedded`` (the default for now) runs the engine
   inside the TUI.
 - ``lazyagent engine …``: run or manage the engine (:mod:`lazyagent.engine.cli`).
-- ``lazyagent status [repo] [--json] [--all]``: the repo's work items, from
-  its engine (proposal 0013).
+- ``lazyagent status [repo] [--json] [--all] [--why KEY]``: the repo's work
+  items, from its engine (proposal 0013); ``--why``: the rule behind a row.
+- ``lazyagent rules {check,show,allow,doc} [repo]``: your rule files
+  (proposal 0014).
 - ``lazyagent host …``: the TUI in a web page (experimental).
 - ``lazyagent mcp``: the MCP server (``python -m lazyagent.mcp_server``).
 - ``lazyagent desktop [repo]``: the native desktop app (:mod:`lazyagent.desktop`).
@@ -24,7 +26,7 @@ import argparse
 import os
 import sys
 
-SUBCOMMANDS = ("engine", "status", "host", "mcp", "desktop", "update")
+SUBCOMMANDS = ("engine", "status", "rules", "host", "mcp", "desktop", "update")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="TUI for managing coding agents across git worktrees",
         epilog="Subcommands: lazyagent engine {start,stop,restart,status,logs,restore} [repo] "
         "(the engine that owns the agents); lazyagent status [repo] [--json] "
-        "[--all] (every branch: who has the ball, its state and age); "
+        "[--all] [--why KEY] (every branch: who has the ball, its state and age); "
+        "lazyagent rules {check,show,allow,doc} [repo] (your rules.toml); "
         "lazyagent host [repo] (the web "
         "UI, experimental); lazyagent desktop [repo] (the native desktop "
         "app); lazyagent update {check,apply} (a newer lazyagent); lazyagent "
@@ -71,6 +74,10 @@ def main(argv: list[str] | None = None) -> None:
         from lazyagent.engine.cli import status_main
 
         sys.exit(status_main(argv[1:]))
+    if argv[:1] == ["rules"]:
+        from lazyagent.engine.cli import rules_main
+
+        sys.exit(rules_main(argv[1:]))
     if argv[:1] == ["host"]:
         from lazyagent.host.cli import main as host_main
 

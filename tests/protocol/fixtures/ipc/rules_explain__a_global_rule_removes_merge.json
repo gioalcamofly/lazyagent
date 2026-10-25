@@ -1,0 +1,313 @@
+{
+  "case": "rules_explain/a_global_rule_removes_merge",
+  "method": "rules_explain",
+  "params": {
+    "key": "docs-index"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "above": [
+        {
+          "failed": "pr.state == \"merged\"",
+          "id": "closed.merged",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "pr.state == \"closed\"",
+          "id": "closed.pr_closed",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "pr.merged_into != \"\"",
+          "id": "closed.already_merged",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "gesture.kind == \"close\"",
+          "id": "closed.by_you",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "gesture.kind == \"park\"",
+          "id": "park",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "items.count > 0",
+          "id": "queue",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "claim.active",
+          "id": "claim",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "hold.active",
+          "id": "hold",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "holder == \"orchestrator\"",
+          "id": "held",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "delegation.phase == \"on_it\"",
+          "id": "delegated",
+          "origin": "builtin",
+          "value": "unknown"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "approve",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "answer",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "agent_failed",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "agent_may_hang",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "needs_you",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "facts": [
+            {
+              "freshness": "\u2264 60 s",
+              "name": "ci.state",
+              "source": "PR checks",
+              "unknown": false,
+              "value": "green"
+            },
+            {
+              "freshness": "on worktrees.changed",
+              "name": "item.branch",
+              "source": "worktree scan",
+              "unknown": false,
+              "value": "docs-index"
+            },
+            {
+              "freshness": "\u2264 60 s",
+              "name": "pr.mergeable",
+              "source": "PR poller",
+              "unknown": false,
+              "value": "mergeable"
+            },
+            {
+              "freshness": "\u2264 60 s",
+              "name": "pr.review",
+              "source": "PR poller",
+              "unknown": false,
+              "value": "approved"
+            },
+            {
+              "freshness": "\u2264 60 s",
+              "name": "pr.state",
+              "source": "PR poller",
+              "unknown": false,
+              "value": "open"
+            }
+          ],
+          "failed": "item.branch != \"docs-index\"",
+          "file": "/home/user/.config/lazyagent/rules.toml",
+          "id": "merge",
+          "line": 3,
+          "origin": "global",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "changes_requested",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "conflict_no_agent",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "ci_red_no_agent",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "not queue.enabled",
+          "id": "agent_finished",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "gesture.kind == \"label\"",
+          "id": "label",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "agents.running > 0",
+          "id": "agent_running",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "ci.state == \"running\"",
+          "id": "ci_running",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "report.ball == \"others\"",
+          "id": "reported_others",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "report.ball != \"\"",
+          "id": "reported_ball",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "tracker.ball == \"you\"",
+          "id": "tracker_you",
+          "origin": "builtin",
+          "value": "unknown"
+        },
+        {
+          "failed": "tracker.ball == \"others\"",
+          "id": "tracker_others",
+          "origin": "builtin",
+          "value": "unknown"
+        },
+        {
+          "failed": "tracker.ball != \"you\"",
+          "id": "tracker_ball",
+          "origin": "builtin",
+          "value": "unknown"
+        },
+        {
+          "failed": "pr.review in [\"review_required\", \"none\"]",
+          "id": "no_reviewer",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "pr.review in [\"review_required\", \"none\"]",
+          "id": "review_requested",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "agents.count > 0",
+          "id": "agent_idle",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "item.restorable > 0",
+          "id": "restorable",
+          "origin": "builtin",
+          "value": "false"
+        },
+        {
+          "failed": "item.idle > config.stalled_after",
+          "id": "no_activity",
+          "origin": "builtin",
+          "value": "false"
+        }
+      ],
+      "facts": [
+        {
+          "freshness": "\u2264 60 s",
+          "name": "ci.state",
+          "source": "PR checks",
+          "unknown": false,
+          "value": "green"
+        },
+        {
+          "freshness": "\u2264 60 s",
+          "name": "pr.mergeable",
+          "source": "PR poller",
+          "unknown": false,
+          "value": "mergeable"
+        },
+        {
+          "freshness": "\u2264 60 s",
+          "name": "pr.review",
+          "source": "PR poller",
+          "unknown": false,
+          "value": "approved"
+        },
+        {
+          "freshness": "\u2264 60 s",
+          "name": "pr.state",
+          "source": "PR poller",
+          "unknown": false,
+          "value": "open"
+        },
+        {
+          "freshness": "static",
+          "name": "queue.enabled",
+          "source": "ActionableQueue",
+          "unknown": false,
+          "value": true
+        }
+      ],
+      "items": [],
+      "key": "repo:docs-index",
+      "rule": {
+        "action": null,
+        "and_when": null,
+        "file": null,
+        "id": "approved_ready",
+        "item": false,
+        "line": null,
+        "locked": false,
+        "num": 12,
+        "origin": "builtin",
+        "replaces": null,
+        "says": "Approved, green and mergeable with no Merge item: you dismissed or parked it, or one of your rules narrowed merge.",
+        "verb": null,
+        "when": "queue.enabled and pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\""
+      },
+      "then": {
+        "action": null,
+        "ball": "stalled",
+        "item": false,
+        "level": null,
+        "state": "approved, CI green",
+        "verb": null
+      }
+    }
+  }
+}

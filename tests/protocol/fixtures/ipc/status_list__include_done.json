@@ -93,7 +93,10 @@
           "last_event_at": null,
           "last_step": null,
           "level": "round",
-          "needs_you": null,
+          "needs_you": {
+            "count": 1,
+            "top": "Rule:merge:repo:docs-index"
+          },
           "note": null,
           "pr": {
             "ci": "green",
@@ -104,7 +107,7 @@
           },
           "priority": "medium",
           "repo": "repo",
-          "rule": 4,
+          "rule": 2,
           "seen_at": null,
           "stale": false,
           "state": "merge: approved, CI green",
