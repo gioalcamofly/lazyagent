@@ -979,6 +979,54 @@
   {
    "cost": "poll",
    "freshness": "≤ 60 s",
+   "name": "pr.draft",
+   "phrase": "the PR is a draft",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ 60 s",
+   "name": "pr.labels",
+   "phrase": "the PR's labels (lower case)",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller (review query)",
+   "type": "set label",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ 60 s",
+   "name": "pr.human_approvals",
+   "phrase": "the PR's approvals by people (latest review each; no apps)",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller (review query)",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ 60 s",
+   "name": "pr.commits_after_ready",
+   "phrase": "the pushes since the PR was marked ready (0: a draft)",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller (review query)",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
    "name": "pr.number",
    "phrase": "the PR's number",
    "scopes": [
@@ -1737,6 +1785,9 @@
    "zone": "deep"
   }
  ],
+ "review": {
+  "not_human": []
+ },
  "rules": [
   {
    "action": null,

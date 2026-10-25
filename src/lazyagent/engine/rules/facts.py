@@ -39,6 +39,7 @@ from lazyagent.engine.rules.lang import (
     Function,
     Type,
     enum,
+    open_set,
     set_of,
 )
 from lazyagent.engine.trackers import QA_VALUES
@@ -67,6 +68,8 @@ PR_MERGEABLE = enum("pr_mergeable", ("mergeable", "conflicting", "unknown"))
 CI_STATE = enum("ci_state", ("green", "red", "running", "none"))
 CI_HEAD = enum("ci_head", ("green", "red", "running", "moved", "none"))
 TRACKER_QA = enum("tracker_qa", QA_VALUES)
+# Any name: lower case, as GitHub matches labels.
+LABELS = open_set("label")
 GESTURE_KIND = enum("gesture_kind", ("label", "park", "close", "none"))
 
 _PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
@@ -117,14 +120,17 @@ def _fact(name: str, type_: Type, phrase: str, source: str, freshness: str, cost
 class RowContext:
     """One row's facts for one evaluation (memoised)."""
 
-    __slots__ = ("facts", "now", "last_change", "stalled_hours", "_memo", "first")
+    __slots__ = ("facts", "now", "last_change", "stalled_hours", "not_human", "_memo", "first")
     getters: dict[str, Getter] = {}
 
-    def __init__(self, facts: Facts, now: float, last_change: float, stalled_hours: float):
+    def __init__(self, facts: Facts, now: float, last_change: float, stalled_hours: float,
+                 not_human: frozenset[str] = frozenset()):
         self.facts = facts
         self.now = now
         self.last_change = last_change
         self.stalled_hours = stalled_hours
+        # The catalog's [review] not_human (lower case).
+        self.not_human = not_human
         self._memo: dict[str, Any] = {}
         # Catalog.first_item's scan on this context, for a match after it.
         self.first: tuple[int, bool] | None = None
@@ -192,6 +198,20 @@ def _pr_attr(attr: str) -> Getter:
         return UNKNOWN if value is None else value
 
     return get
+
+
+def _labels(c: RowContext) -> Any:
+    pr = c.facts.pr
+    if pr is None or pr.labels is None:
+        return UNKNOWN
+    return frozenset(name.lower() for name in pr.labels)
+
+
+def _human_approvals(c: RowContext) -> Any:
+    pr = c.facts.pr
+    if pr is None or pr.approved_by is None:
+        return UNKNOWN
+    return sum(1 for login in pr.approved_by if login.lower() not in c.not_human)
 
 
 def _row_ci_state(c: RowContext) -> str:
@@ -383,6 +403,7 @@ def _is_orchestrator(c: ItemContext) -> bool:
 _W = "worktree scan"
 _REG = "agent registry"
 _PRP = "PR poller"
+_PRR = "PR poller (review query)"
 _OV = "overlay"
 
 _fact("item.key", TEXT, "the work item", _W, "on worktrees.changed", "free",
@@ -441,6 +462,16 @@ _fact("pr.review_requests", NUM, "the PR's requested reviewers", _PRP, "≤ 60 s
       row=_pr_attr("review_requests"))
 _fact("pr.reviews", NUM, "the PR's reviews", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("reviews"))
+_fact("pr.draft", BOOL, "the PR is a draft", _PRP, "≤ 60 s", "poll",
+      row=_pr_attr("is_draft"))
+_fact("pr.labels", LABELS, "the PR's labels (lower case)", _PRR, "≤ 60 s", "extra",
+      row=_labels)
+_fact("pr.human_approvals", NUM,
+      "the PR's approvals by people (latest review each; no apps)", _PRR, "≤ 60 s", "extra",
+      row=_human_approvals)
+_fact("pr.commits_after_ready", NUM,
+      "the pushes since the PR was marked ready (0: a draft)", _PRR, "≤ 60 s", "extra",
+      row=_pr_attr("commits_after_ready"))
 _fact("pr.number", NUM, "the PR's number", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("number"))
 _fact("pr.base", TEXT, "the PR's base branch", _PRP, "≤ 60 s", "poll",
@@ -601,6 +632,9 @@ ROW_FUNCTIONS = {
         doc='agents.detail_of("<status>"): the detail line of the first agent in that status',
     ),
 }
+
+# What the PR poll's second query fetches, only while a rule reads it.
+REVIEW_FACTS = frozenset({"pr.labels", "pr.human_approvals", "pr.commits_after_ready"})
 
 RowContext.getters = {n: f.row for n, f in FACTS.items() if f.row is not None}
 ItemContext.getters = {n: f.item for n, f in FACTS.items() if f.item is not None}

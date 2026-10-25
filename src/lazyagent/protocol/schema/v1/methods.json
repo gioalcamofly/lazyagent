@@ -2020,6 +2020,7 @@
         "actions": {"type": "array", "items": {"type": "object", "required": ["id", "key", "label"]}},
         "verbs": {"type": "array", "items": {"type": "string"}},
         "concepts": {"type": "object", "required": ["sections", "zones", "balls", "line", "colours", "keys"], "description": "The \"How lazyagent works\" page's hand-written part (concepts.toml, R6): sections {id, title, intro, generated, screenshot, caption, cards}, zones, balls, the example line, colours, keys {keys, where, does}."},
+        "review": {"type": "object", "properties": {"not_human": {"type": "array", "items": {"type": "string"}}}, "description": "R3b: the rule files' [review] tables, merged; not_human: the logins pr.human_approvals leaves out (lower case)."},
         "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}}

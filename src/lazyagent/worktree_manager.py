@@ -122,7 +122,7 @@ _PR_NODES_PER_BRANCH = 30
 _PR_FIELDS = """
 fragment pr on PullRequest {
   number title state url reviewDecision mergeable isCrossRepository baseRefName
-  headRefOid reviewRequests { totalCount } reviews { totalCount }
+  headRefOid reviewRequests { totalCount } reviews { totalCount } isDraft author { login }
   commits(last: 1) {
     nodes {
       commit {
@@ -141,6 +141,32 @@ fragment pr on PullRequest {
 }
 """
 
+# The review facts (pr.labels, pr.human_approvals, pr.commits_after_ready):
+# a second query on the chosen open PRs, by number, made only while a rule
+# reads them. In the query above every connection is paid for the
+# _PR_NODES_PER_BRANCH candidates of each branch: these three there took a
+# 25-branch batch from 15 to 38 rate-limit points; here they cost 1.
+_REVIEW_FIELDS = """
+fragment review on PullRequest {
+  createdAt
+  labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
+  reviews(last: 100) {
+    totalCount pageInfo { hasPreviousPage }
+    nodes { state author { __typename login } }
+  }
+  timelineItems(last: 100, itemTypes: [READY_FOR_REVIEW_EVENT, PULL_REQUEST_COMMIT,
+                                       HEAD_REF_FORCE_PUSHED_EVENT]) {
+    pageInfo { hasPreviousPage }
+    nodes {
+      __typename
+      ... on ReadyForReviewEvent { createdAt }
+      ... on HeadRefForcePushedEvent { createdAt }
+      ... on PullRequestCommit { commit { committedDate } }
+    }
+  }
+}
+"""
+
 def _count(value: object) -> int | None:
     """A GraphQL ``{totalCount}`` or a ``gh --json`` list, as a count; None
     when the field was not fetched."""
@@ -149,6 +175,94 @@ def _count(value: object) -> int | None:
     if isinstance(value, list):
         return len(value)
     return None
+
+
+def _labels(conn: object) -> list[str] | None:
+    """A GraphQL ``labels`` connection or a ``gh --json labels`` list, as
+    names; None when not fetched or cut short."""
+    if isinstance(conn, list):
+        return [n["name"] for n in conn if isinstance(n, dict) and isinstance(n.get("name"), str)]
+    if not isinstance(conn, dict) or (conn.get("pageInfo") or {}).get("hasNextPage"):
+        return None
+    nodes = conn.get("nodes")
+    return _labels(nodes) if isinstance(nodes, list) else None
+
+
+def is_bot_login(author: object) -> bool:
+    """A GraphQL actor that is an app: type Bot, or a ``[bot]`` login (REST's
+    spelling)."""
+    if not isinstance(author, dict):
+        return False
+    login = author.get("login") or ""
+    return author.get("__typename") == "Bot" or login.lower().endswith("[bot]")
+
+
+def _approved_by(conn: object, pr_author: str) -> list[str] | None:
+    """The logins whose latest review that is not a comment is an approval:
+    a later CHANGES_REQUESTED or DISMISSED cancels it, COMMENTED and PENDING
+    do not count. Apps, deleted accounts and the PR's author are left out.
+    None when the reviews were not fetched or the window is cut short (an
+    approval older than it would be missed)."""
+    if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+        return None
+    if (conn.get("pageInfo") or {}).get("hasPreviousPage"):
+        return None
+    latest: dict[str, str] = {}
+    for review in conn["nodes"]:
+        if not isinstance(review, dict):
+            continue
+        state = review.get("state")
+        author = review.get("author")
+        if state not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            continue
+        if not isinstance(author, dict) or not author.get("login") or is_bot_login(author):
+            continue
+        latest[author["login"]] = state
+    me = pr_author.lower()
+    return sorted(login for login, state in latest.items()
+                  if state == "APPROVED" and login.lower() != me)
+
+
+def _commits_after_ready(node: dict) -> tuple[int | None, str]:
+    """Commits and force pushes after the PR's last ready-for-review event,
+    with that event's time: ``(count, ready_at)``.
+
+    GitHub orders a timeline's commits by their committer date, not by when
+    they were pushed, so a commit made before the event and pushed after it
+    sits before it; a force push's event carries the push's own time. The
+    engine's head check covers the first case (``WorktreeService.
+    _ready_head``). A draft is 0. A PR opened ready, with no event, counts
+    from its creation (commits committed after it, force pushes after it).
+    None when the timeline was not fetched, or is cut short with no event
+    in it.
+    """
+    conn = node.get("timelineItems")
+    if node.get("isDraft"):
+        return 0, ""
+    if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+        return None, ""
+    items = [i for i in conn["nodes"] if isinstance(i, dict)]
+    ready = [n for n, i in enumerate(items) if i.get("__typename") == "ReadyForReviewEvent"]
+    if ready:
+        after = items[ready[-1] + 1:]
+        count = sum(1 for i in after
+                    if i.get("__typename") in ("PullRequestCommit", "HeadRefForcePushedEvent"))
+        return count, items[ready[-1]].get("createdAt") or ""
+    if (conn.get("pageInfo") or {}).get("hasPreviousPage"):
+        return None, ""
+    created = node.get("createdAt") or ""
+    if not created:
+        return None, ""
+    count = 0
+    for i in items:
+        if i.get("__typename") == "PullRequestCommit":
+            when = (i.get("commit") or {}).get("committedDate") or ""
+        elif i.get("__typename") == "HeadRefForcePushedEvent":
+            when = i.get("createdAt") or ""
+        else:
+            continue
+        count += when > created
+    return count, created
 
 
 _REMOTE_OWNER_RE = re.compile(r"[:/]([^/:]+)/[^/]+?/?$")
@@ -636,12 +750,20 @@ class WorktreeManager:
             head_sha=data.get("headRefOid") or "",
             review_requests=_count(data.get("reviewRequests")),
             reviews=_count(data.get("latestReviews", data.get("reviews"))),
+            is_draft=data["isDraft"] if isinstance(data.get("isDraft"), bool) else None,
+            labels=_labels(data.get("labels")),
+            author=(data.get("author") or {}).get("login") or "",
+            approved_by=data.get("approvedBy"),
+            commits_after_ready=data.get("commitsAfterReady"),
+            ready_at=data.get("readyAt") or "",
         )
 
     @staticmethod
     def _graphql_pr_to_view(node: dict) -> dict:
         """Reshape a GraphQL ``PullRequest`` node the way ``gh pr view --json``
         exports it, so both paths share one parser."""
+        author = node.get("author") if isinstance(node.get("author"), dict) else {}
+        after, ready_at = _commits_after_ready(node)
         commits = (node.get("commits") or {}).get("nodes") or []
         rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
         contexts = ((rollup or {}).get("contexts") or {}).get("nodes") or []
@@ -672,6 +794,14 @@ class WorktreeManager:
             "headRefOid": node.get("headRefOid") or "",
             "reviewRequests": node.get("reviewRequests"),
             "reviews": node.get("reviews"),
+            "isDraft": node.get("isDraft"),
+            "labels": node.get("labels"),
+            "author": author,
+            # Only the batched query has them (gh pr view's --json has no
+            # timeline, nor the reviewers' account types): unknown otherwise.
+            "approvedBy": _approved_by(node.get("reviews"), author.get("login") or ""),
+            "commitsAfterReady": after,
+            "readyAt": ready_at,
         }
 
     @staticmethod
@@ -692,8 +822,8 @@ class WorktreeManager:
         return None
 
     @staticmethod
-    def _parse_pr_batch(raw: str, heads: list[tuple[str, str]]) -> dict[str, PrInfo | None]:
-        """Parse a batched ``gh api graphql`` response.
+    def _select_batch(raw: str, heads: list[tuple[str, str]]) -> dict[str, dict | None]:
+        """The chosen PR node per worktree in a batched response.
 
         ``heads`` lists ``(worktree_path, head_ref)`` in alias order: alias
         ``pr<i>`` answers ``heads[i]``. Raises ``TypeError`` when the
@@ -704,17 +834,68 @@ class WorktreeManager:
         if not isinstance(repo, dict):
             raise TypeError(f"no repository in response: {data.get('errors')}")
         default_branch = (repo.get("defaultBranchRef") or {}).get("name") or ""
-        result: dict[str, PrInfo | None] = {}
+        result: dict[str, dict | None] = {}
         for i, (path, head) in enumerate(heads):
             conn = repo.get(f"pr{i}")
             if not isinstance(conn, dict):
                 raise TypeError(f"missing pr{i} in response")
-            node = WorktreeManager._select_pr(conn.get("nodes") or [], default_branch, head)
-            result[path] = (
-                None if node is None
-                else WorktreeManager._pr_info_from_view(WorktreeManager._graphql_pr_to_view(node))
-            )
+            result[path] = WorktreeManager._select_pr(conn.get("nodes") or [], default_branch, head)
         return result
+
+    @staticmethod
+    def _infos(nodes: dict[str, dict | None]) -> dict[str, PrInfo | None]:
+        return {
+            path: None if node is None
+            else WorktreeManager._pr_info_from_view(WorktreeManager._graphql_pr_to_view(node))
+            for path, node in nodes.items()
+        }
+
+    @staticmethod
+    def _parse_pr_batch(raw: str, heads: list[tuple[str, str]]) -> dict[str, PrInfo | None]:
+        """Parse a batched ``gh api graphql`` response (see :meth:`_select_batch`)."""
+        return WorktreeManager._infos(WorktreeManager._select_batch(raw, heads))
+
+    @staticmethod
+    def _review_query(count: int) -> str:
+        variables = ", ".join(f"$n{i}: Int!" for i in range(count))
+        aliases = "\n".join(f"    r{i}: pullRequest(number: $n{i}) {{ ...review }}"
+                            for i in range(count))
+        return (
+            f"query($owner: String!, $name: String!, {variables}) {{\n"
+            "  repository(owner: $owner, name: $name) {\n"
+            f"{aliases}\n"
+            "  }\n"
+            "}\n"
+            f"{_REVIEW_FIELDS}"
+        )
+
+    def _add_review(self, nodes: dict[str, dict | None], repo: GithubRepo) -> None:
+        """The review fields merged into ``nodes``' open PRs, in one call. A
+        failure leaves them out: those facts read unknown."""
+        open_nodes = [n for n in nodes.values() if n is not None and n.get("state") == "OPEN"]
+        if not open_nodes:
+            return
+        cmd = [
+            "gh", "api", "graphql",
+            "-f", f"query={self._review_query(len(open_nodes))}",
+            "-f", f"owner={repo.owner}",
+            "-f", f"name={repo.name}",
+        ]
+        for i, node in enumerate(open_nodes):
+            cmd += ["-F", f"n{i}={int(node.get('number') or 0)}"]
+        try:
+            proc = _run(cmd, capture_output=True, text=True, cwd=self.repo_path, timeout=20)
+            if proc.returncode != 0:
+                raise WorktreeManagerError(proc.stderr.strip() or str(proc.returncode))
+            data = (json.loads(proc.stdout).get("data") or {}).get("repository") or {}
+        except (subprocess.TimeoutExpired, OSError, ValueError, AttributeError,
+                WorktreeManagerError) as e:
+            diag.event(log, "worker.pr_review_failed", error=str(e))
+            return
+        for i, node in enumerate(open_nodes):
+            extra = data.get(f"r{i}")
+            if isinstance(extra, dict):
+                node.update(extra)
 
     @staticmethod
     def _pr_batch_query(count: int) -> str:
@@ -811,10 +992,11 @@ class WorktreeManager:
         return heads
 
     def get_pr_infos(
-        self, worktrees: list[WorktreeInfo], repo: GithubRepo,
+        self, worktrees: list[WorktreeInfo], repo: GithubRepo, *, review: bool = False,
     ) -> dict[str, PrInfo | None]:
         """PR info for many worktrees in one ``gh api graphql`` call per
-        :data:`_PR_BATCH_SIZE` branches.
+        :data:`_PR_BATCH_SIZE` branches; with ``review``, one more per batch
+        that has open PRs, for the review facts (:data:`_REVIEW_FIELDS`).
 
         Gives the PR ``gh pr view`` would show in each worktree, whoever
         opened it. Worktrees missing from the result need :meth:`get_pr_info`
@@ -844,7 +1026,10 @@ class WorktreeManager:
                     f"PR batch query failed: {proc.stderr.strip() or proc.returncode}"
                 )
             try:
-                result.update(self._parse_pr_batch(proc.stdout, chunk))
+                nodes = self._select_batch(proc.stdout, chunk)
+                if review:
+                    self._add_review(nodes, repo)
+                result.update(self._infos(nodes))
             except (ValueError, AttributeError, TypeError) as e:
                 raise WorktreeManagerError(f"PR batch query: bad response: {e}") from e
         return result
@@ -858,7 +1043,7 @@ class WorktreeManager:
                     "gh", "pr", "view",
                     "--json",
                     "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName,"
-                    "headRefOid,reviewRequests,latestReviews",
+                    "headRefOid,reviewRequests,latestReviews,isDraft,labels,author",
                 ],
                 capture_output=True,
                 text=True,

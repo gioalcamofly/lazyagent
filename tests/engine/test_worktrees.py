@@ -80,7 +80,7 @@ class FakeManager:
         self.world.calls.append(("repo_view",))
         return self.world.github_repo
 
-    def get_pr_infos(self, worktrees, repo):
+    def get_pr_infos(self, worktrees, repo, review=False):
         if self.world.pr_delay:
             time.sleep(self.world.pr_delay)
         self.world.calls.append(("pr_batch", tuple(wt.path for wt in worktrees)))

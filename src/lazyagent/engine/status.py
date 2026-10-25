@@ -648,7 +648,8 @@ class StatusProjection:
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
             # The queue on, with nothing open yet: what the row would be.
-            ctx = RowContext(evolve(facts, actionables=()), now, last_change, hours)
+            ctx = RowContext(evolve(facts, actionables=()), now, last_change, hours,
+                             catalog.not_human)
             contexts.append(ctx)
             rule = catalog.first_item(ctx)
             if rule is None:
@@ -684,8 +685,10 @@ class StatusProjection:
         now = self.clock()
         seen = self._seen.get(key)
         last_change = seen.changed_at if seen is not None else now
-        ctx = RowContext(facts, now, last_change, self._engine.config.status.stalled_hours)
-        out = self.catalog.explain(ctx)
+        catalog = self.catalog
+        ctx = RowContext(facts, now, last_change, self._engine.config.status.stalled_hours,
+                         catalog.not_human)
+        out = catalog.explain(ctx)
         out["key"] = key
         out["items"] = [
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
@@ -1077,7 +1080,8 @@ class StatusProjection:
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
             if ctx is None:
-                ctx = RowContext(facts, now, last_change, config.stalled_hours)
+                ctx = RowContext(facts, now, last_change, config.stalled_hours,
+                                 catalog.not_human)
             derived = catalog.evaluate(ctx)
             fp = fingerprint(facts, derived, user_facts(catalog, ctx, derived.rule_id))
             if seen is None:

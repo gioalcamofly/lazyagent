@@ -68,6 +68,8 @@ def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
         # The page's hand-written part (concepts.toml): intros, zones, the
         # ball, the colours, the keys.
         "concepts": concepts(),
+        # The rule files' [review] tables, merged.
+        "review": {"not_human": sorted(catalog.not_human)},
         "files": check["files"],
         "errors": check["errors"],
         "warnings": check["warnings"],

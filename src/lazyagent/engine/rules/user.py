@@ -55,7 +55,8 @@ else:  # pragma: no cover - the tomli dependency on 3.10
 MAX_FILE_BYTES = 256 * 1024
 MAX_RULES = 200
 RULE_KEYS = frozenset({"id", "says", "when", "and_when", "then", "before", "after", "disabled"})
-TOP_KEYS = frozenset({"version", "rule"})
+TOP_KEYS = frozenset({"version", "rule", "review"})
+REVIEW_KEYS = frozenset({"not_human"})
 # Tables later phases read (R4, R5): accepted, not read yet.
 LATER_KEYS = frozenset({"ci", "ci_unrelated"})
 SCOPES = ("global", "repo")
@@ -94,6 +95,8 @@ class FileRules:
     warnings: list[dict[str, Any]] = field(default_factory=list)
     # False: the file as a whole was ignored (TOML, size, version).
     ok: bool = True
+    # [review] not_human: logins that are not people (lower case).
+    not_human: list[str] = field(default_factory=list)
 
 
 def problem(f: FileRules | None, line: int | None, rule: str | None, message: str,
@@ -159,6 +162,8 @@ def parse_file(text: str, scope: str, path: str) -> FileRules:
                                       "ignored"))
         else:
             f.errors.append(problem(f, None, None, f"unknown top-level key {key!r}", "ignored"))
+    if "review" in data:
+        _review(f, data["review"], text)
     raw_rules = data.get("rule", [])
     if not isinstance(raw_rules, list):
         f.errors.append(problem(f, None, None, "rule must be an array of tables ([[rule]])",
@@ -184,6 +189,26 @@ def parse_file(text: str, scope: str, path: str) -> FileRules:
         seen.add(rid)
         f.entries.append(entry)
     return f
+
+
+_REVIEW_HEADER = re.compile(r"^\s*\[\s*review\s*\]")
+
+
+def _review(f: FileRules, table: Any, text: str) -> None:
+    """``[review]``: ``not_human``, the accounts pr.human_approvals leaves
+    out (a review app that signs in as a user, a CI account)."""
+    line = next((n for n, s in enumerate(text.splitlines(), 1) if _REVIEW_HEADER.match(s)), None)
+    if not isinstance(table, dict):
+        f.errors.append(problem(f, line, None, "[review] must be a table", "ignored"))
+        return
+    for key in sorted(set(table) - REVIEW_KEYS):
+        f.errors.append(problem(f, line, None, f"unknown key {key!r} in [review]", "ignored"))
+    logins = table.get("not_human", [])
+    if not isinstance(logins, list) or not all(isinstance(x, str) and x.strip() for x in logins):
+        f.errors.append(problem(f, line, None, "[review] not_human must be a list of logins",
+                                "ignored"))
+        return
+    f.not_human = [x.strip().lower() for x in logins]
 
 
 # ----------------------------------------------------------------------
@@ -410,7 +435,8 @@ def compose(builtin: Catalog, files: list[FileRules]) -> Composed:
             continue
         seq.insert(at if key == "before" else at + 1, rule)
     rules = locked + seq
-    return Composed(Catalog(rules, list(builtin.kinds)), errors, warnings)
+    not_human = frozenset(login for f in files for login in f.not_human)
+    return Composed(Catalog(rules, list(builtin.kinds), not_human), errors, warnings)
 
 
 _AT = re.compile(r" \(at (\d+)\)$")

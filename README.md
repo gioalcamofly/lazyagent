@@ -518,6 +518,101 @@ id = "merge"
 and_when = 'item.branch != "release" and tracker.linked'
 ```
 
+**Owner review → human peer review → QA → merge.** When your agents push
+and open PRs as you, GitHub never shows your own approval: the PR stays a
+draft while you review (looping with the agent), and the agent marks it
+ready for review when you approve. A peer then reviews (looping too), QA
+tests it if needed, and you merge. `pr.review == "approved"` is not enough
+for the peer step, since an app can approve; the recipe reads these facts:
+
+| Fact | What it is |
+|---|---|
+| `pr.draft` | the PR is a draft |
+| `pr.human_approvals` | reviewers whose latest review (comments aside) approves: a later "changes requested" or a dismissal cancels it; apps (`Bot` accounts, `…[bot]`), the PR's author and the logins in `[review] not_human` do not count |
+| `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening |
+| `pr.labels` | the label names, lower case: `"qa:skip" in pr.labels` |
+
+```toml
+# ~/.config/lazyagent/rules.toml: owner review, peer review, QA, merge
+version = 1
+
+[review]
+not_human = ["my-review-app"]      # accounts that review but are not people
+
+[[rule]]
+id = "merge"
+says = "Merge when a person approved what you approved, CI is fine and QA is done."
+when = '''
+pr.state == "open" and not pr.draft and pr.commits_after_ready == 0
+and pr.human_approvals >= 1 and ci.state in ["green", "none"]
+and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
+'''
+[rule.then]
+ball = "you"
+level = "round"
+verb = "Merge"
+action = "open_pr"
+state = "merge: peer approved, QA ok"
+
+[[rule]]
+id = "owner_review"
+after = "label"                     # your own label still wins
+when = 'pr.state == "open" and pr.draft and agents.running == 0'
+[rule.then]
+ball = "you"
+verb = "Review"
+action = "open_pr"
+state = "draft · your review"
+
+[[rule]]
+id = "owner_review_again"
+after = "owner_review"
+when = '''
+pr.state == "open" and not pr.draft and pr.commits_after_ready > 0
+and agents.running == 0
+'''
+[rule.then]
+ball = "you"
+verb = "Review"
+action = "open_pr"
+state = "new commits since your approval"
+
+[[rule]]
+id = "waiting_for_peer"
+after = "owner_review_again"
+when = '''
+pr.state == "open" and not pr.draft and pr.human_approvals == 0
+and agents.running == 0
+'''
+[rule.then]
+ball = "others"
+state = "waiting for peer review"
+
+[[rule]]
+id = "waiting_for_qa"
+after = "waiting_for_peer"
+when = '''
+pr.state == "open" and not pr.draft and pr.human_approvals >= 1
+and pr.commits_after_ready == 0 and tracker.qa == "pending" and agents.running == 0
+'''
+[rule.then]
+ball = "others"
+state = "waiting for QA"
+```
+
+While an agent works on the branch the built-in "agent at work" line
+decides (each rule asks `agents.running == 0`), and the inbox (changes
+requested, CI red, conflicts) still comes first. Pushes after your approval
+bring the review back to you even if the agent forgets to turn the PR back
+into a draft; a merge of the base branch into it counts too. The timeline
+orders commits by their date, so a commit made before the PR was marked
+ready and pushed after it is caught only while the engine is running (it
+notices the head move). These facts are unknown when the PR could not be
+read: none of these rules matches then, and the built-ins below decide.
+`pr.labels`, `pr.human_approvals` and `pr.commits_after_ready` cost one
+more GitHub query per PR poll (1 point of the rate limit for up to 25
+branches), made only while one of your rules reads them.
+
 ```sh
 lazyagent rules check     # errors with file and line (exit 1), and what is in force instead
 lazyagent rules show      # the effective rules in order, and where each comes from
