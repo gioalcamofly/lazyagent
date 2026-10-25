@@ -230,7 +230,7 @@ class TestResolvedBase:
         service._gh_available = True
         calls = []
 
-        def fetch(root, targets):
+        def fetch(root, targets, review=False):
             calls.append([wt.path for wt in targets])
             return {str(repo): _pr("feature-a")}, 0
 

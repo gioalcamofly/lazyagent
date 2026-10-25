@@ -47,6 +47,7 @@ from typing import Any
 from lazyagent.engine.rules.facts import (
     BALLS,
     LEVEL_VALUES,
+    REVIEW_FACTS,
     SCOPES,
     ItemContext,
     RowContext,
@@ -413,9 +414,14 @@ def _derived() -> Any:
 class Catalog:
     """The ordered row rules and the kinds."""
 
-    def __init__(self, rules: list[Rule], kinds: list[KindRule]) -> None:
+    def __init__(self, rules: list[Rule], kinds: list[KindRule],
+                 not_human: frozenset[str] = frozenset()) -> None:
         self.rules = rules
         self.kinds = kinds
+        # [review] not_human: logins pr.human_approvals leaves out (lower case).
+        self.not_human = not_human
+        # A rule reads a fact the PR poll fetches only on demand.
+        self.reads_review = any(r.facts & REVIEW_FACTS for r in rules)
         self.kind = {k.id: k for k in kinds}
         self.by_id = {r.id: r for r in rules}
         self._tests = [r.test for r in rules]
@@ -427,7 +433,8 @@ class Catalog:
 
     def derive(self, facts: Any, now: float, last_change: float, stalled_hours: float) -> Any:
         """The row's :class:`~lazyagent.engine.status.Derived`."""
-        return self.evaluate(RowContext(facts, now, last_change, stalled_hours))
+        return self.evaluate(RowContext(facts, now, last_change, stalled_hours,
+                                        self.not_human))
 
     def match(self, ctx: RowContext, start: int = 0) -> int:
         """The index of the first rule from ``start`` whose condition is true."""

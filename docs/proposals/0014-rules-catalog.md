@@ -1,6 +1,6 @@
 # 0014. Rules catalog: states, actions and the facts behind them
 
-- **Status:** Accepted (2026-10-24; Q-R1-Q-R26 answered by the owner, all as recommended, with notes on Q-R7 and Q-R24). Plan in [rules-plan.md](../design/rules-plan.md) (R1, R2, R3 and R6 landed: its §5); the answers in "Open questions" below
+- **Status:** Accepted (2026-10-24; Q-R1-Q-R26 answered by the owner, all as recommended, with notes on Q-R7 and Q-R24). Plan in [rules-plan.md](../design/rules-plan.md) (R1, R2, R3, R3b and R6 landed: its §5); the answers in "Open questions" below
 - **Design refs:** [0013-inbox-and-status.md](0013-inbox-and-status.md) ("No LLM in the state path", "Kinds → level", "The orchestrator"); [inbox-plan.md](../design/inbox-plan.md) §3 (derivation), §5c (mandate, never alone), §7b (trackers), §8 I1-I8b as landed; [docs/guides/home.md](../guides/home.md)
 
 Today the rules that decide every Home row live in four places that must agree by hand: `derive()` in `engine/status.py` (rules 1-16, first match wins), the kinds and detectors in `engine/actionables.py`, the verb table in the desktop (`home.rs` `verb()`), and the guide text (`home_help.rs` and `docs/guides/home.md`, kept in step only by a heading test). This proposal turns them into **one catalog**: a closed list of **facts** the engine computes, and **rules** over those facts that give a row its ball, state, level, verb and action. Today's behaviour becomes the built-in catalog, byte for byte. The user can override and add rules in TOML. The desktop gets a **"How lazyagent works"** page generated from the same catalog, with a **"Why is this row in this state?"** view. Evaluation stays deterministic: there is never an LLM at evaluation time. An LLM may only help the user *write* a rule, and the user accepts or rejects the result.
@@ -78,6 +78,8 @@ Facts are grouped by namespace. **Cost** is the price of having the fact at all:
 | `pr.mergeable` | mergeable · conflicting · unknown | `PrInfo.mergeable` | ≤ 60 s | poll |
 | `pr.review_requests`, `pr.reviews` | count or unknown | `PrInfo` (I4d) | ≤ 60 s | poll |
 | `pr.number`, `pr.base`, `pr.head_sha` | int, text | `PrInfo` | ≤ 60 s | poll |
+| `pr.draft` | bool | `PrInfo.is_draft` (R3b) | ≤ 60 s | poll |
+| `pr.labels`, `pr.human_approvals`, `pr.commits_after_ready` | set of label names (lower case), count, count | the PR poll's review query (R3b) | ≤ 60 s | extra |
 | `pr.merged_into` | text or none | `merged_into()` (I4d) | per head | free |
 | `ci.state` | green · red · running · none | PR checks (`ci_state`) | ≤ 60 s | poll |
 | `ci.head` | green · red · running · moved · none | Actions verdict on the head (I7) | ≤ `actions_poll_s` | poll |
@@ -501,6 +503,7 @@ There is no LLM after step 2. The accepted TOML is evaluated by the engine like 
 | config | `[ci_unrelated] compare_to, base_fetches_per_poll`, `[ci_unrelated.project."<id>"] compare_to` | R4 | In `rules.toml` |
 | config | `[ci] nondeterministic, accept_attestation_for, attestation_ttl`, `[ci.check."<name>"] tests_from, parser options, confirm, min_base_runs, min_repetitions, max_drop` | R4, R5 | In `rules.toml` |
 | config | `[<adapter>.qa]`, `qa_field`, `qa_field_values` | R3 | In `trackers.toml` |
+| config | `[review] not_human` | R3b | In `rules.toml` (global and repo, merged) |
 
 ### Security: rules are data
 

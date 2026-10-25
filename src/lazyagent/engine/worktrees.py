@@ -26,7 +26,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable, Collection, Coroutine, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
@@ -96,6 +96,12 @@ class WorktreeService:
         self.worktrees: list[WorktreeInfo] = []
         self.git_statuses: dict[str, GitStatus] = {}
         self._pr_infos: dict[str, PrInfo | None] = {}
+        # path → (PR number, ready_at, the head first seen after it): see
+        # _ready_head.
+        self._ready_heads: dict[str, tuple[int, str, str]] = {}
+        # Whether a rule reads the review facts (pr.labels …): the batch then
+        # makes its second query. The engine sets it.
+        self.wants_review: Callable[[], bool] = lambda: False
         self._diffs: dict[str, str] = {}
 
         self._interests: dict[str, frozenset[str]] = {}
@@ -196,7 +202,7 @@ class WorktreeService:
 
     def _prune(self) -> None:
         live = {wt.path for wt in self.worktrees}
-        for cache in (self.git_statuses, self._pr_infos, self._diffs):
+        for cache in (self.git_statuses, self._pr_infos, self._diffs, self._ready_heads):
             for path in [p for p in cache if p not in live]:
                 del cache[path]
 
@@ -423,7 +429,7 @@ class WorktreeService:
                     span["in_flight"] = in_flight
                     span["peak_in_flight"] = _PR_STATUS_GAUGE.peak
                     infos, batched = await asyncio.to_thread(
-                        self._fetch_pr_infos, repo_root, targets
+                        self._fetch_pr_infos, repo_root, targets, self.wants_review()
                     )
                 span["batched"] = batched
                 span["found"] = sum(info is not None for info in infos.values())
@@ -439,13 +445,30 @@ class WorktreeService:
         for path, info in infos.items():
             if path not in live:
                 continue
+            info = self._ready_head(path, info)
             if path in self._pr_infos and self._pr_infos[path] == info:
                 continue
             self._pr_infos[path] = info
             self._emit(PR_INFO_UPDATED, {"path": path, "pr_info": info})
 
+    def _ready_head(self, path: str, info: PrInfo | None) -> PrInfo | None:
+        """``info`` with at least one commit after ready when its head moved
+        since the first poll after its ready event. The timeline orders
+        commits by committer date, so a commit made before the event and
+        pushed after it reads as before it; this catches it whenever the
+        engine saw the PR between the two (a restart forgets)."""
+        if info is None or info.commits_after_ready is None or not info.ready_at:
+            self._ready_heads.pop(path, None)
+            return info
+        seen = self._ready_heads.get(path)
+        if seen is None or seen[:2] != (info.number, info.ready_at):
+            self._ready_heads[path] = (info.number, info.ready_at, info.head_sha)
+        elif seen[2] != info.head_sha and info.commits_after_ready == 0:
+            return replace(info, commits_after_ready=1)
+        return info
+
     def _fetch_pr_infos(
-        self, repo_root: str, targets: list[WorktreeInfo],
+        self, repo_root: str, targets: list[WorktreeInfo], review: bool = False,
     ) -> tuple[dict[str, PrInfo | None], int]:
         """Batched lookup first, then ``gh pr view`` for whatever it did not
         answer. Returns the infos and how many came from the batch."""
@@ -454,7 +477,7 @@ class WorktreeService:
         repo = self._resolve_github_repo(manager)
         if repo is not None:
             try:
-                results = manager.get_pr_infos(targets, repo)
+                results = manager.get_pr_infos(targets, repo, review=review)
             except WorktreeManagerError as e:
                 diag.event(log, "worker.pr_batch_failed", error=str(e))
                 results = {}

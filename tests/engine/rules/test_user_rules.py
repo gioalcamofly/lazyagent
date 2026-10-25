@@ -548,7 +548,8 @@ def test_the_readme_examples_do_what_the_readme_says():
     readme = (Path(__file__).resolve().parents[3] / "README.md").read_text()
     section = readme.split("### Your rules (rules.toml)")[1].split("\n### ")[0]
     blocks = re.findall(r"```toml\n(.*?)```", section, re.S)
-    assert len(blocks) == 2
+    # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py.
+    assert len(blocks) == 3
     cat, errors, warnings = catalog_of(("global", blocks[0]))
     assert errors == [] and warnings == []
     assert cat.by_id["merge"].origin == "global"

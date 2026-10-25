@@ -576,7 +576,7 @@ class TestGetPrInfo:
 
         mock_run.assert_called_once_with(
             ["gh", "pr", "view", "--json", "number,title,state,statusCheckRollup,url,reviewDecision,mergeable,baseRefName,"
-             "headRefOid,reviewRequests,latestReviews"],
+             "headRefOid,reviewRequests,latestReviews,isDraft,labels,author"],
             capture_output=True,
             text=True,
             cwd="/path/to/worktree",

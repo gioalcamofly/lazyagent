@@ -180,6 +180,17 @@ class PrInfo:
     # Requested reviewers and reviews given; None when not fetched.
     review_requests: int | None = None
     reviews: int | None = None
+    # isDraft and the label names; None when not fetched.
+    is_draft: bool | None = None
+    labels: list[str] | None = None
+    author: str = ""            # the PR's author's login
+    # The reviewers (no apps, not the author) whose latest review that is
+    # not a comment approves, and the commits and force pushes since the
+    # last ready-for-review event (ready_at; the PR's creation when it was
+    # opened ready). None when not fetched: only the batched query has them.
+    approved_by: list[str] | None = None
+    commits_after_ready: int | None = None
+    ready_at: str = ""
 
     @property
     def checks_summary(self) -> str:

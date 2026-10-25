@@ -292,6 +292,7 @@ class Engine:
         self.status = StatusProjection(self)
         # The rule files (proposal 0014 R2): the catalog the rows use.
         self.rules = RulesHub(lambda: self.repo_root, self.events.emit)
+        self.worktree_service.wants_review = lambda: self.rules.catalog.reads_review
         # Inbox items take their work item's priority.
         self.actionables.filters.append(self.status.prioritize)
         # Pass to orchestrator (claims on work items): rows and queue read it.

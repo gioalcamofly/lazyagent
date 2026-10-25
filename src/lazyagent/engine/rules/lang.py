@@ -76,7 +76,8 @@ class RuleError(ValueError):
 @dataclass(frozen=True)
 class Type:
     """``bool`` · ``num`` · ``duration`` · ``time`` · ``text`` · ``enum``
-    (a closed list of lower-case values) · ``set`` (of an enum's values) ·
+    (a closed list of lower-case values) · ``set`` (of an enum's values;
+    with no values, of any lower-case text) ·
     ``list`` (a literal list) · ``raw`` (only passed to a function)."""
 
     kind: str
@@ -104,6 +105,11 @@ def enum(name: str, values: tuple[str, ...]) -> Type:
 
 def set_of(name: str, values: tuple[str, ...]) -> Type:
     return Type("set", name, values)
+
+
+def open_set(name: str) -> Type:
+    """A set of any text, held in lower case (a PR's labels)."""
+    return Type("set", name)
 
 
 _ORDERED = ("num", "duration", "time")
@@ -512,9 +518,14 @@ class _Compiler:
             values = [a.value for a in lit.args]
         else:
             return
+        what = fact.value if fact.op == "fact" else "it"
+        if t.kind == "set" and not t.values:
+            for v in values:
+                if isinstance(v, str) and v != v.lower():
+                    raise RuleError(f"{what} is in lower case: write {v.lower()!r}", lit.pos)
+            return
         for v in values:
             if v not in t.values:
-                what = fact.value if fact.op == "fact" else "it"
                 raise RuleError(
                     f"{what} is never {v!r}" + _suggest(str(v), t.values)
                     + f" (one of {', '.join(t.values)})",
