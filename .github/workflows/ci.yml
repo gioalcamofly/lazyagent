@@ -16,6 +16,10 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+    # UV_PYTHON wins over .python-version (3.12, for local work), so every
+    # uv command below runs the matrix version.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +31,17 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Check the interpreter is ${{ matrix.python-version }}
+        run: |
+          uv run python --version
+          uv run python -c "import sys; assert '%d.%d' % sys.version_info[:2] == '${{ matrix.python-version }}', sys.version"
+
+      # Static check that nothing needs more than requires-python (3.10),
+      # also in code the tests do not reach.
+      - name: Minimum Python version (vermin)
+        if: matrix.python-version == '3.10'
+        run: uvx vermin==1.9.2 -t=3.10- --violations --eval-annotations --no-parse-comments --no-tips src tests hatch_build.py
 
       - name: Run tests
         run: uv run pytest

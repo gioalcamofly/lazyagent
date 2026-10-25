@@ -10,7 +10,7 @@ build-time copy of the catalog are generated here and checked by tests."""
 from __future__ import annotations
 
 import json
-import tomllib
+import sys
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -18,6 +18,11 @@ from typing import Any
 
 from lazyagent.engine.rules.facts import FACTS
 from lazyagent.engine.rules.lang import Node, parse
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - the tomli dependency on 3.10
+    import tomli as tomllib
 
 GENERATED = ("overview", "zones", "line", "ball", "states", "kinds", "keys", "rules", "facts")
 COLOURS = ("yellow", "orange", "purple", "cyan", "blue", "grey")
