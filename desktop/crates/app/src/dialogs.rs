@@ -24,8 +24,6 @@ pub enum Kind {
     Remove,
     Stop,
     Help,
-    /// The Home guide (`?` on Home, Help → Home guide).
-    HomeHelp,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +145,7 @@ pub fn handoff(state: &State, target: &str, agent_id: Option<&str>) -> Handoff {
 
 /// Every key, for the `?` sheet (ui-plan §7a, keymap.js), in this app's terms.
 pub const KEYMAP: &[(&str, &str, &str)] = &[
+    ("F1", "How lazyagent works", "Anywhere"),
     ("Ctrl+K", "Focus the sidebar", "Anywhere"),
     ("Ctrl+J", "Focus the active agent (in the agent: a newline)", "Anywhere"),
     ("Ctrl+L", "Open and focus the worktree shell (in the shell: clear)", "Anywhere"),
@@ -159,7 +158,8 @@ pub const KEYMAP: &[(&str, &str, &str)] = &[
     ("Ctrl+=  Ctrl+−  Ctrl+0", "Terminal font size: larger, smaller, default", "Anywhere"),
     ("J  K  ↓  ↑", "Next / previous worktree; Enter: its agent", "Sidebar"),
     ("J  K  ↓  ↑  Enter", "Next / previous line; Enter: answer a Now item, else expand", "Home"),
-    ("?", "The Home guide: zones, the ball, rounds, the orchestrator, every key", "Home"),
+    ("?", "How lazyagent works, at Home: zones, the ball, every state and key", "Home"),
+    ("W", "Why is this line here? (the rule, its facts, the rules above)", "Home"),
     ("O  N  P", "The line's agent terminal / its notes / its PR", "Home"),
     ("X  Z", "Dismiss the line's item / park it (1-5; W the whole work item)", "Home"),
     ("Shift+Z  D", "Show / hide Parked / delegate the line's item to the branch's agent", "Home"),
@@ -200,7 +200,7 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
     let mut submit = None::<Submit>;
     let handoff = if d.kind == Kind::Stop { handoff(state, &d.target, d.agent_id.as_deref()) } else { Handoff::Empty };
     let modal = egui::Modal::new(egui::Id::unique(("lazyagent-dialog", d.id))).show(ctx, |ui| {
-        let help = matches!(d.kind, Kind::Help | Kind::HomeHelp);
+        let help = matches!(d.kind, Kind::Help);
         ui.set_width(if help { 640.0 } else { 460.0 });
         let typing = ui.ctx().text_edit_focused();
         let title = match d.kind {
@@ -209,7 +209,6 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
             Kind::Remove => format!("Remove {}", store::basename(&d.target)),
             Kind::Stop => "Stop the agent".into(),
             Kind::Help => "Keys".into(),
-            Kind::HomeHelp => "Home guide".into(),
         };
         ui.label(RichText::new(title).strong().size(15.0));
         ui.add_space(6.0);
@@ -426,9 +425,6 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                     }
                 }
             }
-            Kind::HomeHelp => {
-                egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| crate::home_help::show(ui, &t));
-            }
             Kind::Help => {
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
                     egui::Grid::new("help-grid").num_columns(3).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
@@ -454,7 +450,7 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                 Kind::Create => ("Create", Some(Submit::Create)),
                 Kind::Remove => ("Remove", Some(Submit::Remove)),
                 Kind::Stop => ("Stop", Some(Submit::Stop(plain))),
-                Kind::Help | Kind::HomeHelp => ("Close", None),
+                Kind::Help => ("Close", None),
             };
             let blocked = d.kind == Kind::Remove && remove_guard(state.store.worktree(&d.target)).is_some();
             let text = if d.busy { format!("{label}…") } else { label.to_string() };
@@ -479,7 +475,7 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
         close = true;
     }
     if close {
-        if !matches!(d.kind, Kind::Help | Kind::HomeHelp) {
+        if !matches!(d.kind, Kind::Help) {
             state.focus_request = Some(Focus::Agent);
         }
         return;

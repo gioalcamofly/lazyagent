@@ -16,7 +16,7 @@
 //! something changes, indefinitely; keys 1-5, `w` for the whole work item);
 //! a folded **Parked (N)** group (`Shift+Z`); `d` delegates the line's item
 //! to the branch's agent; the orchestrator's holds and release notes on the
-//! row; middle-ellipsis names with the full one on hover; `?` the Home guide.
+//! row; middle-ellipsis names with the full one on hover; `?` "How lazyagent works" at Home; `w` Why? (R6).
 //!
 //! Done rows with nothing to do fold into one "N done today" group at the
 //! end of In flight (`Shift+F`, kept per repo).
@@ -146,6 +146,7 @@ enum Act {
     RevertAction(String),
     ParkedShow,
     DoneFold,
+    Why(Line),
 }
 
 /// `1h 40m`, `25m`: how long is left.
@@ -241,9 +242,12 @@ impl State {
             // The decision view has the keys while it is open (decision_view.rs).
             return self.decision_key(take);
         }
+        if self.why.is_some() {
+            return self.why_key(take);
+        }
         let folded = self.saved.home_fold;
         if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
-            self.open_dialog(crate::dialogs::Kind::HomeHelp);
+            self.open_guide(crate::how_it_works::HOME_SECTION);
             return true;
         }
         if let Some(key) = self.home.parking.clone()
@@ -408,6 +412,11 @@ impl State {
             self.take_back(&line);
         } else if take(Modifiers::NONE, Key::M) {
             self.seen_line(&line);
+        } else if !self.pending_g.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1))
+            && take(Modifiers::NONE, Key::W)
+        {
+            // (g w is the worktrees: the g came first.)
+            self.open_why(&line);
         } else if self.first_responder() && take(Modifiers::NONE, Key::T) {
             self.toggle_strip();
         } else {
@@ -1242,7 +1251,7 @@ pub fn hint_keys(
     if decision_view {
         keys.extend(["v decision view", "y explain", "⇧Y restore and explain"]);
     }
-    keys.extend(["f fold", "Ctrl+Z undo", "? guide"]);
+    keys.extend(["w why", "f fold", "Ctrl+Z undo", "? how it works"]);
     keys.join(" · ")
 }
 
@@ -1250,6 +1259,10 @@ impl App {
     pub(crate) fn home_view(&mut self, ui: &mut Ui) {
         if self.state.decision.is_some() {
             self.decision_view(ui);
+            return;
+        }
+        if self.state.why.is_some() {
+            self.why_view(ui);
             return;
         }
         let t = self.state.theme;
@@ -1298,6 +1311,7 @@ impl App {
             approvals: s.inline_approvals(),
             questions: s.inline_questions(),
             close_stop: s.has(F_CLOSE_STOP),
+            why: s.has("rules"),
         };
         let rules_line = rules_error_line(&s.rules_errors);
         let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
@@ -1534,6 +1548,7 @@ impl App {
                 }
                 Act::Seen => s.mark_all_seen(),
                 Act::SeenLine(l) => s.seen_line(&l),
+                Act::Why(l) => s.open_why(&l),
                 Act::LabelOpen(l) => s.open_label(&l),
                 Act::LabelEdit(l) => s.home.labeling = Some(l),
                 Act::LabelSave(l) => s.label_line(l),
@@ -1602,6 +1617,8 @@ struct LineCtx<'a> {
     questions: bool,
     /// The engine stops a closed item's agents (`close_stop`).
     close_stop: bool,
+    /// The engine explains its lines (feature `rules`): Why?.
+    why: bool,
 }
 
 /// "Presence: auto (present)": the toggle, as one menu.
@@ -2363,6 +2380,12 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                         }
                     }
                 });
+            }
+            if c.why
+                && l.row.is_some()
+                && ui.button("Why?  (w)").on_hover_text("The rule that put it here, and the facts it saw").clicked()
+            {
+                acts.push(Act::Why(l.clone()));
             }
             if let Err(why) = c.pass
                 && l.row.is_some()

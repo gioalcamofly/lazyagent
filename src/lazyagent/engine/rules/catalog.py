@@ -519,8 +519,19 @@ class Catalog:
         item_rule = self.by_id.get(queue[0].get("rule_id") or "") if queue else None
         if rule.id == "queue" and item_rule is not None:
             # The top item is a rule's (Merge): that rule, and what it read.
+            # The rules between the locked prefix and it, each with the
+            # first condition that was not true (as above, for the item).
+            at = self.rules.index(item_rule)
+            item_above = []
+            for r in self.rules[self.unlocked:at]:
+                entry = {"id": r.id, "origin": r.origin, **_failed(r, ctx)}
+                if r.file is not None:
+                    entry |= {"file": r.file, "line": r.line,
+                              "facts": [fact_value(FACTS[n], ctx) for n in sorted(r.facts)]}
+                item_above.append(entry)
             result["item_rule"] = describe(item_rule) | {
-                "facts": [fact_value(FACTS[n], ctx) for n in sorted(item_rule.facts)]}
+                "facts": [fact_value(FACTS[n], ctx) for n in sorted(item_rule.facts)],
+                "above": item_above}
         return result
 
     # --- kinds ---
@@ -540,13 +551,24 @@ def _failed(rule: Rule, ctx: RowContext) -> dict[str, Any]:
     for text, test in rule.conditions():
         value = test(ctx)
         if value is not True:
-            return {"failed": text, "value": "unknown" if value is UNKNOWN else "false"}
+            return {"failed": text, "said": _said(text),
+                    "value": "unknown" if value is UNKNOWN else "false"}
     if rule.item:
         # True, but the queue makes the item: shown there, or dismissed or
         # parked.
         return {"failed": "an inbox item: the queue shows it (or it was dismissed or parked)",
                 "value": "item"}
     return {"failed": "", "value": "true"}
+
+
+def _said(text: str) -> str:
+    """The condition in English (the "Why?" view shows it)."""
+    from lazyagent.engine.rules.doc import sentence
+
+    try:
+        return sentence(text)
+    except Exception:  # noqa: BLE001 - a term the sentence maker does not know: its source
+        return text
 
 
 def plain(value: Any) -> Any:

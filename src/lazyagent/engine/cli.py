@@ -630,9 +630,13 @@ def build_rules_parser() -> argparse.ArgumentParser:
     allow.add_argument("hash", nargs="?", default=None,
                        help="The hash `rules check` shows (12+ characters); without it, "
                        "the file and its hash are printed")
-    doc = command("doc", "The rules catalog as Markdown (the built-ins by default)")
+    doc = command("doc", "\"How lazyagent works\" as Markdown, from the rules catalog "
+                  "(the built-ins by default)")
     doc.add_argument("--effective", action="store_true",
                      help="With your rules (the files as they apply now)")
+    doc.add_argument("--write", action="store_true",
+                     help="In a lazyagent checkout: write docs/guides/how-lazyagent-works.md and the "
+                     "desktop's copy of the catalog (desktop/crates/app/assets/rules_catalog.json)")
     return parser
 
 
@@ -695,10 +699,23 @@ def rules_main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload) if args.json else format_rules(payload), flush=True)
         return 0
     if args.command == "doc":
-        from lazyagent.engine.rules import builtin
-        from lazyagent.engine.rules.export import markdown
+        from lazyagent.engine.rules import doc
+        from lazyagent.engine.rules.export import catalog_payload
 
-        print(markdown(hub.catalog if args.effective else builtin()), end="", flush=True)
+        if args.write:
+            if args.effective:
+                error("--write writes the built-in page; --effective only prints")
+                return 2
+            try:
+                for path in doc.write(Path(root)):
+                    print(f"wrote {path}")
+            except FileNotFoundError as e:
+                error(str(e))
+                return 1
+            return 0
+        payload = (catalog_payload(hub.catalog, hub.check_result()) if args.effective
+                   else doc.builtin_payload())
+        print(doc.page_markdown(payload), end="", flush=True)
         return 0
     return _rules_allow(hub, root, args.hash, error)
 

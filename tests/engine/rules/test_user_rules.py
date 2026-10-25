@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from lazyagent.engine.rules import builtin
-from lazyagent.engine.rules.export import format_explain, markdown
+from lazyagent.engine.rules.export import format_explain
 from lazyagent.engine.rules.facts import RowContext
 from lazyagent.engine.rules.hub import RULES_CHANGED, RULES_ERRORS, RulesHub, digest
 from lazyagent.engine.rules.user import compose, parse_file
@@ -496,7 +496,7 @@ def test_cli_rules_check_show_doc_and_allow(repo, capsys):
     out = capsys.readouterr().out
     assert "mine" in out and "global" in out and "error:" in out
     assert rules_main(["doc", str(repo)]) == 0
-    assert capsys.readouterr().out == markdown(builtin())
+    assert capsys.readouterr().out.startswith("# How lazyagent works")
     # Without a hash: the file and its hash, nothing allowed.
     assert rules_main(["allow", str(repo)]) == 0
     out = capsys.readouterr().out

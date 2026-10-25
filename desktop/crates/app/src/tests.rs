@@ -3585,7 +3585,7 @@ fn home_i4c_screenshots() {
     shot(&mut h, "i4c-home-light");
 }
 
-// --- Home, I4d: park menu, Parked, the Home guide, names, holds, notes ------
+// --- Home, I4d: park menu, Parked, names, holds, notes ---------------------
 
 const I4D: &[&str] = &["status", "actionables", "claims", "gestures", "decisions", "holds", "delegation", "parked"];
 
@@ -3862,37 +3862,6 @@ fn parked_work_items_wait_folded_and_say_when_they_need_you() {
     h.state_mut().state.home.expanded = Some("repo:billing".into());
     h.run_steps(2);
     h.get_by_label_contains("needs you: its items are not routed to the orchestrator");
-}
-
-#[test]
-fn question_mark_on_home_and_the_help_menu_open_the_home_guide() {
-    let (app, _tx) = engine_home(I4D);
-    let mut h = harness(app);
-    h.run_steps(2);
-    h.key_press(egui::Key::Questionmark);
-    h.run_steps(2);
-    assert_eq!(h.state().state.dialog.as_ref().map(|d| d.kind), Some(crate::dialogs::Kind::HomeHelp));
-    h.get_by_label("Home guide");
-    for heading in [
-        "The zones",
-        "The ball",
-        "Pass to orchestrator",
-        "What the orchestrator may do",
-        "Auto-delegation",
-        "Getting the most out of Home",
-    ] {
-        h.get_by_label(heading);
-    }
-    h.get_by_label_contains("Never alone: merge to a default or protected branch");
-    h.get_by_label("Close");
-    h.key_press(egui::Key::Escape);
-    h.run_steps(2);
-    assert!(h.state().state.dialog.is_none());
-    h.get_by_label("Help").click();
-    h.run_steps(2);
-    h.get_by_label("Home guide  (? on Home)").click();
-    h.run_steps(2);
-    assert_eq!(h.state().state.dialog.as_ref().map(|d| d.kind), Some(crate::dialogs::Kind::HomeHelp));
 }
 
 #[test]
@@ -4249,10 +4218,6 @@ fn home_i4d_screenshots() {
     h.state_mut().state.toggle_theme(&ctx);
     h.run_steps(4);
     shot(&mut h, "i4d-home-light");
-    // The Home guide, too.
-    h.state_mut().state.open_dialog(crate::dialogs::Kind::HomeHelp);
-    h.run_steps(4);
-    shot(&mut h, "i4d-home-guide-light");
 }
 
 // --- Home, I6: feeders' work items (projects, waits on, priority, waiting) ----
@@ -5594,3 +5559,6 @@ fn a_rule_item_shows_its_rules_verb() {
     let lines = h.state().state.home.shown_in(crate::home::Zone::Round);
     assert_eq!(lines.iter().map(|l| l.verb().to_string()).collect::<Vec<_>>(), ["Merge"]);
 }
+
+// "How lazyagent works", the Why? view and their screenshots (R6).
+mod how;

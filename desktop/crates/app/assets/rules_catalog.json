@@ -1,0 +1,2667 @@
+{
+ "actions": [
+  {
+   "id": "answer",
+   "key": "Enter",
+   "label": "Opens the agent's terminal at its dialog"
+  },
+  {
+   "id": "expand",
+   "key": "Enter",
+   "label": "Expands the line"
+  },
+  {
+   "id": "open_terminal",
+   "key": "o",
+   "label": "The agent's terminal"
+  },
+  {
+   "id": "open_notes",
+   "key": "n",
+   "label": "The agent's notes"
+  },
+  {
+   "id": "open_pr",
+   "key": "p",
+   "label": "The PR (for Merge: merging is done there, by you)"
+  },
+  {
+   "id": "open_tracker",
+   "key": "p",
+   "label": "The tracker task"
+  },
+  {
+   "id": "dismiss",
+   "key": "x",
+   "label": "Dismiss this occurrence of the item"
+  },
+  {
+   "id": "park",
+   "key": "z",
+   "label": "Park the item or the work item"
+  },
+  {
+   "id": "label",
+   "key": "l",
+   "label": "Put a ball and a text on the row"
+  },
+  {
+   "id": "close",
+   "key": "Shift+X",
+   "label": "Close the work item (done / dropped)"
+  },
+  {
+   "id": "take_back",
+   "key": "u",
+   "label": "Take back a pass, or clear your gesture"
+  },
+  {
+   "id": "pass",
+   "key": "Shift+O",
+   "label": "Pass to orchestrator"
+  },
+  {
+   "id": "delegate",
+   "key": "d",
+   "label": "Send the item to the branch's agent"
+  },
+  {
+   "id": "decision_view",
+   "key": "v",
+   "label": "Open the brief"
+  },
+  {
+   "id": "explain",
+   "key": "y",
+   "label": "Explain this"
+  },
+  {
+   "id": "explain_restore",
+   "key": "Shift+Y",
+   "label": "Explain this (restore)"
+  },
+  {
+   "id": "rebrief",
+   "key": "b",
+   "label": "Request a new brief"
+  },
+  {
+   "id": "seen",
+   "key": "m",
+   "label": "Mark seen"
+  },
+  {
+   "id": "all_seen",
+   "key": "Shift+M",
+   "label": "Mark all seen"
+  },
+  {
+   "id": "revert",
+   "key": "Shift+U",
+   "label": "Revert the orchestrator's decision"
+  },
+  {
+   "id": "why",
+   "key": "w",
+   "label": "Why is this row in this state?"
+  },
+  {
+   "id": "fold",
+   "key": "f",
+   "label": "Fold In flight"
+  },
+  {
+   "id": "fold_parked",
+   "key": "Shift+Z",
+   "label": "Fold Parked"
+  }
+ ],
+ "concepts": {
+  "balls": [
+   {
+    "colour": "orange",
+    "id": "you",
+    "text": "In your inbox."
+   },
+   {
+    "colour": "cyan",
+    "id": "orchestrator",
+    "text": "You passed it, or it holds it while it verifies."
+   },
+   {
+    "colour": "cyan",
+    "id": "agent",
+    "text": "An agent works on it (directly, or delegated)."
+   },
+   {
+    "colour": "purple",
+    "id": "others",
+    "text": "A reviewer or a teammate (or your label says so)."
+   },
+   {
+    "colour": "yellow",
+    "id": "stalled",
+    "text": "Nobody runs and nothing moves."
+   },
+   {
+    "colour": "grey",
+    "id": "done",
+    "text": "Merged, closed, or already in the base branch."
+   }
+  ],
+  "colours": [
+   {
+    "id": "orange",
+    "text": "You: the ball is yours. Nothing else is orange."
+   },
+   {
+    "id": "yellow",
+    "text": "Now, and parked items that still need you."
+   },
+   {
+    "id": "purple",
+    "text": "To sit down with; your labels, parks and closes."
+   },
+   {
+    "id": "cyan",
+    "text": "The orchestrator, and lines an agent works on."
+   },
+   {
+    "id": "blue",
+    "text": "The selected line, and the • of a changed line."
+   },
+   {
+    "id": "grey",
+    "text": "Facts and ages. Dimmed: done, or the next round."
+   }
+  ],
+  "keys": [
+   {
+    "does": "Next / previous line",
+    "keys": "J K ↓ ↑",
+    "where": "home"
+   },
+   {
+    "does": "Next line that needs you",
+    "keys": "Tab",
+    "where": "home"
+   },
+   {
+    "does": "Jump to Now, Round, To sit down with, In flight (on a brief: pick an option)",
+    "keys": "1 2 3 4",
+    "where": "home"
+   },
+   {
+    "does": "Expand; open a brief; a Now line's terminal",
+    "keys": "Enter",
+    "where": "home"
+   },
+   {
+    "does": "Close the form, else collapse",
+    "keys": "Esc",
+    "where": "home"
+   },
+   {
+    "does": "On an approval: approve / deny",
+    "keys": "Y  N",
+    "where": "home"
+   },
+   {
+    "does": "On an expanded brief: answer",
+    "keys": "Ctrl+Enter",
+    "where": "home"
+   },
+   {
+    "does": "The decision view",
+    "keys": "V",
+    "where": "home"
+   },
+   {
+    "does": "Explain this / restore its agent and explain",
+    "keys": "Y  ⇧Y",
+    "where": "home"
+   },
+   {
+    "does": "Why is this line here?",
+    "keys": "W",
+    "where": "home"
+   },
+   {
+    "does": "The agent's terminal",
+    "keys": "O",
+    "where": "home"
+   },
+   {
+    "does": "Its session notes",
+    "keys": "N",
+    "where": "home"
+   },
+   {
+    "does": "Its PR (or tracker task)",
+    "keys": "P",
+    "where": "home"
+   },
+   {
+    "does": "Dismiss the item (Undo 5 s)",
+    "keys": "X",
+    "where": "home"
+   },
+   {
+    "does": "Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; W whole work item)",
+    "keys": "Z",
+    "where": "home"
+   },
+   {
+    "does": "Show / hide Parked",
+    "keys": "⇧Z",
+    "where": "home"
+   },
+   {
+    "does": "Show / hide done today",
+    "keys": "⇧F",
+    "where": "home"
+   },
+   {
+    "does": "Pass to the orchestrator (Undo 5 s)",
+    "keys": "⇧O",
+    "where": "home"
+   },
+   {
+    "does": "Take back a pass or hold; clear your label, park, close or delegation",
+    "keys": "U",
+    "where": "home"
+   },
+   {
+    "does": "Delegate to the branch's agent (Undo 5 s)",
+    "keys": "D",
+    "where": "home"
+   },
+   {
+    "does": "Label who has the ball",
+    "keys": "L",
+    "where": "home"
+   },
+   {
+    "does": "Close the work item and stop its agent (asks first)",
+    "keys": "⇧X",
+    "where": "home"
+   },
+   {
+    "does": "Mark seen / everything seen",
+    "keys": "M  ⇧M",
+    "where": "home"
+   },
+   {
+    "does": "Revert the orchestrator's decision (asks first)",
+    "keys": "⇧U",
+    "where": "home"
+   },
+   {
+    "does": "The orchestrator's actions today",
+    "keys": "T",
+    "where": "home"
+   },
+   {
+    "does": "Undo the last dismiss, park, delegate or pass",
+    "keys": "Ctrl+Z",
+    "where": "home"
+   },
+   {
+    "does": "Fold In flight",
+    "keys": "F",
+    "where": "home"
+   },
+   {
+    "does": "The worktrees / back to Home",
+    "keys": "G W  G H",
+    "where": "home"
+   },
+   {
+    "does": "This page, at Home",
+    "keys": "?",
+    "where": "home"
+   },
+   {
+    "does": "Pick an option",
+    "keys": "1-4",
+    "where": "decision"
+   },
+   {
+    "does": "Answer",
+    "keys": "Ctrl+Enter",
+    "where": "decision"
+   },
+   {
+    "does": "Next / previous evidence tab",
+    "keys": "]  [",
+    "where": "decision"
+   },
+   {
+    "does": "Explain this / restore its agent and explain",
+    "keys": "Y  ⇧Y",
+    "where": "decision"
+   },
+   {
+    "does": "Request a new brief",
+    "keys": "B",
+    "where": "decision"
+   },
+   {
+    "does": "The agent's terminal",
+    "keys": "O",
+    "where": "decision"
+   },
+   {
+    "does": "Revert the orchestrator's decision",
+    "keys": "⇧U",
+    "where": "decision"
+   },
+   {
+    "does": "Back to Home",
+    "keys": "Esc",
+    "where": "decision"
+   },
+   {
+    "does": "Open this page (anywhere)",
+    "keys": "F1",
+    "where": "page"
+   },
+   {
+    "does": "Back to where you were",
+    "keys": "Esc",
+    "where": "page"
+   },
+   {
+    "does": "Back to Home",
+    "keys": "Esc",
+    "where": "why"
+   }
+  ],
+  "line": {
+   "example": [
+    "•",
+    "▴",
+    "cart-discount #12",
+    "agent",
+    "working · 12m · tests pass; opening the PR",
+    "3m"
+   ],
+   "parts": [
+    {
+     "part": "•",
+     "text": "changed since you looked"
+    },
+    {
+     "part": "▴",
+     "text": "high priority (▾ low)"
+    },
+    {
+     "part": "cart-discount #12",
+     "text": "branch and PR"
+    },
+    {
+     "part": "agent",
+     "text": "who has the ball"
+    },
+    {
+     "part": "working · 12m · …",
+     "text": "the state: a fact, never a guess"
+    },
+    {
+     "part": "3m",
+     "text": "how long it has been like this"
+    }
+   ]
+  },
+  "sections": [
+   {
+    "caption": "",
+    "cards": [
+     {
+      "text": "Owns the state: worktrees, agents, PRs, CI. Derives every line from facts. No LLM.",
+      "title": "Engine"
+     },
+     {
+      "text": "Claude Code or Codex sessions, one or more per worktree. They work, ask and report.",
+      "title": "Agents"
+     },
+     {
+      "text": "An agent with a mandate: relays, re-runs CI, holds while it verifies. Never merges alone.",
+      "title": "Orchestrator"
+     },
+     {
+      "text": "Answer what blocks an agent, merge, decide. Home shows what needs you first.",
+      "title": "You"
+     }
+    ],
+    "example": "",
+    "generated": "overview",
+    "id": "overview",
+    "intro": "The engine watches. Agents work. The orchestrator helps. You decide.",
+    "screenshot": null,
+    "title": "How it fits together"
+   },
+   {
+    "caption": "Home: Now, the Round, To sit down with, In flight, and the Parked chip.",
+    "cards": [],
+    "example": "",
+    "generated": "zones",
+    "id": "home",
+    "intro": "One line per work item: a branch with its PR, its agents and its CI. Nothing to keep up to date: the engine derives every line.",
+    "screenshot": "home",
+    "title": "Home"
+   },
+   {
+    "caption": "An expanded line: the whole ask, its buttons, and since you looked.",
+    "cards": [],
+    "example": "",
+    "generated": "line",
+    "id": "line",
+    "intro": "An inbox line starts with what to do (a verb); an In flight line with who has the ball.",
+    "screenshot": "expanded",
+    "title": "Reading a line"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": "ball",
+    "id": "ball",
+    "intro": "Who must move next. Only the ball you sees your inbox.",
+    "screenshot": null,
+    "title": "The ball"
+   },
+   {
+    "caption": "The decision view: options on the left, evidence on the right.",
+    "cards": [
+     {
+      "text": "1-4 pick, Ctrl+Enter answers. It reaches the agent after its turn.",
+      "title": "Answer"
+     },
+     {
+      "text": "y: the owner agent explains in 10 lines; ⇧Y restores it first.",
+      "title": "Explain this"
+     },
+     {
+      "text": "b: ask for a better one, with a note.",
+      "title": "New brief"
+     }
+    ],
+    "example": "",
+    "generated": null,
+    "id": "decision",
+    "intro": "A brief is a question with options, a recommendation and evidence. Enter (or v) opens it.",
+    "screenshot": "decision",
+    "title": "Decisions"
+   },
+   {
+    "caption": "The park menu: until when, for this item or the whole work item.",
+    "cards": [
+     {
+      "text": "1 h, tomorrow, a week, until something changes, indefinitely.",
+      "title": "Park  z"
+     },
+     {
+      "text": "Who has the ball and why: others · QA.",
+      "title": "Label  l"
+     },
+     {
+      "text": "Done or dropped. Never touches the worktree, branch or PR.",
+      "title": "Close  ⇧X"
+     },
+     {
+      "text": "x, z, d and ⇧O show Undo for 5 s (Ctrl+Z).",
+      "title": "Undo"
+     }
+    ],
+    "example": "",
+    "generated": null,
+    "id": "park",
+    "intro": "Keep your inbox to what you can act on today.",
+    "screenshot": "park",
+    "title": "Park, label, close"
+   },
+   {
+    "caption": "The orchestrator strip: its report, its queue, today's actions, presence.",
+    "cards": [
+     {
+      "text": "Hand it an item for 2 h. It releases it with a note, or hands it back.",
+      "title": "Pass  ⇧O"
+     },
+     {
+      "text": "It holds a worker's branch while it verifies, then releases it to you.",
+      "title": "Hold"
+     },
+     {
+      "text": "Present: small reversible steps. Away: also reversible briefs, rebases, workers.",
+      "title": "Mandate"
+     },
+     {
+      "text": "Merge, publish, force-push, delete unpushed work, close a PR: always yours.",
+      "title": "Never alone"
+     },
+     {
+      "text": "Undo its decision for a day: tells the agent, stops what it spawned.",
+      "title": "Revert  ⇧U"
+     }
+    ],
+    "example": "",
+    "generated": null,
+    "id": "orchestrator",
+    "intro": "A delegate with a mandate. The strip on top of Home says what it is doing, what it holds and what it did today.",
+    "screenshot": "strip",
+    "title": "The orchestrator"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": "states",
+    "id": "states",
+    "intro": "Each line's state comes from the first rule that matches, top to bottom. An unknown fact never matches.",
+    "screenshot": null,
+    "title": "Every state"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": "kinds",
+    "id": "kinds",
+    "intro": "What can land in your inbox, at which level, and the verb it shows.",
+    "screenshot": null,
+    "title": "Inbox items"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": "keys",
+    "id": "keys",
+    "intro": "Single letters act on the selected line. Shifted keys ask first or are bigger.",
+    "screenshot": null,
+    "title": "Keys and actions"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": null,
+    "id": "why",
+    "intro": "w on any Home line (or Why? in the expanded line) shows the rule that matched, the facts it read, and the rules above it that did not match.",
+    "screenshot": null,
+    "title": "Why is this line here?"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "# $XDG_CONFIG_HOME/lazyagent/rules.toml\nversion = 1\n\n[[rule]]\nid = \"merge\"\nsays = \"Merge only after QA.\"\nand_when = 'tracker.status == \"QA passed\"'",
+    "generated": "rules",
+    "id": "rules",
+    "intro": "Rules are data. Your global rules.toml and a repo's .lazyagent/rules.toml can add, replace or narrow the built-ins. A bad rule is skipped and the built-in stays.",
+    "screenshot": null,
+    "title": "Your rules"
+   },
+   {
+    "caption": "",
+    "cards": [],
+    "example": "",
+    "generated": "facts",
+    "id": "facts",
+    "intro": "What rules can read. The engine fetches a costly fact only when an active rule reads it.",
+    "screenshot": null,
+    "title": "Facts"
+   }
+  ],
+  "zones": [
+   {
+    "colour": "yellow",
+    "id": "now",
+    "name": "Now",
+    "text": "An agent is blocked on you: an approval, a question. Shown at once."
+   },
+   {
+    "colour": "orange",
+    "id": "round",
+    "name": "Round",
+    "text": "Quick things that block nobody. Delivered in rounds, so nothing moves under your cursor."
+   },
+   {
+    "colour": "purple",
+    "id": "deep",
+    "name": "To sit down with",
+    "text": "Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max)."
+   },
+   {
+    "colour": "cyan",
+    "id": "flight",
+    "name": "In flight",
+    "text": "The ball is not yours: who has it and since when. Done rows fold at its end for a day."
+   },
+   {
+    "colour": "purple",
+    "id": "parked",
+    "name": "Parked",
+    "text": "What you parked, folded until you open it (⇧Z). Says when it comes back."
+   }
+  ]
+ },
+ "errors": [],
+ "facts": [
+  {
+   "cost": "free",
+   "freshness": "on worktrees.changed",
+   "name": "item.key",
+   "phrase": "the work item",
+   "scopes": [
+    "row"
+   ],
+   "source": "worktree scan",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on worktrees.changed",
+   "name": "item.repo",
+   "phrase": "the repo",
+   "scopes": [
+    "row"
+   ],
+   "source": "worktree scan",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on worktrees.changed",
+   "name": "item.branch",
+   "phrase": "the branch",
+   "scopes": [
+    "row"
+   ],
+   "source": "worktree scan",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on restorable.changed",
+   "name": "item.restorable",
+   "phrase": "the agents to restore",
+   "scopes": [
+    "row"
+   ],
+   "source": "restart manifest",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "item.idle",
+   "phrase": "the time since the last sign of work",
+   "scopes": [
+    "row"
+   ],
+   "source": "projection (activity, else the facts' last change)",
+   "type": "duration",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on start",
+   "name": "config.stalled_after",
+   "phrase": "the stalled threshold",
+   "scopes": [
+    "row"
+   ],
+   "source": "config [status] stalled_hours",
+   "type": "duration",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "now",
+   "phrase": "now",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "the engine's clock",
+   "type": "time",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agents.count",
+   "phrase": "the agents",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agents.running",
+   "phrase": "the agents at work (running or starting)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agents.idle",
+   "phrase": "the agents whose turn is over",
+   "scopes": [
+    "row"
+   ],
+   "source": "agent registry",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agents.statuses",
+   "phrase": "the agents' statuses",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "set agent_status",
+   "values": [
+    "running",
+    "waiting",
+    "waiting_for_user",
+    "waiting_for_approval",
+    "completed",
+    "failed",
+    "interrupted",
+    "possibly_hanged",
+    "starting"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agents.first_running",
+   "phrase": "the first working agent's status",
+   "scopes": [
+    "row"
+   ],
+   "source": "agent registry",
+   "type": "enum agent_status",
+   "values": [
+    "running",
+    "waiting",
+    "waiting_for_user",
+    "waiting_for_approval",
+    "completed",
+    "failed",
+    "interrupted",
+    "possibly_hanged",
+    "starting"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agent.id",
+   "phrase": "the agent",
+   "scopes": [
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agent.status",
+   "phrase": "the agent's status",
+   "scopes": [
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "enum agent_status",
+   "values": [
+    "running",
+    "waiting",
+    "waiting_for_user",
+    "waiting_for_approval",
+    "completed",
+    "failed",
+    "interrupted",
+    "possibly_hanged",
+    "starting"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "on agent.* events",
+   "name": "agent.detail",
+   "phrase": "the agent's detail line",
+   "scopes": [
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "static",
+   "name": "place.is_orchestrator",
+   "phrase": "the orchestrator's own place",
+   "scopes": [
+    "item"
+   ],
+   "source": "agent registry",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "agent.reported",
+   "phrase": "the agent's report says where the ball is (it works on)",
+   "scopes": [
+    "item"
+   ],
+   "source": "overlay",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.exists",
+   "phrase": "there is a PR",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.state",
+   "phrase": "the PR's state",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller",
+   "type": "enum pr_state",
+   "values": [
+    "open",
+    "merged",
+    "closed",
+    "none"
+   ]
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.review",
+   "phrase": "the PR's review decision",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller",
+   "type": "enum pr_review",
+   "values": [
+    "approved",
+    "changes_requested",
+    "review_required",
+    "none"
+   ]
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.mergeable",
+   "phrase": "the PR's mergeability",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller",
+   "type": "enum pr_mergeable",
+   "values": [
+    "mergeable",
+    "conflicting",
+    "unknown"
+   ]
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.review_requests",
+   "phrase": "the PR's requested reviewers",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.reviews",
+   "phrase": "the PR's reviews",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.number",
+   "phrase": "the PR's number",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.base",
+   "phrase": "the PR's base branch",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.head_sha",
+   "phrase": "the PR's head commit",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per head",
+   "name": "pr.merged_into",
+   "phrase": "the branch the head is already in (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "git (merged_into)",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "ci.state",
+   "phrase": "CI on the PR",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR checks",
+   "type": "enum ci_state",
+   "values": [
+    "green",
+    "red",
+    "running",
+    "none"
+   ]
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "ci.first_failing",
+   "phrase": "the first failing check (empty: none)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "Actions runs on the head, else PR checks",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.pr_red",
+   "phrase": "the PR's checks are red on its head",
+   "scopes": [
+    "item"
+   ],
+   "source": "PR checks, made precise by Actions",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.head",
+   "phrase": "Actions on the head",
+   "scopes": [
+    "item"
+   ],
+   "source": "Actions runs (I7)",
+   "type": "enum ci_head",
+   "values": [
+    "green",
+    "red",
+    "running",
+    "moved",
+    "none"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "static",
+   "name": "queue.enabled",
+   "phrase": "the inbox queue is on",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "items.count",
+   "phrase": "the work item's open inbox items",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "num",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "items.top.kind",
+   "phrase": "the top inbox item's kind",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "items.top.level",
+   "phrase": "the top inbox item's level",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "enum level",
+   "values": [
+    "now",
+    "round",
+    "deep"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "items.top.state",
+   "phrase": "the top inbox item's state",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "items.blocks_agent",
+   "phrase": "an open inbox item blocks an agent",
+   "scopes": [
+    "row"
+   ],
+   "source": "ActionableQueue",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "poll_s",
+   "name": "tracker.linked",
+   "phrase": "a tracker task is linked",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker hub",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "poll_s",
+   "name": "tracker.status",
+   "phrase": "the task's status",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker adapter",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "poll_s",
+   "name": "tracker.state",
+   "phrase": "the task's mapped state",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker adapter mapping",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "poll_s",
+   "name": "tracker.ball",
+   "phrase": "the task's mapped ball",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker adapter mapping",
+   "type": "enum ball",
+   "values": [
+    "you",
+    "agent",
+    "others",
+    "stalled",
+    "done"
+   ]
+  },
+  {
+   "cost": "poll",
+   "freshness": "poll_s",
+   "name": "tracker.level",
+   "phrase": "the task's mapped level",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker adapter mapping",
+   "type": "enum level",
+   "values": [
+    "now",
+    "round",
+    "deep"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "poll_s",
+   "name": "tracker.stale",
+   "phrase": "the tracker's last call failed",
+   "scopes": [
+    "row"
+   ],
+   "source": "tracker hub",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.kind",
+   "phrase": "your gesture",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "enum gesture_kind",
+   "values": [
+    "label",
+    "park",
+    "close",
+    "none"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.ball",
+   "phrase": "your label's ball",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "enum ball",
+   "values": [
+    "you",
+    "agent",
+    "others",
+    "stalled",
+    "done"
+   ]
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.text",
+   "phrase": "your gesture's text",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.until",
+   "phrase": "your park's end (a time or an event)",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "raw",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.how",
+   "phrase": "how you closed it",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.waiting",
+   "phrase": "a feeder's Waiting lane",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "gesture.source",
+   "phrase": "the feeder that parked it",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "claim.active",
+   "phrase": "you passed it to the orchestrator",
+   "scopes": [
+    "row"
+   ],
+   "source": "claims",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "hold.active",
+   "phrase": "the orchestrator holds it",
+   "scopes": [
+    "row"
+   ],
+   "source": "claims",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "hold.note",
+   "phrase": "the orchestrator's hold note (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "claims",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "holder",
+   "phrase": "who holds a routed item here (empty: nobody)",
+   "scopes": [
+    "row"
+   ],
+   "source": "first responder",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "delegation.phase",
+   "phrase": "the delegation's phase",
+   "scopes": [
+    "row"
+   ],
+   "source": "delegation",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "delegation.agent",
+   "phrase": "the agent it was delegated to",
+   "scopes": [
+    "row"
+   ],
+   "source": "delegation",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "delegation.fact",
+   "phrase": "what the agent is fixing (empty: unsaid)",
+   "scopes": [
+    "row"
+   ],
+   "source": "delegation",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "report.needs_user",
+   "phrase": "the agent reported it needs you",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "report.ball",
+   "phrase": "the agent's reported ball (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "report.note",
+   "phrase": "the agent's report note (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "report.agent",
+   "phrase": "the agent that reported (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  }
+ ],
+ "files": [],
+ "functions": [
+  {
+   "doc": "with(\"CI red\", detail): \"CI red: <detail>\", the prefix alone when the detail is empty or unknown; 5 words",
+   "name": "with"
+  },
+  {
+   "doc": "clip(text, n): n words",
+   "name": "clip"
+  },
+  {
+   "doc": "park_text(until, reason): \"parked until 08:00\", \"parked: <reason>\"",
+   "name": "park_text"
+  },
+  {
+   "doc": "waiting_text(source, reason): \"waiting: <reason>\", \"waiting (<source>)\"",
+   "name": "waiting_text"
+  },
+  {
+   "doc": "agents.detail_of(\"<status>\"): the detail line of the first agent in that status",
+   "name": "agents.detail_of"
+  }
+ ],
+ "kinds": [
+  {
+   "action": "answer",
+   "blocks_agent": true,
+   "class": "quick",
+   "detector": "agents",
+   "id": "approval",
+   "level": "now",
+   "rank": 1,
+   "says": "",
+   "sentence": "The agent's status is waiting for approval",
+   "state_text": "approve: ‹the agent's detail line›",
+   "title": "Needs approval",
+   "verb": "Approve",
+   "when": "agent.status == \"waiting_for_approval\"",
+   "zone": "now"
+  },
+  {
+   "action": "answer",
+   "blocks_agent": true,
+   "class": "quick",
+   "detector": "agents",
+   "id": "question",
+   "level": "now",
+   "rank": 2,
+   "says": "",
+   "sentence": "The agent's status is waiting for user",
+   "state_text": "answer: ‹the agent's detail line›",
+   "title": "Question",
+   "verb": "Answer",
+   "when": "agent.status == \"waiting_for_user\"",
+   "zone": "now"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "agents",
+   "id": "hanged",
+   "level": "round",
+   "rank": 3,
+   "says": "",
+   "sentence": "The agent's status is possibly hanged",
+   "state_text": "agent may hang",
+   "title": "Hanged?",
+   "verb": "Check agent",
+   "when": "agent.status == \"possibly_hanged\"",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "agents",
+   "id": "failed",
+   "level": "round",
+   "rank": 4,
+   "says": "",
+   "sentence": "The agent's status is failed",
+   "state_text": "agent failed",
+   "title": "Failed",
+   "verb": "Relaunch",
+   "when": "agent.status == \"failed\"",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "exits",
+   "id": "exited",
+   "level": "round",
+   "rank": 4,
+   "says": "",
+   "sentence": "",
+   "state_text": "agent exited",
+   "title": "Exited",
+   "verb": "Relaunch",
+   "when": null,
+   "zone": "round"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "pr",
+   "id": "ci",
+   "level": "round",
+   "rank": 5,
+   "says": "An open PR red on its head with no agent at work on it.",
+   "sentence": "The PR's state is open and the PR's checks are red on its head and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check›",
+   "title": "CI failing",
+   "verb": "Fix CI",
+   "when": "pr.state == \"open\" and ci.pr_red and agents.running == 0",
+   "zone": "round"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "actions",
+   "id": "ci_failed",
+   "level": "round",
+   "rank": 5,
+   "says": "A fresh red Actions run on the head of a branch with no PR (I7).",
+   "sentence": "Not: there is a PR and Actions on the head is red and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check›",
+   "title": "CI failed",
+   "verb": "Fix CI",
+   "when": "not pr.exists and ci.head == \"red\" and agents.running == 0",
+   "zone": "round"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "deep",
+   "detector": "pr",
+   "id": "review",
+   "level": "deep",
+   "rank": 5,
+   "says": "",
+   "sentence": "The PR's state is open and the PR's review decision is changes requested",
+   "state_text": "changes requested",
+   "title": "Changes requested",
+   "verb": "Address review",
+   "when": "pr.state == \"open\" and pr.review == \"changes_requested\"",
+   "zone": "deep"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "pr",
+   "id": "conflict",
+   "level": "round",
+   "rank": 5,
+   "says": "",
+   "sentence": "The PR's state is open and the PR's mergeability is conflicting and there are no agents at work",
+   "state_text": "conflict with base",
+   "title": "Merge conflict",
+   "verb": "Resolve conflict",
+   "when": "pr.state == \"open\" and pr.mergeable == \"conflicting\" and agents.running == 0",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "deep",
+   "detector": "agents",
+   "id": "done",
+   "level": "deep",
+   "rank": 6,
+   "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on.",
+   "sentence": "The agent's status is completed, waiting or interrupted and there are no agents at work and not: there is a PR and not: the orchestrator's own place and not: the agent's report says where the ball is",
+   "state_text": "review: agent finished",
+   "title": "Your turn",
+   "verb": "Review",
+   "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agents.running == 0 and not pr.exists and not place.is_orchestrator and not agent.reported",
+   "zone": "deep"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "jobs",
+   "id": "job",
+   "level": "round",
+   "rank": 7,
+   "says": "",
+   "sentence": "",
+   "state_text": "job failed",
+   "title": "Job failed",
+   "verb": "Fix job",
+   "when": null,
+   "zone": "round"
+  },
+  {
+   "action": "open_tracker",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "tracker",
+   "id": "tracker_status",
+   "level": "round",
+   "rank": 5,
+   "says": "A linked tracker task entered a status mapped with a level (its own).",
+   "sentence": "",
+   "state_text": "",
+   "title": "Tracker",
+   "verb": "Update task",
+   "when": null,
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "report",
+   "id": "report",
+   "level": "round",
+   "rank": 5,
+   "says": "An agent's status_report with needs_user.",
+   "sentence": "",
+   "state_text": "",
+   "title": "Agent reports",
+   "verb": "Read",
+   "when": null,
+   "zone": "round"
+  },
+  {
+   "action": "decision_view",
+   "blocks_agent": false,
+   "class": "deep",
+   "detector": "decision",
+   "id": "decision",
+   "level": "deep",
+   "rank": 2,
+   "says": "A brief: its level and blocks_agent are the item's own.",
+   "sentence": "",
+   "state_text": "",
+   "title": "Decide",
+   "verb": "Decide",
+   "when": null,
+   "zone": "deep"
+  }
+ ],
+ "rules": [
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "done",
+   "file": null,
+   "id": "closed.merged",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 1,
+   "origin": "builtin",
+   "position": 0,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is merged",
+   "state_text": "merged",
+   "then": {
+    "ball": "done",
+    "state": "merged"
+   },
+   "verb": null,
+   "when": "pr.state == \"merged\"",
+   "zone": "done"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "done",
+   "file": null,
+   "id": "closed.pr_closed",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 1,
+   "origin": "builtin",
+   "position": 1,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is closed",
+   "state_text": "PR closed",
+   "then": {
+    "ball": "done",
+    "state": "PR closed"
+   },
+   "verb": null,
+   "when": "pr.state == \"closed\"",
+   "zone": "done"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "done",
+   "file": null,
+   "id": "closed.already_merged",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 1,
+   "origin": "builtin",
+   "position": 2,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Closing the PR stays the user's (never alone).",
+   "sentence": "The PR's state is open and the branch the head is already in is set",
+   "state_text": "already merged into ‹the branch the head is already in›",
+   "then": {
+    "ball": "done",
+    "state_expr": "\"already merged into \" + pr.merged_into",
+    "suggestion_expr": "\"close PR #\" + pr.number + \": its head is in \" + pr.merged_into"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and pr.merged_into != \"\"",
+   "zone": "done"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "done",
+   "file": null,
+   "id": "closed.by_you",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 1,
+   "origin": "builtin",
+   "position": 3,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "Your gesture is close",
+   "state_text": "dropped by you / closed by you",
+   "then": {
+    "ball": "done",
+    "state_expr": "gesture.how == \"dropped\" ? \"dropped by you\" : \"closed by you\""
+   },
+   "verb": null,
+   "when": "gesture.kind == \"close\"",
+   "zone": "done"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "(the ball below)",
+   "file": null,
+   "id": "park",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 7,
+   "origin": "builtin",
+   "position": 4,
+   "queue_off": false,
+   "replaces": null,
+   "says": "The whole work item waits in Parked, with the ball it would have.",
+   "sentence": "Your gesture is park",
+   "state_text": "waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason›",
+   "then": {
+    "inherit": [
+     "ball"
+    ],
+    "state_expr": "gesture.waiting ? waiting_text(gesture.source, gesture.text) : park_text(gesture.until, gesture.text)"
+   },
+   "verb": null,
+   "when": "gesture.kind == \"park\"",
+   "zone": "parked"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "queue",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 2,
+   "origin": "builtin",
+   "position": 5,
+   "queue_off": false,
+   "replaces": null,
+   "says": "The work item's open inbox items, top first.",
+   "sentence": "There are work item's open inbox items",
+   "state_text": "‹the top inbox item's state›",
+   "then": {
+    "ball": "you",
+    "blocks_agent_expr": "items.blocks_agent",
+    "level_expr": "items.top.level",
+    "state_expr": "items.top.state"
+   },
+   "verb": null,
+   "when": "items.count > 0",
+   "zone": "inbox"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "claim",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 13,
+   "origin": "builtin",
+   "position": 6,
+   "queue_off": false,
+   "replaces": null,
+   "says": "You passed it to the orchestrator.",
+   "sentence": "You passed it to the orchestrator",
+   "state_text": "orchestrator · looking",
+   "then": {
+    "ball": "agent",
+    "state": "orchestrator · looking"
+   },
+   "verb": null,
+   "when": "claim.active",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "hold",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 15,
+   "origin": "builtin",
+   "position": 7,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The orchestrator holds it",
+   "state_text": "orchestrator · (holding / ‹the orchestrator's hold note›)",
+   "then": {
+    "ball": "agent",
+    "state_expr": "clip(\"orchestrator · \" + (hold.note == \"\" ? \"holding\" : hold.note), 8)"
+   },
+   "verb": null,
+   "when": "hold.active",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "held",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 14,
+   "origin": "builtin",
+   "position": 8,
+   "queue_off": false,
+   "replaces": null,
+   "says": "The orchestrator holds a routed brief or question here.",
+   "sentence": "Who holds a routed item here is orchestrator",
+   "state_text": "orchestrator · looking",
+   "then": {
+    "ball": "agent",
+    "state": "orchestrator · looking"
+   },
+   "verb": null,
+   "when": "holder == \"orchestrator\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "delegated",
+   "item": false,
+   "line": null,
+   "locked": true,
+   "num": 16,
+   "origin": "builtin",
+   "position": 9,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The delegation's phase is on it",
+   "state_text": "agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›)",
+   "then": {
+    "ball": "agent",
+    "state_expr": "clip(\"agent \" + delegation.agent + \" · fixing \" + (delegation.fact == \"\" ? \"it\" : delegation.fact), 8)"
+   },
+   "verb": null,
+   "when": "delegation.phase == \"on_it\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "approve",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 2,
+   "origin": "builtin",
+   "position": 10,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and the agents' statuses include waiting for approval",
+   "state_text": "approve: ‹the agent's detail›",
+   "then": {
+    "ball": "you",
+    "blocks_agent": true,
+    "level": "now",
+    "state_expr": "with(\"approve\", agents.detail_of(\"waiting_for_approval\"))"
+   },
+   "verb": null,
+   "when": "not queue.enabled and \"waiting_for_approval\" in agents.statuses",
+   "zone": "now"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "answer",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 2,
+   "origin": "builtin",
+   "position": 11,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and the agents' statuses include waiting for user",
+   "state_text": "answer: ‹the agent's detail›",
+   "then": {
+    "ball": "you",
+    "blocks_agent": true,
+    "level": "now",
+    "state_expr": "with(\"answer\", agents.detail_of(\"waiting_for_user\"))"
+   },
+   "verb": null,
+   "when": "not queue.enabled and \"waiting_for_user\" in agents.statuses",
+   "zone": "now"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "agent_failed",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 2,
+   "origin": "builtin",
+   "position": 12,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and the agents' statuses include failed",
+   "state_text": "agent failed",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state": "agent failed"
+   },
+   "verb": null,
+   "when": "not queue.enabled and \"failed\" in agents.statuses",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "agent_may_hang",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 2,
+   "origin": "builtin",
+   "position": 13,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and the agents' statuses include possibly hanged",
+   "state_text": "agent may hang",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state": "agent may hang"
+   },
+   "verb": null,
+   "when": "not queue.enabled and \"possibly_hanged\" in agents.statuses",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "needs_you",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 3,
+   "origin": "builtin",
+   "position": 14,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and the agent reported it needs you",
+   "state_text": "needs you: ‹the agent's report note›",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state_expr": "with(\"needs you\", report.note)"
+   },
+   "verb": null,
+   "when": "not queue.enabled and report.needs_user",
+   "zone": "round"
+  },
+  {
+   "action": "open_pr",
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "merge",
+   "item": true,
+   "line": null,
+   "locked": false,
+   "num": 4,
+   "origin": "builtin",
+   "position": 15,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Approved, CI green and mergeable: merging is yours, on the PR.",
+   "sentence": "The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable",
+   "state_text": "merge: approved, CI green",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state": "merge: approved, CI green"
+   },
+   "verb": "Merge",
+   "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\"",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "changes_requested",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 5,
+   "origin": "builtin",
+   "position": 16,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and not: the inbox queue is on and the PR's review decision is changes requested",
+   "state_text": "changes requested",
+   "then": {
+    "ball": "you",
+    "level": "deep",
+    "state": "changes requested"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and not queue.enabled and pr.review == \"changes_requested\"",
+   "zone": "deep"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "conflict_no_agent",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 5,
+   "origin": "builtin",
+   "position": 17,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and not: the inbox queue is on and there are no agents at work and the PR's mergeability is conflicting",
+   "state_text": "conflict with base",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state": "conflict with base"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and pr.mergeable == \"conflicting\"",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "ci_red_no_agent",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 5,
+   "origin": "builtin",
+   "position": 18,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and not: the inbox queue is on and there are no agents at work and CI on the PR is red",
+   "state_text": "CI red: ‹the first failing check›",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state_expr": "with(\"CI red\", ci.first_failing)"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\"",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "agent_finished",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 6,
+   "origin": "builtin",
+   "position": 19,
+   "queue_off": true,
+   "replaces": null,
+   "says": "",
+   "sentence": "Not: the inbox queue is on and there are agents whose turn is over and there are no agents at work and not: there is a PR and the agent's reported ball is empty",
+   "state_text": "review: agent finished",
+   "then": {
+    "ball": "you",
+    "level": "deep",
+    "state": "review: agent finished"
+   },
+   "verb": null,
+   "when": "not queue.enabled and agents.idle > 0 and agents.running == 0 and not pr.exists and report.ball == \"\"",
+   "zone": "deep"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "‹your label's ball›",
+   "file": null,
+   "id": "label",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 8,
+   "origin": "builtin",
+   "position": 20,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "Your gesture is label",
+   "state_text": "(the state below)",
+   "then": {
+    "ball_expr": "gesture.ball",
+    "inherit": [
+     "state"
+    ]
+   },
+   "verb": null,
+   "when": "gesture.kind == \"label\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "agent_running",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 9,
+   "origin": "builtin",
+   "position": 21,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Never the agent's tool line (\"Bash done\"): that is noise on a row.",
+   "sentence": "There are agents at work",
+   "state_text": "fixing CI / starting / working",
+   "then": {
+    "ball": "agent",
+    "state_expr": "ci.state == \"red\" ? \"fixing CI\" : agents.first_running == \"starting\" ? \"starting\" : \"working\""
+   },
+   "verb": null,
+   "when": "agents.running > 0",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "ci_running",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 9,
+   "origin": "builtin",
+   "position": 22,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and CI on the PR is running",
+   "state_text": "CI running",
+   "then": {
+    "ball": "agent",
+    "state": "CI running"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and ci.state == \"running\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "‹the agent's reported ball›",
+   "file": null,
+   "id": "reported_others",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 10,
+   "origin": "builtin",
+   "position": 23,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The agent's reported ball is others",
+   "state_text": "reported: ‹the agent's reported ball› / ‹the agent's report note›",
+   "then": {
+    "ball_expr": "report.ball",
+    "state_expr": "clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
+   },
+   "verb": null,
+   "when": "report.ball == \"others\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "‹the agent's reported ball›",
+   "file": null,
+   "id": "reported_ball",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 24,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Ball agent: it works on in the background (its turn is over).",
+   "sentence": "The agent's reported ball is set",
+   "state_text": "agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note›",
+   "then": {
+    "ball_expr": "report.ball",
+    "state_expr": "report.ball == \"agent\" ? clip(\"agent \" + report.agent + \" · \" + (report.note == \"\" ? \"working\" : report.note), 8) : clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
+   },
+   "verb": null,
+   "when": "report.ball != \"\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "tracker_you",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 3,
+   "origin": "builtin",
+   "position": 25,
+   "queue_off": true,
+   "replaces": null,
+   "says": "Without the queue: the level while the task's entered-status item is open.",
+   "sentence": "The task's mapped ball is you and the task's mapped level is known and not: the inbox queue is on",
+   "state_text": "‹the task's mapped state›",
+   "then": {
+    "ball": "you",
+    "level_expr": "tracker.level",
+    "state_expr": "clip(tracker.state, 5)"
+   },
+   "verb": null,
+   "when": "tracker.ball == \"you\" and known(tracker.level) and not queue.enabled",
+   "zone": "inbox"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "others",
+   "file": null,
+   "id": "tracker_others",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 10,
+   "origin": "builtin",
+   "position": 26,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The task's mapped ball is others",
+   "state_text": "‹the task's mapped state›",
+   "then": {
+    "ball": "others",
+    "state_expr": "clip(tracker.state, 5)"
+   },
+   "verb": null,
+   "when": "tracker.ball == \"others\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "‹the task's mapped ball›",
+   "file": null,
+   "id": "tracker_ball",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 27,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The task's mapped ball is not you",
+   "state_text": "‹the task's mapped state›",
+   "then": {
+    "ball_expr": "tracker.ball",
+    "state_expr": "clip(tracker.state, 5)"
+   },
+   "verb": null,
+   "when": "tracker.ball != \"you\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
+   "id": "no_reviewer",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 10,
+   "origin": "builtin",
+   "position": 28,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Nobody was asked: that is the user's to do, not others' to wait on.",
+   "sentence": "The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews",
+   "state_text": "PR has no reviewer",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state": "PR has no reviewer"
+   },
+   "verb": "Request reviewer",
+   "when": "pr.state == \"open\" and pr.review in [\"review_required\", \"none\"] and pr.review_requests == 0 and pr.reviews == 0",
+   "zone": "round"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "others",
+   "file": null,
+   "id": "review_requested",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 10,
+   "origin": "builtin",
+   "position": 29,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and the PR's review decision is review required or none",
+   "state_text": "(PR open / review requested)(, CI green)",
+   "then": {
+    "ball": "others",
+    "state_expr": "(pr.review == \"none\" ? \"PR open\" : \"review requested\") + (ci.state == \"green\" ? \", CI green\" : \"\")"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and pr.review in [\"review_required\", \"none\"]",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "agent",
+   "file": null,
+   "id": "agent_idle",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 30,
+   "queue_off": false,
+   "replaces": null,
+   "says": "An agent still on a dialog whose item was dismissed or parked.",
+   "sentence": "There are agents",
+   "state_text": "waits: approve / waits: answer / waits: agent failed / waits: agent may hang / agent idle",
+   "then": {
+    "ball": "agent",
+    "state_expr": "\"waiting_for_approval\" in agents.statuses ? \"waits: approve\" : \"waiting_for_user\" in agents.statuses ? \"waits: answer\" : \"failed\" in agents.statuses ? \"waits: agent failed\" : \"possibly_hanged\" in agents.statuses ? \"waits: agent may hang\" : \"agent idle\""
+   },
+   "verb": null,
+   "when": "agents.count > 0",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "stalled",
+   "file": null,
+   "id": "restorable",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 31,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "There are agents to restore",
+   "state_text": "agent to restore",
+   "then": {
+    "ball": "stalled",
+    "state": "agent to restore"
+   },
+   "verb": null,
+   "when": "item.restorable > 0",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "stalled",
+   "file": null,
+   "id": "no_activity",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 11,
+   "origin": "builtin",
+   "position": 32,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The time since the last sign of work is over the stalled threshold",
+   "state_text": "no activity",
+   "then": {
+    "ball": "stalled",
+    "state": "no activity"
+   },
+   "verb": null,
+   "when": "item.idle > config.stalled_after",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "stalled",
+   "file": null,
+   "id": "approved_ready",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 33,
+   "queue_off": false,
+   "replaces": null,
+   "says": "Approved, green and mergeable with no Merge item: you dismissed or parked it, or one of your rules narrowed merge.",
+   "sentence": "The inbox queue is on and the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable",
+   "state_text": "approved, CI green",
+   "then": {
+    "ball": "stalled",
+    "state": "approved, CI green"
+   },
+   "verb": null,
+   "when": "queue.enabled and pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "stalled",
+   "file": null,
+   "id": "approved_not_mergeable",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 34,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "The PR's state is open and the PR's review decision is approved",
+   "state_text": "approved, not mergeable",
+   "then": {
+    "ball": "stalled",
+    "state": "approved, not mergeable"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and pr.review == \"approved\"",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
+   "ball_text": "stalled",
+   "file": null,
+   "id": "no_agent",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 12,
+   "origin": "builtin",
+   "position": 35,
+   "queue_off": false,
+   "replaces": null,
+   "says": "",
+   "sentence": "Always",
+   "state_text": "no agent",
+   "then": {
+    "ball": "stalled",
+    "state": "no agent"
+   },
+   "verb": null,
+   "when": "true",
+   "zone": "flight"
+  }
+ ],
+ "verbs": [
+  "Approve",
+  "Answer",
+  "Merge",
+  "Review",
+  "Fix CI",
+  "Sync",
+  "Confirm",
+  "Assign",
+  "Decide",
+  "Read",
+  "Relaunch",
+  "Check agent",
+  "Fix job",
+  "Update task",
+  "Address review",
+  "Resolve conflict",
+  "Request reviewer",
+  "Look"
+ ],
+ "warnings": []
+}

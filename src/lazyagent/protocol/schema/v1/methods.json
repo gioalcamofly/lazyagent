@@ -1972,7 +1972,12 @@
         "action": {"type": ["string", "null"]},
         "replaces": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["origin", "file", "line"], "properties": {"origin": {"type": "string"}, "file": {"type": ["string", "null"]}, "line": {"type": ["integer", "null"]}}}]},
         "position": {"type": "integer"},
-        "then": {"type": "object", "description": "ball, level, state, blocks_agent, suggestion (or <field>_expr), inherit."}
+        "then": {"type": "object", "description": "ball, level, state, blocks_agent, suggestion (or <field>_expr), inherit."},
+        "sentence": {"type": "string", "description": "rules_catalog only (R6): the condition in English, from the facts' phrases."},
+        "zone": {"enum": ["now", "round", "deep", "flight", "parked", "done", "inbox"], "description": "rules_catalog only (R6): where the rule leads (inbox: the queue, its top item's level)."},
+        "state_text": {"type": "string", "description": "rules_catalog only (R6): the state, a template with ‹holes› for an expression."},
+        "ball_text": {"type": "string"},
+        "queue_off": {"type": "boolean", "description": "rules_catalog only (R6): a rule for an engine with the inbox queue off."}
       }
     },
     "rules_check.params": {
@@ -2002,7 +2007,7 @@
         "kinds": {"type": "array", "items": {"type": "object", "required": ["id", "level", "title", "detector"]}},
         "actions": {"type": "array", "items": {"type": "object", "required": ["id", "key", "label"]}},
         "verbs": {"type": "array", "items": {"type": "string"}},
-        "concepts": {"type": "array", "description": "The page's concepts text (R6); empty for now."},
+        "concepts": {"type": "object", "required": ["sections", "zones", "balls", "line", "colours", "keys"], "description": "The \"How lazyagent works\" page's hand-written part (concepts.toml, R6): sections {id, title, intro, generated, screenshot, caption, cards}, zones, balls, the example line, colours, keys {keys, where, does}."},
         "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}}
@@ -2024,9 +2029,9 @@
         "rule": {"oneOf": [{"$ref": "#/$defs/rules_rule"}, {"type": "null"}]},
         "then": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["ball", "level", "state", "verb", "action", "item"]}]},
         "inherited_from": {"type": ["string", "null"], "description": "park, label: the rule below that gave the inherited field."},
-        "item_rule": {"type": "object", "description": "queue matched on a rule's item (Merge): that rule (rules_rule) and the facts it read."},
+        "item_rule": {"type": "object", "description": "queue matched on a rule's item (Merge): that rule (rules_rule), the facts it read, and above: the rules between the locked prefix and it, as above."},
         "facts": {"type": "array", "items": {"type": "object", "required": ["name", "value", "unknown", "source", "freshness"]}, "description": "What the matched rule read."},
-        "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
+        "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "said": {"type": "string", "description": "R6: that condition in English (absent with value item or true)."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
         "items": {"type": "array", "description": "The row's open inbox items, top first."}
       }
     },

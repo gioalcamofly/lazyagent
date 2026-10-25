@@ -1305,6 +1305,289 @@ pub struct RulesErrors {
     pub errors: Vec<RulesProblem>,
 }
 
+/// `rules_catalog` (feature `rules`): what "How lazyagent works" draws. The
+/// desktop also carries a build-time copy for engines without the feature.
+/// Only what the page reads; the rest of the payload is ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RulesCatalog {
+    #[serde(default)]
+    pub facts: Vec<CatalogFact>,
+    #[serde(default)]
+    pub rules: Vec<CatalogRule>,
+    #[serde(default)]
+    pub kinds: Vec<CatalogKind>,
+    #[serde(default)]
+    pub actions: Vec<CatalogAction>,
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    /// The hand-written part (`concepts.toml`, R6). An R2 engine sent `[]`.
+    #[serde(default, deserialize_with = "concepts_or_empty")]
+    pub concepts: Concepts,
+    #[serde(default)]
+    pub files: Vec<RulesFile>,
+    #[serde(default)]
+    pub errors: Vec<RulesProblem>,
+    #[serde(default)]
+    pub warnings: Vec<RulesProblem>,
+}
+
+fn concepts_or_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Concepts, D::Error> {
+    let v = Value::deserialize(d)?;
+    if v.is_object() { serde_json::from_value(v).map_err(serde::de::Error::custom) } else { Ok(Concepts::default()) }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Concepts {
+    #[serde(default)]
+    pub sections: Vec<ConceptSection>,
+    #[serde(default)]
+    pub zones: Vec<ConceptZone>,
+    #[serde(default)]
+    pub balls: Vec<ConceptBall>,
+    #[serde(default)]
+    pub line: ConceptLine,
+    #[serde(default)]
+    pub colours: Vec<ConceptColour>,
+    #[serde(default)]
+    pub keys: Vec<ConceptKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptSection {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub intro: String,
+    /// The catalog part drawn after the intro (`zones`, `states`, `keys` …).
+    #[serde(default)]
+    pub generated: Option<String>,
+    /// A screenshot of the app (assets/how/<name>.png).
+    #[serde(default)]
+    pub screenshot: Option<String>,
+    #[serde(default)]
+    pub caption: String,
+    /// A code block after the intro (a rules.toml example).
+    #[serde(default)]
+    pub example: String,
+    #[serde(default)]
+    pub cards: Vec<ConceptCard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptCard {
+    pub title: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptZone {
+    pub id: String,
+    pub name: String,
+    pub colour: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptBall {
+    pub id: String,
+    pub colour: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConceptLine {
+    #[serde(default)]
+    pub example: Vec<String>,
+    #[serde(default)]
+    pub parts: Vec<ConceptPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptPart {
+    pub part: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptColour {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConceptKey {
+    pub keys: String,
+    /// `home` · `decision` · `page` · `why`.
+    #[serde(rename = "where")]
+    pub place: String,
+    pub does: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogFact {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+    #[serde(default)]
+    pub phrase: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub freshness: String,
+    #[serde(default)]
+    pub cost: String,
+}
+
+/// A row rule, as `rules_catalog` lists it (and `rules_explain` names it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogRule {
+    pub id: String,
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub says: String,
+    #[serde(default)]
+    pub when: String,
+    #[serde(default)]
+    pub and_when: Option<String>,
+    #[serde(default)]
+    pub item: bool,
+    #[serde(default)]
+    pub verb: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub replaces: Option<Value>,
+    /// `rules_catalog` only (R6 engines): the condition in English, where
+    /// the rule leads, its state and ball as text.
+    #[serde(default)]
+    pub sentence: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
+    pub state_text: Option<String>,
+    #[serde(default)]
+    pub ball_text: Option<String>,
+    #[serde(default)]
+    pub queue_off: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogKind {
+    pub id: String,
+    pub level: String,
+    #[serde(default)]
+    pub class: String,
+    pub title: String,
+    #[serde(default)]
+    pub blocks_agent: bool,
+    #[serde(default)]
+    pub detector: String,
+    #[serde(default)]
+    pub verb: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub sentence: Option<String>,
+    #[serde(default)]
+    pub state_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogAction {
+    pub id: String,
+    pub key: String,
+    pub label: String,
+}
+
+/// A rule file (`rules_check` / `rules_catalog` files).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RulesFile {
+    pub scope: String,
+    pub path: String,
+    #[serde(default)]
+    pub exists: bool,
+    #[serde(default)]
+    pub applied: Option<String>,
+    #[serde(default)]
+    pub rules: u32,
+}
+
+/// `rules_explain {key}`: why a row is in its state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RulesExplain {
+    pub key: String,
+    pub rule: Option<CatalogRule>,
+    #[serde(default)]
+    pub then: Option<Value>,
+    #[serde(default)]
+    pub inherited_from: Option<String>,
+    #[serde(default)]
+    pub facts: Vec<ExplainFact>,
+    #[serde(default)]
+    pub above: Vec<ExplainAbove>,
+    #[serde(default)]
+    pub items: Vec<Value>,
+    /// The queue matched on a rule's item (Merge): that rule.
+    #[serde(default)]
+    pub item_rule: Option<ExplainItemRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplainItemRule {
+    #[serde(flatten)]
+    pub rule: CatalogRule,
+    #[serde(default)]
+    pub facts: Vec<ExplainFact>,
+    /// The rules between the locked prefix and it (R6 engines).
+    #[serde(default)]
+    pub above: Vec<ExplainAbove>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplainFact {
+    pub name: String,
+    #[serde(default)]
+    pub value: Value,
+    #[serde(default)]
+    pub unknown: bool,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub freshness: String,
+}
+
+/// A rule above the one that matched, and the first condition that was
+/// not true.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplainAbove {
+    pub id: String,
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default)]
+    pub failed: String,
+    /// That condition in English (R6 engines).
+    #[serde(default)]
+    pub said: Option<String>,
+    /// `false` · `unknown` · `item` · `true`.
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub facts: Vec<ExplainFact>,
+}
+
 /// The events the desktop app acts on; everything else is `Other` and
 /// ignored by design (§4c: unknown events are tolerated).
 #[derive(Debug, Clone, PartialEq)]

@@ -1,5 +1,6 @@
-"""The catalog as data (``rules_catalog``) and as Markdown (``lazyagent
-rules doc``). R6 builds the "How lazyagent works" page on these."""
+"""The catalog as data (``rules_catalog``), the rules table as Markdown, and
+the ``--why`` and ``rules show`` text. The "How lazyagent works" page
+(``lazyagent rules doc``) is doc.py's."""
 
 from __future__ import annotations
 
@@ -37,9 +38,19 @@ def facts_payload() -> list[dict[str, Any]]:
     ]
 
 
+def _kind_state(k: Any) -> str:
+    from lazyagent.engine.rules.doc import template
+
+    if k.state is None:
+        return ""
+    return k.state.value if k.state.expr is None else template(k.state.expr.source)
+
+
 def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
+    from lazyagent.engine.rules.doc import annotate, concepts
+
     functions = {**FUNCTIONS, **ROW_FUNCTIONS}
-    return {
+    return annotate({
         "facts": facts_payload(),
         "functions": [{"name": f.name, "doc": f.doc} for f in functions.values()],
         "rules": [describe(r) | {"position": i, "then": _out(r)}
@@ -48,61 +59,19 @@ def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
             {"id": k.id, "level": k.level, "class": "deep" if k.level == "deep" else "quick",
              "title": k.title, "rank": k.rank, "blocks_agent": k.blocks_agent,
              "detector": k.detector, "says": k.says, "verb": k.verb, "action": k.action,
-             "when": None if k.when is None else " ".join(k.when.source.split())}
+             "when": None if k.when is None else " ".join(k.when.source.split()),
+             "state_text": _kind_state(k)}
             for k in catalog.kinds
         ],
         "actions": [{"id": a, "key": key, "label": label} for a, (key, label) in ACTIONS.items()],
         "verbs": list(VERBS),
-        # The page's hand-written concepts text comes with R6 (concepts.toml).
-        "concepts": [],
+        # The page's hand-written part (concepts.toml): intros, zones, the
+        # ball, the colours, the keys.
+        "concepts": concepts(),
         "files": check["files"],
         "errors": check["errors"],
         "warnings": check["warnings"],
-    }
-
-
-def _cell(text: Any) -> str:
-    return "" if text in (None, "") else str(text).replace("|", "\\|")
-
-
-def markdown(catalog: Catalog, *, title: str = "lazyagent rules") -> str:
-    """The catalog as Markdown: the row rules in order, the inbox kinds,
-    the facts and the actions."""
-    lines = [f"# {title}", "",
-             "Row rules: first match wins, in this order. An unknown fact never matches.", "",
-             "| # | id | from | when | ball | level | state | verb |",
-             "|---|---|---|---|---|---|---|---|"]
-    for i, r in enumerate(catalog.rules, 1):
-        then = _out(r)
-        where = r.origin + (" (locked)" if r.locked else "")
-        if r.file:
-            where += f" {r.file}:{r.line}"
-        when = " ".join(r.when.source.split())
-        if r.and_when is not None:
-            when = f"({when}) and ({' '.join(r.and_when.source.split())})"
-        state = then.get("state") or then.get("state_expr") or (
-            "(below)" if "state" in r.inherit else "")
-        ball = then.get("ball") or then.get("ball_expr") or (
-            "(below)" if "ball" in r.inherit else "")
-        level = then.get("level") or then.get("level_expr") or ""
-        verb = (r.verb or "") + (" · item" if r.item else "")
-        lines.append(f"| {i} | `{r.id}` | {_cell(where)} | `{_cell(when)}` | {_cell(ball)} | "
-                     f"{_cell(level)} | {_cell(state)} | {_cell(verb)} |")
-    lines += ["", "## Inbox kinds", "", "| id | level | title | verb | when |",
-              "|---|---|---|---|---|"]
-    for k in catalog.kinds:
-        when = " ".join(k.when.source.split()) if k.when is not None else f"({k.detector})"
-        lines.append(f"| `{k.id}` | {k.level} | {_cell(k.title)} | {_cell(k.verb)} | "
-                     f"`{_cell(when)}` |")
-    lines += ["", "## Facts", "", "| fact | type | is | source | cost |", "|---|---|---|---|---|"]
-    for f in FACTS.values():
-        kind = str(f.type) + (f" ({', '.join(f.values)})" if f.values else "")
-        lines.append(f"| `{f.name}` | {_cell(kind)} | {_cell(f.phrase)} | {_cell(f.source)} | "
-                     f"{f.cost} |")
-    lines += ["", "## Actions", "", "| action | key | does |", "|---|---|---|"]
-    for a, (key, label) in ACTIONS.items():
-        lines.append(f"| `{a}` | {key} | {_cell(label)} |")
-    return "\n".join(lines) + "\n"
+    })
 
 
 def _where(rule: dict[str, Any]) -> str:
@@ -158,6 +127,10 @@ def format_explain(result: dict[str, Any]) -> str:
         out.append(f"         when {item['when']}" + (f" and {item['and_when']}"
                                                        if item.get("and_when") else ""))
         _facts(out, "         facts it read", item["facts"], indent="           ")
+        item_misses = [a for a in item.get("above", []) if a["value"] != "false" or a.get("file")]
+        for a in item_misses:
+            where = f"  ({_where(a)})" if a.get("file") else ""
+            out.append(f"         above it: {a['id']:<22} {a['value']}: {a['failed']}{where}")
     misses = [a for a in result["above"] if a["value"] != "false" or a.get("file")]
     if result["above"]:
         out.append(f"  rules above that did not match ({len(result['above'])}; "
