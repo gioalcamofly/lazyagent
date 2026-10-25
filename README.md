@@ -576,12 +576,14 @@ cd /tmp && claude mcp list | grep lazyagent      # verify
 
 In an agent lazyagent spawned, both servers are there, and both know which agent is calling: the engine puts the agent's token and socket (`LAZYAGENT_AGENT_TOKEN`, `LAZYAGENT_SOCKET`) in the agent's own environment, and Claude starts every MCP server with it. So `notes_read()` with no arguments reads the caller's own notes on either one (as long as your `lazyagent` server runs a lazyagent recent enough to read the token).
 
+A lazyagent server in the repo's own `.mcp.json` (any entry that runs `lazyagent.mcp_server` or `lazyagent mcp`) is turned off in the agents lazyagent spawns, by name (`disabledMcpjsonServers` in the agent's settings): they have `lazyagent_app` already, and the repo's other servers still run. A user-scope one stays, since settings cannot turn it off for one session; `/mcp disable lazyagent` in a project turns it off there.
+
 ## Development
 
 ```bash
 git clone https://github.com/gioalcamofly/lazyagent.git
 cd lazyagent
-uv sync --group dev
+uv sync --group dev   # also what this repo's .mcp.json runs: .venv/bin/python
 uv run pytest
 ```
 
