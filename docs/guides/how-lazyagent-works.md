@@ -108,8 +108,8 @@ Keep your inbox to what you can act on today.
 
 - **Park  z**: 1 h, tomorrow, a week, until something changes, indefinitely.
 - **Label  l**: Who has the ball and why: others · QA.
-- **Close  ⇧X**: Done or dropped. Never touches the worktree, branch or PR.
-- **Undo**: x, z, d and ⇧O show Undo for 5 s (Ctrl+Z).
+- **Close  ⇧X**: Done or dropped; stops its agent. Never touches the worktree, branch or PR.
+- **Undo**: x, z, d, ⇧O and ⇧D (deny) show Undo for 5 s (Ctrl+Z).
 
 ![The park menu: until when, for this item or the whole work item.](../../desktop/crates/app/assets/how/park.png)
 
@@ -137,8 +137,8 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 
 | verb | state | when | key |
 |---|---|---|---|
-| **Approve** | approve: ‹the agent's detail line› | The agent's status is waiting for approval | `Enter` Opens the agent's terminal at its dialog |
-| **Answer** | answer: ‹the agent's detail line› | The agent's status is waiting for user | `Enter` Opens the agent's terminal at its dialog |
+| **Approve** | approve: ‹the agent's detail line› | The agent's status is waiting for approval | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
+| **Answer** | answer: ‹the agent's detail line› | The agent's status is waiting for user | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
 
 ### Round
 
@@ -174,9 +174,9 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 
 | verb | state | when | key |
 |---|---|---|---|
-| agent | orchestrator · looking | You passed it to the orchestrator |  |
-| agent | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |  |
-| agent | orchestrator · looking | Who holds a routed item here is orchestrator |  |
+| orchestrator | orchestrator · looking | You passed it to the orchestrator |  |
+| orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |  |
+| orchestrator | orchestrator · looking | Who holds a routed item here is orchestrator |  |
 | agent | agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |  |
 | ‹your label's ball› | (the state below) | Your gesture is label |  |
 | agent | fixing CI / starting / working | There are agents at work |  |
@@ -220,9 +220,9 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 4 | `closed.by_you` (locked) | done | dropped by you / closed by you | Your gesture is close |
 | 5 | `park` (locked) | (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park |
 | 6 | `queue` (locked) | you | ‹the top inbox item's state› | There are open inbox items on the work item |
-| 7 | `claim` (locked) | agent | orchestrator · looking | You passed it to the orchestrator |
-| 8 | `hold` (locked) | agent | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |
-| 9 | `held` (locked) | agent | orchestrator · looking | Who holds a routed item here is orchestrator |
+| 7 | `claim` (locked) | orchestrator | orchestrator · looking | You passed it to the orchestrator |
+| 8 | `hold` (locked) | orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |
+| 9 | `held` (locked) | orchestrator | orchestrator · looking | Who holds a routed item here is orchestrator |
 | 10 | `delegated` (locked) | agent | agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |
 | 11 | `approve` *queue off* | you | approve: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for approval |
 | 12 | `answer` *queue off* | you | answer: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for user |
@@ -257,8 +257,8 @@ What can land in your inbox, at which level, and the verb it shows.
 
 | verb | item | level | class | blocks an agent | key |
 |---|---|---|---|---|---|
-| **Approve** | Needs approval | now | quick | yes | `Enter` Opens the agent's terminal at its dialog |
-| **Answer** | Question | now | quick | yes | `Enter` Opens the agent's terminal at its dialog |
+| **Approve** | Needs approval | now | quick | yes | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
+| **Answer** | Question | now | quick | yes | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
 | **Check agent** | Hanged? | round | quick |  |  |
 | **Relaunch** | Failed | round | quick |  |  |
 | **Relaunch** | Exited | round | quick |  |  |
@@ -280,34 +280,34 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 
 | key | does |
 |---|---|
-| `J K ↓ ↑` | Next / previous line |
+| `j k ↓ ↑` | Next / previous line |
 | `Tab` | Next line that needs you |
 | `1 2 3 4` | Jump to Now, Round, To sit down with, In flight (on a brief: pick an option) |
-| `Enter` | Expand; open a brief; a Now line's terminal |
+| `Enter` | Expand (approve or answer there); open a brief |
 | `Esc` | Close the form, else collapse |
-| `Y  N` | On an approval: approve / deny |
+| `a  ⇧D` | On an approval: approve / deny (deny waits 5 s for Undo) |
 | `Ctrl+Enter` | On an expanded brief: answer |
-| `V` | The decision view |
-| `Y  ⇧Y` | Explain this / restore its agent and explain |
-| `W` | Why is this line here? |
-| `O` | The agent's terminal |
-| `N` | Its session notes |
-| `P` | Its PR (or tracker task) |
-| `X` | Dismiss the item (Undo 5 s) |
-| `Z` | Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; W whole work item) |
+| `v` | The decision view |
+| `y  ⇧Y` | Explain this / restore its agent and explain |
+| `w` | Why is this line here? |
+| `o` | The agent's terminal |
+| `n` | Its session notes |
+| `p` | Its PR (or tracker task) |
+| `x` | Dismiss the item (Undo 5 s) |
+| `z` | Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; w whole work item) |
 | `⇧Z` | Show / hide Parked |
 | `⇧F` | Show / hide done today |
 | `⇧O` | Pass to the orchestrator (Undo 5 s) |
-| `U` | Take back a pass or hold; clear your label, park, close or delegation |
-| `D` | Delegate to the branch's agent (Undo 5 s) |
-| `L` | Label who has the ball |
+| `u` | Take back a pass or hold; clear your label, park, close or delegation |
+| `d` | Delegate to the branch's agent (Undo 5 s) |
+| `l` | Label who has the ball |
 | `⇧X` | Close the work item and stop its agent (asks first) |
-| `M  ⇧M` | Mark seen / everything seen |
+| `m  ⇧M` | Mark seen / everything seen |
 | `⇧U` | Revert the orchestrator's decision (asks first) |
-| `T` | The orchestrator's actions today |
-| `Ctrl+Z` | Undo the last dismiss, park, delegate or pass |
-| `F` | Fold In flight |
-| `G W  G H` | The worktrees / back to Home |
+| `t` | The orchestrator's actions today |
+| `Ctrl+Z` | Undo the last dismiss, park, delegate, pass or deny |
+| `f` | Fold In flight |
+| `g w  g h` | The worktrees / back to Home |
 | `?` | This page, at Home |
 
 ### The decision view
@@ -317,9 +317,9 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `1-4` | Pick an option |
 | `Ctrl+Enter` | Answer |
 | `]  [` | Next / previous evidence tab |
-| `Y  ⇧Y` | Explain this / restore its agent and explain |
-| `B` | Request a new brief |
-| `O` | The agent's terminal |
+| `y  ⇧Y` | Explain this / restore its agent and explain |
+| `b` | Request a new brief |
+| `o` | The agent's terminal |
 | `⇧U` | Revert the orchestrator's decision |
 | `Esc` | Back to Home |
 
@@ -340,7 +340,7 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 
 | action | key | does |
 |---|---|---|
-| `answer` | `Enter` | Opens the agent's terminal at its dialog |
+| `answer` | `Enter` | Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
 | `expand` | `Enter` | Expands the line |
 | `open_terminal` | `o` | The agent's terminal |
 | `open_notes` | `n` | The agent's notes |
@@ -349,7 +349,7 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `dismiss` | `x` | Dismiss this occurrence of the item |
 | `park` | `z` | Park the item or the work item |
 | `label` | `l` | Put a ball and a text on the row |
-| `close` | `⇧X` | Close the work item (done / dropped) |
+| `close` | `⇧X` | Close the work item (done / dropped) and stop its agent |
 | `take_back` | `u` | Take back a pass, or clear your gesture |
 | `pass` | `⇧O` | Pass to orchestrator |
 | `delegate` | `d` | Send the item to the branch's agent |
