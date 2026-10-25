@@ -30,7 +30,7 @@
         "needs_user": true,
         "note": "PR up: pick a reviewer",
         "turn_over": false,
-        "until": 1700007200.0,
+        "until": null,
         "worktree_path": "/tmp/repo-export"
       }
     }

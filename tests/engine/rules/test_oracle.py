@@ -7,8 +7,8 @@ an inbox item, so the row rule ``merge`` (4) no longer matches a row: the
 queue's item does (rule 2, tested with the projection), and with no item
 open (dismissed, parked) the row reads as the rules below ``merge`` say
 (``approved_ready`` when nothing else does). And one since (fix-auto-hold):
-a reported ball says the agent works on, so it is not ``changes_requested``
-(5) or ``agent_finished`` (6) while it holds, and a reported ball ``agent``
+a reported ball says the agent works on, so it is not ``agent_finished``
+(6) while it holds, and a reported ball ``agent``
 reads ``agent <id> · <note>``. :func:`both` maps the oracle's answer for
 those cases; every other one must agree."""
 
@@ -159,9 +159,8 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
         # What a label or a park keeps comes from below them: compare there.
         under = oracle.derive(replace(facts, gesture=None), NOW, last_change,
                               stalled_hours=stalled_hours)
-        if under.rule in (5, 6) and under.state in ("changes requested",
-                                                    "review: agent finished"):
-            assert new.state not in ("changes requested", "review: agent finished")
+        if under.rule == 6 and under.state == "review: agent finished":
+            assert new.state != "review: agent finished"
             return new, new
         if under.rule == 12 and ball == "agent" and old.state == under.state:
             agent = facts.report.get("agent") or ""

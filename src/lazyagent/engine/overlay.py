@@ -14,8 +14,9 @@ The rows themselves stay a projection (status.py); this store keeps only:
   note, and optionally a ball and ``needs_user``. The ball and
   ``needs_user`` clear once the agent has ended a turn and runs again, when
   it is sent input, or when it is gone; the note stays as the row's note.
-  The ball also lapses at the report's ``until`` (:data:`REPORT_FOR` by
-  default, at most :data:`MAX_REPORT_FOR`). While it holds, the agent's
+  The ball also lapses at the report's ``until`` (at most
+  :data:`MAX_REPORT_FOR`; ball ``agent``, background work, defaults to
+  :data:`REPORT_FOR`, the others to none). While it holds, the agent's
   finished turn is not "done": it said it works on in the background.
 - **closed**, 24 h tombstones: the item became done (merged, PR closed,
   closed by the user) or its worktree went away. A removed item stays a
@@ -80,7 +81,8 @@ RELEASED_FOR = 86400.0
 GESTURE_KINDS = ("label", "park", "close")
 LABEL_BALLS = ("agent", "others", "stalled")
 REPORT_BALLS = ("agent", "others", "stalled")
-# A reported ball lapses this long after the report, unless it says until.
+# A reported ball "agent" (background work) lapses this long after the
+# report, unless it says until; "others" / "stalled" have no default.
 REPORT_FOR = 2 * 3600.0
 MAX_REPORT_FOR = 8 * 3600.0
 CLOSE_HOW = ("done", "dropped")
@@ -113,6 +115,11 @@ def one_line(text: str, limit: int) -> str:
     """``text`` on one line, at most ``limit`` characters (``…`` when cut)."""
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def default_until(ball: str | None, at: float) -> float | None:
+    """A report's until when it gives none: only background work lapses."""
+    return at + REPORT_FOR if ball == "agent" else None
 
 
 _DURATION = re.compile(r"(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?")
@@ -598,7 +605,7 @@ class Overlay:
             "at": now,
             # Its turn has ended since (then running again answers it).
             "turn_over": False,
-            "until": now + REPORT_FOR if until is None else until,
+            "until": default_until(ball, now) if until is None else until,
         }
         self.reports[key] = r
         if turn is None:
@@ -629,8 +636,8 @@ class Overlay:
             state = self._engine.agent_states(path).get(agent_id)
             until = r.get("until")
             if not isinstance(until, (int, float)):
-                until = r["at"] + REPORT_FOR
-            if r.get("ball") and now >= until:
+                until = default_until(r.get("ball"), r["at"])
+            if r.get("ball") and until is not None and now >= until:
                 # Past until: the engine's own derivation is back.
                 r["ball"] = None
                 self.changed()

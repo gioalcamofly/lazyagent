@@ -364,18 +364,6 @@
           "values": []
         },
         {
-          "cost": "free",
-          "freshness": "per pass",
-          "name": "place.reported",
-          "phrase": "an agent's report here says where the ball is",
-          "scopes": [
-            "item"
-          ],
-          "source": "overlay",
-          "type": "bool",
-          "values": []
-        },
-        {
           "cost": "poll",
           "freshness": "\u2264 60 s",
           "name": "pr.exists",
@@ -1101,10 +1089,10 @@
           "id": "review",
           "level": "deep",
           "rank": 5,
-          "says": "Not while an agent's report says where the ball is (it works on).",
+          "says": "",
           "title": "Changes requested",
           "verb": "Address review",
-          "when": "pr.state == \"open\" and pr.review == \"changes_requested\" and not place.reported"
+          "when": "pr.state == \"open\" and pr.review == \"changes_requested\""
         },
         {
           "action": "delegate",
@@ -1538,7 +1526,7 @@
             "state": "changes requested"
           },
           "verb": null,
-          "when": "pr.state == \"open\" and not queue.enabled and pr.review == \"changes_requested\" and report.ball == \"\""
+          "when": "pr.state == \"open\" and not queue.enabled and pr.review == \"changes_requested\""
         },
         {
           "action": null,

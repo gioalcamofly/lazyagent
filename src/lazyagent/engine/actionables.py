@@ -260,7 +260,8 @@ class Place:
     # (engine/actions.py); None when Actions has no run on the branch.
     ci: CiVerdict | None = None
     # The agent whose status_report ball holds on the work item (overlay
-    # working): its finished turn is not "done", it works on.
+    # working): its finished turn is not "done", it works on (a review
+    # still shows).
     reported: str | None = None
 
     @property

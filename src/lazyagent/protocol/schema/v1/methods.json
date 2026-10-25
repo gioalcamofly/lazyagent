@@ -1335,7 +1335,7 @@
             "text": {"type": "string"}
           }
         },
-        "until": {"type": ["number", "string"], "description": "When the ball lapses: a Unix time, or a duration from now such as \"45m\", \"2h\", \"1h30m\" (at most 8 h; default 2 h). While the ball holds, the agent's ended turn is not \"agent finished\" (it works on in the background); past until, or once the agent runs again and ends a turn with no new report, the engine's derivation is back."},
+        "until": {"type": ["number", "string"], "description": "When the ball lapses: a Unix time, or a duration from now such as \"45m\", \"2h\", \"1h30m\" (at most 8 h; default 2 h for ball agent, none for others / stalled, which hold until the agent's next turn). While the ball holds, the agent's ended turn is not \"agent finished\" (it works on in the background); past until, or once the agent runs again and ends a turn with no new report, the engine's derivation is back."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The agent's token (required): the report is on its own work item. The orchestrator's token: only a note, what it is doing now (status_list orchestrator.report, feature orchestrator_activity)."}
       }
     },
@@ -1359,7 +1359,7 @@
                 "needs_user": {"type": "boolean"},
                 "at": {"type": "number"},
                 "turn_over": {"type": "boolean", "description": "The agent has ended a turn since."},
-                "until": {"type": "number", "description": "When the ball lapses (the report's until, or 2 h after it)."}
+                "until": {"type": ["number", "null"], "description": "When the ball lapses (the report's until; ball agent: 2 h after it by default; null: at the agent's next turn only)."}
               }
             },
             {

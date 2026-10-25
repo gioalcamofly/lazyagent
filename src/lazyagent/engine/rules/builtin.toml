@@ -190,10 +190,7 @@ item = true
 [[rule]]
 id = "changes_requested"
 num = 5
-when = '''
-pr.state == "open" and not queue.enabled and pr.review == "changes_requested"
-and report.ball == ""
-'''
+when = 'pr.state == "open" and not queue.enabled and pr.review == "changes_requested"'
 [rule.then]
 ball = "you"
 level = "deep"
@@ -486,8 +483,7 @@ level = "deep"
 title = "Changes requested"
 rank = 5
 detector = "pr"
-says = "Not while an agent's report says where the ball is (it works on)."
-when = 'pr.state == "open" and pr.review == "changes_requested" and not place.reported'
+when = 'pr.state == "open" and pr.review == "changes_requested"'
 state = "changes requested"
 
 [[kind]]

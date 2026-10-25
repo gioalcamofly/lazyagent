@@ -981,10 +981,10 @@ async def status_report(
         needs_user: True only when the user must do something.
         outward: Optional {kind, ref, text} of an action outside the repo.
         until: When the ball lapses: a Unix time or a duration ("45m",
-            "2h"; at most 8 h, default 2 h). Past it, or once you run again
-            and end a turn without a new report, the engine reads your
-            status again (your finished turn reaches the orchestrator or
-            the user).
+            "2h"; at most 8 h; default 2 h for ball "agent", none for the
+            others). Past it, or once you run again and end a turn without
+            a new report, the engine reads your status again (your
+            finished turn reaches the orchestrator or the user).
 
     Returns:
         Object with key (your work item; null for the orchestrator), report

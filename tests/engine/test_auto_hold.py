@@ -11,6 +11,7 @@ from lazyagent.engine.claims import NOTHING_TO_RELEASE
 from lazyagent.engine.methods import EngineMethods
 from lazyagent.engine.overlay import MAX_REPORT_FOR, REPORT_FOR, report_until
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
+from lazyagent.models import PrInfo
 from tests.engine.fakes import worktree
 from tests.engine.test_home_polish import FEAT, KEY, NOW, _agent, _engine, _orchestrator, _pass, _row
 
@@ -158,6 +159,47 @@ async def test_others_and_stalled_suppress_done_too():
         await _pass(engine)
         assert (_row(engine)["hold"], _row(engine)["ball"]) == (None, ball)
         assert "done" not in _kinds(engine)
+
+
+async def test_others_and_stalled_have_no_default_expiry_but_take_until():
+    engine, clock, _ = _worker()
+    result = await _report(engine, ball="others", note="waiting for QA")
+    assert result["report"]["until"] is None
+    _agent(engine, FEAT, "a1", "completed")
+    clock.now += 8 * 3600
+    await _pass(engine)
+    assert (_row(engine)["hold"], _row(engine)["ball"]) == (None, "others")
+    # Until its next turn ends with no new report.
+    _agent(engine, FEAT, "a1", "running")
+    await _pass(engine)
+    _agent(engine, FEAT, "a1", "completed")
+    await _pass(engine)
+    assert _row(engine)["hold"]["auto"] is True
+
+    engine, clock, _ = _worker()
+    result = await _report(engine, ball="stalled", note="blocked on a key", until="1h")
+    assert result["report"]["until"] == NOW + 3600
+    _agent(engine, FEAT, "a1", "completed")
+    await _pass(engine)
+    assert _row(engine)["hold"] is None
+    clock.now += 3600
+    await _pass(engine)
+    assert _row(engine)["hold"]["auto"] is True
+
+
+async def test_a_reviewers_changes_requested_still_surface_during_background_work():
+    engine, _, orch = _worker()
+    engine.worktree_service._pr_infos[FEAT] = PrInfo(
+        7, "Feat", "OPEN", [], "https://example.com/pull/7", review_decision="CHANGES_REQUESTED",
+    )
+    await _report(engine)
+    _agent(engine, FEAT, "a1", "completed")
+    await _pass(engine)
+    assert engine.actionables.found(f"Review:{FEAT}:7") is not None
+    assert _row(engine)["hold"]["auto"] is True
+    assert "done" not in _kinds(engine)
+    # The orchestrator's worker: its review is held for it, as before.
+    assert _woken(orch)[0].startswith(f"Item {KEY}: agent a1 (spawned by you) — changes requested")
 
 
 async def test_report_until_takes_a_time_or_a_duration_up_to_eight_hours():

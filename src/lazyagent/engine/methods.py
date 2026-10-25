@@ -1238,7 +1238,8 @@ class EngineMethods:
         ball (agent, others, stalled; optional), needs_user (bool), outward
         (optional ``{kind, ref, text}``: something it did outside the repo,
         added to the item's timeline), until (when the ball lapses: a Unix
-        time or a duration such as "45m"; default 2 h, at most 8 h), caller
+        time or a duration such as "45m"; at most 8 h; default 2 h for ball
+        agent, none for the others), caller
         (the agent's token). While the ball holds, the agent's ended turn is
         not "agent finished" (it works on in the background).
 
