@@ -210,6 +210,7 @@ class Overlay:
 
     def __init__(self, engine: Engine | None = None) -> None:
         self._engine = engine
+        self.version = 0
         self._path: Path | None = None
         self.gestures: dict[str, dict[str, Any]] = {}
         self.reports: dict[str, dict[str, Any]] = {}
@@ -321,6 +322,8 @@ class Overlay:
 
     def changed(self) -> None:
         """Write within :data:`SAVE_EVERY` (now, with no event loop)."""
+        # The status projection's cached rows end with any change.
+        self.version += 1
         if self._path is None or self._handle is not None:
             return
         try:

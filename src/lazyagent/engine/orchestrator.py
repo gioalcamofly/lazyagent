@@ -369,10 +369,15 @@ class FirstResponder:
         self.mailbox.post((ORCHESTRATOR_KEY, ""), wake_text(record), tag=f"wake:{record['id']}")
 
     def held(self, key: str) -> bool:
-        return any(
-            r["key"] == key and r["state"] == "open" and r.get("holder") == "orchestrator"
-            for r in self._engine.overlay.decisions.values()
-        )
+        return key in self.held_keys()
+
+    def held_keys(self) -> set[str]:
+        """The keys with an open decision the orchestrator holds (one scan
+        of the decisions, for a status pass over every row)."""
+        return {
+            r["key"] for r in self._engine.overlay.decisions.values()
+            if r["state"] == "open" and r.get("holder") == "orchestrator"
+        }
 
     def check(self, now: float) -> None:
         """On each status pass: route agents' plain questions, close the

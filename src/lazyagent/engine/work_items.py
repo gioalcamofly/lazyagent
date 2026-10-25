@@ -214,6 +214,7 @@ class WorkItems:
         self, engine: Engine | None = None, *, clock: Callable[[], float] | None = None
     ) -> None:
         self._engine = engine
+        self.version = 0
         self._clock = clock
         self._path: Path | None = None
         # url → record.
@@ -283,6 +284,8 @@ class WorkItems:
 
     def changed(self) -> None:
         """Write within :data:`SAVE_EVERY` (now, with no event loop)."""
+        # The status projection's cached rows end with any change.
+        self.version += 1
         if self._path is None or self._handle is not None:
             return
         try:

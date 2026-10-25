@@ -117,7 +117,7 @@ def _fact(name: str, type_: Type, phrase: str, source: str, freshness: str, cost
 class RowContext:
     """One row's facts for one evaluation (memoised)."""
 
-    __slots__ = ("facts", "now", "last_change", "stalled_hours", "_memo")
+    __slots__ = ("facts", "now", "last_change", "stalled_hours", "_memo", "first")
     getters: dict[str, Getter] = {}
 
     def __init__(self, facts: Facts, now: float, last_change: float, stalled_hours: float):
@@ -126,6 +126,8 @@ class RowContext:
         self.last_change = last_change
         self.stalled_hours = stalled_hours
         self._memo: dict[str, Any] = {}
+        # Catalog.first_item's scan on this context, for a match after it.
+        self.first: tuple[int, bool] | None = None
 
     def fact(self, name: str) -> Any:
         memo = self._memo

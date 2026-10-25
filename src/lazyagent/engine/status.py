@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine import overlay as overlay_mod
@@ -163,6 +163,22 @@ class Facts:
     # commit, a notes edit, a report, a step by someone other than the
     # engine, an agent status change the engine saw happen.
     activity_at: float | None = None
+
+
+def evolve(facts: Facts, **changes: Any) -> Facts:
+    """``dataclasses.replace(facts, **changes)`` without the generated
+    ``__init__`` over every field: a pass makes a few per row. Facts has no
+    ``__post_init__`` and every field is an init field, so the copy is the
+    same value."""
+    unknown = changes.keys() - _FACT_FIELDS
+    if unknown:
+        raise TypeError(f"Facts has no field {sorted(unknown)[0]!r}")
+    new = object.__new__(Facts)
+    new.__dict__.update(facts.__dict__, **changes)
+    return new
+
+
+_FACT_FIELDS = frozenset(f.name for f in fields(Facts))
 
 
 @dataclass(frozen=True)
@@ -578,7 +594,9 @@ class StatusProjection:
         self.clock = clock
         self._rows: dict[str, dict[str, Any]] = {}
         self._seen: dict[str, _Seen] = {}
-        self._since: dict[tuple[str, str], tuple[str, float]] = {}
+        # worktree path → agent id → (its status, since when): by path, so a
+        # row reads its own agents, not every agent's (O(rows) per pass).
+        self._since: dict[str, dict[str, tuple[str, float]]] = {}
         # (path, agent) → [its turn, running now]: a turn starts when the
         # agent runs after it ended the last one (see :meth:`turn`).
         self._turns: dict[tuple[str, str], list[Any]] = {}
@@ -596,6 +614,11 @@ class StatusProjection:
         self._actors: dict[str, str] = {}
         self._last_rows: dict[str, dict[str, Any]] = {}
         self._handle: asyncio.TimerHandle | None = None
+        # The clock at the last pass (flush), and the overlay's and the work
+        # items' versions after it: status_list reuses its rows while they
+        # hold and no recompute is pending, for COALESCE seconds.
+        self._passed_at: float | None = None
+        self._passed_versions: tuple[int, int] = (-1, -1)
         self._unsubscribe: Callable[[], None] | None = None
         self._ticks = 0
         self._started = False
@@ -609,9 +632,12 @@ class StatusProjection:
         hub = getattr(self._engine, "rules", None)
         return hub.catalog if hub is not None else _catalog()
 
-    def _rule_items(self, catalog: Any, base: list[Facts], now: float) -> list[Any]:
+    def _rule_items(self, catalog: Any, base: list[Facts], now: float,
+                    contexts: list[RowContext]) -> list[Any]:
         """The item rules' inbox items: per row, the item rule that is the
-        first match below the locked prefix (catalog.first_item)."""
+        first match below the locked prefix (catalog.first_item). Each row's
+        context goes in ``contexts``, in ``base``'s order: the row's own when
+        nothing opens on it."""
         from lazyagent.engine.actionables import RULE, Item
 
         if not catalog.item_rules:
@@ -622,7 +648,8 @@ class StatusProjection:
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
             # The queue on, with nothing open yet: what the row would be.
-            ctx = RowContext(replace(facts, actionables=()), now, last_change, hours)
+            ctx = RowContext(evolve(facts, actionables=()), now, last_change, hours)
+            contexts.append(ctx)
             rule = catalog.first_item(ctx)
             if rule is None:
                 continue
@@ -906,6 +933,8 @@ class StatusProjection:
             self._handle.cancel()
             self._handle = None
         rows = self.compute()
+        self._passed_at = self.clock()
+        self._passed_versions = self._versions()
         events = self._engine.events
         for key, row in rows.items():
             if self._rows.get(key) != row:
@@ -916,9 +945,30 @@ class StatusProjection:
         self._rows = rows
         return rows
 
+    def _versions(self) -> tuple[int, int]:
+        engine = self._engine
+        return (getattr(engine.overlay, "version", -1), getattr(engine.work_items, "version", -1))
+
+    def fresh(self) -> dict[str, dict[str, Any]]:
+        """The rows, recomputed unless the last pass still stands: the
+        projection runs (a change marks it dirty, see :meth:`mark_dirty`),
+        no recompute is pending, the overlay and the work items did not
+        change since, and the pass is under :data:`COALESCE` seconds old,
+        the delay a change already waits for its pass."""
+        passed = self._passed_at
+        if (
+            self._started
+            and self._handle is None
+            and passed is not None
+            and 0 <= self.clock() - passed < COALESCE
+            and self._versions() == self._passed_versions
+        ):
+            return self._rows
+        return self.flush()
+
     def list(self, *, repo: str | None = None, include_done: bool = False) -> dict[str, Any]:
-        """``status_list``: fresh rows, sorted, with counts."""
-        rows = self.flush().values()
+        """``status_list``: fresh rows (see :meth:`fresh`), sorted, with counts."""
+        rows = self.fresh().values()
         if repo is not None:
             rows = [r for r in rows if r["repo"] == repo]
         unstarted = self.not_started_items()
@@ -982,15 +1032,16 @@ class StatusProjection:
                 # close wins, and their label comes back once it ends.
                 record = work_items.records.get((facts.feeder or {}).get("url", ""))
                 gesture = work_items.waiting_gesture(record, facts, now) or gesture
-            facts = replace(
+            facts = evolve(
                 facts,
                 gesture=gesture,
                 report=overlay.reports.get(facts.key),
                 released=overlay.released_note(facts.key, now),
                 spawned_by=overlay.spawned_by(facts.key),
             )
-            base.append(replace(facts, activity_at=self._activity(facts, notes_ids, now)))
-        self._engine.actionables.rule_items = self._rule_items(catalog, base, now)
+            base.append(evolve(facts, activity_at=self._activity(facts, notes_ids, now)))
+        contexts: list[RowContext] = []
+        self._engine.actionables.rule_items = self._rule_items(catalog, base, now, contexts)
         queue: dict[str, list[dict[str, Any]]] = {}
         visible_items = self._engine.actionables.flush(now)
         claims.auto_hold(visible_items, now)
@@ -998,22 +1049,35 @@ class StatusProjection:
         for item in visible_items:
             if item["work_item"] is not None:
                 queue.setdefault(item["work_item"], []).append(item)
-        for facts in base:
+        held = self._engine.first_responder.held_keys()
+        for i, facts in enumerate(base):
             key = facts.key
             items = delegations.filter(key, claims.filter(key, queue.get(key, ())))
-            facts = replace(
-                facts,
-                actionables=tuple(items),
-                claim=claims.get(key),
-                hold=claims.get_hold(key),
-                delegation=delegations.get(key),
-                holder="orchestrator" if self._engine.first_responder.held(key) else None,
-            )
+            claim, hold, delegation = claims.get(key), claims.get_hold(key), delegations.get(key)
+            holder = "orchestrator" if key in held else None
+            ctx = contexts[i] if contexts else None
+            if items or ctx is None or holder is not None or not (
+                claim is None and hold is None and delegation is None
+            ):
+                facts = evolve(
+                    facts,
+                    actionables=tuple(items),
+                    claim=claim,
+                    hold=hold,
+                    delegation=delegation,
+                    holder=holder,
+                )
+                ctx = None
+            else:
+                # Nothing open, claimed or held: the facts (and so the
+                # values) _rule_items read, with the same last change.
+                facts = ctx.facts
             facts_by_key[facts.key] = facts
             live_agents.update((facts.worktree_path or "", a.agent_id) for a in facts.agents)
             seen = self._seen.get(facts.key)
             last_change = seen.changed_at if seen is not None else self._seed(facts, now)
-            ctx = RowContext(facts, now, last_change, config.stalled_hours)
+            if ctx is None:
+                ctx = RowContext(facts, now, last_change, config.stalled_hours)
             derived = catalog.evaluate(ctx)
             fp = fingerprint(facts, derived, user_facts(catalog, ctx, derived.rule_id))
             if seen is None:
@@ -1044,8 +1108,11 @@ class StatusProjection:
             del self._seen[key]
         for key in [k for k in self._derived if k not in rows]:
             del self._derived[key]
-        for slot in [s for s in self._since if s not in live_agents]:
-            del self._since[slot]
+        for path, agents in list(self._since.items()):
+            for agent_id in [a for a in agents if (path, a) not in live_agents]:
+                del agents[agent_id]
+            if not agents:
+                del self._since[path]
         for slot in [s for s in self._turns if s not in live_agents]:
             del self._turns[slot]
         self._primed = True
@@ -1063,6 +1130,7 @@ class StatusProjection:
         actors = self._actors
         self._actors = {}
         tracked: dict[str, dict[str, Any]] = {}
+        heads = {w.path: w.head for w in reversed(self._engine.worktrees)}
         for key, row in rows.items():
             facts = facts_by_key[key]
             pr = facts.pr
@@ -1078,10 +1146,7 @@ class StatusProjection:
             before = self._tracked.get(key)
             if before is None:
                 continue
-            ref = None
-            wt = next((w for w in self._engine.worktrees if w.path == facts.worktree_path), None)
-            if wt is not None:
-                ref = wt.head
+            ref = heads.get(facts.worktree_path)
             noted = False
             if now_facts["commit"] and now_facts["commit"] != before["commit"] and (
                 before["commit"] is None or now_facts["commit"] > before["commit"]
@@ -1372,23 +1437,23 @@ class StatusProjection:
         facts = []
         ids = list(states)
         ids += [a for a in engine.agent_ids(path) if a not in states]
+        since = self._since.setdefault(path, {})
         for agent_id in ids:
             state = states.get(agent_id)
             status = state.status.value if state is not None else STARTING
             if status == AgentStatus.NO_AGENT.value:
                 status = STARTING
-            slot = (path, agent_id)
             self.saw_status(path, agent_id, status)
-            known = self._since.get(slot)
+            known = since.get(agent_id)
             if known is None or known[0] != status:
                 if known is not None or self._primed:
                     # Seen happen, not found running when the engine started.
                     self._saw[path] = now
-                known = self._since[slot] = (status, now)
+                known = since[agent_id] = (status, now)
             facts.append(
                 AgentFact(agent_id, status, state.detail if state else "", known[1])
             )
-        if any(p == path and a not in ids for p, a in self._since):
+        if any(a not in ids for a in since):
             # An agent went: something happened there.
             self._saw[path] = now
         return tuple(facts)
