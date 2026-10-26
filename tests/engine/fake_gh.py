@@ -73,9 +73,11 @@ class FakeGh:
         self.head_runs: dict[str, list[dict[str, Any]]] = {}
         self.per_page = 100
         # run id → its artifacts ([{id, name, size_in_bytes, expired}]);
-        # artifact name → its files (name → text), for ``gh run download``.
+        # artifact name → its files (name → text), zipped for ``gh api
+        # .../artifacts/<id>/zip``; or artifact id → the zip's bytes.
         self.artifacts: dict[int, list[dict[str, Any]]] = {}
         self.artifact_files: dict[str, dict[str, str]] = {}
+        self.zips: dict[int, bytes] = {}
         # PR number → the parents of refs/pull/<n>/merge.
         self.merge_refs: dict[int, list[str]] = {}
         # run id → the run (``actions/runs/<id>``), for runs not in the
@@ -100,18 +102,6 @@ class FakeGh:
             if isinstance(nxt, Exception):
                 raise nxt
             return nxt
-        if args[:2] == ["run", "download"]:
-            name, out = args[args.index("-n") + 1], args[args.index("-D") + 1]
-            files = self.artifact_files.get(name)
-            if files is None:
-                return 1, "", f"no artifact matches {name}"
-            from pathlib import Path
-
-            for fname, text in files.items():
-                target = Path(out) / fname
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(text)
-            return 0, "", ""
         if args[:2] == ["run", "view"]:
             log = self.logs.get(int(args[2]))
             if log is None:
@@ -157,6 +147,42 @@ class FakeGh:
                 return http(404, {"message": "Not Found"})
             return http(200, self.jobs[run_id])
         return http(404, {"message": "Not Found"})
+
+
+    def zip_of(self, aid: int) -> bytes | None:
+        if aid in self.zips:
+            return self.zips[aid]
+        name = next((str(a.get("name")) for arts in self.artifacts.values() for a in arts
+                     if int(a.get("id") or 0) == aid), None)
+        files = self.artifact_files.get(name or "")
+        if files is None:
+            return None
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for fname, text in files.items():
+                z.writestr(fname, text)
+        return buf.getvalue()
+
+    async def stream(self, args: list[str], sink: Any, timeout: float) -> tuple[int, str]:
+        """``actions.Stream``: the artifact zips in binary, else the
+        call's stdout, in 64 KiB chunks until the sink stops."""
+        if args[:1] == ["api"] and args[-1].endswith("/zip"):
+            self.calls.append(list(args))
+            aid = int(args[-1].split("/artifacts/")[1].split("/")[0])
+            data = self.zip_of(aid)
+            if data is None:
+                return 1, "gh: Not Found (HTTP 404)"
+            code, err = 0, ""
+        else:
+            code, out, err = await self(args)
+            data = out.encode()
+        for i in range(0, len(data), 64 * 1024):
+            if not sink(data[i:i + 64 * 1024]):
+                return 0, err
+        return code, err
 
 
 def failed_log(job: str, step: str, lines: list[str]) -> str:
