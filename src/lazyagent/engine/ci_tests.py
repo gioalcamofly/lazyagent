@@ -24,10 +24,17 @@ the display name alone.
 worker ids (``[gw3]``), durations and colour codes stripped; per check, from
 the sources ``[ci.check."<name>"] tests_from`` lists, the first that gives a
 known set: ``junit:<artifact glob>`` (the run's artifacts, every ``*.xml``'s
-failing ``<testcase>``), ``log:<parser>`` (the failed log, read by a
-built-in parser that must find as many failures as the runner's own totals
-line says), ``log:regex`` (the user's RE2 ``test_regex`` and
-``total_regex``). The base must come from the same source as the branch.
+failing ``<testcase>``, read from the zip one file at a time and checked
+against the files' own counts), ``log:<parser>`` (the failed log's head and
+tail, read by a built-in parser that must find as many failures as the
+runner's own totals line says), ``log:regex`` (the user's RE2
+``test_regex`` and ``total_regex``). The base must come from the same
+source as the branch.
+
+**Aggregate jobs** (``aggregate = true``, or with ``[ci_unrelated]
+detect_aggregates = true`` detected: no ``tests_from``, started after the
+run's other failing jobs ended, at most two steps of its own) have no tests:
+one is unrelated when the run's other failing jobs all are.
 
 **The base point P.** ``compare_to = "build_base"`` (default): for a
 ``pull_request`` run, the base parent of the merge ref the run built
@@ -67,7 +74,9 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -75,7 +84,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine.trackers import TrackerError
-from lazyagent.models import WorkflowRun
+from lazyagent.models import WorkflowJob, WorkflowRun
 
 if TYPE_CHECKING:
     from lazyagent.engine.actions import ActionsHub, CiVerdict
@@ -88,17 +97,25 @@ DEFAULT_BASE_FETCHES = 3
 # Test-data reads one poll may start (artifact lists, downloads, logs, base
 # runs, merge refs), inside the hub's 20 calls a minute.
 MAX_FETCHES = 8
-# JUnit: an artifact larger than this is not downloaded; files and test
-# cases read from one artifact.
+# JUnit: an artifact (a zip) larger than this is not downloaded. Its XML
+# files are streamed one at a time, however many: each is scanned for
+# ``<failure`` / ``<error`` and its testsuite counts, and only those with a
+# failure are parsed. Caps: the XML scanned in all, one file, the XML
+# parsed, the test cases parsed, the seconds spent.
 JUNIT_MAX_BYTES = 20 * 1024 * 1024
-JUNIT_MAX_FILES = 200
+JUNIT_MAX_XML_BYTES = 512 * 1024 * 1024
+JUNIT_MAX_FILE_BYTES = 32 * 1024 * 1024
+JUNIT_MAX_PARSE_BYTES = 64 * 1024 * 1024
 JUNIT_MAX_CASES = 50_000
-# A log parser reads at most this much of a job's failed log.
-LOG_MAX_BYTES = 5 * 1024 * 1024
+JUNIT_MAX_SECONDS = 30.0
+JUNIT_TIMEOUT = 120.0
 # A user regex runs on lines cut to this many characters.
 REGEX_LINE_CHARS = 300
 # Decided entries kept (job results, base points, base runs).
 CACHE = 512
+# An aggregate job found without config runs at most this many steps of
+# its own.
+AGGREGATE_STEPS = 2
 # Polls a failed read is tried on before the check stays related.
 RETRIES = 3
 SOURCES = ("junit", "log")
@@ -147,6 +164,9 @@ class CheckConfig:
     tests_from: tuple[str, ...]
     test_regex: str | None = None
     total_regex: str | None = None
+    # An aggregate job (it waits on the run's other jobs and has no tests
+    # of its own): True, False, or None to detect it.
+    aggregate: bool | None = None
 
     def matches(self, check: str, job: str) -> bool:
         return any(fnmatch.fnmatchcase(x, self.name) for x in (check, job, bare_job(job)))
@@ -165,13 +185,21 @@ class CiConfig:
     # I6 project id → compare_to (the repo's over the global's).
     projects: Mapping[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int = DEFAULT_BASE_FETCHES
+    # Take a job for an aggregate from the run's jobs when its check does
+    # not say (opt-in: a wrong "unrelated" could let a real failure merge).
+    detect_aggregates: bool = False
 
     @property
     def configured(self) -> bool:
-        return bool(self.checks)
+        return any(c.tests_from for c in self.checks)
 
     def check(self, check: str, job: str) -> CheckConfig | None:
         return next((c for c in self.checks if c.matches(check, job)), None)
+
+    def tests_for(self, check: str, job: str) -> CheckConfig | None:
+        """The check's config when it has ``tests_from``."""
+        c = self.check(check, job)
+        return c if c is not None and c.tests_from else None
 
     def compare_for(self, project: str | None) -> tuple[str, str]:
         """``(compare_to, why)``: the project's, else the files'."""
@@ -183,6 +211,7 @@ class CiConfig:
         return {
             "checks": [
                 {"name": c.name, "tests_from": list(c.tests_from)}
+                | ({"aggregate": c.aggregate} if c.aggregate is not None else {})
                 | ({"test_regex": c.test_regex} if c.test_regex else {})
                 | ({"total_regex": c.total_regex} if c.total_regex else {})
                 for c in self.checks
@@ -190,7 +219,7 @@ class CiConfig:
             "compare_to": self.compare_to,
             "projects": dict(sorted(self.projects.items())),
             "base_fetches_per_poll": self.base_fetches_per_poll,
-        }
+        } | ({"detect_aggregates": True} if self.detect_aggregates else {})
 
 
 NO_CONFIG = CiConfig()
@@ -201,8 +230,9 @@ LATER_CI_KEYS = frozenset({
     "min_base_runs", "min_repetitions", "max_drop",
 })
 LATER_CHECK_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
-CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex"})
-UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project"})
+CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex", "aggregate"})
+UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project",
+                            "detect_aggregates"})
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 
@@ -214,6 +244,7 @@ class CiPart:
     compare_to: str | None = None
     projects: dict[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int | None = None
+    detect_aggregates: bool | None = None
 
 
 def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]:
@@ -259,6 +290,11 @@ def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]
                 errors.append("[ci_unrelated] base_fetches_per_poll must be a number from 0 to 20")
             else:
                 part.base_fetches_per_poll = n
+        if "detect_aggregates" in unrelated:
+            if not isinstance(unrelated["detect_aggregates"], bool):
+                errors.append("[ci_unrelated] detect_aggregates must be true or false")
+            else:
+                part.detect_aggregates = unrelated["detect_aggregates"]
         projects = unrelated.get("project", {})
         if not isinstance(projects, dict):
             errors.append('[ci_unrelated] project must be tables ([ci_unrelated.project."<id>"])')
@@ -295,9 +331,18 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
             warnings.append(f"{where} {key} is read by a later version; ignored for now")
         else:
             raise ValueError(f"unknown key {key!r}")
+    aggregate = table.get("aggregate")
+    if aggregate is not None and not isinstance(aggregate, bool):
+        raise ValueError("aggregate must be true or false")
     sources = table.get("tests_from")
+    if aggregate and sources is not None:
+        raise ValueError("an aggregate job has no tests of its own: drop tests_from")
     if sources is None:
-        return None
+        if aggregate is None:
+            return None
+        if "test_regex" in table or "total_regex" in table:
+            raise ValueError("test_regex and total_regex are for log:regex")
+        return CheckConfig(name, (), aggregate=aggregate)
     if not isinstance(sources, list) or not sources or not all(isinstance(s, str) for s in sources):
         raise ValueError('tests_from must be a list such as ["junit:junit-*", "log:pytest"]')
     for s in sources:
@@ -317,15 +362,17 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
             compile_re2(value, group)
     elif test_regex is not None or total_regex is not None:
         raise ValueError("test_regex and total_regex are for log:regex")
-    return CheckConfig(name, tuple(sources), test_regex, total_regex)
+    return CheckConfig(name, tuple(sources), test_regex, total_regex, aggregate)
 
 
 def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
     """The files' parts, highest precedence first (repo, then global)."""
     checks: list[CheckConfig] = []
-    compare_to, compare_from, fetches = None, "", None
+    compare_to, compare_from, fetches, detect = None, "", None, None
     projects: dict[str, str] = {}
     for scope, part in parts:
+        if detect is None:
+            detect = part.detect_aggregates
         names = {c.name for c in checks}
         checks += [c for c in part.checks if c.name not in names]
         if compare_to is None and part.compare_to is not None:
@@ -334,10 +381,10 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
             fetches = part.base_fetches_per_poll
         for pid, ref in part.projects.items():
             projects.setdefault(pid, ref)
-    if not checks and compare_to is None and not projects and fetches is None:
+    if not checks and compare_to is None and not projects and fetches is None and detect is None:
         return NO_CONFIG
     return CiConfig(tuple(checks), compare_to or BUILD_BASE, compare_from, projects,
-                    DEFAULT_BASE_FETCHES if fetches is None else fetches)
+                    DEFAULT_BASE_FETCHES if fetches is None else fetches, bool(detect))
 
 
 # ----------------------------------------------------------------------
@@ -463,6 +510,10 @@ def parse_jest(lines: list[str]) -> Found:
     ids: set[str] = set()
     expected, current = None, None
     for line in lines:
+        if line is CUT:
+            # The FAIL line above may not be this test's.
+            current = None
+            continue
         m = _JEST_FAIL.match(line.strip())
         if m:
             current = m[1]
@@ -654,13 +705,26 @@ def parse_regex(lines: list[str], test_regex: str, total_regex: str) -> Found:
     return _counted("regex", ids, expected)
 
 
-def parse_log(parser: str, lines: list[str], check: CheckConfig | None = None) -> Found:
-    size = 0
-    for i, line in enumerate(lines):
-        size += len(line) + 1
-        if size > LOG_MAX_BYTES:
-            lines = lines[:i]
-            break
+# Where a failed log's middle was dropped (actions.FailedLogReader): a
+# parser that carries context across lines starts afresh after it.
+CUT = "\x00(cut)"
+# Parsers whose totals are one line at the end of the run: a log whose
+# middle was dropped can still be checked against them. The others add
+# totals up over the log (cargo per binary, Maven per module, a regex) or
+# print none (go): a dropped middle could hide a failure and its count.
+TAIL_TOTALS = frozenset({"pytest", "jest", "vitest"})
+
+
+def parse_log(parser: str, lines: list[str], check: CheckConfig | None = None, *,
+              cut: int = 0, cut_at: int | None = None) -> Found:
+    """``lines`` (a failed log's kept head and tail; ``cut`` lines dropped
+    at ``cut_at``) read by ``parser``."""
+    if cut:
+        if parser not in TAIL_TOTALS:
+            return unknown(parser, f"{parser}: the log's middle ({_plural(cut, 'line')}) was "
+                                   f"not read, and {parser}'s totals cannot be checked without it")
+        at = len(lines) if cut_at is None else cut_at
+        lines = [*lines[:at], CUT, *lines[at:]]
     if parser == "regex":
         if check is None or not check.test_regex or not check.total_regex:
             return unknown("regex", "regex: no test_regex / total_regex")
@@ -668,15 +732,15 @@ def parse_log(parser: str, lines: list[str], check: CheckConfig | None = None) -
     return PARSERS[parser](lines)
 
 
-def parse_junit_xml(text: str) -> list[str]:
-    """The failing ``<testcase>``s of one JUnit XML file (``<failure>`` or
-    ``<error>`` inside), as ``<classname or file>::<name>``. No DTD and no
+def _junit_cases(data: str | bytes) -> list[tuple[str, int]]:
+    """The failing ``<testcase>``s of one JUnit XML file: ``(<classname or
+    file>::<name>, its <failure> and <error> elements)``. No DTD and no
     entities are accepted. Raises ValueError."""
-    head = text[:4096]
-    if "<!DOCTYPE" in head or "<!ENTITY" in text:
+    raw = data.encode() if isinstance(data, str) else data
+    if b"<!DOCTYPE" in raw[:4096] or b"<!ENTITY" in raw:
         raise ValueError("a DTD or an entity (refused)")
     try:
-        root = ET.fromstring(text)
+        root = ET.fromstring(data)
     except ET.ParseError as e:
         raise ValueError(f"not valid XML: {e}") from None
     out = []
@@ -685,32 +749,115 @@ def parse_junit_xml(text: str) -> list[str]:
         cases += 1
         if cases > JUNIT_MAX_CASES:
             raise ValueError(f"more than {JUNIT_MAX_CASES} test cases")
-        if case.find("failure") is None and case.find("error") is None:
+        bad = len(case.findall("failure")) + len(case.findall("error"))
+        if not bad:
             continue
         suite = case.get("classname") or case.get("file") or ""
         name = _norm(case.get("name") or "")
-        out.append(f"{suite}::{name}" if suite else name)
+        out.append((f"{suite}::{name}" if suite else name, bad))
     return out
 
 
-def read_junit_dir(path: str) -> tuple[list[str], str | None]:
-    """Every ``*.xml`` under ``path`` → (failing tests, an error)."""
-    files = sorted(p for p in Path(path).rglob("*.xml") if p.is_file())
-    if len(files) > JUNIT_MAX_FILES:
-        return [], f"more than {JUNIT_MAX_FILES} XML files"
-    if not files:
-        return [], "no XML file in it"
-    out: list[str] = []
-    total = 0
-    for p in files:
-        total += p.stat().st_size
-        if total > JUNIT_MAX_BYTES * 2:
-            return [], "its XML is too large"
-        try:
-            out += parse_junit_xml(p.read_text(errors="replace"))
-        except ValueError as e:
-            return [], f"{p.name}: {e}"
-    return out, None
+def parse_junit_xml(text: str | bytes) -> list[str]:
+    """The failing ``<testcase>``s of one JUnit XML file (``<failure>`` or
+    ``<error>`` inside), as ``<classname or file>::<name>``. No DTD and no
+    entities are accepted. Raises ValueError."""
+    return [test for test, _ in _junit_cases(text)]
+
+
+_SUITE_TAG = re.compile(rb"<testsuites?[\s/>][^>]*")
+_SUITE_COUNT = re.compile(rb"""\s(tests|failures|errors)\s*=\s*["'](\d+)["']""")
+
+
+def suite_counts(data: bytes) -> tuple[int, int] | None:
+    """``(tests, failures + errors)`` from a JUnit file's ``<testsuites>`` /
+    ``<testsuite>`` start tags, read with a regex (no parse): the root
+    ``<testsuites>``'s own when it has them, else the sum of its
+    ``<testsuite>``s'. None when there is no such tag, or one lacks
+    ``failures``."""
+    tags = _SUITE_TAG.findall(data)
+    if not tags:
+        return None
+    if tags[0].startswith(b"<testsuites"):
+        root = dict(_SUITE_COUNT.findall(tags[0]))
+        if b"failures" in root:
+            return int(root.get(b"tests", 0)), int(root[b"failures"]) + int(root.get(b"errors", 0))
+    tests = bad = 0
+    suites = [t for t in tags if not t.startswith(b"<testsuites")]
+    if not suites:
+        return None
+    for tag in suites:
+        counts = dict(_SUITE_COUNT.findall(tag))
+        if b"failures" not in counts:
+            return None
+        tests += int(counts.get(b"tests", 0))
+        bad += int(counts[b"failures"]) + int(counts.get(b"errors", 0))
+    return tests, bad
+
+
+def read_junit_zip(path: str, clock: Callable[[], float] = time.monotonic,
+                   ) -> tuple[list[str], str | None]:
+    """A JUnit artifact's zip → (failing tests, an error). Its ``*.xml``
+    files are read one at a time (memory: one file); a file with no
+    ``<failure`` and no ``<error`` is only scanned for its testsuite counts,
+    the others are parsed. The count check: the failures and errors parsed
+    must be the files' own counts (when every file has them). Byte and time
+    caps instead of a file count: :data:`JUNIT_MAX_XML_BYTES` scanned,
+    :data:`JUNIT_MAX_FILE_BYTES` a file, :data:`JUNIT_MAX_PARSE_BYTES`
+    parsed, :data:`JUNIT_MAX_SECONDS`."""
+    deadline = clock() + JUNIT_MAX_SECONDS
+    try:
+        z = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as e:
+        return [], f"not a zip: {e}"
+    with z:
+        infos = [i for i in z.infolist() if not i.is_dir() and i.filename.endswith(".xml")]
+        if not infos:
+            return [], "no XML file in it"
+        if sum(i.file_size for i in infos) > JUNIT_MAX_XML_BYTES:
+            return [], f"its XML is larger than {JUNIT_MAX_XML_BYTES >> 20} MB"
+        out: list[str] = []
+        scanned = parsed = tests = expected = found = 0
+        counted = True
+        for info in sorted(infos, key=lambda i: i.filename):
+            if clock() > deadline:
+                return [], f"reading its {len(infos)} XML files took over {JUNIT_MAX_SECONDS:g} s"
+            name = info.filename.rsplit("/", 1)[-1]
+            if info.file_size > JUNIT_MAX_FILE_BYTES:
+                return [], f"{name} is larger than {JUNIT_MAX_FILE_BYTES >> 20} MB"
+            try:
+                with z.open(info) as f:
+                    data = f.read(JUNIT_MAX_FILE_BYTES + 1)
+            except (zipfile.BadZipFile, OSError, ValueError, EOFError) as e:
+                return [], f"{name}: {e}"
+            if len(data) > JUNIT_MAX_FILE_BYTES:
+                return [], f"{name} is larger than {JUNIT_MAX_FILE_BYTES >> 20} MB"
+            scanned += len(data)
+            if scanned > JUNIT_MAX_XML_BYTES:
+                return [], f"its XML is larger than {JUNIT_MAX_XML_BYTES >> 20} MB"
+            counts = suite_counts(data)
+            if counts is None:
+                counted = False
+            else:
+                tests += counts[0]
+                expected += counts[1]
+            if b"<failure" not in data and b"<error" not in data:
+                continue
+            parsed += len(data)
+            if parsed > JUNIT_MAX_PARSE_BYTES:
+                return [], f"its failing XML is larger than {JUNIT_MAX_PARSE_BYTES >> 20} MB"
+            try:
+                cases = _junit_cases(data)
+            except ValueError as e:
+                return [], f"{name}: {e}"
+            out += [test for test, _ in cases]
+            found += sum(n for _, n in cases)
+            if len(out) > JUNIT_MAX_CASES:
+                return [], f"more than {JUNIT_MAX_CASES} failing test cases"
+        if counted and found != expected:
+            return [], (f"found {found} of {expected} failures and errors its "
+                        f"{_plural(len(infos), 'file')} count ({tests} tests)")
+        return out, None
 
 
 def pick_artifacts(artifacts: list[dict[str, Any]], glob: str, job: str) -> tuple[list[dict[str, Any]], str]:
@@ -768,6 +915,8 @@ class CheckResult:
     fixed_detail: str = ""
     # Some data is still to be read (not a failure to read it).
     pending: bool = False
+    # An aggregate job: the failing jobs of its run it waits on.
+    aggregate_of: tuple[str, ...] = ()
 
     @property
     def known_related(self) -> bool:
@@ -790,7 +939,7 @@ class CheckResult:
             "detail": self.detail,
             "base_fixed": self.base_fixed,
             "fixed_detail": self.fixed_detail,
-        }
+        } | ({"aggregate_of": list(self.aggregate_of)} if self.aggregate_of else {})
 
 
 def _plural(n: int, word: str) -> str:
@@ -1079,7 +1228,7 @@ class CiTestsHub:
                     newest = self._newest_base_run(c, v, target)
                     if newest is None or not newest.red or base_budget <= 0:
                         continue
-                    job_cfg = self.config.check(c.check, c.job)
+                    job_cfg = self.config.tests_for(c.check, c.job)
                     if (newest.id, newest.attempt, c.job) in self._found or job_cfg is None:
                         continue
                     base_budget -= 1
@@ -1126,7 +1275,7 @@ class CiTestsHub:
     def _failing(self, v: CiVerdict) -> Iterable[tuple[WorkflowRun, str, CheckConfig]]:
         for run in v.red:
             for job in run.failed_jobs or ():
-                check = self.config.check(check_id(run, job.name), job.name)
+                check = self.config.tests_for(check_id(run, job.name), job.name)
                 if check is not None:
                     yield run, job.name, check
 
@@ -1191,7 +1340,7 @@ class CiTestsHub:
             aid = int(a.get("id") or 0)
             got = self._junit.get(aid)
             if got is None:
-                got = await self._download(run, str(a.get("name", "")))
+                got = await self._download(aid)
                 _put(self._junit, aid, got)
             tests, error = got
             if error:
@@ -1201,14 +1350,30 @@ class CiTestsHub:
         return _known("junit", ids, f"junit: {_plural(n, 'failing test')} in "
                                     + ", ".join(str(a.get("name")) for a in picked))
 
-    async def _download(self, run: WorkflowRun, name: str) -> tuple[list[str], str | None]:
+    async def _download(self, aid: int) -> tuple[list[str], str | None]:
+        """The artifact's zip, streamed to a temporary file (at most
+        :data:`JUNIT_MAX_BYTES`), then read by :func:`read_junit_zip`."""
         self._spend()
         with tempfile.TemporaryDirectory(prefix="lazyagent-junit-") as tmp:
-            code, _, err = await self.hub._call(
-                ["run", "download", str(run.id), "-n", name, "-D", tmp], 120.0)
+            path = Path(tmp) / "artifact.zip"
+            size = 0
+            with open(path, "wb") as f:
+                def sink(chunk: bytes) -> bool:
+                    nonlocal size
+                    size += len(chunk)
+                    if size > JUNIT_MAX_BYTES:
+                        return False
+                    f.write(chunk)
+                    return True
+
+                code, err = await self.hub._stream(
+                    ["api", f"repos/{{owner}}/{{repo}}/actions/artifacts/{aid}/zip"], sink,
+                    JUNIT_TIMEOUT)
+            if size > JUNIT_MAX_BYTES:
+                return [], f"larger than {JUNIT_MAX_BYTES >> 20} MB"
             if code != 0:
-                raise TrackerError(f"gh run download {run.id} -n {name}: {err.strip() or code}")
-            return await asyncio.to_thread(read_junit_dir, tmp)
+                raise TrackerError(f"gh api artifacts/{aid}/zip: {err.strip() or code}")
+            return await asyncio.to_thread(read_junit_zip, str(path))
 
     async def _log_tests(self, run: WorkflowRun, job: str, parser: str,
                          check: CheckConfig) -> Found:
@@ -1223,7 +1388,8 @@ class CiTestsHub:
         if entry is None:
             return unknown(parser, f"{parser}: no failed log for {job}")
         try:
-            return parse_log(parser, entry["lines"], check)
+            return parse_log(parser, entry["lines"], check, cut=entry.get("cut", 0),
+                             cut_at=entry.get("cut_at"))
         except ValueError as e:
             return unknown(parser, f"{parser}: {e}")
 
@@ -1399,9 +1565,29 @@ class CiTestsHub:
                 name = run.path or run.workflow
                 others.append((name.lower(), run.workflow))
                 continue
+            aggregates = {j.name for j in run.failed_jobs if self._is_aggregate(run, j)}
+            own = {j.name: self._check(run, j.name, target, v) for j in run.failed_jobs
+                   if j.name not in aggregates}
             for job in run.failed_jobs:
-                checks.append(self._check(run, job.name, target, v))
+                checks.append(own[job.name] if job.name in own
+                              else _aggregate_result(run, job.name, list(own.values())))
         return CiTests(tuple(checks), tuple(others))
+
+    def _is_aggregate(self, run: WorkflowRun, job: WorkflowJob) -> bool:
+        """``aggregate`` when the check sets it; else, only with ``[ci_unrelated]
+        detect_aggregates``, a job with no ``tests_from`` that started only
+        once every other failing job of its run had ended (it waits on them:
+        ``needs``) and runs at most :data:`AGGREGATE_STEPS` steps of its
+        own."""
+        cfg = self.config.check(check_id(run, job.name), job.name)
+        if cfg is not None and cfg.aggregate is not None:
+            return cfg.aggregate
+        if not self.config.detect_aggregates or (cfg is not None and cfg.tests_from):
+            return False
+        others = [j for j in run.failed_jobs or () if j.name != job.name]
+        if not others or not job.started_at or not 0 < job.own_steps <= AGGREGATE_STEPS:
+            return False
+        return all(0 < j.completed_at <= job.started_at for j in others)
 
     def _check(self, run: WorkflowRun, job: str, target: Target | None, v: CiVerdict) -> CheckResult:
         cid = check_id(run, job)
@@ -1489,6 +1675,37 @@ class CiTestsHub:
         cid = check_id(run, job)
         still = tests & frozenset(f"{cid}::{t}" for t in found.ids or ())
         return (not still), (f"its failing tests pass on {where}" if not still else "")
+
+
+def _aggregate_result(run: WorkflowRun, job: str, deps: list[CheckResult]) -> CheckResult:
+    """An aggregate job: unrelated when every other failing job of its run
+    is (it may wait on fewer: stricter, and the row's verdict is the same,
+    since those jobs are failing checks too), else related naming the
+    first that is not. No test data of its own."""
+    cid = check_id(run, job)
+    names = tuple(d.job for d in deps)
+    base = dict(check=cid, job=job, workflow=run.workflow, run_id=run.id, aggregate_of=names,
+                tests=frozenset(), base_tests=frozenset())
+    if not deps:
+        return CheckResult(**base, unrelated=False,
+                           detail=f"an aggregate job with no other failing job in run {run.id} "
+                                  "(a cancelled or skipped one?)")
+    points = {d.point for d in deps}
+    compared = {d.compared for d in deps}
+    where = dict(point=points.pop() if len(points) == 1 else None,
+                 compared=compared.pop() if len(compared) == 1 else "")
+    culprit = next((d for d in deps if not d.unrelated), None)
+    if culprit is not None:
+        return CheckResult(**base, unrelated=False, **where,
+                           pending=any(d.pending for d in deps),
+                           detail=f"waits on {culprit.job}, related: {culprit.detail}")
+    fixed = [d.base_fixed for d in deps]
+    return CheckResult(**base, unrelated=True, **where,
+                       base_fixed=None if None in fixed else all(fixed),
+                       fixed_detail="every job it waits on passes on the base" if all(
+                           f is True for f in fixed) else "",
+                       detail=f"waits on {', '.join(names)}: "
+                              + ("unrelated" if len(names) == 1 else "all unrelated"))
 
 
 def _same_workflow(a: WorkflowRun, b: WorkflowRun) -> bool:

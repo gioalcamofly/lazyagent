@@ -318,7 +318,7 @@ def test_the_readmes_ci_example_loads_as_written():
     f = parse_file("version = 1\n" + block, "global", GLOBAL_RULES)
     assert f.errors == [] and f.warnings == []
     ci = compose(builtin(), [f]).catalog.ci
-    assert [c.name for c in ci.checks] == ["unit-tests", "e2e"]
+    assert [c.name for c in ci.checks] == ["unit-tests", "e2e", "summary"]
     assert ci.compare_for("checkout-redesign") == ("origin/main", "project checkout-redesign")
     e2e = ci.checks[1]
     assert parse_log("regex", ["✗ cart/add", "1 failing"], e2e).ids == {"cart/add"}
@@ -384,7 +384,8 @@ def _engine(gh: FakeGh, pr: PrInfo | None = None, git: dict | None = None,
                          config=Config())
     clock = Clock()
     engine.status.clock = clock
-    hub = ActionsHub("/tmp/repo", run=gh, read_heads=lambda: {"feat": HEAD}, clock=clock)
+    hub = ActionsHub("/tmp/repo", run=gh, stream=gh.stream, read_heads=lambda: {"feat": HEAD},
+                     clock=clock)
     hub.tests.state_path = None
     git = git or {}
     hub.tests.git = lambda args: (0, git[tuple(args)]) if tuple(args) in git else (128, "")
@@ -531,7 +532,9 @@ async def test_junit_artifacts_are_read_and_preferred_over_the_log():
         assert t.checks[0].tests == {f"{CHECK}::tests.test_a::test_retry[exponential]",
                                      f"{CHECK}::tests.test_b.TestExport::test_csv"}
         assert not any(c[:2] == ["run", "view"] for c in gh.calls)
-        assert sum(c[:2] == ["run", "download"] for c in gh.calls) == 2
+        assert [c[-1] for c in gh.calls if c[-1].endswith("/zip")] == [
+            "repos/{owner}/{repo}/actions/artifacts/110/zip",
+            "repos/{owner}/{repo}/actions/artifacts/210/zip"]
 
 
 @pytest.mark.asyncio

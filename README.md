@@ -682,6 +682,9 @@ tests_from = ["log:regex"]
 test_regex = '^✗ (?P<test>\S+)'            # RE2 syntax only
 total_regex = '(?P<total>\d+) failing'     # the runner's own count, checked
 
+[ci.check."summary"]                       # a job that `needs:` the test jobs and fails when they do
+aggregate = true                           # unrelated when the run's other failing jobs all are
+
 [ci_unrelated]
 compare_to = "build_base"                  # default: the commit the failing run built on
 base_fetches_per_poll = 3                  # Sync's lazy reads of a newer red base run
@@ -693,8 +696,10 @@ compare_to = "origin/main"                 # main's run at the newest main commi
 | Key | Meaning |
 |---|---|
 | `[ci.check."<name>"] tests_from` | `junit:<artifact glob>` (the run's artifacts, every `*.xml`; a matrix job takes the artifact naming its values), `log:pytest`, `log:jest`, `log:vitest`, `log:go`, `log:cargo`, `log:junit-console` (Maven, Gradle), `log:regex` (with `test_regex` and `total_regex`) |
+| `[ci.check."<name>"] aggregate` | `true`: an aggregate job (a `summary` / `all-green` that waits on the test jobs and has no tests of its own); `false`: never one; unset: not one, unless `detect_aggregates` is on. Takes no `tests_from`. The first `[ci.check]` whose name matches a job is the one read, so put it before a `*` |
 | `[ci_unrelated] compare_to` | `build_base` (default): a `pull_request` run's merge-ref base parent, a `push` run's single merge-base with `origin/<base>`; else a ref, compared at its newest commit that is an ancestor of the build base. A project's `compare_to` wins over the repo file's, which wins over the global one |
 | `[ci_unrelated] base_fetches_per_poll` | 3 |
+| `[ci_unrelated] detect_aggregates` | `false` (default). `true`: a job with no `aggregate` key may be taken for one from the run's jobs (see below). The repo file's wins over the global one |
 
 When every failing check is unrelated, Fix CI clears and the row carries
 `CI red · unrelated (base also red: 2 tests)` (`status_list {fields:
@@ -708,6 +713,35 @@ read `ci.unrelated`, `ci.unrelated_checks`, `ci.related_failures`,
 Nothing is read until a check has `tests_from`; then, only while a head is
 red, one artifact list and download (or the failed log) per failing job and
 run attempt, and the same once per base commit, inside the Actions caps.
+
+*Aggregate jobs.* A job that fails because the jobs it `needs:` failed is
+unrelated when every other failing job of its run (not an aggregate) is
+unrelated, else related naming the first that is not (`summary: waits on
+unit-tests (3.12), related: 1 failing test not failing on main at 3f2a9c1`);
+with no other failing job in its run (they were cancelled or skipped), it is
+related. GitHub's jobs list has no `needs`, so the workflow file is not read:
+the run's other failing jobs stand in, which is stricter, and the row's
+verdict is the same since they are failing checks too. A job is an
+aggregate only when its check says `aggregate = true`: a job wrongly taken
+for one could be called unrelated and let a real failure merge. With
+`[ci_unrelated] detect_aggregates = true`, a job with no `aggregate` key is
+also taken for one when it has no `tests_from`, started only after every
+other failing job of its run had ended, and runs at most two steps of its
+own; set `aggregate = false` on a job that looks like that and is not.
+
+*Large reports.* A JUnit artifact (at most 20 MB zipped) is read from its
+zip one file at a time, however many files it has: a file with no
+`<failure` and no `<error` is only scanned for its `<testsuite>` counts,
+the others are parsed, and the failures and errors found must add up to the
+files' own counts (when every file has them). It stays unknown past 512 MB
+of XML, a 32 MB file, 64 MB of failing XML, 50 000 failing cases or 30
+seconds. A failed log is streamed: each job keeps its first 1 MB and its
+last 4 MB (16 MB a run, reading stops at 256 MB), so the summary and the
+totals at the end of a long log are read. When the middle was dropped, only
+`pytest`, `jest` and `vitest` (one totals line at the end) are trusted; the
+parsers that add totals up over the log (`go`, `cargo`, `junit-console`,
+`regex`) say the log was cut. Colour codes are stripped in either form,
+the ESC byte or the `^[` that `gh` writes into a pipe.
 
 ```sh
 lazyagent rules check     # errors with file and line (exit 1), and what is in force instead

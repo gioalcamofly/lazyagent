@@ -80,6 +80,16 @@ MAX_JOB_FETCHES = 5
 CALL_TIMEOUT = 30.0
 # `gh run view --log-failed` downloads the run's logs.
 LOG_TIMEOUT = 60.0
+# The failed log is streamed, never held whole: per job, the first
+# LOG_HEAD_BYTES and the last LOG_TAIL_BYTES of its (cleaned) lines are
+# kept, the middle dropped; a run's jobs keep at most LOG_KEEP_BYTES in all
+# (a later job's head and tail shrink to what is left), and reading stops
+# after LOG_READ_BYTES.
+LOG_HEAD_BYTES = 1024 * 1024
+LOG_TAIL_BYTES = 4 * 1024 * 1024
+LOG_KEEP_BYTES = 16 * 1024 * 1024
+LOG_READ_BYTES = 256 * 1024 * 1024
+STREAM_CHUNK = 64 * 1024
 # The failed-log summary: the last lines of each failed job, a few jobs,
 # each line cut, the whole text capped.
 LOG_LINES = 30
@@ -92,8 +102,19 @@ CACHE = 32
 
 # argv → (exit code, stdout, stderr)
 Run = Callable[[list[str]], Awaitable[tuple[int, str, str]]]
+# (argv, a sink for stdout's chunks that returns False to stop reading,
+# timeout) → (exit code, stderr); the call is cut off when the sink stops.
+Stream = Callable[[list[str], Callable[[bytes], bool], float], Awaitable[tuple[int, str]]]
 
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# Colour and terminal codes, with the ESC byte or as the two characters
+# "^[" that gh writes for it into a pipe: CSI (``^[[31m``), OSC
+# (``^[]8;;url^G``, ended by BEL or ST) and charset selection (``^[(B``).
+_ESC = r"(?:\x1b|\^\[)"
+_ANSI = re.compile(
+    _ESC + r"(?:\[[0-9;?<=>!]*[ -/]*[@-~]"
+    r"|\][^\x07\x1b]*?(?:\x07|\^G|\x1b\\|\^\[\\)"
+    r"|[()][0-9A-Za-z])"
+)
 _STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
 
 
@@ -115,6 +136,70 @@ def _gh_runner(cwd: str) -> Run:
         return await asyncio.to_thread(run_sync, args)
 
     return run
+
+
+def _gh_streamer(cwd: str) -> Stream:
+    """``gh`` with its stdout fed to a sink in chunks (never held whole);
+    killed when the sink has had enough or the timeout passes."""
+
+    def stream_sync(args: list[str], sink: Callable[[bytes], bool],
+                    timeout: float) -> tuple[int, str]:
+        import tempfile
+        import threading
+
+        with tempfile.TemporaryFile() as err:
+            try:
+                proc = subprocess.Popen(["gh", *args], stdout=subprocess.PIPE, stderr=err,
+                                        cwd=cwd or None)
+            except OSError as e:
+                raise TrackerError(f"gh: {e}") from e
+            timed_out = threading.Event()
+
+            def cut_off() -> None:
+                timed_out.set()
+                proc.kill()
+
+            timer = threading.Timer(timeout, cut_off)
+            timer.start()
+            stopped = False
+            try:
+                assert proc.stdout is not None
+                while chunk := proc.stdout.read(STREAM_CHUNK):
+                    if not sink(chunk):
+                        stopped = True
+                        proc.kill()
+                        break
+                code = proc.wait()
+            finally:
+                timer.cancel()
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            if timed_out.is_set():
+                raise TrackerError(f"gh {args[0]} timed out")
+            err.seek(0)
+            return (0 if stopped else code), err.read(4096).decode(errors="replace")
+
+    async def stream(args: list[str], sink: Callable[[bytes], bool],
+                     timeout: float) -> tuple[int, str]:
+        return await asyncio.to_thread(stream_sync, args, sink, timeout)
+
+    return stream
+
+
+def _stream_of(run: Run) -> Stream:
+    """A :data:`Stream` over a plain runner (a fake): its stdout, fed at
+    once."""
+
+    async def stream(args: list[str], sink: Callable[[bytes], bool],
+                     timeout: float) -> tuple[int, str]:
+        code, out, err = await run(args)
+        data = out.encode()
+        for i in range(0, len(data), STREAM_CHUNK):
+            if not sink(data[i:i + STREAM_CHUNK]):
+                return 0, err
+        return code, err
+
+    return stream
 
 
 def _heads_reader(repo_root: str) -> Callable[[], dict[str, str]]:
@@ -225,6 +310,11 @@ def no_log_text(checks: list[dict[str, str]]) -> str:
     )
 
 
+def _github_step(name: str) -> bool:
+    """A step GitHub adds to every job, not one of the workflow's."""
+    return name in ("Set up job", "Complete job") or name.startswith("Post ")
+
+
 def parse_jobs(body: str) -> tuple[WorkflowJob, ...]:
     """``/runs/{id}/jobs``: the jobs that failed or timed out, each with its
     first failing step."""
@@ -239,8 +329,11 @@ def parse_jobs(body: str) -> tuple[WorkflowJob, ...]:
                 (s.get("name", "") for s in j.get("steps") or [] if s.get("conclusion") in RED),
                 "",
             )
+            own = [x for x in j.get("steps") or [] if not _github_step(str(x.get("name") or ""))]
             out.append(WorkflowJob(str(j.get("name") or ""), str(step), str(j.get("html_url") or ""),
-                                   str(j.get("conclusion") or "")))
+                                   str(j.get("conclusion") or ""),
+                                   _timestamp(j.get("started_at")), _timestamp(j.get("completed_at")),
+                                   len(own)))
         return tuple(out)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise ValueError(f"bad jobs response: {e}") from e
@@ -253,30 +346,112 @@ def _clean(line: str) -> str:
     return line
 
 
-def parse_failed_log(text: str) -> list[dict[str, Any]]:
-    """``gh run view --log-failed``: ``<job>\\t<step>\\t<time> <line>`` per
-    line → ``[{name, step, lines, total}]`` in the log's order, timestamps
-    and colour codes stripped. ``lines`` is the whole cleaned log here;
-    :func:`trim` keeps the tail."""
-    jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
-    for raw in text.splitlines():
-        name, sep, rest = raw.partition("\t")
+# A log line longer than this (raw) is cut where it is read.
+RAW_LINE_BYTES = 64 * 1024
+
+
+class FailedLogReader:
+    """``gh run view --log-failed`` (``<job>\\t<step>\\t<time> <line>`` per
+    line) read as it streams, in the log's order, timestamps and colour
+    codes stripped. Per job, the first lines up to a head cap and the last up
+    to a tail cap are kept and the middle is dropped (``cut``: the lines
+    dropped), so memory stays bounded however long the log is; the summary
+    and the runners' totals lines are at the end. ``feed`` returns False once
+    :data:`LOG_READ_BYTES` are read."""
+
+    # What a job keeps once the run's keep cap is spent: enough for the
+    # summary and a runner's final lines.
+    min_head = 16 * 1024
+    min_tail = 64 * 1024
+
+    def __init__(self, head: int = LOG_HEAD_BYTES, tail: int = LOG_TAIL_BYTES,
+                 keep: int = LOG_KEEP_BYTES, limit: int = LOG_READ_BYTES) -> None:
+        self.head, self.tail, self.left, self.limit = head, tail, keep, limit
+        self.jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.read = 0
+        self._carry = b""
+        self._skipping = False
+
+    def feed(self, chunk: bytes) -> bool:
+        self.read += len(chunk)
+        start = 0
+        if self._skipping:
+            # The rest of an over-long line, up to its newline.
+            start = chunk.find(b"\n")
+            if start < 0:
+                return self.read < self.limit
+            self._skipping = False
+        *lines, self._carry = (self._carry + chunk[start:]).split(b"\n")
+        for raw in lines:
+            self._line(raw)
+        if len(self._carry) > RAW_LINE_BYTES:
+            self._carry, self._skipping = self._carry[:RAW_LINE_BYTES], True
+        return self.read < self.limit
+
+    def _job(self, name: str) -> dict[str, Any]:
+        job = self.jobs.get(name)
+        if job is None:
+            head = min(self.head, max(self.left // 5, self.min_head))
+            tail = min(self.tail, max(self.left - head, self.min_tail))
+            self.left = max(self.left - head - tail, 0)
+            job = self.jobs[name] = {"name": name, "step": "", "head": [], "head_left": head,
+                                     "tail": deque(), "tail_size": 0, "tail_cap": tail,
+                                     "cut": 0, "seen": 0}
+        return job
+
+    def _line(self, raw: bytes) -> None:
+        name, sep, rest = raw.decode("utf-8", "replace").partition("\t")
         if not sep:
-            continue
+            return
         step, sep, line = rest.partition("\t")
         if not sep:
             line, step = step, ""
-        job = jobs.setdefault(name, {"name": name, "step": "", "lines": []})
+        job = self._job(name)
         if step and step != "UNKNOWN STEP":
             job["step"] = step
-        job["lines"].append(_clean(line))
-    out = []
-    for job in jobs.values():
-        lines = job["lines"]
-        while lines and not lines[-1].strip():
-            lines.pop()
-        out.append({**job, "total": len(lines)})
-    return out
+        line = _clean(line)
+        size = len(line) + 1
+        job["seen"] += 1
+        if not job["tail"] and size <= job["head_left"]:
+            job["head"].append(line)
+            job["head_left"] -= size
+            return
+        tail = job["tail"]
+        tail.append(line)
+        job["tail_size"] += size
+        while job["tail_size"] > job["tail_cap"] and len(tail) > 1:
+            job["tail_size"] -= len(tail.popleft()) + 1
+            job["cut"] += 1
+
+    def close(self) -> list[dict[str, Any]]:
+        """``[{name, step, lines, total, cut?, cut_at?}]``: ``lines`` the
+        kept head and tail (trailing blank lines dropped), ``total`` every
+        line read, ``cut`` the lines dropped between them, when any, at
+        ``lines[cut_at]``."""
+        if self._carry:
+            self._line(self._carry)
+            self._carry = b""
+        out = []
+        for job in self.jobs.values():
+            lines = job["head"] + list(job["tail"])
+            total = job["seen"]
+            while lines and not lines[-1].strip():
+                lines.pop()
+                total -= 1
+            entry = {"name": job["name"], "step": job["step"], "lines": lines, "total": total}
+            if job["cut"]:
+                entry["cut"] = job["cut"]
+                entry["cut_at"] = min(len(job["head"]), len(lines))
+            out.append(entry)
+        return out
+
+
+def parse_failed_log(text: str) -> list[dict[str, Any]]:
+    """``gh run view --log-failed`` output, whole: see
+    :class:`FailedLogReader`. :func:`trim` keeps the tail."""
+    reader = FailedLogReader()
+    reader.feed(text.encode())
+    return reader.close()
 
 
 def trim(jobs: list[dict[str, Any]], lines: int = LOG_LINES) -> list[dict[str, Any]]:
@@ -475,12 +650,16 @@ class ActionsHub:
         *,
         poll_s: int = DEFAULT_POLL_S,
         run: Run | None = None,
+        stream: Stream | None = None,
         read_heads: Callable[[], dict[str, str]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.repo_root = repo_root
         self.poll_s = poll_s
         self.run = run or _gh_runner(repo_root)
+        # A fake runner with no stream of its own is streamed from its
+        # stdout, never the real gh.
+        self.stream = stream or (_gh_streamer(repo_root) if run is None else _stream_of(run))
         self.read_heads = read_heads or _heads_reader(repo_root)
         self.clock = clock
         self.runs: list[WorkflowRun] = []
@@ -533,6 +712,22 @@ class ActionsHub:
         self.calls.append(now)
         try:
             return await asyncio.wait_for(self.run(args), timeout)
+        except asyncio.TimeoutError as e:
+            raise TrackerError(f"gh {args[0]} timed out") from e
+
+    async def _stream(self, args: list[str], sink: Callable[[bytes], bool],
+                      timeout: float) -> tuple[int, str]:
+        """One streamed gh call (:data:`Stream`), counted like :meth:`_call`
+        and cut off a little after its own timeout."""
+        now = self.clock()
+        if not self.may_call(now):
+            raise TrackerError(
+                "waiting out GitHub's rate limit" if now < self.backoff_until
+                else "too many gh calls this minute"
+            )
+        self.calls.append(now)
+        try:
+            return await asyncio.wait_for(self.stream(args, sink, timeout), timeout + 5)
         except asyncio.TimeoutError as e:
             raise TrackerError(f"gh {args[0]} timed out") from e
 
@@ -746,17 +941,19 @@ class ActionsHub:
             slot = (run.id, run.attempt)
             if slot in self._logs:
                 continue
+            reader = FailedLogReader()
             try:
-                code, out, err = await self._call(
-                    ["run", "view", str(run.id), "--log-failed"], LOG_TIMEOUT
+                code, err = await self._stream(
+                    ["run", "view", str(run.id), "--log-failed"], reader.feed, LOG_TIMEOUT
                 )
-                if code != 0 and not out.strip():
+                logged = reader.close()
+                if code != 0 and not logged:
                     raise TrackerError(f"gh run view {run.id}: {err.strip() or code}")
             except (TrackerError, OSError) as e:
                 self._failed(self.clock(), e)
                 errors.append(str(e) or type(e).__name__)
                 continue
-            _put(self._logs, slot, parse_failed_log(out))
+            _put(self._logs, slot, logged)
         result = self._summary(runs)
         if errors:
             result["error"] = "; ".join(errors)
