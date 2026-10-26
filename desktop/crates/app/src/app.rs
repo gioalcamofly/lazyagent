@@ -633,11 +633,15 @@ impl State {
     fn status_params(&self) -> serde_json::Value {
         let mut p = if self.gestures() { json!({"include_done": true}) } else { json!({}) };
         if self.has("rules") {
-            p["fields"] = if self.has("ci_tests") {
-                json!(["rule_id", "verb", "action", "ci_note"])
-            } else {
-                json!(["rule_id", "verb", "action"])
-            };
+            let mut fields = vec!["rule_id", "verb", "action"];
+            if self.has("ci_tests") {
+                fields.push("ci_note");
+            }
+            if self.has("item_capabilities") {
+                // Where Delegate and Pass apply (I4h).
+                fields.extend(["delegable", "passable"]);
+            }
+            p["fields"] = json!(fields);
         }
         p
     }

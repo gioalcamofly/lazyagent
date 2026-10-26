@@ -228,6 +228,8 @@ class AutoDelegate:
             (i["work_item"], i["kind"]): i
             for i in items
             if i["kind"] in wanted and i["work_item"] is not None
+            # The catalog may say an agent cannot resolve it (I4h).
+            and i.get("delegable", True)
         }
         for slot, attempt in list(self.attempts.items()):
             if slot in open_items:

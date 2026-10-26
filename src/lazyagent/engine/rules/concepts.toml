@@ -84,7 +84,7 @@ intro = "A delegate with a mandate. The strip on top of Home says what it is doi
 screenshot = "strip"
 caption = "The orchestrator strip: its report, its queue, today's actions, presence."
 cards = [
-  { title = "Pass  ⇧O", text = "Hand it an item for 2 h. It releases it with a note, or hands it back." },
+  { title = "Pass  ⇧O", text = "Hand it an item for 2 h. It releases it with a note, or hands it back. Not for approvals, answers, reviews or merges: those stay yours." },
   { title = "Hold", text = "It holds a worker's branch while it verifies, then releases it to you." },
   { title = "Mandate", text = "Present: small reversible steps. Away: also reversible briefs, rebases, workers." },
   { title = "Never alone", text = "Merge, publish, force-push, delete unpushed work, close a PR: always yours." },
@@ -331,7 +331,7 @@ does = "Show / hide done today"
 [[key]]
 keys = "⇧O"
 where = "home"
-does = "Pass to the orchestrator (Undo 5 s)"
+does = "Pass to the orchestrator (Undo 5 s); not on what only you can do: approve, answer, decide, review, merge, confirm"
 
 [[key]]
 keys = "u"
@@ -341,7 +341,7 @@ does = "Take back a pass or hold; clear your label, park, close or delegation"
 [[key]]
 keys = "d"
 where = "home"
-does = "Delegate to the branch's agent (Undo 5 s)"
+does = "Delegate to the branch's agent (Undo 5 s); only what an agent can fix: CI red, a conflict, changes requested, a dead agent"
 
 [[key]]
 keys = "l"

@@ -590,6 +590,8 @@ _fact("agent.status", AGENT_STATUS, "the agent's status", _REG, "on agent.* even
       "free", item=_agent("status"))
 _fact("agent.detail", TEXT, "the agent's detail line", _REG, "on agent.* events", "free",
       item=_agent("detail"))
+_fact("agent.question", TEXT, "the question the agent's finished turn ends with", _REG,
+      "on agent.* events", "free", item=_agent("question"))
 _fact("place.is_orchestrator", BOOL, "the orchestrator's own place", _REG, "static",
       "free", item=_is_orchestrator)
 _fact("agent.reported", BOOL, "the agent's report says where the ball is (it works on)",

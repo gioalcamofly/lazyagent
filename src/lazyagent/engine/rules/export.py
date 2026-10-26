@@ -59,6 +59,7 @@ def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
             {"id": k.id, "level": k.level, "class": "deep" if k.level == "deep" else "quick",
              "title": k.title, "rank": k.rank, "blocks_agent": k.blocks_agent,
              "detector": k.detector, "says": k.says, "verb": k.verb, "action": k.action,
+             "delegable": k.can_delegate, "passable": k.can_pass,
              "when": None if k.when is None else " ".join(k.when.source.split()),
              "state_text": _kind_state(k)}
             for k in catalog.kinds

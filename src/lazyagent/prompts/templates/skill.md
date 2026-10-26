@@ -36,7 +36,10 @@ engine reads your status again.
 ## A choice that needs reading: request_decision
 
 Two designs, a trade-off, a risky or hard-to-undo step, what to do after your
-tries failed. A short yes/no or A/B question goes in the conversation instead.
+tries failed, this branch or a separate task. Whenever you need the user to
+choose, write a brief, then end your turn: a choice left only as prose at the
+end of a turn reaches the inbox as a bare "Asks you" line, with no options or
+evidence. Only a quick yes/no stays in the conversation.
 
 ```
 request_decision(

@@ -215,7 +215,7 @@ They share the TUI's keys (`s`, `x`, `c`, `d`, `r`, `Shift+R`, `?`, `j`/`k` outs
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Desktop: copy / paste in a terminal (`Ctrl+C` copies a selection, else sends ^C) |
 | `Shift+drag`, `Shift+wheel` | Desktop: select and scroll even when the program uses the mouse |
 
-The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent, `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back, `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `w` why (the rule that put the line there, the facts it read, the rules above it), `f` fold, `?` How lazyagent works (`F1` anywhere). **Guide:** [docs/guides/how-lazyagent-works.md](docs/guides/how-lazyagent-works.md) (zones, the ball, every state, verb and key, your rules, the facts; generated from the rules catalog).
+The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent (only what an agent can fix: CI red, a conflict, changes requested, a dead agent), `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back (not on what only you can do: approve, answer, decide, review, merge, confirm), `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `w` why (the rule that put the line there, the facts it read, the rules above it), `f` fold, `?` How lazyagent works (`F1` anywhere). **Guide:** [docs/guides/how-lazyagent-works.md](docs/guides/how-lazyagent-works.md) (zones, the ball, every state, verb and key, your rules, the facts; generated from the rules catalog).
 
 `?` in either shows the full list.
 
@@ -474,6 +474,25 @@ adds a condition to the rule it replaces; `before` / `after` move a rule;
 `disabled = true` turns a non-locked one off. A rule that puts the ball with
 you (`ball = "you"`) is an inbox item you can dismiss or park; so is the
 built-in Merge.
+
+Who else can act on an item: `delegable` (Delegate, `d`, hands it to the
+branch's agent) and `passable` (Pass, `Shift+O`, to the orchestrator). They
+default by the verb: Fix CI, Sync, Address review, Resolve conflict,
+Relaunch, Check agent, Fix job and Update task are delegable; Approve,
+Answer, Decide, Review, Merge and Confirm are not passable; a verb of your
+own is neither delegable nor kept from the orchestrator. A rule's `then`
+may say either (`delegable = true`); the engine refuses a delegate or a pass
+where it is false, and Home does not offer it.
+
+An agent whose turn ends with a question to you in prose ("Should I fix it
+in this PR, or open a separate task?") gets an **Asks you** item (verb
+Answer, Enter opens its terminal): it is in the inbox queue, so it leads the
+row above every rule of yours and the built-in PR rules, and it goes when
+you send the agent input or it starts a new turn. A question in a code
+block, a table or a quote does not count (Claude Code agents: read from the
+turn's last message; other CLIs do not say it yet). The agents lazyagent starts are
+told to send a brief (`request_decision`) for a choice instead; a brief
+stands for the question its turn ends with.
 
 A team whose "ready to merge" means "approved, CI green, and QA tested it or
 it needs none" (`tracker.qa` comes from the trackers' `[<adapter>.qa]`

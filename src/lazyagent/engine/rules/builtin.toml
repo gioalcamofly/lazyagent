@@ -539,14 +539,17 @@ state = "conflict with base"
 [[kind]]
 id = "done"
 verb = "Review"
+# The orchestrator checks a finished agent's work (its auto-hold does).
+passable = true
 level = "deep"
 title = "Your turn"
 rank = 6
 detector = "agents"
-says = "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on."
+says = "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on, nor one whose turn ends with a question (Asks you)."
 when = '''
 agent.status in ["completed", "waiting", "interrupted"] and agents.running == 0
 and not pr.exists and not place.is_orchestrator and not agent.reported
+and agent.question == ""
 '''
 state = "review: agent finished"
 
@@ -630,3 +633,20 @@ detector = "attest"
 says = "An agent says a nondeterministic check's red is not the branch's, with its evidence ([ci] confirm = \"user\"): Accept explains the check, Reject sends your comment to the agent and brings Fix CI back (R5)."
 when = 'not empty(ci.attestation_pending)'
 state_expr = 'with("Confirm unrelated", ci.first_attestation_pending)'
+
+# --- I4h: a finished turn that ends with a question to the user ---
+
+[[kind]]
+id = "turn_question"
+verb = "Answer"
+action = "open_terminal"
+level = "round"
+title = "Asks you"
+rank = 2
+detector = "agents"
+says = "An agent's finished turn ends with a question to you (in prose, not a dialog or a brief): answer it in its terminal. It goes once you send it input or it starts a new turn; ahead of \"Your turn\" and of every PR rule, yours included."
+when = '''
+agent.status in ["completed", "waiting", "interrupted"] and agent.question != ""
+and not place.is_orchestrator
+'''
+state_expr = 'with("answer", agent.question)'

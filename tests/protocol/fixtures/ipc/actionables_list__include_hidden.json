@@ -21,6 +21,7 @@
           "blocks_agent": true,
           "class": "quick",
           "decision_id": null,
+          "delegable": false,
           "detail": "Bash",
           "exit_code": null,
           "id": "Approval:/tmp/repo-login/a1",
@@ -34,6 +35,7 @@
             "by": "user",
             "until": "agent_stopped"
           },
+          "passable": false,
           "pr": null,
           "priority": "medium",
           "run": null,
@@ -48,6 +50,7 @@
           "blocks_agent": false,
           "class": "quick",
           "decision_id": null,
+          "delegable": false,
           "detail": "Approved, CI green and mergeable: merging is yours, on the PR.",
           "exit_code": null,
           "id": "Rule:merge:repo:docs-index",
@@ -57,6 +60,7 @@
           "level": "round",
           "occurrence": "Rule:merge:repo:docs-index@1700000000.0",
           "park": null,
+          "passable": false,
           "pr": {
             "number": 14,
             "title": "Index the docs",

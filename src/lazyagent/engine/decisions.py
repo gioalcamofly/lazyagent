@@ -666,7 +666,10 @@ class Decisions:
                 record.get("answer") or {}
             ).get("delivered_at")
             if record["state"] == "open" or pending:
-                found.pop(f"Question:{record['worktree_path']}/{record['agent']}", None)
+                slot = f"{record['worktree_path']}/{record['agent']}"
+                found.pop(f"Question:{slot}", None)
+                # The prose question its turn ended with ("see brief d3?").
+                found.pop(f"Turn_question:{slot}", None)
 
 
 def _ids(records: Iterable[dict[str, Any]]) -> str:

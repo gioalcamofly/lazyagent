@@ -119,7 +119,7 @@ Keep your inbox to what you can act on today.
 
 A delegate with a mandate. The strip on top of Home says what it is doing, what it holds and what it did today.
 
-- **Pass  ⇧O**: Hand it an item for 2 h. It releases it with a note, or hands it back.
+- **Pass  ⇧O**: Hand it an item for 2 h. It releases it with a note, or hands it back. Not for approvals, answers, reviews or merges: those stay yours.
 - **Hold**: It holds a worker's branch while it verifies, then releases it to you.
 - **Mandate**: Present: small reversible steps. Away: also reversible briefs, rebases, workers.
 - **Never alone**: Merge, publish, force-push, delete unpushed work, close a PR: always yours.
@@ -156,6 +156,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Sync** | Sync with base: ‹the first check the base has fixed› | Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work | `d` Send the item to the branch's agent |
 | **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
 | **Confirm** | Confirm unrelated: ‹the first check whose attestation waits for your confirmation› | The failing checks whose attestation waits for your confirmation is not empty | `Enter` Expands the line |
+| **Answer** | answer: ‹the question the agent's finished turn ends with› | The agent's status is completed, waiting or interrupted and the question the agent's finished turn ends with is not empty and not the orchestrator's own place | `o` The agent's terminal |
 | **Merge** | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) | `p` The PR (you merge it, or review it, there) |
 | **Request reviewer** | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |  |
 
@@ -164,7 +165,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | verb | state | when | key |
 |---|---|---|---|
 | **Address review** | changes requested | The PR's state is open and the PR's review decision is changes requested and (the PR is yours or it is not known whether the PR is yours) | `d` Send the item to the branch's agent |
-| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is |  |
+| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is and the question the agent's finished turn ends with is empty |  |
 | **Decide** | Decide | (decision) | `v` Open the brief |
 
 ### Inbox (the top item decides)
@@ -261,25 +262,28 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 
 What can land in your inbox, at which level, and the verb it shows.
 
-| verb | item | level | class | blocks an agent | key |
-|---|---|---|---|---|---|
-| **Approve** | Needs approval | now | quick | yes | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
-| **Answer** | Question | now | quick | yes | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
-| **Check agent** | Hanged? | round | quick |  |  |
-| **Relaunch** | Failed | round | quick |  |  |
-| **Relaunch** | Exited | round | quick |  |  |
-| **Fix CI** | CI failing | round | quick |  | `d` Send the item to the branch's agent |
-| **Fix CI** | CI failed | round | quick |  | `d` Send the item to the branch's agent |
-| **Address review** | Changes requested | deep | deep |  | `d` Send the item to the branch's agent |
-| **Resolve conflict** | Merge conflict | round | quick |  | `d` Send the item to the branch's agent |
-| **Review** | Your turn | deep | deep |  |  |
-| **Fix job** | Job failed | round | quick |  |  |
-| **Update task** | Tracker | round | quick |  | `p` The tracker task |
-| **Read** | Agent reports | round | quick |  |  |
-| **Decide** | Decide | deep | deep |  | `v` Open the brief |
-| **Sync** | Sync with base | round | quick |  | `d` Send the item to the branch's agent |
-| **Review** | Review requested | round | quick |  | `p` The PR (you merge it, or review it, there) |
-| **Confirm** | Confirm attestation | round | quick |  | `Enter` Expands the line |
+*d*: Delegate to the branch's agent; *⇧O*: Pass to the orchestrator. A rule's own item has them by its verb, unless its `then` says `delegable` or `passable`.
+
+| verb | item | level | class | blocks an agent | d / ⇧O | key |
+|---|---|---|---|---|---|---|
+| **Approve** | Needs approval | now | quick | yes |  | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
+| **Answer** | Question | now | quick | yes |  | `Enter` Expands the line: approve (a) or deny (⇧D) a command there, type an answer to a question |
+| **Check agent** | Hanged? | round | quick |  | d · ⇧O |  |
+| **Relaunch** | Failed | round | quick |  | d · ⇧O |  |
+| **Relaunch** | Exited | round | quick |  | d · ⇧O |  |
+| **Fix CI** | CI failing | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
+| **Fix CI** | CI failed | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
+| **Address review** | Changes requested | deep | deep |  | d · ⇧O | `d` Send the item to the branch's agent |
+| **Resolve conflict** | Merge conflict | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
+| **Review** | Your turn | deep | deep |  | ⇧O |  |
+| **Fix job** | Job failed | round | quick |  | d · ⇧O |  |
+| **Update task** | Tracker | round | quick |  | d · ⇧O | `p` The tracker task |
+| **Read** | Agent reports | round | quick |  | ⇧O |  |
+| **Decide** | Decide | deep | deep |  |  | `v` Open the brief |
+| **Sync** | Sync with base | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
+| **Review** | Review requested | round | quick |  |  | `p` The PR (you merge it, or review it, there) |
+| **Confirm** | Confirm attestation | round | quick |  |  | `Enter` Expands the line |
+| **Answer** | Asks you | round | quick |  |  | `o` The agent's terminal |
 
 ## Keys and actions
 
@@ -306,9 +310,9 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `z` | Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; w whole work item) |
 | `⇧Z` | Show / hide Parked |
 | `⇧F` | Show / hide done today |
-| `⇧O` | Pass to the orchestrator (Undo 5 s) |
+| `⇧O` | Pass to the orchestrator (Undo 5 s); not on what only you can do: approve, answer, decide, review, merge, confirm |
 | `u` | Take back a pass or hold; clear your label, park, close or delegation |
-| `d` | Delegate to the branch's agent (Undo 5 s) |
+| `d` | Delegate to the branch's agent (Undo 5 s); only what an agent can fix: CI red, a conflict, changes requested, a dead agent |
 | `l` | Label who has the ball |
 | `⇧X` | Close the work item and stop its agent (asks first) |
 | `m  ⇧M` | Mark seen / everything seen |
@@ -414,6 +418,7 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `agent.id` | the agent | text | agent registry | on agent.* events | free |
 | `agent.status` | the agent's status | enum agent_status (running, waiting, waiting_for_user, waiting_for_approval, completed, failed, interrupted, possibly_hanged, starting) | agent registry | on agent.* events | free |
 | `agent.detail` | the agent's detail line | text | agent registry | on agent.* events | free |
+| `agent.question` | the question the agent's finished turn ends with | text | agent registry | on agent.* events | free |
 | `place.is_orchestrator` | the orchestrator's own place | bool | agent registry | static | free |
 | `agent.reported` | the agent's report says where the ball is (it works on) | bool | overlay | per pass | free |
 | `pr.exists` | there is a PR | bool | PR poller | ≤ 60 s | poll |

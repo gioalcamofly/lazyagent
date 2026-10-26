@@ -354,6 +354,7 @@
       "rule": {
         "action": null,
         "and_when": null,
+        "delegable": false,
         "file": null,
         "id": "approved_ready",
         "item": false,
@@ -361,6 +362,7 @@
         "locked": false,
         "num": 12,
         "origin": "builtin",
+        "passable": true,
         "replaces": null,
         "says": "Approved, green and mergeable with no Merge item: you dismissed or parked it, or one of your rules narrowed merge.",
         "verb": null,

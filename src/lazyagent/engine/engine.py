@@ -1332,6 +1332,7 @@ class Engine:
                 event.confidence,
                 event.detail,
                 last_output_time=event.last_output_time,
+                question=event.question,
             )
             # Every change, the detail-only ones included; agent.status
             # (the list_events log) only has the transitions.

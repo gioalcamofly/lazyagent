@@ -14,6 +14,7 @@
         "blocks_agent": true,
         "class": "quick",
         "decision_id": null,
+        "delegable": false,
         "detail": "Bash",
         "exit_code": null,
         "id": "Approval:/tmp/repo-login/a1",
@@ -27,6 +28,7 @@
           "by": "user",
           "until": 1700003600.0
         },
+        "passable": false,
         "pr": null,
         "priority": "medium",
         "run": null,

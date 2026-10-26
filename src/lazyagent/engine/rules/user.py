@@ -45,6 +45,7 @@ from lazyagent.engine.rules.catalog import (
     _close,
     _compile,
     _verb_action,
+    capabilities,
     _WANT,
 )
 
@@ -313,6 +314,10 @@ def compile_rule(entry: Entry, base: Rule | None, scope: str, path: str) -> Rule
     if and_when is not None and base is not None:
         verb = verb if "verb" in then else base.verb
         action = action if "action" in then else base.action
+    delegable, passable = capabilities(where, then)
+    if and_when is not None and base is not None:
+        delegable = delegable if "delegable" in then else base.delegable
+        passable = passable if "passable" in then else base.passable
     if "item" in then:
         item = then["item"]
         if not isinstance(item, bool):
@@ -338,6 +343,8 @@ def compile_rule(entry: Entry, base: Rule | None, scope: str, path: str) -> Rule
         entry.line,
         base,
         and_when,
+        delegable,
+        passable,
     )
     if item:
         _check_item(where, rule)

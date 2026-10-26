@@ -28,7 +28,10 @@ request_decision with one question, 2-4 options and your recommendation, what \
 you tried, evidence (diff hunks, log lines, files at lines, notes sections, \
 URLs), reversibility and the impact if wrong. Set blocking=true only if you \
 cannot go on without it, then end your turn.
-- A short question (yes/no, A/B): ask it in the conversation as usual.
+- When you need the user to choose (an approach, this branch or a separate \
+task, a risky step): use request_decision, then end your turn. Never leave the \
+choice only as prose at the end of your turn. Only a quick yes/no stays in the \
+conversation.
 - When the ball moves (you wait on CI, a reviewer or QA; or the user must act), \
 call status_report with a one-line note; needs_user=true only when the user \
 must act.

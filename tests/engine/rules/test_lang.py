@@ -268,7 +268,7 @@ def test_the_builtin_catalog_has_the_old_numbers_and_the_kinds():
     assert [r.id for r in catalog.rules if r.locked] == [
         "closed.merged", "closed.pr_closed", "closed.already_merged", "closed.by_you",
         "park", "queue", "claim", "hold", "held", "delegated"]
-    assert len(catalog.kinds) == 17
+    assert len(catalog.kinds) == 18
     assert catalog.rules[-1].id == "no_agent"
     for rule in catalog.rules:
         assert not rule.when.warnings, rule.id

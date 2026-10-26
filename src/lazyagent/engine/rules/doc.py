@@ -491,11 +491,21 @@ def _states(payload: dict[str, Any]) -> list[str]:
 
 
 def _kinds(payload: dict[str, Any]) -> list[str]:
-    out = ["| verb | item | level | class | blocks an agent | key |", "|---|---|---|---|---|---|"]
+    out = ["*d*: Delegate to the branch's agent; *⇧O*: Pass to the orchestrator. A rule's own "
+           "item has them by its verb, unless its `then` says `delegable` or `passable`.", "",
+           "| verb | item | level | class | blocks an agent | d / ⇧O | key |",
+           "|---|---|---|---|---|---|---|"]
     for k in payload["kinds"]:
         out.append(f"| **{_cell(k['verb'])}** | {_cell(k['title'])} | {k['level']} | {k['class']} | "
-                   f"{'yes' if k['blocks_agent'] else ''} | {_action_cell(k['action'], payload)} |")
+                   f"{'yes' if k['blocks_agent'] else ''} | {_others(k)} | "
+                   f"{_action_cell(k['action'], payload)} |")
     return out + [""]
+
+
+def _others(kind: dict[str, Any]) -> str:
+    """Who else can act on a kind's item: its agent (d), the orchestrator (⇧O)."""
+    return " · ".join(w for w, ok in (("d", kind.get("delegable")),
+                                      ("⇧O", kind.get("passable"))) if ok)
 
 
 def _keys(payload: dict[str, Any]) -> list[str]:

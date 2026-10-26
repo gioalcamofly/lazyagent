@@ -177,6 +177,10 @@ FEATURES: tuple[str, ...] = (
     # attestation_confirm kind (item attestation), rules_explain
     # attestations, [ci] nondeterministic and its keys.
     "ci_attest",
+    # I4h: items say delegable and passable (the catalog's, by verb), rows
+    # too with status_list fields delegable / passable; the engine refuses a
+    # delegate or a pass where they are false; the turn_question kind.
+    "item_capabilities",
 )
 
 STREAM_RESIZED = "stream.resized"
