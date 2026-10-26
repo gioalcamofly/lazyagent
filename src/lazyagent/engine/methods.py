@@ -1807,13 +1807,15 @@ class EngineMethods:
             "repo": repo_name(self._engine),
             "auto_delegate": list(inbox.auto_delegate),
             "auto_delegate_target": inbox.auto_delegate_target,
+            "auto_delegate_skip_checks": list(inbox.auto_delegate_skip_checks),
         }
 
     async def inbox_config_set(self, params: dict) -> Any:
         """Write the repo's auto-delegation settings in .lazyagent.toml
         (the file stays the source of truth; other content is kept).
         Params: repo?, auto_delegate (kinds), auto_delegate_target (owner,
-        orchestrator). The user's only."""
+        orchestrator), auto_delegate_skip_checks? (check names or globs;
+        left out, the file's stay). The user's only."""
         from lazyagent.config import write_inbox_config
         from lazyagent.engine.autodelegate import KINDS, TARGETS
 
@@ -1826,8 +1828,15 @@ class EngineMethods:
         target = params.get("auto_delegate_target", inbox.auto_delegate_target)
         if target not in TARGETS:
             raise ValueError(f"auto_delegate_target must be one of {', '.join(TARGETS)}")
+        skip = params.get("auto_delegate_skip_checks")
+        if skip is not None:
+            if not isinstance(skip, list) or any(
+                not isinstance(p, str) or not p.strip() for p in skip
+            ):
+                raise ValueError("auto_delegate_skip_checks must be a list of check names or globs")
+            skip = list(dict.fromkeys(p.strip() for p in skip))
         kinds = list(dict.fromkeys(kinds))
-        await asyncio.to_thread(write_inbox_config, root, kinds, target)
+        await asyncio.to_thread(write_inbox_config, root, kinds, target, skip)
         self._engine.load_config()
         self._engine.status.mark_dirty()
         return await self.inbox_config_get({"repo": root})

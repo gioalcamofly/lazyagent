@@ -72,13 +72,13 @@ fn a_deep_item_under_a_round_line_shows_in_to_sit_down_with_and_names_itself() {
     h.get_by_label("Address review");
     h.get_by_label("· changes requested");
     h.get_by_label("under its Fix CI in the Round");
-    // A click opens the line itself, which lists every item.
+    // A click expands the ghost itself (I4g), which lists every item.
     h.get_by_label("under its Fix CI in the Round").click();
     h.run_steps(3);
-    assert_eq!(h.state().state.home.expanded.as_deref(), Some("repo:tax"));
+    assert_eq!(h.state().state.home.expanded.as_deref(), Some("repo:tax\nR:/r/repo-tax:7"));
     h.get_by_label("Its items");
     h.get_by_label_contains("1. Fix CI · CI red: e2e-suite · leads the line");
-    h.get_by_label_contains("2. Address review · changes requested · also in To sit down with");
+    h.get_by_label_contains("2. Address review · changes requested · this line");
     assert_eq!(calls_of(&calls, "status_timeline").len(), 1);
 }
 

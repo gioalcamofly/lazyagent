@@ -149,7 +149,10 @@ enum Act {
     Answer(Line, String),
     AnswerCancel,
     BriefChoose(String, String),
-    BriefAnswer(Line),
+    BriefAnswer(Decision),
+    /// "Answer here" on a brief in an expanded line's items (its sel, the
+    /// item's id).
+    ItemOpen(String, String),
     Undo,
     StripToggle,
     RevertAction(String),
@@ -264,7 +267,7 @@ impl State {
             return true;
         }
         if let Some(key) = self.home.parking.clone()
-            && let Some(line) = self.home.lines.get(&key).cloned()
+            && let Some(line) = self.home.get(&key).cloned()
         {
             // The park menu has the keys while it is open.
             let parks = self.parks();
@@ -294,6 +297,8 @@ impl State {
             let h = &mut self.home;
             if h.closing.is_some() || h.labeling.is_some() || h.reverting.is_some() || h.answering.is_some() {
                 (h.closing, h.labeling, h.reverting, h.answering) = (None, None, None, None);
+            } else if h.item_open.is_some() {
+                h.item_open = None;
             } else {
                 h.expanded = None;
             }
@@ -319,9 +324,7 @@ impl State {
                 return true;
             }
             if take(Modifiers::CTRL, Key::Enter) {
-                if let Some(line) = self.home.lines.get(&d.key).cloned() {
-                    self.answer_brief_inline(&line);
-                }
+                self.answer_brief_inline(d);
                 return true;
             }
         }
@@ -365,18 +368,18 @@ impl State {
         if take(Modifiers::NONE, Key::Enter) {
             let asks = line.top.as_ref().is_some_and(|t| t.asks(line.brief.as_ref()));
             let brief = line.top.as_ref().is_some_and(|t| t.kind == "decision" && t.decision_id.is_some());
-            if brief && !asks && self.decision_view_on() {
+            if brief && !asks && self.decision_view_on() && line.ghost.is_none() {
                 self.open_line_decision(&line);
             } else if approval || (kind == "question" && self.inline_questions()) {
                 // Answered on the line: Enter shows the ask in full.
-                self.toggle_line(&line.key);
-                if kind == "question" && self.home.expanded.as_deref() == Some(line.key.as_str()) {
+                self.toggle_line(&line.sel());
+                if kind == "question" && self.home.expanded == Some(line.sel()) {
                     self.open_answer(&line);
                 }
             } else if (line.zone == Zone::Now || asks) && line.agent().is_some() {
                 self.open_line(&line);
             } else {
-                self.toggle_line(&line.key);
+                self.toggle_line(&line.sel());
             }
         } else if approval && !after_g && take(Modifiers::NONE, Key::A) {
             // (g a is Home: the g came first.)
@@ -389,7 +392,17 @@ impl State {
                 self.toast(Severity::Info, "⇧D denies an approval: this line has none.");
             }
         } else if take(Modifiers::NONE, Key::V) {
-            if !self.decision_view_on() {
+            // A brief opened in the line's items: that one.
+            let opened = self
+                .home
+                .item_open
+                .as_ref()
+                .filter(|(s, _)| *s == line.sel() && self.home.expanded.as_ref() == Some(s))
+                .and_then(|(_, id)| line.under_item(id))
+                .and_then(|u| u.top.as_ref()?.decision_id.clone());
+            if let Some(id) = opened.filter(|_| self.decision_view_on()) {
+                self.open_decision(&id, &line.key);
+            } else if !self.decision_view_on() {
                 self.toast(Severity::Info, "This engine has no decision view: expand the line (Enter).");
             } else if !self.open_line_decision(&line) {
                 self.toast(Severity::Info, "No brief on this line.");
@@ -418,8 +431,8 @@ impl State {
             if line.top.is_none() && !self.can_gesture(&line) {
                 self.toast(Severity::Info, "Nothing to park: it leaves once it is merged.");
             } else {
-                self.home.expanded = Some(line.key.clone());
-                self.home.parking = Some(line.key.clone());
+                self.home.expanded = Some(line.sel());
+                self.home.parking = Some(line.sel());
                 self.home.park_whole = line.top.is_none();
             }
         } else if take(Modifiers::NONE, Key::D) {
@@ -464,11 +477,17 @@ impl State {
         self.engine_inbox() && self.has(F_QUESTION)
     }
 
-    /// The open brief of the expanded line, when it has options to pick.
+    /// The open brief of the expanded line (or the one opened in its
+    /// items), when it can be answered there: options to pick, or the
+    /// engine's own brief and its free-text answer.
     pub fn expanded_brief(&self) -> Option<Decision> {
-        let key = self.home.expanded.as_ref()?;
-        let line = self.home.lines.get(key)?;
-        let d = line.brief.clone().filter(|d| d.valid && d.state == "open" && !d.brief.options.is_empty())?;
+        let sel = self.home.expanded.as_ref()?;
+        let line = self.home.get(sel)?;
+        let brief = match self.home.item_open.as_ref().filter(|(s, _)| s == sel) {
+            Some((_, id)) => line.under_item(id).and_then(|u| u.brief.clone()),
+            None => line.brief.clone(),
+        };
+        let d = brief.filter(|d| d.state == "open" && answerable_here(d))?;
         (self.decision_view_on() || self.has("first_responder")).then_some(d)
     }
 
@@ -514,7 +533,7 @@ impl State {
 
     /// The answer field of a question line, with the keyboard.
     pub fn open_answer(&mut self, line: &Line) {
-        self.home.expanded = Some(line.key.clone());
+        self.home.expanded = Some(line.sel());
         if self.home.answering.as_ref().is_none_or(|(k, _)| *k != line.key) {
             self.home.answering = Some((line.key.clone(), String::new()));
         }
@@ -544,18 +563,19 @@ impl State {
     }
 
     /// Ctrl+Enter on an expanded brief: the picked option (1-4), else its
-    /// preselected one, through `decision_answer`.
-    pub fn answer_brief_inline(&mut self, line: &Line) {
-        let Some(d) = line.brief.clone() else { return };
+    /// preselected one (with no options, the typed answer), through
+    /// `decision_answer`.
+    pub fn answer_brief_inline(&mut self, d: &Decision) {
         let choice = self
             .home
             .brief_choice
             .clone()
-            .filter(|(id, _)| *id == d.id)
-            .map(|(_, c)| c)
-            .or_else(|| crate::decision_view::preselected(&d));
+            .filter(|(id, c)| *id == d.id && !c.trim().is_empty())
+            .map(|(_, c)| c.trim().to_string())
+            .or_else(|| crate::decision_view::preselected(d));
         let Some(choice) = choice else {
-            self.toast(Severity::Info, "Pick an option first (1-4).");
+            let how = if d.brief.options.is_empty() { "Type an answer first." } else { "Pick an option first (1-4)." };
+            self.toast(Severity::Info, how);
             return;
         };
         self.home.brief_choice = None;
@@ -649,32 +669,40 @@ impl State {
         });
     }
 
-    fn toggle_line(&mut self, key: &str) {
-        let open = self.home.expanded.as_deref() == Some(key);
-        self.home.expanded = (!open).then(|| key.to_string());
+    /// Expands or collapses the line `sel` ([`Line::sel`]).
+    fn toggle_line(&mut self, sel: &str) {
+        let open = self.home.expanded.as_deref() == Some(sel);
+        self.home.expanded = (!open).then(|| sel.to_string());
         self.home.parking = None;
         self.home.closing = None;
         self.home.answering = None;
-        if !open && let Some(line) = self.home.lines.get(key).cloned() {
+        self.home.item_open = None;
+        if !open && let Some(line) = self.home.get(sel).cloned() {
             self.look_at(&line);
+        }
+    }
+
+    /// "Answer here" on a brief in an expanded line's items: it opens under
+    /// them, and 1-4 / Ctrl+Enter go to it (again: it closes).
+    fn open_item(&mut self, sel: String, id: String) {
+        let open = self.home.item_open.as_ref() == Some(&(sel.clone(), id.clone()));
+        self.home.expanded = Some(sel.clone());
+        self.home.item_open = (!open).then_some((sel.clone(), id.clone()));
+        if open {
+            return;
+        }
+        let decision =
+            self.home.get(&sel).and_then(|l| l.under_item(&id)).and_then(|u| u.top.as_ref()?.decision_id.clone());
+        if let Some(did) = decision {
+            self.fetch_decision(&did);
         }
     }
 
     /// The user looked at a line: its timeline since the last look, its
     /// brief, and the item is seen (`status_seen {key}`).
     pub fn look_at(&mut self, line: &Line) {
-        if let Some(id) = line.top.as_ref().and_then(|t| t.decision_id.clone())
-            && !self.decisions.contains_key(&id)
-            && self.has("decisions")
-        {
-            self.conn.request("decision_get", json!({"id": id}), |s, reply| {
-                if let Ok(v) = reply
-                    && let Ok(r) = serde_json::from_value::<lazyagent_proto::types::DecisionResult>(v)
-                {
-                    s.decisions.insert(r.decision.id.clone(), r.decision);
-                    s.inbox_gen += 1;
-                }
-            });
+        if let Some(id) = line.top.as_ref().and_then(|t| t.decision_id.clone()) {
+            self.fetch_decision(&id);
         }
         if !self.gestures() || line.row.is_none() {
             return;
@@ -688,6 +716,21 @@ impl State {
             }
         });
         self.seen_line(line);
+    }
+
+    /// A brief the client does not have yet (`decision_get`).
+    fn fetch_decision(&mut self, id: &str) {
+        if self.decisions.contains_key(id) || !self.has("decisions") {
+            return;
+        }
+        self.conn.request("decision_get", json!({"id": id}), |s, reply| {
+            if let Ok(v) = reply
+                && let Ok(r) = serde_json::from_value::<lazyagent_proto::types::DecisionResult>(v)
+            {
+                s.decisions.insert(r.decision.id.clone(), r.decision);
+                s.inbox_gen += 1;
+            }
+        });
     }
 
     /// `m`: this item is seen (its dot goes, for every client of the user).
@@ -786,7 +829,7 @@ impl State {
             if self.can_gesture(line) {
                 let params = json!({"key": line.key, "kind": "park", "until": until});
                 let undo = (format!("Parked {}", line.name), UndoAct::Gesture(line.key.clone(), "park"));
-                self.gesture_undo(&line.key, params, "Not parked", Some(undo));
+                self.gesture_undo(&line.sel(), params, "Not parked", Some(undo));
             } else {
                 self.toast(Severity::Info, "Nothing to park: it leaves once it is merged.");
             }
@@ -824,13 +867,13 @@ impl State {
         self.gestures() && line.row.is_some() && !line.done()
     }
 
-    fn gesture(&mut self, key: &str, params: Value, what: &'static str) {
-        self.gesture_undo(key, params, what, None);
+    fn gesture(&mut self, sel: &str, params: Value, what: &'static str) {
+        self.gesture_undo(sel, params, what, None);
     }
 
     /// A gesture, and once the engine took it, an Undo for it (feature
-    /// `undo`).
-    fn gesture_undo(&mut self, key: &str, params: Value, what: &'static str, undo: Option<(String, UndoAct)>) {
+    /// `undo`); the line `sel` stays expanded.
+    fn gesture_undo(&mut self, sel: &str, params: Value, what: &'static str, undo: Option<(String, UndoAct)>) {
         let undo = undo.filter(|_| self.has(F_UNDO));
         self.conn.request("status_gesture", params, move |s, reply| {
             match reply.and_then(|v| {
@@ -851,7 +894,7 @@ impl State {
                 Err(e) => s.toast(Severity::Error, format!("{what}: {e}")),
             }
         });
-        self.home.expanded = Some(key.to_string());
+        self.home.expanded = Some(sel.to_string());
     }
 
     /// `l`: the label form (a ball and a short text, e.g. others · "QA").
@@ -861,7 +904,7 @@ impl State {
             return;
         }
         let g = line.gesture().filter(|g| g["kind"] == "label");
-        self.home.expanded = Some(line.key.clone());
+        self.home.expanded = Some(line.sel());
         self.home.focus_form = true;
         self.home.labeling = Some(Label {
             key: line.key.clone(),
@@ -883,9 +926,9 @@ impl State {
             self.toast(Severity::Info, "Closing a work item needs an engine with gestures.");
             return;
         }
-        self.home.expanded = Some(line.key.clone());
+        self.home.expanded = Some(line.sel());
         self.home.parking = None;
-        self.home.closing = Some(line.key.clone());
+        self.home.closing = Some(line.sel());
     }
 
     /// The confirmed close: the work item as done or dropped, and (with the
@@ -897,7 +940,7 @@ impl State {
         if self.has(F_CLOSE_STOP) {
             params["stop_agents"] = json!(true);
         }
-        self.gesture(&line.key, params, "Not closed");
+        self.gesture(&line.sel(), params, "Not closed");
     }
 
     /// Who `d` hands the line's item to: its live agent, else a restorable
@@ -968,7 +1011,7 @@ impl State {
                 _ => "Spawn an agent for this",
             };
             self.toast(Severity::Info, format!("No agent runs there: use \"{how}\" in the expanded line."));
-            self.home.expanded = Some(line.key.clone());
+            self.home.expanded = Some(line.sel());
             return;
         }
         self.send_delegate(line);
@@ -988,7 +1031,7 @@ impl State {
             params["text"] = json!(crate::attention::ci_failure_prompt(&pr));
         }
         let undo = (format!("Delegated {} to its agent", line.name), UndoAct::Gesture(line.key.clone(), "delegate"));
-        self.gesture_undo(&line.key, params, "Not delegated", Some(undo));
+        self.gesture_undo(&line.sel(), params, "Not delegated", Some(undo));
     }
 
     /// Pass to orchestrator: a claim with a timeout (the engine's).
@@ -1002,17 +1045,17 @@ impl State {
         }
         let params = json!({"key": line.key, "kind": "delegate", "to": "orchestrator"});
         let undo = (format!("Passed {} to the orchestrator", line.name), UndoAct::Gesture(line.key.clone(), "pass"));
-        self.gesture_undo(&line.key, params, "Could not pass it to the orchestrator", Some(undo));
+        self.gesture_undo(&line.sel(), params, "Could not pass it to the orchestrator", Some(undo));
     }
 
     /// `u`: take a pass back, or drop the user's label / park / close.
     pub fn take_back(&mut self, line: &Line) {
         if line.claim.is_some() {
             let params = json!({"key": line.key, "kind": "clear"});
-            self.gesture(&line.key, params, "Could not take it back");
+            self.gesture(&line.sel(), params, "Could not take it back");
         } else if line.gesture().is_some() && self.gestures() {
             let params = json!({"key": line.key, "kind": "clear"});
-            self.gesture(&line.key, params, "Could not clear it");
+            self.gesture(&line.sel(), params, "Could not clear it");
         }
     }
 
@@ -1023,7 +1066,7 @@ impl State {
         }
         match &line.decided {
             Some(d) if d.revertible == Some(true) => {
-                self.home.expanded = Some(line.key.clone());
+                self.home.expanded = Some(line.sel());
                 self.home.reverting = Some((d.id.clone(), String::new()));
                 self.home.focus_form = true;
             }
@@ -1188,6 +1231,23 @@ pub fn auto_delegation_menu(ui: &mut Ui, s: &mut State) {
             next.auto_delegate_target = Some(value.into());
         }
     }
+    // The skip list is the file's (shown, not edited here; the set above
+    // leaves it as it is).
+    ui.separator();
+    let skip = &config.auto_delegate_skip_checks;
+    let text = if skip.is_empty() {
+        "Failing checks it leaves alone: none".to_string()
+    } else {
+        format!("Failing checks it leaves alone: {}", skip.join(", "))
+    };
+    ui.label(RichText::new(text).small());
+    ui.label(
+        RichText::new(
+            "A red made only of these stays yours. Edit [inbox] auto_delegate_skip_checks in .lazyagent.toml.",
+        )
+        .small()
+        .weak(),
+    );
     if next != config {
         s.set_inbox_config(next);
     }
@@ -1397,6 +1457,15 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
             match (l.zone, kind) {
                 (_, "approval") if c.approvals => keys.extend(["a approve", "⇧D deny", "Enter expand", "o terminal"]),
                 (_, "question") => keys.extend(["Enter answer", "o terminal"]),
+                // A ghost's brief is answered on it: Enter expands it (I4g).
+                (_, "decision") if c.decision_view && l.ghost.is_some() => {
+                    let pick = l.brief.as_ref().is_some_and(|d| !d.brief.options.is_empty());
+                    keys.extend(if pick {
+                        ["Enter expand", "1-4 pick", "v decision view"].as_slice()
+                    } else {
+                        ["Enter expand", "v decision view"].as_slice()
+                    })
+                }
                 (_, "decision") if c.decision_view => keys.extend(["Enter open", "v decision view"]),
                 (Zone::Parked, _) => keys.extend(["Enter expand", "u unpark", "o terminal"]),
                 (Zone::Flight, _) => keys.extend(["Enter expand", "o terminal", "n notes"]),
@@ -1459,7 +1528,7 @@ impl App {
         let t = self.state.theme;
         let now = unix_now();
         let folded = self.state.saved.home_fold;
-        let selected = self.state.home.current(folded).map(|l| l.key);
+        let selected = self.state.home.current(folded).map(|l| l.sel());
         let home = &self.state.home;
         let forms = Forms {
             expanded: home.expanded.clone(),
@@ -1470,6 +1539,7 @@ impl App {
             reverting: home.reverting.clone(),
             answering: home.answering.clone(),
             brief_choice: home.brief_choice.clone(),
+            item_open: home.item_open.clone(),
             focus: home.focus_form,
         };
         let lines: Vec<Vec<Line>> =
@@ -1516,7 +1586,7 @@ impl App {
             pass: ctx.pass.is_ok(),
             why: ctx.why,
         };
-        let selected_line = selected.as_ref().and_then(|k| s.home.lines.get(k)).cloned();
+        let selected_line = selected.as_ref().and_then(|k| s.home.get(k)).cloned();
         let rules_line = rules_error_line(&s.rules_errors);
         let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
         let presence = s.presence.clone();
@@ -1629,7 +1699,7 @@ impl App {
                 }
                 zone(ui, Zone::Deep, &mut forms_out, &mut acts);
                 for l in &ghosts {
-                    ghost_ui(ui, &ctx, l, &mut acts);
+                    ghost_ui(ui, &ctx, l, &mut forms_out, &mut acts);
                 }
             }
             ui.add_space(6.0);
@@ -1760,7 +1830,7 @@ impl App {
                 Act::Dismiss(l) => s.dismiss_line(&l),
                 Act::ParkMenu(k) => {
                     let open = s.home.parking.as_deref() == Some(k.as_str());
-                    s.home.park_whole = s.home.lines.get(&k).is_some_and(|l| l.top.is_none());
+                    s.home.park_whole = s.home.get(&k).is_some_and(|l| l.top.is_none());
                     s.home.parking = (!open).then_some(k);
                 }
                 Act::Park(l, p, whole) => s.park_line(&l, p, whole),
@@ -1813,7 +1883,8 @@ impl App {
                 Act::Answer(l, text) => s.answer_question(&l, text),
                 Act::AnswerCancel => s.home.answering = None,
                 Act::BriefChoose(id, choice) => s.home.brief_choice = Some((id, choice)),
-                Act::BriefAnswer(l) => s.answer_brief_inline(&l),
+                Act::BriefAnswer(d) => s.answer_brief_inline(&d),
+                Act::ItemOpen(sel, id) => s.open_item(sel, id),
                 Act::Undo => s.undo_last(),
                 Act::StripToggle => s.toggle_strip(),
                 Act::RevertAction(id) => s.revert_from_strip(&id),
@@ -1833,6 +1904,7 @@ struct Forms {
     reverting: Option<(String, String)>,
     answering: Option<(String, String)>,
     brief_choice: Option<(String, String)>,
+    item_open: Option<(String, String)>,
     focus: bool,
 }
 
@@ -2004,8 +2076,9 @@ fn ball_text(c: &LineCtx, l: &Line, shown: Zone) -> (String, String, Color32) {
 
 fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
-    let selected = c.selected == Some(l.key.as_str());
-    let expanded = forms.expanded.as_deref() == Some(&l.key);
+    let sel = l.sel();
+    let selected = c.selected == Some(sel.as_str());
+    let expanded = forms.expanded.as_deref() == Some(sel.as_str());
     let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
     let mut cut = false;
     let resp = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
@@ -2147,8 +2220,8 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
         ui.painter().rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, t.primary);
     }
     if resp.inner.interact(Sense::click()).clicked() {
-        acts.push(Act::Select(l.key.clone()));
-        acts.push(Act::Toggle(l.key.clone()));
+        acts.push(Act::Select(sel.clone()));
+        acts.push(Act::Toggle(sel));
     }
 }
 
@@ -2216,49 +2289,106 @@ pub fn ball_words(text: &str) -> String {
     format!("{} (was {}): {state}", who(to), who(from))
 }
 
-/// A deep item under a quicker line, in To sit down with: dimmed, its verb
-/// and state, and where the line itself is; a click opens that line.
-fn ghost_ui(ui: &mut Ui, c: &LineCtx, l: &Line, acts: &mut Vec<Act>) {
+/// A ghost line in To sit down with (I4g): a deep item under a quicker
+/// line, dimmed, its verb and state, and where its line is. A line of its
+/// own: selected by keys or a click, Enter expands it on that item.
+fn ghost_ui(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
-    let Some(item) = l.deep_under() else { return };
-    let r = egui::Frame::new().inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.multiply_opacity(0.7);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
-            cell(ui, 10.0, RichText::new("↳").color(t.muted));
-            cell(ui, 112.0, RichText::new(home::kind_verb(&item.kind)).strong().color(t.purple));
-            priority_cell(ui, t, &l.priority);
-            name_cell(ui, name_w, &l.name);
-            let where_ = if l.zone == Zone::Now { "Now" } else { "the Round" };
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(home::age(c.now - item.since)).small().color(t.muted));
-                ui.label(RichText::new(format!("under its {} in {where_}", l.verb())).small().color(t.muted));
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(format!("· {}", home::item_words(item)))).truncate());
-                });
+    let Some(ghost) = &l.ghost else { return };
+    let sel = l.sel();
+    let selected = c.selected == Some(sel.as_str());
+    let expanded = forms.expanded.as_deref() == Some(sel.as_str());
+    let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
+    let mut cut = false;
+    let r = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            let head = ui.scope(|ui| {
+                if !selected && !expanded {
+                    ui.multiply_opacity(0.7);
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
+                    let mark = if selected {
+                        RichText::new("▸").color(t.primary)
+                    } else {
+                        RichText::new("↳").color(t.muted)
+                    };
+                    cell(ui, 10.0, mark);
+                    cell(ui, 112.0, RichText::new(l.verb()).strong().color(t.purple));
+                    priority_cell(ui, t, &l.priority);
+                    cut = name_cell(ui, name_w, &l.name);
+                    let where_ = if ghost.zone == Zone::Now { "Now" } else { "the Round" };
+                    let text = match l.top.as_ref().filter(|t| t.kind == "decision") {
+                        Some(top) => top.label.clone(),
+                        None => l.state.clone(),
+                    };
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
+                        ui.label(RichText::new(format!("under its {} in {where_}", ghost.verb)).small().color(t.muted));
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(format!("· {text}"))).truncate());
+                        });
+                    });
+                })
             });
-        });
-    });
-    if r.response.interact(Sense::click()).on_hover_text("Open its line: every item is listed there").clicked() {
-        acts.push(Act::Select(l.key.clone()));
-        acts.push(Act::Toggle(l.key.clone()));
+            if expanded {
+                details(ui, c, l, cut, forms, acts);
+            }
+            head.response
+        },
+    );
+    if selected {
+        let rect = r.response.rect;
+        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, t.primary);
     }
+    // The head row as a whole takes the click (its labels only show).
+    let click = ui.interact(r.inner.rect, ui.scope_id().with(("home-ghost", &sel)), Sense::click());
+    if click.on_hover_text("Its item, on its own line: Enter or a click expands it").clicked() {
+        acts.push(Act::Select(sel.clone()));
+        acts.push(Act::Toggle(sel));
+    }
+}
+
+/// A brief Home answers itself: one with options (1-4), or the engine's
+/// own (auto-delegation failed), answered in words.
+pub fn answerable_here(d: &Decision) -> bool {
+    (d.valid && !d.brief.options.is_empty()) || engine_brief(d)
+}
+
+fn engine_brief(d: &Decision) -> bool {
+    d.source.as_deref() == Some("auto_delegate")
 }
 
 /// The brief: its options (1-4 pick one when it can be answered here,
 /// Ctrl+Enter answers), what was tried, reversibility, evidence.
 fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool, picked: Option<&str>, acts: &mut Vec<Act>, l: &Line) {
-    if !d.valid {
+    if !d.valid && !engine_brief(d) {
         ui.label(RichText::new(format!("agent {} asks: {}", d.agent, d.brief.question)).color(t.text));
         ui.label(RichText::new("Answer it in the agent's terminal (o).").small().color(t.muted));
         return;
     }
     ui.label(RichText::new(&d.brief.question).strong().color(t.text));
     let rec = d.brief.recommendation.as_deref().unwrap_or("");
-    let answerable = view && d.state == "open" && !d.brief.options.is_empty();
+    let answerable = view && d.state == "open" && answerable_here(d);
+    let words = d.brief.options.is_empty();
     let chosen = picked.map(str::to_string).or_else(|| crate::decision_view::preselected(d));
+    let mut send = false;
+    if answerable && words {
+        // The engine's brief: what the agent should do now, in words.
+        let mut text = picked.unwrap_or("").to_string();
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("your answer (what to do now); it reaches the agent once its turn is over")
+                .desired_width(f32::INFINITY),
+        );
+        if edit.changed() {
+            acts.push(Act::BriefChoose(d.id.clone(), text.clone()));
+        }
+        send = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+    }
     for (i, o) in d.brief.options.iter().enumerate() {
         let mut text = format!("{}  {}", o.key, o.label);
         if let Some(c) = o.consequence.as_deref().filter(|c| !c.is_empty()) {
@@ -2284,23 +2414,35 @@ fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool, picked: Option<&st
     if !d.brief.tried.is_empty() {
         ui.label(RichText::new(format!("Tried: {}", d.brief.tried)).small().color(t.muted));
     }
-    let mut facts = vec![format!("Reversible: {}", d.brief.reversible.as_deref().unwrap_or("not given"))];
-    if !d.brief.impact_if_wrong.is_empty() {
-        facts.push(format!("If wrong: {}", d.brief.impact_if_wrong));
+    let chosen = chosen.filter(|c| !c.trim().is_empty());
+    // The engine's brief has no reversibility to give: what was tried is all.
+    if !engine_brief(d) {
+        let mut facts = vec![format!("Reversible: {}", d.brief.reversible.as_deref().unwrap_or("not given"))];
+        if !d.brief.impact_if_wrong.is_empty() {
+            facts.push(format!("If wrong: {}", d.brief.impact_if_wrong));
+        }
+        ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
     }
-    ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
     if !d.brief.evidence.is_empty() {
         let ev: Vec<String> = d.brief.evidence.iter().map(evidence_text).collect();
         ui.label(RichText::new(format!("Evidence: {}", ev.join(" · "))).small().color(t.muted));
     }
     if answerable {
         ui.horizontal(|ui| {
-            let what =
-                chosen.as_deref().map(|c| format!("Answer {c}  (Ctrl+Enter)")).unwrap_or("Answer  (Ctrl+Enter)".into());
-            if ui.add_enabled(chosen.is_some(), egui::Button::new(what)).clicked() {
-                acts.push(Act::BriefAnswer(l.clone()));
+            let what = match chosen.as_deref() {
+                Some(c) if !words => format!("Answer {c}  (Ctrl+Enter)"),
+                _ => "Answer  (Ctrl+Enter)".into(),
+            };
+            if (ui.add_enabled(chosen.is_some(), egui::Button::new(what)).clicked() || send) && chosen.is_some() {
+                acts.push(Act::BriefAnswer(d.clone()));
             }
-            ui.label(RichText::new("1-4 pick · Enter or v opens the brief with its evidence").small().color(t.muted));
+            let open = if l.ghost.is_some() || l.top.as_ref().is_none_or(|t| t.decision_id.as_deref() != Some(&d.id)) {
+                "v opens the brief with its evidence"
+            } else {
+                "Enter or v opens the brief with its evidence"
+            };
+            let pick = if words { "" } else { "1-4 pick · " };
+            ui.label(RichText::new(format!("{pick}{open}")).small().color(t.muted));
         });
     } else {
         let how =
@@ -2359,7 +2501,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
     let t = c.t;
     let focus = std::mem::take(&mut forms.focus);
     ui.add_space(2.0);
-    ui.indent(("home-details", &l.key), |ui| {
+    ui.indent(("home-details", l.sel()), |ui| {
         // The full name, only when the line cut it.
         if cut {
             ui.label(RichText::new(&l.name).small().strong().color(t.text));
@@ -2390,18 +2532,44 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             }
             _ => {}
         }
-        // Every open item, and which one leads the line.
+        // Every open item, and which one leads the line. A brief behind
+        // the top one is answered here too ("Answer here"): never a dead end.
+        let sel = l.sel();
+        let mine = l.ghost.as_ref().map(|g| g.item.as_str());
         if l.items().len() > 1 {
             ui.label(RichText::new("Its items").small().strong().color(t.muted));
             for (i, item) in l.items().iter().enumerate() {
                 let mut text = format!("{}. {} · {}", i + 1, home::kind_verb(&item.kind), home::item_words(item));
-                if i == 0 {
+                if mine == Some(item.id.as_str()) {
+                    text.push_str(" · this line");
+                } else if i == 0 {
                     text.push_str(" · leads the line");
-                } else if item.level == "deep" {
+                } else if item.level == "deep" && mine.is_none() {
                     text.push_str(" · also in To sit down with");
                 }
                 text.push_str(&format!(" · {}", home::age(c.now - item.since)));
-                ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
+                let open = forms.item_open.as_ref().is_some_and(|(s, id)| *s == sel && *id == item.id);
+                let brief = (i > 0 && item.kind == "decision" && mine.is_none()).then(|| l.under_item(&item.id)).flatten();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
+                    if brief.is_some() {
+                        let what = if open { "hide" } else { "Answer here" };
+                        if ui.small_button(what).clicked() {
+                            acts.push(Act::ItemOpen(sel.clone(), item.id.clone()));
+                        }
+                    }
+                });
+                if open && let Some(u) = brief {
+                    ui.indent(("home-item", &item.id), |ui| match &u.brief {
+                        Some(d) => {
+                            let picked = forms.brief_choice.as_ref().filter(|(id, _)| *id == d.id).map(|(_, c)| c.as_str());
+                            brief_ui(ui, t, d, c.decision_view || c.first_responder, picked, acts, l);
+                        }
+                        None => {
+                            ui.label(RichText::new("…").small().color(t.muted));
+                        }
+                    });
+                }
             }
         }
         if kind == "approval" && c.approvals {
@@ -2505,6 +2673,10 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             }
             if let Some(g) = &row.gesture {
                 ui.label(RichText::new(gesture_text(g, c.now)).small().color(t.purple));
+            }
+            // The skip list: why no agent was sent ([inbox] auto_delegate_skip_checks).
+            if let Some(text) = &row.auto_delegate {
+                ui.label(RichText::new(text).small().color(t.yellow));
             }
         }
         let target = match l.top.as_ref().and_then(|t| t.decision_id.clone()) {
@@ -2684,7 +2856,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             buttons.push(b);
         }
         if l.top.is_some() || row_gestures {
-            buttons.push(button("Park until…  (z)", Act::ParkMenu(l.key.clone())));
+            buttons.push(button("Park until…  (z)", Act::ParkMenu(l.sel())));
         }
         if l.claim.is_some() || l.hold().is_some() {
             buttons.push(button("Take back  (u)", Act::TakeBack(l.clone())));
@@ -2709,7 +2881,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             let mut b = button("Label…  (l)", Act::LabelOpen(l.clone()));
             b.hover = Some("Who has the ball, in your words (e.g. QA)");
             buttons.push(b);
-            let mut b = button("Close…  (⇧X)", Act::CloseMenu(l.key.clone()));
+            let mut b = button("Close…  (⇧X)", Act::CloseMenu(l.sel()));
             b.hover = Some("Close the work item and stop its agent; the worktree, branch and PR stay");
             buttons.push(b);
         }
@@ -2752,7 +2924,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             // On a line of its own: wrapped, never cut.
             ui.add(egui::Label::new(RichText::new(why).small().color(t.muted)).wrap());
         }
-        if forms.parking.as_deref() == Some(&l.key) {
+        if forms.parking == Some(l.sel()) {
             let whole = forms.park_whole || l.top.is_none();
             egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -2779,7 +2951,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 ui.label(RichText::new("1-5 choose · w whole work item · Esc close").small().color(t.muted));
             });
         }
-        if forms.closing.as_deref() == Some(&l.key) {
+        if forms.closing == Some(l.sel()) {
             let agents: Vec<String> = l.row.as_ref().map(|r| r.agents.iter().map(|a| a.id.clone()).collect()).unwrap_or_default();
             egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
                 ui.label(RichText::new(close_text(&agents, c.close_stop)).small().color(t.text));
@@ -2792,7 +2964,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                         acts.push(Act::Close(l.clone(), "dropped"));
                     }
                     if ui.button(RichText::new("Cancel  (Esc)").small()).clicked() {
-                        acts.push(Act::CloseMenu(l.key.clone()));
+                        acts.push(Act::CloseMenu(l.sel()));
                     }
                 });
             });

@@ -625,6 +625,10 @@ pub struct StatusRow {
     /// A hint for the user, e.g. "close PR #12: its head is in develop".
     #[serde(default)]
     pub suggestion: Option<String>,
+    /// Why auto-delegation left the row's red CI alone: "auto-delegation
+    /// skipped: eval-suite is on the skip list" (I4g; absent otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_delegate: Option<String>,
     /// The linked feeder work item's project (feature `work_items`; absent
     /// when no feeder item is linked, and on older engines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1123,6 +1127,9 @@ pub struct InboxConfig {
     pub auto_delegate: Vec<String>,
     #[serde(default)]
     pub auto_delegate_target: Option<String>,
+    /// Failing checks auto-delegation leaves alone (names or globs; I4g).
+    #[serde(default)]
+    pub auto_delegate_skip_checks: Vec<String>,
 }
 
 /// `status_gesture`: the claim made (none after `clear`) and the row now.

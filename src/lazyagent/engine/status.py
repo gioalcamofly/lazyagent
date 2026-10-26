@@ -722,6 +722,11 @@ class StatusProjection:
 
         # One sentence for people, above the rules' detail (the Why? view).
         out["answer"] = answer(out)
+        skipped = self._engine.autodelegate.skipped.get(key)
+        if skipped:
+            # The skip list (engine/autodelegate.py): why no agent got it.
+            out["auto_delegate"] = skipped
+            out["answer"] = f"{out['answer']} {skipped[0].upper()}{skipped[1:]}."
         return out
 
     def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
