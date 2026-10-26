@@ -143,6 +143,8 @@ EXITED = KINDS["exited"]
 CI = KINDS["ci"]
 # A fresh red Actions run on the head of a branch with no PR (I7).
 CI_FAILED = KINDS["ci_failed"]
+# Every failing check is unrelated, and the base has fixed it since (R4).
+SYNC_BASE = KINDS["sync_base"]
 REVIEW = KINDS["review"]
 CONFLICT = KINDS["conflict"]
 REVIEW_REQUEST = KINDS["review_request"]
@@ -276,6 +278,9 @@ class Place:
     me: str | None = None
     review_request: dict[str, Any] | None = None
     requests_known: bool = False
+    # Mechanism A on the head (engine/ci_tests.py): None while no check has
+    # tests_from.
+    tests: Any = None
 
     @property
     def running(self) -> bool:
@@ -374,6 +379,8 @@ def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
     """An open PR item's detail, and the red run for ``ci``."""
     if kind is CI:
         red = place.ci.red if place.ci is not None else ()
+        if _explained(place):
+            return place.tests.related_detail(), red[0] if red else None
         if red:
             return run_detail(red[0]), red[0]
         failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
@@ -381,6 +388,13 @@ def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
     if kind is REVIEW:
         return "a reviewer asked for changes", None
     return "conflicts with the base branch", None
+
+
+def _explained(place: Place) -> bool:
+    """Mechanism A has explained part of the red, or named new failing
+    tests: the item's detail says which checks are the branch's."""
+    t = place.tests
+    return t is not None and bool(t.unrelated_checks or any(c.new for c in t.checks))
 
 
 def pr_items(snap: Snapshot) -> Iterable[Item]:
@@ -426,12 +440,18 @@ def actions_items(snap: Snapshot) -> Iterable[Item]:
                 continue
             kind = KINDS[rule.id]
             run = ci.red[0]
+            if kind is SYNC_BASE:
+                detail = place.tests.fixed_detail()
+            elif _explained(place):
+                detail = place.tests.related_detail()
+            else:
+                detail = run_detail(run)
             yield Item(
                 _id(kind, f"{place.path}:{ci.branch}"),
                 kind.name,
                 rule.state_of(ctx),
                 label=ci.branch,
-                detail=run_detail(run),
+                detail=detail,
                 work_item=place.work_item,
                 worktree_path=place.path,
                 run=run_info(run),
@@ -802,16 +822,21 @@ class ActionableQueue:
         self._labels = {}
         places = [Place(ORCHESTRATOR_KEY, None, self._agents(ORCHESTRATOR_KEY))]
         overlay = getattr(engine, "overlay", None)
-        hub = getattr(engine, "review_requests", None)
-        me = hub.viewer if hub is not None else None
-        known = bool(hub is not None and hub.enabled and hub.known)
-        requests = list(hub.requests) if known else []
+        requests_hub = getattr(engine, "review_requests", None)
+        me = requests_hub.viewer if requests_hub is not None else None
+        known = bool(requests_hub is not None and requests_hub.enabled and requests_hub.known)
+        requests = list(requests_hub.requests) if known else []
+        hub = getattr(engine, "actions", None)
+        tests = getattr(hub, "tests", None)
+        if tests is not None and not tests.config.configured:
+            tests = None
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
             pr = engine.get_pr_info(wt.path)
             key = work_item_key(repo, wt)
             report = overlay.working(key) if overlay is not None else None
+            verdict = ci_verdict(engine, wt.branch, pr)
             request = request_of(requests, pr, wt.branch)
             if pr is None and request is not None:
                 pr = request_pr(request)
@@ -822,11 +847,12 @@ class ActionableQueue:
                     self._agents(wt.path),
                     pr,
                     getattr(wt, "head", None),
-                    ci_verdict(engine, wt.branch, pr),
+                    verdict,
                     report["agent"] if report and report["worktree_path"] == wt.path else None,
-                    me,
-                    request.to_dict() if request is not None else None,
-                    known,
+                    tests=tests.analysis(wt.branch, verdict, pr) if tests is not None else None,
+                    me=me,
+                    review_request=request.to_dict() if request is not None else None,
+                    requests_known=known,
                 )
             )
         # The review requests no worktree holds: places with no path.

@@ -245,6 +245,11 @@ class WorkflowRun:
     workflow_id: int = 0
     # Fetched on demand (``/runs/{id}/jobs``); None until then.
     failed_jobs: tuple[WorkflowJob, ...] | None = None
+    # The workflow file (``.github/workflows/ci.yml``) and what started the
+    # run (``push``, ``pull_request``, ...): a check's identity and its
+    # base point (engine/ci_tests.py).
+    path: str = ""
+    event: str = ""
 
     @property
     def red(self) -> bool:

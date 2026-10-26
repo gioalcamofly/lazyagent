@@ -15,9 +15,10 @@ CREATED = "2026-10-24T10:00:00Z"
 def run_json(
     run_id: int, branch: str, sha: str, *, conclusion: str | None = "failure",
     status: str = "completed", workflow: str = "Tests", workflow_id: int = 1,
-    created: str = CREATED, attempt: int = 1,
+    created: str = CREATED, attempt: int = 1, path: str | None = None, event: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    extra = {k: v for k, v in (("path", path), ("event", event)) if v is not None}
+    return extra | {
         "id": run_id,
         "name": workflow,
         "workflow_id": workflow_id,
@@ -71,6 +72,12 @@ class FakeGh:
         # ``per_page``, ETag ``"h-<sha[:4]>"``.
         self.head_runs: dict[str, list[dict[str, Any]]] = {}
         self.per_page = 100
+        # run id → its artifacts ([{id, name, size_in_bytes, expired}]);
+        # artifact name → its files (name → text), for ``gh run download``.
+        self.artifacts: dict[int, list[dict[str, Any]]] = {}
+        self.artifact_files: dict[str, dict[str, str]] = {}
+        # PR number → the parents of refs/pull/<n>/merge.
+        self.merge_refs: dict[int, list[str]] = {}
 
     def set_runs(self, runs: list[dict[str, Any]], etag: str) -> None:
         self.runs, self.etag = runs, etag
@@ -90,6 +97,18 @@ class FakeGh:
             if isinstance(nxt, Exception):
                 raise nxt
             return nxt
+        if args[:2] == ["run", "download"]:
+            name, out = args[args.index("-n") + 1], args[args.index("-D") + 1]
+            files = self.artifact_files.get(name)
+            if files is None:
+                return 1, "", f"no artifact matches {name}"
+            from pathlib import Path
+
+            for fname, text in files.items():
+                target = Path(out) / fname
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+            return 0, "", ""
         if args[:2] == ["run", "view"]:
             log = self.logs.get(int(args[2]))
             if log is None:
@@ -112,6 +131,16 @@ class FakeGh:
                 return http(304, "", {"ETag": self.etag})
             return http(200, {"total_count": len(self.runs), "workflow_runs": self.runs},
                         {"ETag": self.etag})
+        if path.endswith("/artifacts?per_page=100"):
+            run_id = int(path.split("/runs/")[1].split("/")[0])
+            arts = self.artifacts.get(run_id, [])
+            return http(200, {"total_count": len(arts), "artifacts": arts})
+        if "/commits/pull/" in path:
+            number = int(path.split("/commits/pull/")[1].split("/")[0])
+            if number not in self.merge_refs:
+                return http(404, {"message": "Not Found"})
+            return http(200, {"sha": "m" * 40,
+                              "parents": [{"sha": p} for p in self.merge_refs[number]]})
         if "/jobs" in path:
             run_id = int(path.split("/runs/")[1].split("/")[0])
             if run_id not in self.jobs:

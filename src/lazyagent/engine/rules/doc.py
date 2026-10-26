@@ -200,6 +200,11 @@ def _sentence(n: Node) -> str:
         inner = n.args[0]
         if inner.op == "fact":
             return negate(_phrase(inner.value))
+        if inner.op == "call" and inner.value in ("known", "unknown", "empty") and inner.args:
+            # "the failing checks … is not empty", not "not (… is empty)".
+            word = {"known": "is unknown", "unknown": "is known",
+                    "empty": "is not empty"}[inner.value]
+            return f"{_value(inner.args[0])} {word}"
         return f"not ({_sentence(inner)})"
     if n.op == "cmp":
         return _cmp(n)

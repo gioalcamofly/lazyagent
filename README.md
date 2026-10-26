@@ -475,7 +475,7 @@ id = "merge"                     # replaces the built-in "merge"
 says = "Merge when approved, CI is fine and QA is done."
 when = '''
 pr.state == "open" and pr.review == "approved" and pr.mergeable == "mergeable"
-and ci.state in ["green", "none"]  # R4 adds: or red only for unrelated reasons (ci.unrelated)
+and (ci.state in ["green", "none"] or ci.unrelated)   # red only for reasons not the branch's
 and tracker.qa in ["tested", "not_required"]
 '''
 [rule.then]
@@ -551,7 +551,7 @@ id = "merge"
 says = "Merge when a person approved what you approved, CI is fine and QA is done."
 when = '''
 pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready == 0
-and pr.human_approvals >= 1 and ci.state in ["green", "none"]
+and pr.human_approvals >= 1 and (ci.state in ["green", "none"] or ci.unrelated)
 and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
 '''
 [rule.then]
@@ -638,6 +638,54 @@ PR as theirs (`pr.mine` false: no Merge, no "PR has no reviewer"; dismissed
 or parked, the request reads "review requested · set aside"). Your rules
 can read `pr.review_requested_from_me` and `pr.author`;
 `[status] review_requests = false` turns the search off.
+
+**CI red, but not the branch's fault.** A check that is red on the branch
+counts as **unrelated** only when its failing *tests* all fail on the base
+too, at the commit the branch is compared with: the same test ids, not the
+same red check. A branch that fails one more test than the base, or other
+tests, is related and keeps **Fix CI**, which names the new tests. A check
+with no test data (no `tests_from`, no artifact, a parser that could not
+match the runner's own count, a build or lint failure, another CI's check),
+a check that exists only on the branch, or a base with no run at exactly
+that commit: related. Suites whose results vary run to run (LLM evals,
+noisy benchmarks) are never compared this way: they stay related.
+
+```toml
+# rules.toml (global or repo): where each check's failing-test ids come from
+[ci.check."unit-tests"]                    # a job name (matrix values aside), a job name with them, or "<workflow file>/<job>"; * and ? work
+tests_from = ["junit:junit-*", "log:pytest"]   # the first that gives a known set
+
+[ci.check."e2e"]
+tests_from = ["log:regex"]
+test_regex = '^✗ (?P<test>\S+)'            # RE2 syntax only
+total_regex = '(?P<total>\d+) failing'     # the runner's own count, checked
+
+[ci_unrelated]
+compare_to = "build_base"                  # default: the commit the failing run built on
+base_fetches_per_poll = 3                  # Sync's lazy reads of a newer red base run
+
+[ci_unrelated.project."checkout-redesign"]   # a feeder's project id (stacked branches)
+compare_to = "origin/main"                 # main's run at the newest main commit under the build base
+```
+
+| Key | Meaning |
+|---|---|
+| `[ci.check."<name>"] tests_from` | `junit:<artifact glob>` (the run's artifacts, every `*.xml`; a matrix job takes the artifact naming its values), `log:pytest`, `log:jest`, `log:vitest`, `log:go`, `log:cargo`, `log:junit-console` (Maven, Gradle), `log:regex` (with `test_regex` and `total_regex`) |
+| `[ci_unrelated] compare_to` | `build_base` (default): a `pull_request` run's merge-ref base parent, a `push` run's single merge-base with `origin/<base>`; else a ref, compared at its newest commit that is an ancestor of the build base. A project's `compare_to` wins over the repo file's, which wins over the global one |
+| `[ci_unrelated] base_fetches_per_poll` | 3 |
+
+When every failing check is unrelated, Fix CI clears and the row carries
+`CI red · unrelated (base also red: 2 tests)` (`status_list {fields:
+["ci_note"]}`; the CLI and MCP tables add it to the state). If the base's
+newest run of that workflow then passes (or no longer fails those tests),
+**Sync** asks for the base to be merged in. `lazyagent status --why <key>`
+lists each failing check with what decided it, or what was missing. Rules
+read `ci.unrelated`, `ci.unrelated_checks`, `ci.related_failures`,
+`ci.failing_tests`, `ci.base_point`, `ci.base_failing_tests`,
+`ci.base_fixed`, `ci.unrelated_summary` and `ci.failing_tests_of("<check>")`.
+Nothing is read until a check has `tests_from`; then, only while a head is
+red, one artifact list and download (or the failed log) per failing job and
+run attempt, and the same once per base commit, inside the Actions caps.
 
 ```sh
 lazyagent rules check     # errors with file and line (exit 1), and what is in force instead

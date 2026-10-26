@@ -633,7 +633,11 @@ impl State {
     fn status_params(&self) -> serde_json::Value {
         let mut p = if self.gestures() { json!({"include_done": true}) } else { json!({}) };
         if self.has("rules") {
-            p["fields"] = json!(["rule_id", "verb", "action"]);
+            p["fields"] = if self.has("ci_tests") {
+                json!(["rule_id", "verb", "action", "ci_note"])
+            } else {
+                json!(["rule_id", "verb", "action"])
+            };
         }
         p
     }
@@ -1112,6 +1116,7 @@ impl State {
                         self.status_rows.get(&row.key).filter(|o| o.rule == row.rule && o.state == row.state)
                 {
                     (row.rule_id, row.verb, row.action) = (old.rule_id.clone(), old.verb.clone(), old.action.clone());
+                    row.ci_note = old.ci_note.clone();
                 }
                 self.status_rows.insert(row.key.clone(), row);
                 self.inbox_gen += 1;
