@@ -18,7 +18,10 @@ user's inbox and the row reads ``agent <id> · on it`` in flight.
 
 A CI item (``ci``, ``ci_failed``) carries the failed-log summary of its red
 runs on the head (engine/actions.py) after the line: at once when it is
-cached, else once ``gh run view --log-failed`` answers.
+cached, else once ``gh run view --log-failed`` answers. A CI item that
+clears because every failing check turned out unrelated to the branch
+(engine/ci_tests.py) ends the delegation with ``CI failures unrelated
+(base also red: 2 tests)``, not "still CI red".
 
 Every step is a ``delegate`` timeline entry. A returned delegation ends when
 its item resolves or is dismissed, or with a new delegation; the user's
@@ -252,9 +255,22 @@ class Delegations:
         else:
             del self.store[key]
             text = f"{what}: {d['fact']} cleared"
+            note = self._unrelated(key, d)
+            if note:
+                # The red is the base's, not the branch's (R4): say so,
+                # not "cleared" as if CI had passed.
+                text = f"{what}: CI failures unrelated ({note})"
         engine.overlay.add(key, "delegate", f"agent:{d['agent']}", text, ref=d["item"], at=now)
         engine.overlay.changed()
         engine.status.mark_dirty()
+
+    def _unrelated(self, key: str, d: dict[str, Any]) -> str:
+        """``base also red: 2 tests`` when a CI item cleared because every
+        failing check is unrelated to the branch."""
+        if str(d.get("item", "")).split(":", 1)[0].lower() not in CI_KINDS:
+            return ""
+        tests = actions.ci_tests_of(self._engine, key)
+        return tests.summary if tests is not None and tests.unrelated is True else ""
 
     def _dismissed(self, item: Item) -> Callable[[], None] | None:
         key = item.work_item

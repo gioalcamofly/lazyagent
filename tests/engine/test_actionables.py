@@ -193,9 +193,9 @@ def test_every_kind_has_its_fixed_level():
     assert {k: v.level for k, v in KINDS.items()} == {
         "approval": "now", "question": "now", "hanged": "round", "failed": "round",
         "exited": "round", "ci": "round", "ci_failed": "round", "review": "deep",
-        "conflict": "round",
+        "conflict": "round", "sync_base": "round",
         "done": "deep", "job": "round", "delegation": "round", "report": "round",
-        "decision": "deep",
+        "decision": "deep", "review_request": "round",
         # Its default: an item carries the tracker mapping's level.
         "tracker_status": "round",
         # An item rule's (the built-in Merge): the rule gives its level.

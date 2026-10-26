@@ -110,6 +110,8 @@ _PARK_TEXT = {
 }
 # The fields of each open inbox item a row lists (``needs_you.items``).
 ITEM_FIELDS = ("id", "kind", "level", "state", "since")
+# What a row shows of a review request (status_row.review_request).
+REQUEST_FIELDS = ("number", "title", "url", "author", "requested_at", "team")
 # The branches an open PR's head may already be in ("already merged").
 MERGED_INTO = ("develop", "main")
 
@@ -165,6 +167,16 @@ class Facts:
     # commit, a notes edit, a report, a step by someone other than the
     # engine, an agent status change the engine saw happen.
     activity_at: float | None = None
+    # The authenticated GitHub user's login (pr.mine); None: not known.
+    me: str | None = None
+    # The open request for the user's review on this row's PR
+    # (engine/review_requests.py, ReviewRequest.to_dict), and whether the
+    # hub's search answered (else pr.review_requested_from_me is unknown).
+    review_request: dict[str, Any] | None = None
+    requests_known: bool = False
+    # Mechanism A on the head (engine/ci_tests.py): None while no check has
+    # tests_from.
+    ci_tests: Any = None
 
 
 def evolve(facts: Facts, **changes: Any) -> Facts:
@@ -495,6 +507,8 @@ def build_row(
         # Filled in once every row is known (StatusProjection._projects).
         row["waits_on"] = []
         row["feeder"] = feeder
+    if facts.review_request is not None:
+        row["review_request"] = {k: facts.review_request[k] for k in REQUEST_FIELDS}
     tracker = facts.tracker
     if tracker is not None:
         if tracker.url and tracker.url not in row["urls"]:
@@ -631,6 +645,13 @@ class StatusProjection:
         self._head_times: dict[str, float] = {}
         # (key, head) → the branch that head is already in, or None.
         self._merged: dict[tuple[str, str], str | None] = {}
+        # The review requests' rows no worktree holds (key → Facts), from
+        # the last pass: the review_request detector's places.
+        self.remote: dict[str, Facts] = {}
+        self._remote_keys: set[str] = set()
+        # The feeders' items linked to a review request's row (last pass).
+        self._request_links: set[str] = set()
+        self._request_feeders: dict[str, dict[str, Any]] = {}
         self._facts_by_key: dict[str, Facts] = {}
         # Timeline: what each row looked like at the last pass, and who made
         # the next change (a gesture).
@@ -714,6 +735,9 @@ class StatusProjection:
                          catalog.not_human)
         out = catalog.explain(ctx)
         out["key"] = key
+        if facts.ci_tests is not None and facts.ci_tests.red:
+            # Mechanism A per failing check: what decided it, what was missing.
+            out["ci"] = facts.ci_tests.to_dict()
         out["items"] = [
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
             for i in facts.actionables or ()
@@ -730,17 +754,21 @@ class StatusProjection:
         return out
 
     def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
-        """The opt-in row fields (Q-R20): rule_id, verb, action. A row the
-        queue decides takes its top item's."""
+        """The opt-in row fields (Q-R20): rule_id, verb, action (a row the
+        queue decides takes its top item's), and ci_note: ``CI red ·
+        unrelated (base also red: 2 tests)`` while every failing check is
+        explained (R4, Q-R23)."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
         rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
+        facts = self._facts_by_key.get(key)
+        tests = facts.ci_tests if facts is not None else None
         out: dict[str, Any] = {"rule_id": rule.id if rule is not None else None,
-                               "verb": None, "action": None}
+                               "verb": None, "action": None,
+                               "ci_note": tests.note if tests is not None else None}
         if rule is None:
             return out
         out["verb"], out["action"] = rule.verb, rule.action
-        facts = self._facts_by_key.get(key)
         if rule.id == "queue" and facts is not None and facts.actionables:
             top = facts.actionables[0]
             kind = catalog.kind.get(top["kind"])
@@ -779,6 +807,7 @@ class StatusProjection:
             self._refresh_commit_times()
         self._poll_trackers()
         self._poll_actions()
+        self._poll_review_requests()
         hub = getattr(self._engine, "rules", None)
         if hub is not None:
             # A rule file edited by hand (or allowed) applies on this pass.
@@ -867,6 +896,24 @@ class StatusProjection:
         self._refresh_commit_times()
         self._poll_trackers()
         self._poll_actions()
+        self._poll_review_requests()
+
+    def _poll_review_requests(self) -> None:
+        """Search the review requests when due, at the PR poller's cadence,
+        once it has found ``gh`` working and the repo it resolves against."""
+        hub = getattr(self._engine, "review_requests", None)
+        service = self._engine.worktree_service
+        if hub is None or service._gh_available is not True:
+            return
+        repo = service.github_repo
+        if repo is None:
+            return
+
+        async def poll() -> None:
+            if await hub.poll(repo.owner, repo.name):
+                self.mark_dirty()
+
+        self._spawn(poll())
 
     def _poll_actions(self) -> None:
         """Poll GitHub Actions when due (a new branch at once): the
@@ -888,12 +935,31 @@ class StatusProjection:
             pr = self._engine.get_pr_info(wt.path)
             if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
                 red_heads[wt.branch] = pr.head_sha
+        hub.tests.config = self.catalog.ci
+        if hub.tests.config.configured:
+            hub.tests.targets = {wt.branch: self._target(wt) for wt in members}
 
         async def poll() -> None:
             if await hub.poll(branches, red_heads=red_heads):
                 self.mark_dirty()
 
         self._spawn(poll())
+
+    def _target(self, wt: Any) -> Any:
+        """What mechanism A compares a branch with: its open PR's base
+        (else the default branch) and its I6 project."""
+        from lazyagent.engine.ci_tests import Target
+
+        pr = self._engine.get_pr_info(wt.path)
+        is_open = pr is not None and pr.state.upper() == "OPEN"
+        base = ((pr.base_ref if is_open and pr.base_ref else None)
+                or self._engine.config.default_branch or "main")
+        feeder = self._feeder(wt.branch) or {}
+        project = feeder.get("project")
+        if isinstance(project, dict):
+            project = project.get("id")
+        return Target(wt.branch, base, pr.number if is_open else None,
+                      project if isinstance(project, str) else None)
 
     def _poll_trackers(self) -> None:
         """Poll the tracker adapters that are due (a new branch's key at
@@ -1262,9 +1328,19 @@ class StatusProjection:
                     decisions.expire_item(key, how)
             elif key in overlay.closed:
                 overlay.reopen(key)
+        # A review request that went (reviewed, withdrawn, the PR closed)
+        # leaves no done row: what was kept for it goes.
+        for key in self._remote_keys - set(rows):
+            overlay.forget(key)
+            decisions.expire_item(key, "review_request_done")
+        self._remote_keys = {k for k, r in rows.items() if r["worktree_path"] is None}
         known = set(overlay.gestures) | set(overlay.reports) | set(overlay.timeline)
         known |= {d["key"] for d in overlay.decisions.values() if d.get("state") == "open"}
         known |= set(self._last_rows)
+        if self._requests_pending():
+            # Until the first search answers, a review request's row kept
+            # in the overlay (a label, its timeline) is not a removed one.
+            known = set(self._last_rows)
         for key in known - set(rows) - set(overlay.closed):
             if overlay.close(key, "worktree_removed", now, self._last_rows.get(key)):
                 decisions.expire_item(key, "worktree_removed")
@@ -1280,6 +1356,14 @@ class StatusProjection:
             for k, r in rows.items()
             if r["worktree_path"] is not None
         }
+
+    def _requests_pending(self) -> bool:
+        """The review requests hub is on and has not answered nor failed
+        yet (while gh may work)."""
+        hub = getattr(self._engine, "review_requests", None)
+        if hub is None or not hub.enabled or hub.known or hub.error is not None:
+            return False
+        return self._engine.worktree_service._gh_available is not False
 
     def _branches(self) -> set[str]:
         """Every local branch: the worktrees' and every for-each-ref one."""
@@ -1302,7 +1386,7 @@ class StatusProjection:
         branches = self._branches()
         out: dict[str, dict[str, Any]] = {}
         for record in work_items.unlinked(branches):
-            if work_items.waiting_active(record):
+            if work_items.waiting_active(record) or record["url"] in self._request_links:
                 continue
             item = work_items.public(record)
             item["startable"] = self._startable(record)
@@ -1326,6 +1410,9 @@ class StatusProjection:
         its tracker task's; None: the default."""
         if not work_item:
             return None
+        linked = self._request_feeders.get(work_item)
+        if linked is not None:
+            return linked["priority"]
         branch = work_item.partition(":")[2]
         record = self._engine.work_items.link(branch)
         if record is not None:
@@ -1419,6 +1506,8 @@ class StatusProjection:
         times = [a.since for a in facts.agents]
         if facts.commit_time is not None:
             times.append(facts.commit_time)
+        if facts.review_request is not None:
+            times.append(facts.review_request["requested_at"])
         if facts.activity_at is not None:
             times.append(facts.activity_at)
         return min(max(times), now) if times else now
@@ -1442,6 +1531,8 @@ class StatusProjection:
         engine = self._engine
         path = facts.worktree_path or ""
         times = [facts.commit_time] if facts.commit_time is not None else []
+        if facts.review_request is not None:
+            times.append(facts.review_request["requested_at"])
         store = engine.notes
         if store is not None:
             ids = [engine.notes_id(path, a.agent_id) for a in facts.agents]
@@ -1475,7 +1566,13 @@ class StatusProjection:
         if engine.manifest is not None:
             for entry in engine._offerable():
                 restorable[entry.worktree_path] = restorable.get(entry.worktree_path, 0) + 1
+        hub = getattr(engine, "review_requests", None)
+        me = hub.viewer if hub is not None else None
+        known = bool(hub is not None and hub.enabled and hub.known)
+        requests = list(hub.requests) if known else []
         out = []
+        hub = getattr(engine, "actions", None)
+        tests = hub.tests if hub is not None and hub.tests.config.configured else None
         for wt in self._members():
             agents = self._agents(wt.path, now)
             branch = wt.branch
@@ -1485,6 +1582,13 @@ class StatusProjection:
             merged = None
             if pr is not None and pr.state == "OPEN":
                 merged = self._merged.get((key, pr.head_sha or head or ""))
+            request = request_of(requests, pr, branch)
+            if pr is None and request is not None:
+                # The search knows the PR before the PR poller's first answer.
+                pr = request_pr(request)
+            feeder = self._feeder(branch)
+            if request is not None and feeder is None:
+                feeder = self._request_feeder(request)
             out.append(
                 Facts(
                     key=key,
@@ -1498,12 +1602,63 @@ class StatusProjection:
                     restorable=restorable.get(wt.path, 0),
                     note=self._note(wt.path, agents),
                     tracker=engine.trackers.fact(branch),
-                    feeder=self._feeder(branch),
+                    feeder=feeder,
                     head=head,
                     merged_into=merged,
+                    me=me,
+                    review_request=request.to_dict() if request is not None else None,
+                    requests_known=known,
+                    ci_tests=self._ci_tests(tests, wt, pr) if tests is not None else None,
                 )
             )
+        out += self._request_facts(repo, requests, out, me)
+        self.remote = {f.key: f for f in out if f.worktree_path is None}
+        # A feeder's item on a review request's row is started, branch or not.
+        self._request_feeders = {f.key: f.feeder for f in out
+                                 if f.review_request is not None and f.feeder is not None}
+        self._request_links = {f["url"] for f in self._request_feeders.values()}
         return out
+
+    def _request_feeder(self, request: Any) -> dict[str, Any] | None:
+        record = self._engine.work_items.link_request(request.url, request.head, request.title)
+        return self._engine.work_items.public(record) if record is not None else None
+
+    def _request_facts(self, repo: str, requests: list[Any], local: list[Facts],
+                       me: str | None) -> list[Facts]:
+        """A row per review request no worktree holds: keyed by its head
+        branch (``<repo>:#<number>`` for a fork's, or when a worktree has
+        that branch for another PR), with the PR's title, author and URL,
+        and the feeder's work item it links to (its URL, else the ticket
+        key in its branch or title)."""
+        taken = {f.review_request["number"] for f in local if f.review_request is not None}
+        keys = {f.key for f in local}
+        out = []
+        for request in requests:
+            if request.number in taken:
+                continue
+            key = f"{repo}:{request.head}"
+            if request.cross_repo or key in keys:
+                key = f"{repo}:#{request.number}"
+            keys.add(key)
+            out.append(Facts(
+                key=key,
+                repo=repo,
+                branch=request.head,
+                worktree_path=None,
+                pr=request_pr(request),
+                tracker=self._engine.trackers.fact(request.head),
+                feeder=self._request_feeder(request),
+                me=me,
+                review_request=request.to_dict(),
+                requests_known=True,
+            ))
+        return out
+
+    def _ci_tests(self, tests: Any, wt: Any, pr: PrInfo | None) -> Any:
+        from lazyagent.engine.actions import ci_verdict
+
+        return tests.analysis(wt.branch, ci_verdict(self._engine, wt.branch, pr), pr,
+                              tests.targets.get(wt.branch) or (self._target(wt) if wt.branch else None))
 
     def _feeder(self, branch: str | None) -> dict[str, Any] | None:
         record = self._engine.work_items.link(branch)
@@ -1562,6 +1717,34 @@ class StatusProjection:
                     "agent_id": agent.agent_id,
                 }
         return None
+
+
+def request_of(requests: list[Any], pr: PrInfo | None, branch: str | None) -> Any:
+    """The review request a worktree holds: its open PR's, else (PR info
+    not read yet) the same-repo request on its branch."""
+    if pr is not None:
+        if pr.state != "OPEN":
+            return None
+        return next((r for r in requests if r.number == pr.number), None)
+    if not branch:
+        return None
+    return next((r for r in requests if not r.cross_repo and r.head == branch), None)
+
+
+def request_pr(request: Any) -> PrInfo:
+    """What a review request's row knows of its PR: open, not a draft,
+    its number, title, URL and author (no checks, review or mergeability:
+    those facts read unknown or none)."""
+    return PrInfo(
+        number=request.number,
+        title=request.title,
+        state="OPEN",
+        checks=[],
+        url=request.url,
+        review_decision=request.review,
+        is_draft=False,
+        author=request.author,
+    )
 
 
 def project_wake_text(project: str, record: dict[str, Any], allowed: bool) -> str:
@@ -1652,6 +1835,8 @@ def state_text(row: dict[str, Any], now: float) -> str:
         state = f"{gesture['text']} · {state}"
     if row.get("waits_on") and row["ball"] != "done":
         state += " · waits on " + ", ".join(w["title"] for w in row["waits_on"])
+    if row.get("ci_note"):
+        state += f" · {row['ci_note']}"
     tracker = row.get("tracker")
     if not tracker or not tracker["state"]:
         return state

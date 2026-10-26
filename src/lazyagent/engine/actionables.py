@@ -55,6 +55,8 @@ from lazyagent.engine.rules.facts import ItemContext
 from lazyagent.engine.runtime import repo_digest, state_dir
 from lazyagent.engine.status import (
     _RUNNING,
+    request_of,
+    request_pr,
     DEFAULT_PRIORITY,
     LEVELS,
     PRIORITY_ORDER,
@@ -141,8 +143,11 @@ EXITED = KINDS["exited"]
 CI = KINDS["ci"]
 # A fresh red Actions run on the head of a branch with no PR (I7).
 CI_FAILED = KINDS["ci_failed"]
+# Every failing check is unrelated, and the base has fixed it since (R4).
+SYNC_BASE = KINDS["sync_base"]
 REVIEW = KINDS["review"]
 CONFLICT = KINDS["conflict"]
+REVIEW_REQUEST = KINDS["review_request"]
 DONE = KINDS["done"]
 JOB = KINDS["job"]
 # A linked tracker task entered a status mapped with a level (its own).
@@ -268,6 +273,14 @@ class Place:
     # working): its finished turn is not "done", it works on (a review
     # still shows).
     reported: str | None = None
+    # The user's GitHub login (pr.mine), the review request on the PR and
+    # whether the search answered (engine/review_requests.py).
+    me: str | None = None
+    review_request: dict[str, Any] | None = None
+    requests_known: bool = False
+    # Mechanism A on the head (engine/ci_tests.py): None while no check has
+    # tests_from.
+    tests: Any = None
 
     @property
     def running(self) -> bool:
@@ -366,6 +379,8 @@ def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
     """An open PR item's detail, and the red run for ``ci``."""
     if kind is CI:
         red = place.ci.red if place.ci is not None else ()
+        if _explained(place):
+            return place.tests.related_detail(), red[0] if red else None
         if red:
             return run_detail(red[0]), red[0]
         failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
@@ -373,6 +388,13 @@ def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
     if kind is REVIEW:
         return "a reviewer asked for changes", None
     return "conflicts with the base branch", None
+
+
+def _explained(place: Place) -> bool:
+    """Mechanism A has explained part of the red, or named new failing
+    tests: the item's detail says which checks are the branch's."""
+    t = place.tests
+    return t is not None and bool(t.unrelated_checks or any(c.new for c in t.checks))
 
 
 def pr_items(snap: Snapshot) -> Iterable[Item]:
@@ -418,15 +440,52 @@ def actions_items(snap: Snapshot) -> Iterable[Item]:
                 continue
             kind = KINDS[rule.id]
             run = ci.red[0]
+            if kind is SYNC_BASE:
+                detail = place.tests.fixed_detail()
+            elif _explained(place):
+                detail = place.tests.related_detail()
+            else:
+                detail = run_detail(run)
             yield Item(
                 _id(kind, f"{place.path}:{ci.branch}"),
                 kind.name,
                 rule.state_of(ctx),
                 label=ci.branch,
-                detail=run_detail(run),
+                detail=detail,
                 work_item=place.work_item,
                 worktree_path=place.path,
                 run=run_info(run),
+            )
+
+
+def review_request_items(snap: Snapshot) -> Iterable[Item]:
+    """An open PR, not a draft, whose author asked the user (or a team of
+    theirs) for a review, until the user reviews, the request goes or the
+    PR closes (the catalog's ``review_requests`` kinds). The id carries the
+    request's time: a later request is a new occurrence, and the item dates
+    from it."""
+    kinds = _CATALOG.kinds_of("review_requests")
+    for place in snap.places:
+        request = place.review_request
+        if request is None or place.pr is None:
+            continue
+        ctx = ItemContext(place)
+        for rule in kinds:
+            if not rule.matches(ctx):
+                continue
+            kind = KINDS[rule.id]
+            asked = f"team {request['team']}" if request.get("team") else "you"
+            yield Item(
+                _id(kind, f"#{request['number']}:{int(request['requested_at'])}"),
+                kind.name,
+                rule.state_of(ctx),
+                label=f"#{request['number']} {request['title']}",
+                detail=f"{request['author']} asked {asked} for a review",
+                work_item=place.work_item,
+                worktree_path=place.path or None,
+                pr={"number": request["number"], "title": request["title"],
+                    "url": request["url"]},
+                since=request["requested_at"],
             )
 
 
@@ -465,7 +524,7 @@ def job_items(snap: Snapshot) -> Iterable[Item]:
 
 
 DEFAULT_DETECTORS: tuple[Detector, ...] = (
-    agent_items, pr_items, actions_items, exit_items, job_items,
+    agent_items, pr_items, actions_items, review_request_items, exit_items, job_items,
 )
 
 
@@ -763,12 +822,24 @@ class ActionableQueue:
         self._labels = {}
         places = [Place(ORCHESTRATOR_KEY, None, self._agents(ORCHESTRATOR_KEY))]
         overlay = getattr(engine, "overlay", None)
+        requests_hub = getattr(engine, "review_requests", None)
+        me = requests_hub.viewer if requests_hub is not None else None
+        known = bool(requests_hub is not None and requests_hub.enabled and requests_hub.known)
+        requests = list(requests_hub.requests) if known else []
+        hub = getattr(engine, "actions", None)
+        tests = getattr(hub, "tests", None)
+        if tests is not None and not tests.config.configured:
+            tests = None
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
             pr = engine.get_pr_info(wt.path)
             key = work_item_key(repo, wt)
             report = overlay.working(key) if overlay is not None else None
+            verdict = ci_verdict(engine, wt.branch, pr)
+            request = request_of(requests, pr, wt.branch)
+            if pr is None and request is not None:
+                pr = request_pr(request)
             places.append(
                 Place(
                     wt.path,
@@ -776,10 +847,19 @@ class ActionableQueue:
                     self._agents(wt.path),
                     pr,
                     getattr(wt, "head", None),
-                    ci_verdict(engine, wt.branch, pr),
+                    verdict,
                     report["agent"] if report and report["worktree_path"] == wt.path else None,
+                    tests=tests.analysis(wt.branch, verdict, pr) if tests is not None else None,
+                    me=me,
+                    review_request=request.to_dict() if request is not None else None,
+                    requests_known=known,
                 )
             )
+        # The review requests no worktree holds: places with no path.
+        status = getattr(engine, "status", None)
+        for key, facts in (getattr(status, "remote", None) or {}).items():
+            places.append(Place("", key, (), facts.pr, me=me,
+                                review_request=facts.review_request, requests_known=True))
         # An exit is answered once an agent runs in its slot again.
         live = {(p.path, a.agent_id) for p in places for a in p.agents}
         self._exits = [e for e in self._exits if (e.path, e.agent_id) not in live]
@@ -816,6 +896,9 @@ class ActionableQueue:
             at = self._since.get(item_id)
             if at is None:
                 at = self._carried.pop(item_id, None)
+            if at is None and item.since:
+                # An item that knows when it happened (a review request).
+                at = min(item.since, now)
             if at is None:
                 # A PR item found with the PR info (the engine's start, the
                 # poller's first answer) dates from the last sign of work.

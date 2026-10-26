@@ -467,6 +467,27 @@ class WorkItems:
                      if (t := self.ticket(r)) is not None and t.casefold() == folded]
         return max(found, key=lambda r: r["updated_at"]) if found else None
 
+    def link_request(self, url: str, branch: str, title: str) -> dict[str, Any] | None:
+        """The record a review request's PR links to: the one whose URL is
+        the PR's, else the one its head branch links to (:meth:`link`), else
+        the one whose ticket is the key in the PR's title."""
+        if not self.records:
+            return None
+        wanted = url.rstrip("/").casefold()
+        found = [r for r in self.records.values()
+                 if wanted and r["url"].rstrip("/").casefold() == wanted]
+        if not found:
+            record = self.link(branch)
+            if record is not None:
+                return record
+            key = ticket_id(title, self.ticket_pattern)
+            if key is None:
+                return None
+            folded = key.casefold()
+            found = [r for r in self.records.values()
+                     if (t := self.ticket(r)) is not None and t.casefold() == folded]
+        return max(found, key=lambda r: r["updated_at"]) if found else None
+
     def unlinked(self, branches: Iterable[str]) -> list[dict[str, Any]]:
         """The records no branch in ``branches`` links to."""
         linked = set()

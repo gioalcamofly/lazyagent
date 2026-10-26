@@ -413,7 +413,7 @@ def test_why_on_a_merge_row_shows_the_item_rule_and_its_facts():
     assert result["item_rule"]["id"] == "merge"
     assert {f["name"]: f["value"] for f in result["item_rule"]["facts"]} == {
         "ci.state": "green", "pr.mergeable": "mergeable", "pr.review": "approved",
-        "pr.state": "open"}
+        "pr.state": "open", "pr.mine": None}
     assert "item   from rule merge  (built-in)" in format_explain(result)
 
 
@@ -550,8 +550,9 @@ def test_the_readme_examples_do_what_the_readme_says():
     readme = (Path(__file__).resolve().parents[3] / "README.md").read_text()
     section = readme.split("### Your rules (rules.toml)")[1].split("\n### ")[0]
     blocks = re.findall(r"```toml\n(.*?)```", section, re.S)
-    # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py.
-    assert len(blocks) == 3
+    # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py;
+    # the fourth, [ci.check] and [ci_unrelated]: tests/engine/test_ci_tests.py.
+    assert len(blocks) == 4
     cat, errors, warnings = catalog_of(("global", blocks[0]))
     assert errors == [] and warnings == []
     assert cat.by_id["merge"].origin == "global"

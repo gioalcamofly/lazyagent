@@ -1004,6 +1004,10 @@ impl State {
             self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
             return;
         }
+        if top.kind == "review_request" {
+            self.toast(Severity::Info, "A teammate asked you for this review: open the PR (p) and review it there.");
+            return;
+        }
         if self.delegate_target(line) != DelegateTo::Agent {
             // No agent runs there: the buttons offer to restore or start one.
             let how = match self.delegate_target(line) {
@@ -1469,7 +1473,7 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
                 (_, "decision") if c.decision_view => keys.extend(["Enter open", "v decision view"]),
                 (Zone::Parked, _) => keys.extend(["Enter expand", "u unpark", "o terminal"]),
                 (Zone::Flight, _) => keys.extend(["Enter expand", "o terminal", "n notes"]),
-                _ if l.verb() == "Merge" => keys.extend(["p PR", "Enter expand"]),
+                _ if l.verb() == "Merge" || kind == "review_request" => keys.extend(["p PR", "Enter expand"]),
                 _ => keys.extend(["Enter expand", "o terminal"]),
             }
             if l.top.as_ref().is_some_and(|t| t.is_ci()) && l.url.is_some() {
@@ -2074,6 +2078,21 @@ fn ball_text(c: &LineCtx, l: &Line, shown: Zone) -> (String, String, Color32) {
     }
 }
 
+/// `CI red · unrelated (base also red: 2 tests)` (feature ci_tests, R4):
+/// an informational chip, not an item; the full text on hover.
+fn ci_chip(ui: &mut Ui, t: &Theme, l: &Line) {
+    let Some(note) = l.ci_note() else { return };
+    let short = home::middle_ellipsis(note, 48);
+    let r = egui::Frame::new()
+        .fill(t.panel)
+        .stroke(egui::Stroke::new(1.0, t.muted))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(6, 0))
+        .show(ui, |ui| ui.label(RichText::new(short).small().color(t.muted)))
+        .response;
+    r.on_hover_text(note);
+}
+
 fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
     let sel = l.sel();
@@ -2103,6 +2122,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     cell(ui, 110.0, RichText::new(ball).small().color(color));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
+                        ci_chip(ui, t, l);
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             ui.add(egui::Label::new(RichText::new(state).color(t.muted)).truncate());
                         });
@@ -2138,6 +2158,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     let age = c.now - l.top.as_ref().map(|t| t.since).unwrap_or(l.changed_at);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(age)).small().color(t.muted));
+                        ci_chip(ui, t, l);
                         // "+ changes requested": what is behind the top item.
                         if let Some(more) = l.more_text() {
                             let r = ui.add(
@@ -2635,6 +2656,16 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                     .collect();
                 ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
             }
+            if let Some(rr) = &row.review_request {
+                // The item line names the PR and who asked: when, and through
+                // which team, is what it does not say.
+                let mut text = format!("review requested {} ago", home::age(c.now - rr.requested_at));
+                if let Some(team) = &rr.team {
+                    text.push_str(&format!(" · through team {team}"));
+                }
+                text.push_str(" · it goes once you review it on the PR");
+                ui.label(RichText::new(text).small().color(t.muted));
+            }
             if let Some(p) = &row.project {
                 let mut text = format!("project {}", p.title);
                 for w in &row.waits_on {
@@ -2817,6 +2848,13 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             b.hover = Some("Merging happens on the PR page");
             buttons.push(b);
         }
+        let reviewing = l.top.as_ref().is_some_and(|t| t.kind == "review_request");
+        if reviewing && let Some(url) = &l.url {
+            // A teammate's PR: the review is done on the PR page.
+            let mut b = button("Open PR to review  (p)", Act::Pr(url.clone()));
+            b.hover = Some("Approve, request changes or comment there: the line goes once you do");
+            buttons.push(b);
+        }
         if l.place.is_some() {
             buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
         }
@@ -2874,6 +2912,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         }
         if let Some(url) = &l.url
             && l.verb() != "Merge"
+            && !reviewing
         {
             buttons.push(button("PR  (p)", Act::Pr(url.clone())));
         }

@@ -336,3 +336,37 @@ fn home_i4g_screenshots() {
         }
     }
 }
+
+#[test]
+fn ghosts_and_review_requests_share_home() {
+    let caps: Vec<&str> = caps().into_iter().chain(["review_requests"]).collect();
+    let (app, tx) = engine_home(&caps);
+    let mut h = harness(app);
+    engine_answers(&h);
+    red_with_brief(&tx, "deep", brief("d1", "tax", true));
+    let url = "https://github.com/o/r/pull/12";
+    let req = json!({"id": "Review_request:#12:1", "occurrence": "r@1", "kind": "review_request", "level": "round",
+        "title": "Review requested", "label": "#12 Fix the CSV export", "detail": "ana asked you for a review",
+        "state": "review requested by ana", "work_item": "repo:ana-csv-export", "worktree_path": null,
+        "agent_id": null, "pr": {"number": 12, "title": "Fix the CSV export", "url": url},
+        "job_id": null, "exit_code": null, "blocks_agent": false, "priority": "medium",
+        "since": crate::app::unix_now() - 7200.0, "park": null, "run": null});
+    let mut row = status_row("ana-csv-export", "inbox", Some("round"), "you", "review requested by ana", 7200.0);
+    row["worktree_path"] = json!(null);
+    row["needs_you"] = needs(&[&req]);
+    row["review_request"] = json!({"number": 12, "title": "Fix the CSV export", "url": url, "author": "ana",
+                                   "requested_at": crate::app::unix_now() - 7200.0, "team": null});
+    tx.send(event("actionable.created", json!({"item": req}))).unwrap();
+    tx.send(event("status.updated", json!({"row": row}))).unwrap();
+    settle(&mut h);
+    let sels: Vec<String> = h.state().state.home.visible(false).iter().map(|l| l.sel()).collect();
+    assert_eq!(sels, ["repo:ana-csv-export", "repo:tax", GHOST], "the request in the Round, the ghost after");
+    assert_eq!(h.state().state.home.deep_count(), 1, "a request has no deep item: no ghost of its own");
+    h.key_press(egui::Key::Num3);
+    h.run_steps(2);
+    assert_eq!(selected(&h).as_deref(), Some(GHOST));
+    h.key_press(egui::Key::K);
+    h.key_press(egui::Key::K);
+    h.run_steps(2);
+    assert_eq!(selected(&h).as_deref(), Some("repo:ana-csv-export"));
+}

@@ -70,6 +70,8 @@ def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
         "concepts": concepts(),
         # The rule files' [review] tables, merged.
         "review": {"not_human": sorted(catalog.not_human)},
+        # [ci.check] and [ci_unrelated], merged (R4).
+        "ci": catalog.ci.to_dict(),
         "files": check["files"],
         "errors": check["errors"],
         "warnings": check["warnings"],
@@ -125,6 +127,17 @@ def format_explain(result: dict[str, Any]) -> str:
         out.append("  items  " + "; ".join(
             f"{i['id']} ({i['level']}: {i['state']})" for i in result["items"]))
     _facts(out, "  facts it read", result["facts"])
+    ci = result.get("ci")
+    if ci:
+        out.append("  CI     " + ("unrelated: " + ci["summary"] if ci["unrelated"] is True
+                                  else "related" if ci["unrelated"] is False
+                                  else "related (some test data unknown)"))
+        for c in ci["checks"] + ci["others"]:
+            verdict = "unrelated" if c["unrelated"] else "related"
+            new = c.get("new") or []
+            named = (" (new: " + ", ".join(t.split("::", 1)[-1] for t in new[:5])
+                     + (f", +{len(new) - 5} more" if len(new) > 5 else "") + ")") if new else ""
+            out.append(f"         {c.get('job') or c['name']}: {verdict}: {c['detail']}{named}")
     item = result.get("item_rule")
     if item:
         out.append(f"  item   from rule {item['id']}  ({_where(item)})")

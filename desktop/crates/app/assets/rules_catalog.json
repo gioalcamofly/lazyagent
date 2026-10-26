@@ -23,7 +23,7 @@
   {
    "id": "open_pr",
    "key": "p",
-   "label": "The PR (for Merge: merging is done there, by you)"
+   "label": "The PR (you merge it, or review it, there)"
   },
   {
    "id": "open_tracker",
@@ -116,6 +116,12 @@
    "label": "Fold Parked"
   }
  ],
+ "ci": {
+  "base_fetches_per_poll": 3,
+  "checks": [],
+  "compare_to": "build_base",
+  "projects": {}
+ },
  "concepts": {
   "balls": [
    {
@@ -447,7 +453,7 @@
     "example": "",
     "generated": "zones",
     "id": "home",
-    "intro": "One line per work item: a branch with its PR, its agents and its CI. Nothing to keep up to date: the engine derives every line.",
+    "intro": "One line per work item: a branch with its PR, its agents and its CI, or a teammate's PR that asks for your review. Nothing to keep up to date: the engine derives every line.",
     "screenshot": "home",
     "title": "Home"
    },
@@ -624,7 +630,7 @@
     "colour": "orange",
     "id": "round",
     "name": "Round",
-    "text": "Quick things that block nobody. Delivered in rounds, so nothing moves under your cursor."
+    "text": "Quick things that block nobody, and the reviews teammates asked of you. Delivered in rounds, so nothing moves under your cursor."
    },
    {
     "colour": "purple",
@@ -989,6 +995,45 @@
    "values": []
   },
   {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.author",
+   "phrase": "the PR's author (login)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.mine",
+   "phrase": "the PR is yours (its author is the user gh is logged in as)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "PR poller, gh's login",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "≤ 60 s",
+   "name": "pr.review_requested_from_me",
+   "phrase": "the PR asks you for a review (you, or a team of yours)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "review requests search",
+   "type": "bool",
+   "values": []
+  },
+  {
    "cost": "extra",
    "freshness": "≤ 60 s",
    "name": "pr.labels",
@@ -1132,6 +1177,136 @@
     "moved",
     "none"
    ]
+  },
+  {
+   "cost": "extra",
+   "freshness": "once per run attempt",
+   "name": "ci.failing_tests",
+   "phrase": "the failing tests on the head (lower case)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "JUnit artifacts or log parsers ([ci.check] tests_from)",
+   "type": "set test",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per head",
+   "name": "ci.base_point",
+   "phrase": "the base commit the head is compared with",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "git and Actions run metadata ([ci_unrelated] compare_to)",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "once per base sha",
+   "name": "ci.base_failing_tests",
+   "phrase": "the tests failing on the base at that commit",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "JUnit artifacts or log parsers ([ci.check] tests_from)",
+   "type": "set test",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per pass",
+   "name": "ci.unrelated_checks",
+   "phrase": "the failing checks whose tests all fail on the base too",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "per pass",
+   "name": "ci.related_failures",
+   "phrase": "the failing checks not explained by the base",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "failing checks minus ci.unrelated_checks",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per pass",
+   "name": "ci.unrelated",
+   "phrase": "CI is red only for reasons unrelated to the branch",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "ci.unrelated_summary",
+   "phrase": "what explains the red (empty: nothing)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.base_fixed",
+   "phrase": "the unrelated checks the base has fixed since",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "the base's newest run in the Actions runs",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "per pass",
+   "name": "ci.first_related",
+   "phrase": "the first failing check not explained by the base",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A, else the first failing check",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.first_base_fixed",
+   "phrase": "the first check the base has fixed",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "text",
+   "values": []
   },
   {
    "cost": "free",
@@ -1555,6 +1730,10 @@
    "name": "waiting_text"
   },
   {
+   "doc": "ci.failing_tests_of(\"<check>\"): the failing tests of that check (a check id, a job name, or a job name without its matrix values; unknown with no test data)",
+   "name": "ci.failing_tests_of"
+  },
+  {
    "doc": "agents.detail_of(\"<status>\"): the detail line of the first agent in that status",
    "name": "agents.detail_of"
   }
@@ -1648,12 +1827,12 @@
    "id": "ci",
    "level": "round",
    "rank": 5,
-   "says": "An open PR red on its head with no agent at work on it.",
-   "sentence": "The PR's state is open and the PR's checks are red on its head and there are no agents at work",
-   "state_text": "CI red: ‹the first failing check›",
+   "says": "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4).",
+   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failing",
    "verb": "Fix CI",
-   "when": "pr.state == \"open\" and ci.pr_red and agents.running == 0",
+   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -1664,12 +1843,12 @@
    "id": "ci_failed",
    "level": "round",
    "rank": 5,
-   "says": "A fresh red Actions run on the head of a branch with no PR (I7).",
-   "sentence": "There is no PR and Actions on the head is red and there are no agents at work",
-   "state_text": "CI red: ‹the first failing check›",
+   "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4).",
+   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failed",
    "verb": "Fix CI",
-   "when": "not pr.exists and ci.head == \"red\" and agents.running == 0",
+   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -1680,12 +1859,12 @@
    "id": "review",
    "level": "deep",
    "rank": 5,
-   "says": "",
-   "sentence": "The PR's state is open and the PR's review decision is changes requested",
+   "says": "On your PR (a teammate's changes requested are theirs to address).",
+   "sentence": "The PR's state is open and the PR's review decision is changes requested and (the PR is yours or it is not known whether the PR is yours)",
    "state_text": "changes requested",
    "title": "Changes requested",
    "verb": "Address review",
-   "when": "pr.state == \"open\" and pr.review == \"changes_requested\"",
+   "when": "pr.state == \"open\" and pr.review == \"changes_requested\" and (pr.mine or unknown(pr.mine))",
    "zone": "deep"
   },
   {
@@ -1783,6 +1962,38 @@
    "verb": "Decide",
    "when": null,
    "zone": "deep"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "actions",
+   "id": "sync_base",
+   "level": "round",
+   "rank": 5,
+   "says": "Every failing check also fails on the base at the commit compared, and the base has fixed it since: merge or rebase the base in (R4).",
+   "sentence": "Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work",
+   "state_text": "Sync with base: ‹the first check the base has fixed›",
+   "title": "Sync with base",
+   "verb": "Sync",
+   "when": "ci.head == \"red\" and empty(ci.related_failures) and not empty(ci.base_fixed) and agents.running == 0",
+   "zone": "round"
+  },
+  {
+   "action": "open_pr",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "review_requests",
+   "id": "review_request",
+   "level": "round",
+   "rank": 5,
+   "says": "A teammate's open PR (not a draft) asks you, or a team of yours, for a review; it goes when you review (approve, request changes or comment), the request is withdrawn or the PR closes.",
+   "sentence": "The PR asks you for a review and the PR is not yours",
+   "state_text": "review requested by ‹the PR's author›",
+   "title": "Review requested",
+   "verb": "Review",
+   "when": "pr.review_requested_from_me and not pr.mine",
+   "zone": "round"
   }
  ],
  "review": {
@@ -2181,17 +2392,43 @@
    "and_when": null,
    "ball_text": "you",
    "file": null,
+   "id": "review_request",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 3,
+   "origin": "builtin",
+   "position": 15,
+   "queue_off": true,
+   "replaces": null,
+   "says": "Without the queue: a teammate asked you for a review.",
+   "sentence": "The inbox queue is off and the PR asks you for a review and the PR is not yours",
+   "state_text": "review requested by ‹the PR's author›",
+   "then": {
+    "ball": "you",
+    "level": "round",
+    "state_expr": "\"review requested by \" + pr.author"
+   },
+   "verb": "Review",
+   "when": "not queue.enabled and pr.review_requested_from_me and not pr.mine",
+   "zone": "round"
+  },
+  {
+   "action": "open_pr",
+   "and_when": null,
+   "ball_text": "you",
+   "file": null,
    "id": "merge",
    "item": true,
    "line": null,
    "locked": false,
    "num": 4,
    "origin": "builtin",
-   "position": 15,
+   "position": 16,
    "queue_off": false,
    "replaces": null,
    "says": "Approved, CI green and mergeable: merging is yours, on the PR.",
-   "sentence": "The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable",
+   "sentence": "The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours)",
    "state_text": "merge: approved, CI green",
    "then": {
     "ball": "you",
@@ -2199,7 +2436,7 @@
     "state": "merge: approved, CI green"
    },
    "verb": "Merge",
-   "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\"",
+   "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\" and (pr.mine or unknown(pr.mine))",
    "zone": "round"
   },
   {
@@ -2213,7 +2450,7 @@
    "locked": false,
    "num": 5,
    "origin": "builtin",
-   "position": 16,
+   "position": 17,
    "queue_off": true,
    "replaces": null,
    "says": "",
@@ -2239,7 +2476,7 @@
    "locked": false,
    "num": 5,
    "origin": "builtin",
-   "position": 17,
+   "position": 18,
    "queue_off": true,
    "replaces": null,
    "says": "",
@@ -2265,11 +2502,11 @@
    "locked": false,
    "num": 5,
    "origin": "builtin",
-   "position": 18,
+   "position": 19,
    "queue_off": true,
    "replaces": null,
    "says": "",
-   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red",
+   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty",
    "state_text": "CI red: ‹the first failing check›",
    "then": {
     "ball": "you",
@@ -2277,7 +2514,7 @@
     "state_expr": "with(\"CI red\", ci.first_failing)"
    },
    "verb": null,
-   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\"",
+   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.related_failures)",
    "zone": "round"
   },
   {
@@ -2291,7 +2528,7 @@
    "locked": false,
    "num": 6,
    "origin": "builtin",
-   "position": 19,
+   "position": 20,
    "queue_off": true,
    "replaces": null,
    "says": "",
@@ -2317,7 +2554,7 @@
    "locked": false,
    "num": 8,
    "origin": "builtin",
-   "position": 20,
+   "position": 21,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2344,7 +2581,7 @@
    "locked": false,
    "num": 9,
    "origin": "builtin",
-   "position": 21,
+   "position": 22,
    "queue_off": false,
    "replaces": null,
    "says": "Never the agent's tool line (\"Bash done\"): that is noise on a row.",
@@ -2369,7 +2606,7 @@
    "locked": false,
    "num": 9,
    "origin": "builtin",
-   "position": 22,
+   "position": 23,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2394,7 +2631,7 @@
    "locked": false,
    "num": 10,
    "origin": "builtin",
-   "position": 23,
+   "position": 24,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2419,7 +2656,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 24,
+   "position": 25,
    "queue_off": false,
    "replaces": null,
    "says": "Ball agent: it works on in the background (its turn is over).",
@@ -2444,7 +2681,7 @@
    "locked": false,
    "num": 3,
    "origin": "builtin",
-   "position": 25,
+   "position": 26,
    "queue_off": true,
    "replaces": null,
    "says": "Without the queue: the level while the task's entered-status item is open.",
@@ -2470,7 +2707,7 @@
    "locked": false,
    "num": 10,
    "origin": "builtin",
-   "position": 26,
+   "position": 27,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2495,7 +2732,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 27,
+   "position": 28,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2512,6 +2749,31 @@
   {
    "action": null,
    "and_when": null,
+   "ball_text": "stalled / others",
+   "file": null,
+   "id": "teammate_pr",
+   "item": false,
+   "line": null,
+   "locked": false,
+   "num": 10,
+   "origin": "builtin",
+   "position": 29,
+   "queue_off": false,
+   "replaces": null,
+   "says": "A teammate's PR (yours to review, not to drive): a request you set aside, else theirs.",
+   "sentence": "The PR's state is open and the PR is not yours",
+   "state_text": "review requested · set aside / ‹the PR's author›'s PR( · approved /  · changes requested)",
+   "then": {
+    "ball_expr": "pr.review_requested_from_me ? \"stalled\" : \"others\"",
+    "state_expr": "pr.review_requested_from_me ? \"review requested · set aside\" : clip(pr.author + \"'s PR\" + (pr.review == \"approved\" ? \" · approved\" : pr.review == \"changes_requested\" ? \" · changes requested\" : \"\"), 5)"
+   },
+   "verb": null,
+   "when": "pr.state == \"open\" and not pr.mine",
+   "zone": "flight"
+  },
+  {
+   "action": null,
+   "and_when": null,
    "ball_text": "you",
    "file": null,
    "id": "no_reviewer",
@@ -2520,7 +2782,7 @@
    "locked": false,
    "num": 10,
    "origin": "builtin",
-   "position": 28,
+   "position": 30,
    "queue_off": false,
    "replaces": null,
    "says": "Nobody was asked: that is the user's to do, not others' to wait on.",
@@ -2546,7 +2808,7 @@
    "locked": false,
    "num": 10,
    "origin": "builtin",
-   "position": 29,
+   "position": 31,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2571,7 +2833,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 30,
+   "position": 32,
    "queue_off": false,
    "replaces": null,
    "says": "An agent still on a dialog whose item was dismissed or parked.",
@@ -2596,7 +2858,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 31,
+   "position": 33,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2621,7 +2883,7 @@
    "locked": false,
    "num": 11,
    "origin": "builtin",
-   "position": 32,
+   "position": 34,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2646,7 +2908,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 33,
+   "position": 35,
    "queue_off": false,
    "replaces": null,
    "says": "Approved, green and mergeable with no Merge item: you dismissed or parked it, or one of your rules narrowed merge.",
@@ -2671,7 +2933,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 34,
+   "position": 36,
    "queue_off": false,
    "replaces": null,
    "says": "",
@@ -2696,7 +2958,7 @@
    "locked": false,
    "num": 12,
    "origin": "builtin",
-   "position": 35,
+   "position": 37,
    "queue_off": false,
    "replaces": null,
    "says": "",

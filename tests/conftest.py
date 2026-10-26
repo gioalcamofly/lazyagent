@@ -25,8 +25,8 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_real_github(monkeypatch):
-    """GitHub Actions polling never reaches the real ``gh``: a test gives
-    the hub its own runner."""
+    """GitHub Actions and review-request polling never reach the real
+    ``gh``: a test gives the hub its own runner."""
     from lazyagent.engine import actions
 
     def runner(cwd):

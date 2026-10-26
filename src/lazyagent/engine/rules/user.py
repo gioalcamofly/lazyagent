@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from lazyagent.engine.ci_tests import CiPart, merge_parts, parse_tables
 from lazyagent.engine.rules.catalog import (
     ID_RE,
     INHERITABLE,
@@ -55,10 +56,10 @@ else:  # pragma: no cover - the tomli dependency on 3.10
 MAX_FILE_BYTES = 256 * 1024
 MAX_RULES = 200
 RULE_KEYS = frozenset({"id", "says", "when", "and_when", "then", "before", "after", "disabled"})
-TOP_KEYS = frozenset({"version", "rule", "review"})
+TOP_KEYS = frozenset({"version", "rule", "review", "ci", "ci_unrelated"})
 REVIEW_KEYS = frozenset({"not_human"})
-# Tables later phases read (R4, R5): accepted, not read yet.
-LATER_KEYS = frozenset({"ci", "ci_unrelated"})
+# Tables later phases read: accepted, not read yet.
+LATER_KEYS: frozenset[str] = frozenset()
 SCOPES = ("global", "repo")
 
 _HEADER = re.compile(r"^\s*\[\[\s*rule\s*\]\]")
@@ -97,6 +98,8 @@ class FileRules:
     ok: bool = True
     # [review] not_human: logins that are not people (lower case).
     not_human: list[str] = field(default_factory=list)
+    # [ci.check."<name>"] and [ci_unrelated] (R4, engine/ci_tests.py).
+    ci: CiPart = field(default_factory=CiPart)
 
 
 def problem(f: FileRules | None, line: int | None, rule: str | None, message: str,
@@ -164,6 +167,8 @@ def parse_file(text: str, scope: str, path: str) -> FileRules:
             f.errors.append(problem(f, None, None, f"unknown top-level key {key!r}", "ignored"))
     if "review" in data:
         _review(f, data["review"], text)
+    if "ci" in data or "ci_unrelated" in data:
+        _ci(f, data.get("ci"), data.get("ci_unrelated"), text)
     raw_rules = data.get("rule", [])
     if not isinstance(raw_rules, list):
         f.errors.append(problem(f, None, None, "rule must be an array of tables ([[rule]])",
@@ -209,6 +214,20 @@ def _review(f: FileRules, table: Any, text: str) -> None:
                                 "ignored"))
         return
     f.not_human = [x.strip().lower() for x in logins]
+
+
+_CI_HEADER = re.compile(r"^\s*\[\s*ci(?:_unrelated)?\s*[.\]]")
+
+
+def _ci(f: FileRules, ci: Any, unrelated: Any, text: str) -> None:
+    """``[ci.check."<name>"]`` (where a check's failing-test ids come from)
+    and ``[ci_unrelated]`` (the comparison base): each bad entry is left out
+    alone, with an error."""
+    line = next((n for n, s in enumerate(text.splitlines(), 1) if _CI_HEADER.match(s)), None)
+    part, errors, warnings = parse_tables(ci, unrelated)
+    f.ci = part
+    f.errors += [problem(f, line, None, e, "ignored") for e in errors]
+    f.warnings += [problem(f, line, None, w, "ignored") for w in warnings]
 
 
 # ----------------------------------------------------------------------
@@ -436,7 +455,8 @@ def compose(builtin: Catalog, files: list[FileRules]) -> Composed:
         seq.insert(at if key == "before" else at + 1, rule)
     rules = locked + seq
     not_human = frozenset(login for f in files for login in f.not_human)
-    return Composed(Catalog(rules, list(builtin.kinds), not_human), errors, warnings)
+    ci = merge_parts((f.scope, f.ci) for f in reversed(files))
+    return Composed(Catalog(rules, list(builtin.kinds), not_human, ci), errors, warnings)
 
 
 _AT = re.compile(r" \(at (\d+)\)$")

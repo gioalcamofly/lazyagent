@@ -14,8 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   optional lines in skills you pick), each file's diff approved before it is
   written, with backups and version-stamped markers. Desktop: Agents →
   Prompts…; "Prompts outdated" after an upgrade
+- Review requests in Home: a teammate's open PR that asks you (or a team of
+  yours) for a review is a Round line, "Review", with no worktree needed; it
+  goes once you review, when the request is withdrawn or the PR closes. One
+  GraphQL search per repo per PR poll (2 rate-limit points);
+  `[status] review_requests = false` turns it off. A feeder's work item whose
+  URL or ticket matches the PR joins that line
+- Rule facts `pr.mine`, `pr.author` and `pr.review_requested_from_me`
 
 ### Changed
+- A teammate's PR checked out locally reads as theirs: the built-in Merge and
+  "Address review" are for your own PRs, and the README's owner-review recipe
+  asks `pr.mine`
 - The worktree list shows a ticket ID from the branch name for any project key
   (`TASK-123`, `ENG-42`), not only for one hard-coded prefix
 

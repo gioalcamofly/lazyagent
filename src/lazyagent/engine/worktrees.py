@@ -487,6 +487,13 @@ class WorktreeService:
                 results[wt.path] = manager.get_pr_info(wt.path)
         return results, batched
 
+    @property
+    def github_repo(self) -> GithubRepo | None:
+        """The repository the PR poller resolved (None until it did, or
+        when ``gh`` could not tell)."""
+        repo = self._github_repo
+        return repo if isinstance(repo, GithubRepo) else None
+
     def _resolve_github_repo(self, manager: WorktreeManager) -> GithubRepo | None:
         if self._github_repo is _UNRESOLVED:
             self._github_repo = manager.get_github_repo()

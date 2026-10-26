@@ -33,7 +33,7 @@ cards = [
 [[section]]
 id = "home"
 title = "Home"
-intro = "One line per work item: a branch with its PR, its agents and its CI. Nothing to keep up to date: the engine derives every line."
+intro = "One line per work item: a branch with its PR, its agents and its CI, or a teammate's PR that asks for your review. Nothing to keep up to date: the engine derives every line."
 generated = "zones"
 screenshot = "home"
 caption = "Home: Now, the Round, To sit down with, In flight, and the Parked chip."
@@ -147,7 +147,7 @@ text = "An agent is blocked on you: an approval, a question. Shown at once."
 id = "round"
 name = "Round"
 colour = "orange"
-text = "Quick things that block nobody. Delivered in rounds, so nothing moves under your cursor."
+text = "Quick things that block nobody, and the reviews teammates asked of you. Delivered in rounds, so nothing moves under your cursor."
 
 [[zone]]
 id = "deep"
