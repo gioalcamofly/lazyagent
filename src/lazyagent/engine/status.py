@@ -716,6 +716,8 @@ class StatusProjection:
                 rule_id=rule.id,
                 verb=rule.verb,
                 title=rule.verb or "Rule",
+                delegable=rule.can_delegate,
+                passable=rule.can_pass,
             ))
         return out
 
@@ -762,15 +764,21 @@ class StatusProjection:
         """The opt-in row fields (Q-R20): rule_id, verb, action (a row the
         queue decides takes its top item's), and ci_note: ``CI red ·
         unrelated (base also red: 2 tests)`` while every failing check is
-        explained (R4, Q-R23)."""
+        explained (R4, Q-R23); delegable (its top item can go to the branch's
+        agent) and passable (the orchestrator can act on something there:
+        one of its items, else its rule), the catalog's (I4h)."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
         rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
         facts = self._facts_by_key.get(key)
         tests = facts.ci_tests if facts is not None else None
+        items = (facts.actionables or ()) if facts is not None else ()
         out: dict[str, Any] = {"rule_id": rule.id if rule is not None else None,
                                "verb": None, "action": None,
-                               "ci_note": tests.note if tests is not None else None}
+                               "ci_note": tests.note if tests is not None else None,
+                               "delegable": bool(items) and items[0].get("delegable", False),
+                               "passable": any(i.get("passable", True) for i in items)
+                               if items else rule is None or rule.can_pass}
         if rule is None:
             return out
         out["verb"], out["action"] = rule.verb, rule.action

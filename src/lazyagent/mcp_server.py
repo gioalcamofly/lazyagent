@@ -23,6 +23,11 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("lazyagent")
 
 
+# The longest reply line read (asyncio's default is 64 KiB; rules_catalog
+# is larger).
+REPLY_LIMIT = 16 * 1024 * 1024
+
+
 class IpcClient:
     """Thin client that talks to the lazyagent IPC server over a Unix socket.
 
@@ -34,7 +39,9 @@ class IpcClient:
 
     async def call(self, method: str, params: dict | None = None) -> Any:
         """Send a JSON request and return the result (or raise on error)."""
-        reader, writer = await asyncio.open_unix_connection(self._socket_path)
+        reader, writer = await asyncio.open_unix_connection(
+            self._socket_path, limit=REPLY_LIMIT
+        )
         try:
             request = {
                 "id": str(uuid.uuid4()),
@@ -1091,8 +1098,10 @@ async def request_decision(
 
     When to use: two designs, a trade-off, a risky or hard-to-undo step,
     what to do after your tries failed: anything the user must read before
-    answering. A short question (yes/no, A or B with no reading) goes in the
-    conversation as usual. At most 2 open briefs per agent.
+    answering, or any time you need the user to choose (this branch or a
+    separate task, an approach): send the brief, then end your turn; never
+    leave the choice only as prose. Only a quick yes/no goes in the
+    conversation. At most 2 open briefs per agent.
 
     Template (fill every field; a brief with fewer than 2 options, a
     recommendation that is not one of them, or no evidence is shown only as

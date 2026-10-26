@@ -521,3 +521,30 @@ def test_lazyagent_status_ends_with_the_outdated_line(monkeypatch, capsys, tmp_p
     install_all(Env.process())
     engine_cli._prompts_notice(str(tmp_path))
     assert capsys.readouterr().out == ""
+
+
+def test_the_i4h_brief_guidance_makes_an_older_skill_outdated_at_the_same_version(home, monkeypatch):
+    """The skill now says: a choice for the user is a brief, then end the
+    turn. A skill installed before that reads outdated, with no version
+    bump: the state compares the text."""
+    claude(home)
+    real = prompts._template
+    assert "write a brief, then end your turn" in real("skill.md")
+
+    def before(name):
+        text = real(name)
+        if name != "skill.md":
+            return text
+        start = text.index("tries failed, this branch")
+        end = text.index("Only a quick yes/no stays in the conversation.\n") + len(
+            "Only a quick yes/no stays in the conversation.\n")
+        return text[:start] + ("tries failed. A short yes/no or A/B question goes in the "
+                               "conversation instead.\n") + text[end:]
+
+    monkeypatch.setattr(prompts, "_template", before)
+    env = make_env(home)
+    install_all(env)
+    monkeypatch.setattr(prompts, "_template", real)
+    states = {c.kind: c.state for c in prompts.plan(env, "install")}
+    assert states["skill"] == "outdated"
+    assert prompts.status(env, "claude")["targets"][0]["state"] == "outdated"

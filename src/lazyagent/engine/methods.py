@@ -164,7 +164,7 @@ class SpawnCaps:
 
 
 # status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
-ROW_FIELDS = ("rule_id", "verb", "action", "ci_note")
+ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "passable")
 
 
 class EngineMethods:

@@ -16,6 +16,8 @@ A row rule::
     blocks_agent = false          # or blocks_agent_expr
     suggestion = "..."            # or suggestion_expr
     inherit = ["ball"]            # take that field from the rules below
+    delegable = false             # the agent can resolve its item: Delegate (d)
+    passable = true               # the orchestrator can act on it: Pass (⇧O)
 
 A kind::
 
@@ -64,12 +66,13 @@ ID_RE = re.compile(r"^[a-z0-9_.-]{1,48}$")
 RULE_KEYS = frozenset({"id", "num", "locked", "says", "when", "then"})
 THEN_FIELDS = ("ball", "level", "state", "blocks_agent", "suggestion")
 THEN_KEYS = frozenset(
-    {*THEN_FIELDS, *(f"{f}_expr" for f in THEN_FIELDS), "inherit", "verb", "action", "item"}
+    {*THEN_FIELDS, *(f"{f}_expr" for f in THEN_FIELDS), "inherit", "verb", "action", "item",
+     "delegable", "passable"}
 )
 INHERITABLE = ("ball", "state")
 KIND_KEYS = frozenset(
     {"id", "level", "title", "rank", "blocks_agent", "detector", "says", "when",
-     "state", "state_expr", "verb", "action"}
+     "state", "state_expr", "verb", "action", "delegable", "passable"}
 )
 # The user actions (proposal 0014, "Actions"): id → (key, what it does).
 # Actions are code; a rule only names its row's primary one.
@@ -104,6 +107,27 @@ VERBS = (
     "Decide", "Read", "Relaunch", "Check agent", "Fix job", "Update task",
     "Address review", "Resolve conflict", "Request reviewer", "Look",
 )
+# Who else can act on an item, by its verb, unless the kind or the rule says
+# (``delegable``, ``passable``): Delegate (d) hands it to the branch's agent,
+# so only what an agent can resolve on the branch; Pass (⇧O) hands the row to
+# the orchestrator, so not what only the user may do (approve, answer,
+# decide, review, merge, confirm). A verb of the user's own: neither
+# delegable nor kept from the orchestrator, until the rule says.
+DELEGABLE_VERBS = frozenset({
+    "Fix CI", "Sync", "Address review", "Resolve conflict", "Relaunch", "Check agent",
+    "Fix job", "Update task",
+})
+USERS_VERBS = frozenset({"Approve", "Answer", "Decide", "Review", "Merge", "Confirm"})
+
+
+def can_delegate(verb: str | None, given: bool | None = None) -> bool:
+    return given if given is not None else verb in DELEGABLE_VERBS
+
+
+def can_pass(verb: str | None, given: bool | None = None) -> bool:
+    return given if given is not None else verb not in USERS_VERBS
+
+
 VERB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 '-]{0,11}$")
 # The detectors whose candidates a kind's condition decides, and the scope
 # its facts are read in. The others are fed by events or by their own
@@ -185,6 +209,9 @@ class Rule:
     base: Rule | None = None
     # A condition added to the base's own (``and_when``).
     and_when: Expr | None = None
+    # Given in ``then``; None: by the verb (can_delegate, can_pass).
+    delegable: bool | None = None
+    passable: bool | None = None
     test: Any = field(init=False, repr=False)
     cond: Any = field(init=False, repr=False)
 
@@ -194,6 +221,14 @@ class Rule:
         else:
             self.cond = self.when.fn
         self.test = _queue_gate(self.cond) if self.item else self.cond
+
+    @property
+    def can_delegate(self) -> bool:
+        return can_delegate(self.verb, self.delegable)
+
+    @property
+    def can_pass(self) -> bool:
+        return can_pass(self.verb, self.passable)
 
     @property
     def facts(self) -> frozenset[str]:
@@ -279,8 +314,10 @@ def _rule(raw: Mapping[str, Any], index: int) -> Rule:
     item = then.get("item", False)
     if not isinstance(item, bool):
         raise CatalogError(f"{where}: item must be true or false")
+    delegable, passable = capabilities(where, then)
     rule = Rule(rid, num, when, outs, tuple(inherit), bool(raw.get("locked", False)),
-                str(raw.get("says", "")), item, verb, action)
+                str(raw.get("says", "")), item, verb, action,
+                delegable=delegable, passable=passable)
     if item:
         _check_item(where, rule)
     return rule
@@ -300,6 +337,17 @@ def _verb_action(where: str, then: Mapping[str, Any]) -> tuple[str | None, str |
             + f" (one of {', '.join(ACTIONS)})"
         )
     return verb, action
+
+
+def capabilities(where: str, raw: Mapping[str, Any]) -> tuple[bool | None, bool | None]:
+    """``delegable`` and ``passable`` as given (None: by the verb)."""
+    out = []
+    for name in ("delegable", "passable"):
+        value = raw.get(name)
+        if value is not None and not isinstance(value, bool):
+            raise CatalogError(f"{where}: {name} must be true or false")
+        out.append(value)
+    return out[0], out[1]
 
 
 def _close(word: Any, choices: Any) -> str:
@@ -344,6 +392,16 @@ class KindRule:
     says: str = ""
     verb: str | None = None
     action: str | None = None
+    delegable: bool | None = None
+    passable: bool | None = None
+
+    @property
+    def can_delegate(self) -> bool:
+        return can_delegate(self.verb, self.delegable)
+
+    @property
+    def can_pass(self) -> bool:
+        return can_pass(self.verb, self.passable)
 
     def matches(self, ctx: ItemContext) -> bool:
         return self.when is not None and self.when.fn(ctx) is True
@@ -396,8 +454,9 @@ def _kind(raw: Mapping[str, Any], index: int) -> KindRule:
     if scope is not None and state is None:
         raise CatalogError(f"{where}: state or state_expr is required")
     verb, action = _verb_action(where, raw)
+    delegable, passable = capabilities(where, raw)
     return KindRule(kid, level, title, rank, blocks, detector, when, state,
-                    str(raw.get("says", "")), verb, action)
+                    str(raw.get("says", "")), verb, action, delegable, passable)
 
 
 # ----------------------------------------------------------------------
@@ -645,6 +704,8 @@ def describe(rule: Rule) -> dict[str, Any]:
         "item": rule.item,
         "verb": rule.verb,
         "action": rule.action,
+        "delegable": rule.can_delegate,
+        "passable": rule.can_pass,
         "replaces": None,
     }
     if rule.base is not None:

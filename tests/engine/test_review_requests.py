@@ -272,15 +272,18 @@ async def test_dismissed_or_parked_it_reads_set_aside_and_a_label_works():
 
 
 @pytest.mark.asyncio
-async def test_a_pass_to_the_orchestrator_leaves_the_review_with_the_user():
+async def test_a_review_asked_of_the_user_is_not_passed_to_the_orchestrator():
+    """I4h: the review is the user's; the orchestrator cannot act on it."""
     gh = FakeSearch([_asked()])
     engine, _ = _engine(gh)
     await _pass(engine)
     engine.claims.orchestrator_alive = lambda: True
-    engine.claims.claim(KEY)
+    assert engine.status.fields_of(KEY)["passable"] is False
+    with pytest.raises(ValueError, match="Review on .* is yours: the orchestrator cannot act"):
+        engine.claims.claim(KEY)
     engine.status.flush()
     row = _rows(engine)[KEY]
-    assert row["needs_you"]["top"] == ITEM and row["ball"] == "you"
+    assert row["needs_you"]["top"] == ITEM and row["ball"] == "you" and row["claim"] is None
 
 
 @pytest.mark.asyncio

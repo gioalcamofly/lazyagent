@@ -126,6 +126,7 @@
         ],
         "action": "open_pr",
         "and_when": null,
+        "delegable": false,
         "facts": [
           {
             "freshness": "\u2264 60 s",
@@ -175,6 +176,7 @@
         "locked": false,
         "num": 4,
         "origin": "builtin",
+        "passable": false,
         "replaces": null,
         "says": "Approved, CI green and mergeable: merging is yours, on the PR.",
         "verb": "Merge",
@@ -193,6 +195,7 @@
       "rule": {
         "action": null,
         "and_when": null,
+        "delegable": false,
         "file": null,
         "id": "queue",
         "item": false,
@@ -200,6 +203,7 @@
         "locked": true,
         "num": 2,
         "origin": "builtin",
+        "passable": true,
         "replaces": null,
         "says": "The work item's open inbox items, top first.",
         "verb": null,

@@ -111,6 +111,8 @@ class AgentState:
     agent_id: str = ""   # "" = legacy/primary (single-agent, e.g. orchestrator)
     label: str = ""      # human-facing tab label (e.g. "Agent 1")
     session_name: str = ""  # SendMessage address (Claude agents only)
+    # The question its finished turn ends with, while idle (engine/questions.py).
+    question: str = ""
 
 
 # Priority order for rolling up several per-agent statuses into one summary

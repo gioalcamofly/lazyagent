@@ -110,6 +110,10 @@ class Kind:
     rank: int
     # An agent waits on the answer: first in its level.
     blocks_agent: bool = False
+    # The branch's agent can resolve it (Delegate, d); the orchestrator can
+    # act on it (Pass, ⇧O): the catalog's, by the verb (rules/catalog.py).
+    delegable: bool = False
+    passable: bool = True
 
     @property
     def cls(self) -> str:
@@ -134,9 +138,12 @@ def register_kind(kind: Kind) -> Kind:
 # state, the kind's condition and state text are the catalog's too.
 _CATALOG = rules.builtin()
 for _k in _CATALOG.kinds:
-    register_kind(Kind(_k.id, _k.level, _k.title, _k.rank, _k.blocks_agent))
+    register_kind(Kind(_k.id, _k.level, _k.title, _k.rank, _k.blocks_agent,
+                       _k.can_delegate, _k.can_pass))
 APPROVAL = KINDS["approval"]
 QUESTION = KINDS["question"]
+# A finished turn that ends with a prose question to the user (I4h).
+TURN_QUESTION = KINDS["turn_question"]
 HANGED = KINDS["hanged"]
 FAILED = KINDS["failed"]
 EXITED = KINDS["exited"]
@@ -196,6 +203,17 @@ class Item:
     title: str | None = None
     # attestation_confirm: the attestation and its evidence (attest.public).
     attestation: dict[str, Any] | None = None
+    # The kind's unless the item says (a rule item: its rule's).
+    delegable: bool | None = None
+    passable: bool | None = None
+
+    @property
+    def can_delegate(self) -> bool:
+        return KINDS[self.kind].delegable if self.delegable is None else self.delegable
+
+    @property
+    def can_pass(self) -> bool:
+        return KINDS[self.kind].passable if self.passable is None else self.passable
 
     @property
     def occurrence(self) -> str:
@@ -226,6 +244,8 @@ class Item:
             "park": park,
             "decision_id": self.decision_id,
             "run": self.run,
+            "delegable": self.can_delegate,
+            "passable": self.can_pass,
         } | ({"rule_id": self.rule_id, "verb": self.verb} if self.rule_id is not None else {}) \
           | ({"attestation": self.attestation} if self.attestation is not None else {})
 
@@ -259,6 +279,8 @@ class AgentSeen:
     status: str
     detail: str = ""
     label: str = ""
+    # The question its finished turn ends with (engine/questions.py).
+    question: str = ""
 
 
 @dataclass(frozen=True)
@@ -349,12 +371,15 @@ def agent_items(snap: Snapshot) -> Iterable[Item]:
             if rule is None:
                 continue
             kind = KINDS[rule.id]
+            who = a.label or _default_label(place.path, a.agent_id)
+            asks = kind is TURN_QUESTION
             yield Item(
                 _id(kind, f"{place.path}/{a.agent_id}"),
                 kind.name,
                 rule.state_of(ctx),
-                label=a.label or _default_label(place.path, a.agent_id),
-                detail=a.detail or a.status,
+                # The question itself; who asks it in the detail.
+                label=a.question if asks else who,
+                detail=f"{who} asks · answer in its terminal" if asks else a.detail or a.status,
                 work_item=place.work_item,
                 worktree_path=place.path,
                 agent_id=a.agent_id,
@@ -920,7 +945,8 @@ class ActionableQueue:
             info = engine.get_agent(path, agent_id)
             label = info.label if info is not None else ""
             self._labels[(path, agent_id)] = label
-            out.append(AgentSeen(agent_id, status, state.detail if state else "", label))
+            out.append(AgentSeen(agent_id, status, state.detail if state else "", label,
+                                 state.question if state else ""))
         return tuple(out)
 
     def flush(self, now: float | None = None) -> list[dict[str, Any]]:

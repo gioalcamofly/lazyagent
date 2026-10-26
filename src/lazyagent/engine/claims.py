@@ -73,7 +73,8 @@ HOLD_NOTE_CHARS = 60
 # What a pass or a hold leaves in the user's inbox: what the orchestrator
 # may not answer (approvals) or was not routed (questions, briefs), and a
 # review a teammate asked of the user.
-USERS_KINDS = frozenset({"approval", "question", "decision", "review_request"})
+USERS_KINDS = frozenset({"approval", "question", "turn_question", "decision",
+                         "review_request"})
 # The finished work of the orchestrator's own workers it holds first.
 AUTO_HOLD_KINDS = frozenset({"done", "review"})
 NO_RESPONSE = "orchestrator did not respond"
@@ -244,6 +245,13 @@ class Claims:
             raise ValueError(f"No work item {key!r}")
         if row["ball"] == "done":
             raise ValueError(f"{key} is done: nothing to pass")
+        fields = self._engine.status.fields_of(key)
+        if not fields.get("passable", True):
+            verb = fields.get("verb") or "this"
+            raise ValueError(
+                f"{verb} on {row.get('branch') or key} is yours: the orchestrator cannot "
+                "act on it (approve, answer, decide, review, merge and confirm stay yours)"
+            )
         if ttl_s is None:
             ttl_s = self._engine.config.orchestrator.claim_ttl_s
         if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):

@@ -160,6 +160,8 @@ class StatusChanged:
     confidence: LifecycleConfidence
     detail: str
     last_output_time: float | None
+    # The question the finished turn ends with (AgentLifecycleEvent).
+    question: str = ""
 
 
 @dataclass(frozen=True)
@@ -827,6 +829,7 @@ class AgentSession(TerminalSession):
         self.status = AgentStatus.NO_AGENT
         self.confidence = LifecycleConfidence.LOW
         self.detail = ""
+        self.question = ""
         self.last_output_time: float | None = None  # time.monotonic()
         self._observer = observer or AgentObserver()
         self._scan_timer: asyncio.TimerHandle | None = None
@@ -870,8 +873,9 @@ class AgentSession(TerminalSession):
         new_status: AgentStatus,
         confidence: LifecycleConfidence = LifecycleConfidence.LOW,
         detail: str = "",
+        question: str = "",
     ) -> None:
-        if new_status == self.status and detail == self.detail:
+        if new_status == self.status and detail == self.detail and question == self.question:
             return
         diag.event(
             log,
@@ -885,6 +889,7 @@ class AgentSession(TerminalSession):
         self.status = new_status
         self.confidence = confidence
         self.detail = detail
+        self.question = question
         if not self._stopped:
             self._emit(
                 StatusChanged(
@@ -894,13 +899,15 @@ class AgentSession(TerminalSession):
                     confidence,
                     detail,
                     self.last_output_time,
+                    question,
                 )
             )
 
     def _apply_events(self, events: list[AgentLifecycleEvent]) -> None:
         for event in events:
             self._set_status(
-                event.status, confidence=event.confidence, detail=event.detail
+                event.status, confidence=event.confidence, detail=event.detail,
+                question=event.question,
             )
 
     def _on_text(self, text: str) -> None:

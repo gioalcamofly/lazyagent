@@ -805,6 +805,8 @@
         "rule_id": {"type": ["string", "null"], "description": "status_list fields only (feature rules): the catalog rule's id."},
         "verb": {"type": ["string", "null"], "description": "status_list fields only: the line's verb (Merge, Fix CI, ...), null when no rule gives one."},
         "action": {"type": ["string", "null"], "description": "status_list fields only: the primary action's id (rules_catalog actions)."},
+        "delegable": {"type": "boolean", "description": "status_list fields only (feature item_capabilities, I4h): the row's top inbox item can go to the branch's agent."},
+        "passable": {"type": "boolean", "description": "status_list fields only (feature item_capabilities, I4h): the orchestrator can act on something on the row (one of its items, else its rule): status_gesture delegate to: orchestrator accepts it."},
         "ci_note": {"type": ["string", "null"], "description": "status_list fields only (feature ci_tests, R4): 'CI red · unrelated (base also red: 2 tests)' while every failing check's tests also fail on the base at the commit compared; null otherwise."},
         "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
         "needs_you": {
@@ -1046,7 +1048,7 @@
       "properties": {
         "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
         "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
-        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note."},
+        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note", "delegable", "passable"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note; delegable and passable (feature item_capabilities): Delegate and Pass apply."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
       }
     },
@@ -1110,13 +1112,15 @@
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "sync_base", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule", "review_request", "attestation_confirm"], "description": "Open set. attestation_confirm: an agent's attestation waiting for the user's confirmation (feature ci_attest); its attestation carries the evidence. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). sync_base: every failing check is unrelated and the base has fixed it since (feature ci_tests). review_request: a teammate's open PR asks the user for a review (feature review_requests); its pr is that PR, its since the request's time, its worktree_path null unless a worktree holds the branch."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "turn_question", "hanged", "failed", "exited", "ci", "ci_failed", "sync_base", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule", "review_request", "attestation_confirm"], "description": "Open set. turn_question: an agent's finished turn ends with a question to the user in prose (I4h); its label is the question, it clears on input or a new turn. attestation_confirm: an agent's attestation waiting for the user's confirmation (feature ci_attest); its attestation carries the evidence. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). sync_base: every failing check is unrelated and the base has fixed it since (feature ci_tests). review_request: a teammate's open PR asks the user for a review (feature review_requests); its pr is that PR, its since the request's time, its worktree_path null unless a worktree holds the branch."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
         "run": {"anyOf": [{"$ref": "#/$defs/ci_run"}, {"type": "null"}], "description": "ci / ci_failed: the fresh red Actions run on the head (feature actions); null otherwise."},
         "rule_id": {"type": "string", "description": "kind rule only (feature rules): the item rule that makes it, e.g. merge. Its id is Rule:<rule id>:<work item>."},
         "verb": {"type": ["string", "null"], "description": "kind rule only: the rule's verb."},
+        "delegable": {"type": "boolean", "description": "I4h: the branch's agent can resolve it, so status_gesture delegate to: agent accepts it (the catalog's: the kind's or the rule's, by its verb unless it says). False for the user's own: approve, answer, decide, review, merge, confirm, read."},
+        "passable": {"type": "boolean", "description": "I4h: the orchestrator can act on it (Pass to orchestrator). False for approvals, answers, decisions, reviews, merges and confirmations."},
         "attestation": {"$ref": "#/$defs/attestation", "description": "attestation_confirm only (feature ci_attest): the attestation to Accept or Reject (ci_attestation_confirm)."},
         "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
         "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>', the job's title, or the tracker task's title."},
@@ -2101,6 +2105,8 @@
         "item": {"type": "boolean", "description": "An inbox item rule (with the queue on, the row reaches the inbox through queue)."},
         "verb": {"type": ["string", "null"]},
         "action": {"type": ["string", "null"]},
+        "delegable": {"type": "boolean", "description": "I4h: its item can go to the branch's agent (Delegate, d): then delegable, else by the verb (Fix CI, Sync, Address review, Resolve conflict, Relaunch, Check agent, Fix job, Update task)."},
+        "passable": {"type": "boolean", "description": "I4h: the orchestrator can act on it (Pass, ⇧O): then passable, else every verb but Approve, Answer, Decide, Review, Merge and Confirm."},
         "replaces": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["origin", "file", "line"], "properties": {"origin": {"type": "string"}, "file": {"type": ["string", "null"]}, "line": {"type": ["integer", "null"]}}}]},
         "position": {"type": "integer"},
         "then": {"type": "object", "description": "ball, level, state, blocks_agent, suggestion (or <field>_expr), inherit."},

@@ -45,9 +45,6 @@ if TYPE_CHECKING:
     from lazyagent.engine.engine import Engine
 
 TEXT_CHARS = 4000
-# Kinds that are not a fact to hand over: the agent's own dialogs and the
-# orchestrator's.
-NOT_DELEGABLE = frozenset({"approval", "question", "decision", "delegation"})
 CI_KINDS = frozenset({"ci", "ci_failed"})
 # How long a delegation waits for the failed log before it goes without.
 SUMMARY_WAIT = 90.0
@@ -125,10 +122,16 @@ class Delegations:
         found = engine.actionables.found(item_id)
         if found is None or found.work_item != key:
             raise ValueError(f"No inbox item {item_id!r} on {key}")
-        if found.kind in NOT_DELEGABLE:
-            raise ValueError(
-                f"A {found.kind} item is answered, not delegated: open the agent's terminal"
-            )
+        if not found.can_delegate:
+            # The catalog's (rules/catalog.py): only what an agent can resolve.
+            from lazyagent.engine.actionables import KINDS
+
+            title = found.title or KINDS[found.kind].title
+            if found.kind in ("approval", "question", "turn_question", "decision", "delegation"):
+                why = "it is answered, not delegated: open the agent's terminal"
+            else:
+                why = "it is yours to do, not an agent's (a rule may say delegable = true)"
+            raise ValueError(f"{title} on {row['branch'] or key} cannot be delegated: {why}")
         live = engine.agent_ids(path)
         if agent_id is None:
             agent_id = live[0] if live else None

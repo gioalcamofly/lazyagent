@@ -32,6 +32,10 @@ log = logging.getLogger(__name__)
 # Registry key of the orchestrator agent, which has no worktree of its own.
 ORCHESTRATOR_KEY = "__orchestrator__"
 
+# A finished turn's question is kept only while the agent is idle.
+_TURN_OVER = frozenset({AgentStatus.WAITING.value, AgentStatus.COMPLETED.value,
+                        AgentStatus.INTERRUPTED.value})
+
 _ID_RE = re.compile(r"a(\d+)")
 _STORE_VERSION = 1
 _CORRUPT_BACKUPS_KEPT = 3
@@ -233,6 +237,7 @@ class AgentRegistry:
         confidence: LifecycleConfidence,
         detail: str = "",
         last_output_time: float | None = None,
+        question: str = "",
     ) -> AgentState:
         """Record an agent's status; publish an event if the status changed.
 
@@ -243,6 +248,7 @@ class AgentRegistry:
         state.status = status
         state.confidence = confidence
         state.detail = detail
+        state.question = question if status.value in _TURN_OVER else ""
         if last_output_time is not None:
             state.last_output_time = last_output_time
         self._apply_identity(key, agent_id, state)

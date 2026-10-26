@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lazyagent.engine.manifest import clip_instruction
+from lazyagent.engine.questions import last_assistant_text, turn_question
 from lazyagent.models import AgentStatus, LifecycleConfidence
 
 
@@ -16,6 +17,9 @@ class AgentLifecycleEvent:
     status: AgentStatus
     confidence: LifecycleConfidence
     detail: str = ""
+    # The question the finished turn ends with (an idle status only): the
+    # agent asked in prose and waits (engine/questions.py).
+    question: str = ""
 
 
 class AgentObserver:
@@ -167,6 +171,8 @@ class ClaudeHooksObserver(JsonlTailObserver):
         super().__init__(log_path, temp_dir=temp_dir)
         # False between the main agent's Stop and the next prompt.
         self._turn_open = True
+        # The question the last finished turn ended with, until the next one.
+        self._question = ""
 
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event_name = data.get("hook_event_name")
@@ -197,6 +203,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.HIGH,
                     detail="idle",
+                    question=self._question,
                 )
             if notification_type == "elicitation_dialog":
                 return AgentLifecycleEvent(
@@ -207,6 +214,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
             return None
         if event_name == "UserPromptSubmit":
             self._turn_open = True
+            self._question = ""
             prompt = data.get("prompt")
             if (
                 self.first_prompt is None
@@ -225,6 +233,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
             )
         if event_name == "Stop":
             self._turn_open = False
+            self._question = _stop_question(data)
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,
             # not COMPLETED (which is reserved for TaskCompleted/SessionEnd).
@@ -232,6 +241,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 status=AgentStatus.WAITING,
                 confidence=LifecycleConfidence.HIGH,
                 detail="waiting for input",
+                question=self._question,
             )
         if event_name == "TaskCompleted":
             return AgentLifecycleEvent(
@@ -246,6 +256,8 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail="session ended",
             )
         if event_name == "PreToolUse":
+            if not data.get("agent_id"):
+                self._question = ""
             tool_name = data.get("tool_name", "unknown")
             return AgentLifecycleEvent(
                 status=AgentStatus.RUNNING,
@@ -260,6 +272,16 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail=f"{tool_name} done",
             )
         return None
+
+
+def _stop_question(data: dict) -> str:
+    """The question a Stop hook's turn ends with: from the hook's last
+    assistant message, else from the transcript's end."""
+    text = data.get("last_assistant_message")
+    if not isinstance(text, str):
+        transcript = data.get("transcript_path")
+        text = last_assistant_text(transcript) if isinstance(transcript, str) and transcript else None
+    return turn_question(text) or ""
 
 
 class CodexAppServerObserver(JsonlTailObserver):
