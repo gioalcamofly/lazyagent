@@ -8,6 +8,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from lazyagent import diagnostics as diag
 from lazyagent.models import CiCheck, GitStatus, PrInfo, WorktreeInfo
@@ -160,8 +161,8 @@ fragment review on PullRequest {
     nodes {
       __typename
       ... on ReadyForReviewEvent { createdAt }
-      ... on HeadRefForcePushedEvent { createdAt }
-      ... on PullRequestCommit { commit { committedDate } }
+      ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } afterCommit { oid } }
+      ... on PullRequestCommit { commit { committedDate oid parents { totalCount } } }
     }
   }
 }
@@ -223,9 +224,20 @@ def _approved_by(conn: object, pr_author: str) -> list[str] | None:
                   if state == "APPROVED" and login.lower() != me)
 
 
-def _commits_after_ready(node: dict) -> tuple[int | None, str]:
+class _AfterReady(NamedTuple):
+    """What ``_commits_after_ready`` read from the timeline."""
+
+    count: int | None
+    ready_at: str = ""
+    merges: tuple[str, ...] = ()                   # merge commits counted
+    pushes: tuple[tuple[str, str], ...] = ()       # force pushes counted: (before, after)
+
+
+def _commits_after_ready(node: dict) -> _AfterReady:
     """Commits and force pushes after the PR's last ready-for-review event,
-    with that event's time: ``(count, ready_at)``.
+    with that event's time, and the merge commits and force pushes among
+    them (the engine takes the clean merges of the base out:
+    ``engine/base_merges.py``).
 
     GitHub orders a timeline's commits by their committer date, not by when
     they were pushed, so a commit made before the event and pushed after it
@@ -238,31 +250,44 @@ def _commits_after_ready(node: dict) -> tuple[int | None, str]:
     """
     conn = node.get("timelineItems")
     if node.get("isDraft"):
-        return 0, ""
+        return _AfterReady(0)
     if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
-        return None, ""
+        return _AfterReady(None)
     items = [i for i in conn["nodes"] if isinstance(i, dict)]
     ready = [n for n, i in enumerate(items) if i.get("__typename") == "ReadyForReviewEvent"]
     if ready:
+        since = items[ready[-1]].get("createdAt") or ""
         after = items[ready[-1] + 1:]
-        count = sum(1 for i in after
-                    if i.get("__typename") in ("PullRequestCommit", "HeadRefForcePushedEvent"))
-        return count, items[ready[-1]].get("createdAt") or ""
-    if (conn.get("pageInfo") or {}).get("hasPreviousPage"):
-        return None, ""
-    created = node.get("createdAt") or ""
-    if not created:
-        return None, ""
-    count = 0
-    for i in items:
+    elif (conn.get("pageInfo") or {}).get("hasPreviousPage"):
+        return _AfterReady(None)
+    else:
+        since = node.get("createdAt") or ""
+        if not since:
+            return _AfterReady(None)
+        after = [i for i in items if _when(i) > since]
+    counted = [i for i in after
+               if i.get("__typename") in ("PullRequestCommit", "HeadRefForcePushedEvent")]
+    merges, pushes = [], []
+    for i in counted:
         if i.get("__typename") == "PullRequestCommit":
-            when = (i.get("commit") or {}).get("committedDate") or ""
-        elif i.get("__typename") == "HeadRefForcePushedEvent":
-            when = i.get("createdAt") or ""
+            commit = i.get("commit") or {}
+            if ((commit.get("parents") or {}).get("totalCount") or 0) >= 2 and commit.get("oid"):
+                merges.append(commit["oid"])
         else:
-            continue
-        count += when > created
-    return count, created
+            before = (i.get("beforeCommit") or {}).get("oid")
+            now = (i.get("afterCommit") or {}).get("oid")
+            if before and now:
+                pushes.append((before, now))
+    return _AfterReady(len(counted), since, tuple(merges), tuple(pushes))
+
+
+def _when(item: dict) -> str:
+    """A timeline commit's committer date, a force push's time."""
+    if item.get("__typename") == "PullRequestCommit":
+        return (item.get("commit") or {}).get("committedDate") or ""
+    if item.get("__typename") == "HeadRefForcePushedEvent":
+        return item.get("createdAt") or ""
+    return ""
 
 
 _REMOTE_OWNER_RE = re.compile(r"[:/]([^/:]+)/[^/]+?/?$")
@@ -756,6 +781,9 @@ class WorktreeManager:
             approved_by=data.get("approvedBy"),
             commits_after_ready=data.get("commitsAfterReady"),
             ready_at=data.get("readyAt") or "",
+            after_ready_merges=tuple(data.get("afterReadyMerges") or ()),
+            after_ready_pushes=tuple(data.get("afterReadyPushes") or ()),
+            base_merges_after_ready=0 if data.get("commitsAfterReady") is not None else None,
         )
 
     @staticmethod
@@ -763,7 +791,7 @@ class WorktreeManager:
         """Reshape a GraphQL ``PullRequest`` node the way ``gh pr view --json``
         exports it, so both paths share one parser."""
         author = node.get("author") if isinstance(node.get("author"), dict) else {}
-        after, ready_at = _commits_after_ready(node)
+        after = _commits_after_ready(node)
         commits = (node.get("commits") or {}).get("nodes") or []
         rollup = (commits[0].get("commit") or {}).get("statusCheckRollup") if commits else None
         contexts = ((rollup or {}).get("contexts") or {}).get("nodes") or []
@@ -800,8 +828,10 @@ class WorktreeManager:
             # Only the batched query has them (gh pr view's --json has no
             # timeline, nor the reviewers' account types): unknown otherwise.
             "approvedBy": _approved_by(node.get("reviews"), author.get("login") or ""),
-            "commitsAfterReady": after,
-            "readyAt": ready_at,
+            "commitsAfterReady": after.count,
+            "readyAt": after.ready_at,
+            "afterReadyMerges": after.merges,
+            "afterReadyPushes": after.pushes,
         }
 
     @staticmethod

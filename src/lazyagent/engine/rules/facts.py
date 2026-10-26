@@ -612,8 +612,13 @@ _fact("pr.human_approvals", NUM,
       "the PR's approvals by people (latest review each; no apps)", _PRR, "≤ 60 s", "extra",
       row=_human_approvals)
 _fact("pr.commits_after_ready", NUM,
-      "the pushes since the PR was marked ready (0: a draft)", _PRR, "≤ 60 s", "extra",
+      "the pushes since the PR was marked ready (0: a draft; clean merges of the base left out)",
+      _PRR, "≤ 60 s", "extra",
       row=_pr_attr("commits_after_ready"))
+_fact("pr.base_merges_after_ready", NUM,
+      "the clean merges of the base since the PR was marked ready (not counted in "
+      "pr.commits_after_ready)", _PRR, "≤ 60 s", "extra",
+      row=_pr_attr("base_merges_after_ready"))
 _fact("pr.number", NUM, "the PR's number", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("number"))
 _fact("pr.base", TEXT, "the PR's base branch", _PRP, "≤ 60 s", "poll",
@@ -827,7 +832,8 @@ ROW_FUNCTIONS = {
 }
 
 # What the PR poll's second query fetches, only while a rule reads it.
-REVIEW_FACTS = frozenset({"pr.labels", "pr.human_approvals", "pr.commits_after_ready"})
+REVIEW_FACTS = frozenset({"pr.labels", "pr.human_approvals", "pr.commits_after_ready",
+                          "pr.base_merges_after_ready"})
 
 RowContext.getters = {n: f.row for n, f in FACTS.items() if f.row is not None}
 ItemContext.getters = {n: f.item for n, f in FACTS.items() if f.item is not None}

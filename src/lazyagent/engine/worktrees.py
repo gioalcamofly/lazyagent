@@ -25,12 +25,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from collections.abc import Callable, Collection, Coroutine, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
 from lazyagent import diagnostics as diag
+from lazyagent.engine.base_merges import BaseMerges
 from lazyagent.models import GitStatus, PrInfo, WorktreeInfo
 from lazyagent.worktree_manager import (
     GithubRepo,
@@ -99,6 +101,10 @@ class WorktreeService:
         # path → (PR number, ready_at, the head first seen after it): see
         # _ready_head.
         self._ready_heads: dict[str, tuple[int, str, str]] = {}
+        # Taken in the poll's thread too (_after_ready).
+        self._ready_lock = threading.Lock()
+        # Clean merges of the base, left out of pr.commits_after_ready.
+        self.base_merges = BaseMerges()
         # Whether a rule reads the review facts (pr.labels …): the batch then
         # makes its second query. The engine sets it.
         self.wants_review: Callable[[], bool] = lambda: False
@@ -202,9 +208,10 @@ class WorktreeService:
 
     def _prune(self) -> None:
         live = {wt.path for wt in self.worktrees}
-        for cache in (self.git_statuses, self._pr_infos, self._diffs, self._ready_heads):
-            for path in [p for p in cache if p not in live]:
-                del cache[path]
+        with self._ready_lock:
+            for cache in (self.git_statuses, self._pr_infos, self._diffs, self._ready_heads):
+                for path in [p for p in cache if p not in live]:
+                    del cache[path]
 
     # --- Git status ---
 
@@ -431,6 +438,7 @@ class WorktreeService:
                     infos, batched = await asyncio.to_thread(
                         self._fetch_pr_infos, repo_root, targets, self.wants_review()
                     )
+                    infos = await asyncio.to_thread(self._after_ready, repo_root, infos)
                 span["batched"] = batched
                 span["found"] = sum(info is not None for info in infos.values())
         finally:
@@ -445,26 +453,42 @@ class WorktreeService:
         for path, info in infos.items():
             if path not in live:
                 continue
-            info = self._ready_head(path, info)
             if path in self._pr_infos and self._pr_infos[path] == info:
                 continue
             self._pr_infos[path] = info
             self._emit(PR_INFO_UPDATED, {"path": path, "pr_info": info})
 
-    def _ready_head(self, path: str, info: PrInfo | None) -> PrInfo | None:
+    def _after_ready(self, repo_root: str, infos: dict[str, PrInfo | None]
+                     ) -> dict[str, PrInfo | None]:
+        """The poll's infos with the clean base merges taken out of
+        ``commits_after_ready``, then the head check. Local git only; runs
+        in the poll's thread."""
+        return {path: self._ready_head(path, self.base_merges.adjust(repo_root, info), repo_root)
+                for path, info in infos.items()}
+
+    def _ready_head(self, path: str, info: PrInfo | None, repo_root: str = "") -> PrInfo | None:
         """``info`` with at least one commit after ready when its head moved
-        since the first poll after its ready event. The timeline orders
-        commits by committer date, so a commit made before the event and
-        pushed after it reads as before it; this catches it whenever the
-        engine saw the PR between the two (a restart forgets)."""
-        if info is None or info.commits_after_ready is None or not info.ready_at:
-            self._ready_heads.pop(path, None)
+        since the first poll after its ready event, unless it moved only by
+        clean merges of the base. The timeline orders commits by committer
+        date, so a commit made before the event and pushed after it reads as
+        before it; this catches it whenever the engine saw the PR between
+        the two (a restart forgets)."""
+        with self._ready_lock:
+            if info is None or info.commits_after_ready is None or not info.ready_at:
+                self._ready_heads.pop(path, None)
+                return info
+            seen = self._ready_heads.get(path)
+            if seen is None or seen[:2] != (info.number, info.ready_at):
+                self._ready_heads[path] = (info.number, info.ready_at, info.head_sha)
+                return info
+        if seen[2] == info.head_sha or info.commits_after_ready != 0:
             return info
-        seen = self._ready_heads.get(path)
-        if seen is None or seen[:2] != (info.number, info.ready_at):
-            self._ready_heads[path] = (info.number, info.ready_at, info.head_sha)
-        elif seen[2] != info.head_sha and info.commits_after_ready == 0:
+        merges = self.base_merges.moved_only_by_base_merges(
+            repo_root, seen[2], info.head_sha, info.base_ref)
+        if merges is None:
             return replace(info, commits_after_ready=1)
+        if merges > (info.base_merges_after_ready or 0):
+            return replace(info, base_merges_after_ready=merges)
         return info
 
     def _fetch_pr_infos(

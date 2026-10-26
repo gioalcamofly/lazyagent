@@ -191,6 +191,13 @@ class PrInfo:
     approved_by: list[str] | None = None
     commits_after_ready: int | None = None
     ready_at: str = ""
+    # The merge commits and the force pushes (before, after) counted in
+    # commits_after_ready, and how many of them were clean merges of the base
+    # (engine/base_merges.py: taken out of commits_after_ready; None when
+    # that is unknown).
+    after_ready_merges: tuple[str, ...] = ()
+    after_ready_pushes: tuple[tuple[str, str], ...] = ()
+    base_merges_after_ready: int | None = None
 
     @property
     def checks_summary(self) -> str:
