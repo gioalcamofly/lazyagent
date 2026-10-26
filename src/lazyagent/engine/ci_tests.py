@@ -31,10 +31,10 @@ runner's own totals line says), ``log:regex`` (the user's RE2
 ``test_regex`` and ``total_regex``). The base must come from the same
 source as the branch.
 
-**Aggregate jobs** (``aggregate = true``, or detected: no ``tests_from``,
-started after the run's other failing jobs ended, at most two steps of its
-own) have no tests: one is unrelated when the run's other failing jobs all
-are.
+**Aggregate jobs** (``aggregate = true``, or with ``[ci_unrelated]
+detect_aggregates = true`` detected: no ``tests_from``, started after the
+run's other failing jobs ended, at most two steps of its own) have no tests:
+one is unrelated when the run's other failing jobs all are.
 
 **The base point P.** ``compare_to = "build_base"`` (default): for a
 ``pull_request`` run, the base parent of the merge ref the run built
@@ -185,6 +185,9 @@ class CiConfig:
     # I6 project id → compare_to (the repo's over the global's).
     projects: Mapping[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int = DEFAULT_BASE_FETCHES
+    # Take a job for an aggregate from the run's jobs when its check does
+    # not say (opt-in: a wrong "unrelated" could let a real failure merge).
+    detect_aggregates: bool = False
 
     @property
     def configured(self) -> bool:
@@ -216,7 +219,7 @@ class CiConfig:
             "compare_to": self.compare_to,
             "projects": dict(sorted(self.projects.items())),
             "base_fetches_per_poll": self.base_fetches_per_poll,
-        }
+        } | ({"detect_aggregates": True} if self.detect_aggregates else {})
 
 
 NO_CONFIG = CiConfig()
@@ -228,7 +231,8 @@ LATER_CI_KEYS = frozenset({
 })
 LATER_CHECK_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
 CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex", "aggregate"})
-UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project"})
+UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project",
+                            "detect_aggregates"})
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 
@@ -240,6 +244,7 @@ class CiPart:
     compare_to: str | None = None
     projects: dict[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int | None = None
+    detect_aggregates: bool | None = None
 
 
 def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]:
@@ -285,6 +290,11 @@ def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]
                 errors.append("[ci_unrelated] base_fetches_per_poll must be a number from 0 to 20")
             else:
                 part.base_fetches_per_poll = n
+        if "detect_aggregates" in unrelated:
+            if not isinstance(unrelated["detect_aggregates"], bool):
+                errors.append("[ci_unrelated] detect_aggregates must be true or false")
+            else:
+                part.detect_aggregates = unrelated["detect_aggregates"]
         projects = unrelated.get("project", {})
         if not isinstance(projects, dict):
             errors.append('[ci_unrelated] project must be tables ([ci_unrelated.project."<id>"])')
@@ -358,9 +368,11 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
 def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
     """The files' parts, highest precedence first (repo, then global)."""
     checks: list[CheckConfig] = []
-    compare_to, compare_from, fetches = None, "", None
+    compare_to, compare_from, fetches, detect = None, "", None, None
     projects: dict[str, str] = {}
     for scope, part in parts:
+        if detect is None:
+            detect = part.detect_aggregates
         names = {c.name for c in checks}
         checks += [c for c in part.checks if c.name not in names]
         if compare_to is None and part.compare_to is not None:
@@ -369,10 +381,10 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
             fetches = part.base_fetches_per_poll
         for pid, ref in part.projects.items():
             projects.setdefault(pid, ref)
-    if not checks and compare_to is None and not projects and fetches is None:
+    if not checks and compare_to is None and not projects and fetches is None and detect is None:
         return NO_CONFIG
     return CiConfig(tuple(checks), compare_to or BUILD_BASE, compare_from, projects,
-                    DEFAULT_BASE_FETCHES if fetches is None else fetches)
+                    DEFAULT_BASE_FETCHES if fetches is None else fetches, bool(detect))
 
 
 # ----------------------------------------------------------------------
@@ -1562,14 +1574,15 @@ class CiTestsHub:
         return CiTests(tuple(checks), tuple(others))
 
     def _is_aggregate(self, run: WorkflowRun, job: WorkflowJob) -> bool:
-        """``aggregate`` when the check sets it; else a job with no
-        ``tests_from`` that started only once every other failing job of its
-        run had ended (it waits on them: ``needs``) and runs at most
-        :data:`AGGREGATE_STEPS` steps of its own."""
+        """``aggregate`` when the check sets it; else, only with ``[ci_unrelated]
+        detect_aggregates``, a job with no ``tests_from`` that started only
+        once every other failing job of its run had ended (it waits on them:
+        ``needs``) and runs at most :data:`AGGREGATE_STEPS` steps of its
+        own."""
         cfg = self.config.check(check_id(run, job.name), job.name)
         if cfg is not None and cfg.aggregate is not None:
             return cfg.aggregate
-        if cfg is not None and cfg.tests_from:
+        if not self.config.detect_aggregates or (cfg is not None and cfg.tests_from):
             return False
         others = [j for j in run.failed_jobs or () if j.name != job.name]
         if not others or not job.started_at or not 0 < job.own_steps <= AGGREGATE_STEPS:

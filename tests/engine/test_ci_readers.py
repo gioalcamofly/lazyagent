@@ -177,7 +177,7 @@ async def test_an_aggregate_is_related_naming_the_job_that_is():
     gh = _gh(branch_tests=[*TWO, "tests/test_c.py::test_new"])
     _with_summary(gh)
     engine, _, _ = _engine(gh)
-    with _rules_files({GLOBAL_RULES: CONFIG}):
+    with _rules_files({GLOBAL_RULES: CONFIG + '\n[ci.check."summary"]\naggregate = true\n'}):
         engine.rules.reload()
         await _poll(engine)
         [item] = _items(engine, "ci")
@@ -192,12 +192,25 @@ async def test_an_aggregate_is_related_naming_the_job_that_is():
         assert f"summary: related: waits on {JOB}, related" in why
 
 
+DETECT = CONFIG + "\n[ci_unrelated]\ndetect_aggregates = true\n"
+
+
 @pytest.mark.asyncio
-async def test_an_aggregate_is_detected_from_the_runs_jobs_alone():
+async def test_an_aggregate_is_detected_only_when_detection_is_on():
     gh = _gh()
     _with_summary(gh)
     engine, _, _ = _engine(gh)
+    # Off by default: a job that looks like an aggregate is still related.
     with _rules_files({GLOBAL_RULES: CONFIG}):
+        engine.rules.reload()
+        await _poll(engine)
+        assert len(_items(engine, "ci")) == 1
+        summary = engine.status.facts(KEY).ci_tests.checks[1]
+        assert summary.aggregate_of == () and "no tests_from" in summary.detail
+    gh = _gh()
+    _with_summary(gh)
+    engine, _, _ = _engine(gh)
+    with _rules_files({GLOBAL_RULES: DETECT}):
         engine.rules.reload()
         await _poll(engine)
         assert _items(engine, "ci") == []
@@ -215,7 +228,7 @@ async def test_a_job_that_does_not_look_like_an_aggregate_stays_related(summary,
     gh = _gh()
     _with_summary(gh, summary)
     engine, _, _ = _engine(gh)
-    with _rules_files({GLOBAL_RULES: CONFIG}):
+    with _rules_files({GLOBAL_RULES: DETECT}):
         engine.rules.reload()
         await _poll(engine)
         assert len(_items(engine, "ci")) == 1
@@ -227,7 +240,7 @@ async def test_aggregate_false_turns_the_detection_off_and_a_lone_aggregate_is_r
     gh = _gh()
     _with_summary(gh)
     engine, _, _ = _engine(gh)
-    with _rules_files({GLOBAL_RULES: CONFIG + '\n[ci.check."summary"]\naggregate = false\n'}):
+    with _rules_files({GLOBAL_RULES: DETECT + '\n[ci.check."summary"]\naggregate = false\n'}):
         engine.rules.reload()
         await _poll(engine)
         assert len(_items(engine, "ci")) == 1
@@ -258,6 +271,15 @@ def test_aggregate_config_and_its_errors():
         {"check": {"summary": {"aggregate": True}}}, None)[0])])
     assert not cfg.configured
     assert cfg.to_dict()["checks"] == [{"name": "summary", "tests_from": [], "aggregate": True}]
+    assert "detect_aggregates" not in cfg.to_dict()
+    # detect_aggregates: the repo's over the global's; a bad value is an error.
+    repo = parse_tables(None, {"detect_aggregates": False})[0]
+    glob = parse_tables(None, {"detect_aggregates": True})[0]
+    assert ci_tests.merge_parts([("repo", repo), ("global", glob)]).detect_aggregates is False
+    on = ci_tests.merge_parts([("global", glob)])
+    assert on.detect_aggregates is True and on.to_dict()["detect_aggregates"] is True
+    assert parse_tables(None, {"detect_aggregates": 1})[1] == [
+        "[ci_unrelated] detect_aggregates must be true or false"]
 
 
 # ----------------------------------------------------------------------

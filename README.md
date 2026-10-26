@@ -696,9 +696,10 @@ compare_to = "origin/main"                 # main's run at the newest main commi
 | Key | Meaning |
 |---|---|
 | `[ci.check."<name>"] tests_from` | `junit:<artifact glob>` (the run's artifacts, every `*.xml`; a matrix job takes the artifact naming its values), `log:pytest`, `log:jest`, `log:vitest`, `log:go`, `log:cargo`, `log:junit-console` (Maven, Gradle), `log:regex` (with `test_regex` and `total_regex`) |
-| `[ci.check."<name>"] aggregate` | `true`: an aggregate job (a `summary` / `all-green` that waits on the test jobs and has no tests of its own); `false`: never one; unset: detected (see below). Takes no `tests_from`. The first `[ci.check]` whose name matches a job is the one read, so put it before a `*` |
+| `[ci.check."<name>"] aggregate` | `true`: an aggregate job (a `summary` / `all-green` that waits on the test jobs and has no tests of its own); `false`: never one; unset: not one, unless `detect_aggregates` is on. Takes no `tests_from`. The first `[ci.check]` whose name matches a job is the one read, so put it before a `*` |
 | `[ci_unrelated] compare_to` | `build_base` (default): a `pull_request` run's merge-ref base parent, a `push` run's single merge-base with `origin/<base>`; else a ref, compared at its newest commit that is an ancestor of the build base. A project's `compare_to` wins over the repo file's, which wins over the global one |
 | `[ci_unrelated] base_fetches_per_poll` | 3 |
+| `[ci_unrelated] detect_aggregates` | `false` (default). `true`: a job with no `aggregate` key may be taken for one from the run's jobs (see below). The repo file's wins over the global one |
 
 When every failing check is unrelated, Fix CI clears and the row carries
 `CI red · unrelated (base also red: 2 tests)` (`status_list {fields:
@@ -720,11 +721,13 @@ unit-tests (3.12), related: 1 failing test not failing on main at 3f2a9c1`);
 with no other failing job in its run (they were cancelled or skipped), it is
 related. GitHub's jobs list has no `needs`, so the workflow file is not read:
 the run's other failing jobs stand in, which is stricter, and the row's
-verdict is the same since they are failing checks too. With `aggregate`
-unset, a job is taken for one when it has no `tests_from`, started only
-after every other failing job of its run had ended, and runs at most two
-steps of its own; set `aggregate = false` on a job that looks like that and
-is not.
+verdict is the same since they are failing checks too. A job is an
+aggregate only when its check says `aggregate = true`: a job wrongly taken
+for one could be called unrelated and let a real failure merge. With
+`[ci_unrelated] detect_aggregates = true`, a job with no `aggregate` key is
+also taken for one when it has no `tests_from`, started only after every
+other failing job of its run had ended, and runs at most two steps of its
+own; set `aggregate = false` on a job that looks like that and is not.
 
 *Large reports.* A JUnit artifact (at most 20 MB zipped) is read from its
 zip one file at a time, however many files it has: a file with no
