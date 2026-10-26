@@ -413,7 +413,7 @@ def test_why_on_a_merge_row_shows_the_item_rule_and_its_facts():
     assert result["item_rule"]["id"] == "merge"
     assert {f["name"]: f["value"] for f in result["item_rule"]["facts"]} == {
         "ci.state": "green", "pr.mergeable": "mergeable", "pr.review": "approved",
-        "pr.state": "open"}
+        "pr.state": "open", "pr.mine": None}
     assert "item   from rule merge  (built-in)" in format_explain(result)
 
 

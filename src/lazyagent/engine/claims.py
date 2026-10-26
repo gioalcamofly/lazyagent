@@ -71,8 +71,9 @@ HOLD_TTL = 7200.0
 MAX_HOLD_TTL = 8 * 3600.0
 HOLD_NOTE_CHARS = 60
 # What a pass or a hold leaves in the user's inbox: what the orchestrator
-# may not answer (approvals) or was not routed (questions, briefs).
-USERS_KINDS = frozenset({"approval", "question", "decision"})
+# may not answer (approvals) or was not routed (questions, briefs), and a
+# review a teammate asked of the user.
+USERS_KINDS = frozenset({"approval", "question", "decision", "review_request"})
 # The finished work of the orchestrator's own workers it holds first.
 AUTO_HOLD_KINDS = frozenset({"done", "review"})
 NO_RESPONSE = "orchestrator did not respond"

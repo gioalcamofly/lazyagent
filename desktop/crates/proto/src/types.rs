@@ -657,6 +657,25 @@ pub struct StatusRow {
     /// status is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dirty: Option<u32>,
+    /// A teammate's open PR that asks the user for a review (feature
+    /// `review_requests`): the row may have no worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_request: Option<ReviewRequest>,
+}
+
+/// An open request for the user's review (`status_row.review_request`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    /// The PR author's login.
+    pub author: String,
+    /// When it was asked (else the PR's last update).
+    pub requested_at: f64,
+    /// The team it came through; None when the user was asked directly.
+    #[serde(default)]
+    pub team: Option<String>,
 }
 
 /// A feeder's project (`work_items_upsert {project}`).

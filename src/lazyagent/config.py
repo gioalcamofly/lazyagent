@@ -103,6 +103,9 @@ class StatusConfig:
     # GitHub Actions runs (engine/actions.py): one conditional REST call per
     # repo this often, in seconds; 0 turns CI tracking off.
     actions_poll_s: int = 60
+    # The open PRs where someone asked you for a review (engine/
+    # review_requests.py): one GraphQL search per PR poll; false: off.
+    review_requests: bool = True
 
 
 # Below this, actions_poll_s would spend the rate limit for nothing.
@@ -305,6 +308,8 @@ def _status_config(data: object) -> StatusConfig:
     value = data.get("actions_poll_s")
     if type(value) is int and (value == 0 or value >= MIN_ACTIONS_POLL_S):
         config.actions_poll_s = value
+    if isinstance(data.get("review_requests"), bool):
+        config.review_requests = data["review_requests"]
     pattern = data.get("ticket_pattern")
     if isinstance(pattern, str) and pattern:
         try:

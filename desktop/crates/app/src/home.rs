@@ -335,7 +335,7 @@ impl Line {
 }
 
 /// The items that are answered, never delegated.
-pub const NOT_DELEGABLE: [&str; 4] = ["approval", "question", "decision", "delegation"];
+pub const NOT_DELEGABLE: [&str; 5] = ["approval", "question", "decision", "delegation", "review_request"];
 
 /// The verb of an inbox item's kind, always an imperative ("Look" for one
 /// this table does not know).
@@ -354,6 +354,7 @@ pub fn kind_verb(kind: &str) -> &'static str {
         "tracker_status" => "Update task",
         "decision" => "Decide",
         "report" => "Read",
+        "review_request" => "Review",
         _ => "Look",
     }
 }
@@ -452,6 +453,14 @@ pub fn engine_lines(
             && let Some(first) = row.needs_you.as_ref().and_then(|n| n.items.first())
         {
             state.push_str(&format!(" · needs you: {}", item_words(first)));
+        }
+        // A teammate's PR that asks for the user's review: its title, since
+        // the branch is theirs ("review requested by ana · Fix the export").
+        if let Some(rr) = &row.review_request
+            && row.needs_you.is_some()
+            && !rr.title.is_empty()
+        {
+            state.push_str(&format!(" · {}", rr.title));
         }
         // Stale: what would be lost with the worktree.
         if row.stale {

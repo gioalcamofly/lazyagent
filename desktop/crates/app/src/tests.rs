@@ -5591,3 +5591,6 @@ mod i4f;
 
 // "Prompts…": the agent prompts page and its screenshots.
 mod prompts;
+
+// Review requests: a teammate's PR that asks for the user's review.
+mod review_requests;

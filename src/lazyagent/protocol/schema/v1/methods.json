@@ -790,10 +790,10 @@
       "description": "One work item (proposal 0013): a branch with its worktree, agents and PR, projected by the engine; nothing in it is stored.",
       "required": ["key", "repo", "branch", "worktree_path", "title", "urls", "zone", "level", "ball", "priority", "state", "rule", "blocks_agent", "needs_you", "agents", "pr", "note", "gesture", "claim", "stale", "changed_at", "fingerprint", "class", "seen_at", "last_event_at", "activity_at", "last_step"],
       "properties": {
-        "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached)."},
+        "key": {"type": "string", "description": "<repo>:<branch> (<repo>:@<head> when detached). A review request no worktree holds (feature review_requests): <repo>:<its head branch>, or <repo>:#<number> for a fork's PR or a branch a worktree holds for another PR."},
         "repo": {"type": "string", "description": "The repo root's directory name."},
         "branch": {"type": ["string", "null"]},
-        "worktree_path": {"type": ["string", "null"]},
+        "worktree_path": {"type": ["string", "null"], "description": "null for a review request no worktree holds (and a tombstone)."},
         "title": {"type": "string", "description": "The PR title, else the linked tracker task's title, else the branch."},
         "urls": {"type": "array", "items": {"type": "string"}},
         "zone": {"enum": ["inbox", "in_flight", "parked"], "description": "inbox: the ball is the user's; parked: the user parked the whole work item (its inbox items wait with it, feature parked)."},
@@ -898,7 +898,21 @@
         "project": {"oneOf": [{"$ref": "#/$defs/work_item_project"}, {"type": "null"}], "description": "The linked feeder work item's project (feature work_items); absent when no feeder item is linked."},
         "depends_on": {"type": "array", "items": {"type": "string"}, "description": "The linked feeder work item's dependencies (URLs); absent when none is linked."},
         "waits_on": {"type": "array", "items": {"$ref": "#/$defs/work_item_dependency"}, "description": "Of those, the ones still open or in review: 'waits on <title>'."},
-        "feeder": {"$ref": "#/$defs/work_item", "description": "The feeder work item linked by the branch (its ticket key or its branch); absent when none is."}
+        "feeder": {"$ref": "#/$defs/work_item", "description": "The feeder work item linked by the branch (its ticket key or its branch); absent when none is. On a review request's row, also the one whose URL is the PR's, or whose ticket is the key in the PR's title."},
+        "review_request": {"$ref": "#/$defs/review_request", "description": "The open request for the user's review on the row's PR (feature review_requests); absent when there is none."}
+      }
+    },
+    "review_request": {
+      "type": "object",
+      "description": "An open PR, not a draft, whose author asked the user (or a team of theirs) for a review, not reviewed by the user since.",
+      "required": ["number", "title", "url", "author", "requested_at", "team"],
+      "properties": {
+        "number": {"type": "integer"},
+        "title": {"type": "string"},
+        "url": {"type": "string"},
+        "author": {"type": "string", "description": "The PR author's login."},
+        "requested_at": {"type": "number", "description": "When the request was made (the latest review-request event naming the user or a requested team), else the PR's last update."},
+        "team": {"type": ["string", "null"], "description": "The team (slug) the request came through; null when the user was asked directly."}
       }
     },
     "work_item_project": {
@@ -1094,7 +1108,7 @@
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions)."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule", "review_request"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). review_request: a teammate's open PR asks the user for a review (feature review_requests); its pr is that PR, its since the request's time, its worktree_path null unless a worktree holds the branch."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},

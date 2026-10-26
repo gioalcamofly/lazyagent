@@ -9,8 +9,10 @@ open (dismissed, parked) the row reads as the rules below ``merge`` say
 (``approved_ready`` when nothing else does). And one since (fix-auto-hold):
 a reported ball says the agent works on, so it is not ``agent_finished``
 (6) while it holds, and a reported ball ``agent``
-reads ``agent <id> · <note>``. :func:`both` maps the oracle's answer for
-those cases; every other one must agree."""
+reads ``agent <id> · <note>``. And one since the review requests: a
+teammate's PR (``pr.mine`` false) is neither Merge nor "PR has no reviewer"
+nor "review requested" (``teammate_pr`` reads it). :func:`both` maps the
+oracle's answer for those cases; every other one must agree."""
 
 from __future__ import annotations
 
@@ -135,7 +137,15 @@ def random_facts(r: random.Random) -> tuple[Facts, float]:
         merged_into=_pick(r, "develop", "main", none=0.85),
         activity_at=_pick(r, NOW - 3600, NOW - 30 * 3600, none=0.7),
     )
-    return facts, NOW - r.choice([0, 600, 23 * 3600, 25 * 3600, 48 * 3600])
+    last_change = NOW - r.choice([0, 600, 23 * 3600, 25 * 3600, 48 * 3600])
+    if pr is not None and r.random() < 0.25:
+        # Whose PR it is, and a review request (the oracle knows neither).
+        request = {"number": pr.number, "author": "alice", "requested_at": NOW - 600}
+        facts = replace(
+            facts, pr=replace(pr, author=r.choice(["me", "alice", ""])), me=_pick(r, "me", none=0.2),
+            requests_known=r.random() < 0.8, review_request=request if r.random() < 0.5 else None,
+        )
+    return facts, last_change
 
 
 def both(facts: Facts, last_change: float, stalled_hours: float = 24):
@@ -143,6 +153,14 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
     old = oracle.derive(facts, NOW, last_change, stalled_hours=stalled_hours)
     catalog = builtin()
     ctx = RowContext(facts, NOW, last_change, stalled_hours)
+    if ctx.fact("pr.mine") is False:
+        # A teammate's PR: not Merge, nor theirs to wait on as yours; the
+        # oracle knows no author.
+        assert new.rule_id not in ("merge", "no_reviewer", "review_requested")
+        if old.rule in (4, 10) or new.rule_id in (
+            "teammate_pr", "review_request", "label", "park",
+        ):
+            return new, new
     if facts.actionables is not None and catalog.by_id["merge"].cond(ctx) is True:
         # R2: Merge is the queue's item; with none open, the rules below it
         # decide (the row, or the ball a park keeps).

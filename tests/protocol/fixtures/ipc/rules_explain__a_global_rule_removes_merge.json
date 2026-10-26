@@ -114,6 +114,13 @@
           "value": "false"
         },
         {
+          "failed": "not queue.enabled",
+          "id": "review_request",
+          "origin": "builtin",
+          "said": "The inbox queue is off",
+          "value": "false"
+        },
+        {
           "facts": [
             {
               "freshness": "\u2264 60 s",
@@ -138,6 +145,14 @@
               "source": "PR poller",
               "unknown": false,
               "value": "mergeable"
+            },
+            {
+              "freshness": "\u2264 60 s",
+              "name": "pr.mine",
+              "shown": "unknown",
+              "source": "PR poller, gh's login",
+              "unknown": true,
+              "value": null
             },
             {
               "freshness": "\u2264 60 s",
@@ -246,6 +261,13 @@
           "id": "tracker_ball",
           "origin": "builtin",
           "said": "The task's mapped ball is not you",
+          "value": "unknown"
+        },
+        {
+          "failed": "not pr.mine",
+          "id": "teammate_pr",
+          "origin": "builtin",
+          "said": "The PR is not yours",
           "value": "unknown"
         },
         {

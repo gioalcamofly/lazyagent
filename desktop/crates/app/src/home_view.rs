@@ -961,6 +961,10 @@ impl State {
             self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
             return;
         }
+        if top.kind == "review_request" {
+            self.toast(Severity::Info, "A teammate asked you for this review: open the PR (p) and review it there.");
+            return;
+        }
         if self.delegate_target(line) != DelegateTo::Agent {
             // No agent runs there: the buttons offer to restore or start one.
             let how = match self.delegate_target(line) {
@@ -1400,7 +1404,7 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
                 (_, "decision") if c.decision_view => keys.extend(["Enter open", "v decision view"]),
                 (Zone::Parked, _) => keys.extend(["Enter expand", "u unpark", "o terminal"]),
                 (Zone::Flight, _) => keys.extend(["Enter expand", "o terminal", "n notes"]),
-                _ if l.verb() == "Merge" => keys.extend(["p PR", "Enter expand"]),
+                _ if l.verb() == "Merge" || kind == "review_request" => keys.extend(["p PR", "Enter expand"]),
                 _ => keys.extend(["Enter expand", "o terminal"]),
             }
             if l.top.as_ref().is_some_and(|t| t.is_ci()) && l.url.is_some() {
@@ -2467,6 +2471,16 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                     .collect();
                 ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
             }
+            if let Some(rr) = &row.review_request {
+                // The item line names the PR and who asked: when, and through
+                // which team, is what it does not say.
+                let mut text = format!("review requested {} ago", home::age(c.now - rr.requested_at));
+                if let Some(team) = &rr.team {
+                    text.push_str(&format!(" · through team {team}"));
+                }
+                text.push_str(" · it goes once you review it on the PR");
+                ui.label(RichText::new(text).small().color(t.muted));
+            }
             if let Some(p) = &row.project {
                 let mut text = format!("project {}", p.title);
                 for w in &row.waits_on {
@@ -2645,6 +2659,13 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             b.hover = Some("Merging happens on the PR page");
             buttons.push(b);
         }
+        let reviewing = l.top.as_ref().is_some_and(|t| t.kind == "review_request");
+        if reviewing && let Some(url) = &l.url {
+            // A teammate's PR: the review is done on the PR page.
+            let mut b = button("Open PR to review  (p)", Act::Pr(url.clone()));
+            b.hover = Some("Approve, request changes or comment there: the line goes once you do");
+            buttons.push(b);
+        }
         if l.place.is_some() {
             buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
         }
@@ -2702,6 +2723,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         }
         if let Some(url) = &l.url
             && l.verb() != "Merge"
+            && !reviewing
         {
             buttons.push(button("PR  (p)", Act::Pr(url.clone())));
         }
