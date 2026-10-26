@@ -1067,7 +1067,19 @@
           "cost": "extra",
           "freshness": "\u2264 60 s",
           "name": "pr.commits_after_ready",
-          "phrase": "the pushes since the PR was marked ready (0: a draft)",
+          "phrase": "the pushes since the PR was marked ready (0: a draft; clean merges of the base left out)",
+          "scopes": [
+            "row"
+          ],
+          "source": "PR poller (review query)",
+          "type": "num",
+          "values": []
+        },
+        {
+          "cost": "extra",
+          "freshness": "\u2264 60 s",
+          "name": "pr.base_merges_after_ready",
+          "phrase": "the clean merges of the base since the PR was marked ready (not counted in pr.commits_after_ready)",
           "scopes": [
             "row"
           ],

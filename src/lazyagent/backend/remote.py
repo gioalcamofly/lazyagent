@@ -106,6 +106,8 @@ def _pr_info(data: Mapping[str, Any] | None) -> PrInfo | None:
         CiCheck(**{k: v for k, v in check.items() if k in check_fields})
         for check in data.get("checks") or []
     ]
+    values["after_ready_merges"] = tuple(data.get("after_ready_merges") or ())
+    values["after_ready_pushes"] = tuple(tuple(p) for p in data.get("after_ready_pushes") or ())
     return PrInfo(**values)
 
 

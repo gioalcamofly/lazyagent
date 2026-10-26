@@ -426,7 +426,8 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `pr.review_requested_from_me` | the PR asks you for a review (you, or a team of yours) | bool | review requests search | ≤ 60 s | poll |
 | `pr.labels` | the PR's labels (lower case) | set label | PR poller (review query) | ≤ 60 s | extra |
 | `pr.human_approvals` | the PR's approvals by people (latest review each; no apps) | num | PR poller (review query) | ≤ 60 s | extra |
-| `pr.commits_after_ready` | the pushes since the PR was marked ready (0: a draft) | num | PR poller (review query) | ≤ 60 s | extra |
+| `pr.commits_after_ready` | the pushes since the PR was marked ready (0: a draft; clean merges of the base left out) | num | PR poller (review query) | ≤ 60 s | extra |
+| `pr.base_merges_after_ready` | the clean merges of the base since the PR was marked ready (not counted in pr.commits_after_ready) | num | PR poller (review query) | ≤ 60 s | extra |
 | `pr.number` | the PR's number | num | PR poller | ≤ 60 s | poll |
 | `pr.base` | the PR's base branch | text | PR poller | ≤ 60 s | poll |
 | `pr.head_sha` | the PR's head commit | text | PR poller | ≤ 60 s | poll |

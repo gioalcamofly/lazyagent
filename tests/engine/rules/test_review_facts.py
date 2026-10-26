@@ -115,11 +115,11 @@ def test_reviews_not_fetched_or_cut_short_are_unknown_not_zero():
 def test_commits_and_force_pushes_after_the_last_ready_event_count():
     node = timeline(commit("2026-10-01T09:00:00Z"), ready_at("2026-10-01T10:00:00Z"),
                     commit("2026-10-01T11:00:00Z"), force("2026-10-01T12:00:00Z"))
-    assert _commits_after_ready(node) == (2, "2026-10-01T10:00:00Z")
+    assert _commits_after_ready(node)[:2] == (2, "2026-10-01T10:00:00Z")
     # Back to draft, fixes, ready again: only what follows the last one.
     node = timeline(ready_at("2026-10-01T10:00:00Z"), commit("2026-10-01T11:00:00Z"),
                     ready_at("2026-10-01T13:00:00Z"))
-    assert _commits_after_ready(node) == (0, "2026-10-01T13:00:00Z")
+    assert _commits_after_ready(node)[:2] == (0, "2026-10-01T13:00:00Z")
 
 
 def test_a_rebase_after_ready_counts_whatever_dates_its_commits_keep():
@@ -127,26 +127,26 @@ def test_a_rebase_after_ready_counts_whatever_dates_its_commits_keep():
     # event, the force push's own event does not.
     node = timeline(commit("2026-10-01T09:00:00Z"), ready_at("2026-10-01T10:00:00Z"),
                     force("2026-10-02T08:00:00Z"))
-    assert _commits_after_ready(node) == (1, "2026-10-01T10:00:00Z")
+    assert _commits_after_ready(node)[:2] == (1, "2026-10-01T10:00:00Z")
 
 
 def test_a_draft_is_zero_even_unfetched():
-    assert _commits_after_ready(timeline(commit("2026-10-01T11:00:00Z"), draft=True)) == (0, "")
-    assert _commits_after_ready({"isDraft": True}) == (0, "")
+    assert _commits_after_ready(timeline(commit("2026-10-01T11:00:00Z"), draft=True))[:2] == (0, "")
+    assert _commits_after_ready({"isDraft": True})[:2] == (0, "")
 
 
 def test_a_pr_opened_ready_counts_from_its_opening():
     node = timeline(commit("2026-10-01T08:00:00Z"), commit("2026-10-01T10:00:00Z"),
                     force("2026-10-01T11:00:00Z"), created="2026-10-01T09:00:00Z")
-    assert _commits_after_ready(node) == (2, "2026-10-01T09:00:00Z")
+    assert _commits_after_ready(node)[:2] == (2, "2026-10-01T09:00:00Z")
 
 
 def test_an_unfetched_or_cut_timeline_without_an_event_is_unknown():
-    assert _commits_after_ready({"isDraft": False}) == (None, "")
-    assert _commits_after_ready(timeline(commit("2026-10-01T10:00:00Z"), cut=True)) == (None, "")
+    assert _commits_after_ready({"isDraft": False})[:2] == (None, "")
+    assert _commits_after_ready(timeline(commit("2026-10-01T10:00:00Z"), cut=True))[:2] == (None, "")
     # Cut short, but the event is in the window: what follows it is all there.
     node = timeline(ready_at("2026-10-01T10:00:00Z"), commit("2026-10-01T11:00:00Z"), cut=True)
-    assert _commits_after_ready(node) == (1, "2026-10-01T10:00:00Z")
+    assert _commits_after_ready(node)[:2] == (1, "2026-10-01T10:00:00Z")
 
 
 def test_labels_from_both_shapes_and_unknown_when_cut():

@@ -44,8 +44,11 @@
         "labels": {"type": ["array", "null"], "items": {"type": "string"}, "description": "R3b: the label names; null when not fetched (only while a rule reads pr.labels)."},
         "author": {"type": "string", "description": "R3b: the PR author's login; empty when unknown."},
         "approved_by": {"type": ["array", "null"], "items": {"type": "string"}, "description": "R3b: reviewers whose latest review that is not a comment approves (no apps, not the author); null when not fetched."},
-        "commits_after_ready": {"type": ["integer", "null"], "description": "R3b: commits and force pushes since the last ready-for-review event (0: a draft); null when not fetched."},
-        "ready_at": {"type": "string", "description": "R3b: that event's time (the PR's creation when it was opened ready); empty when none or not fetched."}
+        "commits_after_ready": {"type": ["integer", "null"], "description": "R3b: commits and force pushes since the last ready-for-review event (0: a draft); null when not fetched. R3c: clean merges of the base branch are not counted."},
+        "ready_at": {"type": "string", "description": "R3b: that event's time (the PR's creation when it was opened ready); empty when none or not fetched."},
+        "after_ready_merges": {"type": "array", "items": {"type": "string"}, "description": "R3c: the merge commits counted after the ready point, as the timeline read them."},
+        "after_ready_pushes": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "R3c: the force pushes counted after the ready point, each [before, after]."},
+        "base_merges_after_ready": {"type": ["integer", "null"], "description": "R3c: the clean merges of the base branch after the ready point, which commits_after_ready leaves out (as it does force pushes that moved the head only by them); null when that is unknown."}
       }
     },
     "stream_geometry": {

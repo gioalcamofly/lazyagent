@@ -548,7 +548,8 @@ for the peer step, since an app can approve; the recipe reads these facts:
 | `pr.mine` | the PR is yours: its author is the account `gh` is logged in as (unknown until the engine has read it) |
 | `pr.draft` | the PR is a draft |
 | `pr.human_approvals` | reviewers whose latest review (comments aside) approves: a later "changes requested" or a dismissal cancels it; apps (`Bot` accounts, `…[bot]`), the PR's author and the logins in `[review] not_human` do not count |
-| `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening |
+| `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening. Clean merges of the base branch are left out (see below) |
+| `pr.base_merges_after_ready` | the clean merges of the base branch since then, which `pr.commits_after_ready` left out: for a state text such as `state_expr = 'pr.base_merges_after_ready > 0 ? "base merged since, not counted" : "waiting for peer review"'` |
 | `pr.labels` | the label names, lower case: `"qa:skip" in pr.labels` |
 
 ```toml
@@ -623,7 +624,16 @@ While an agent works on the branch the built-in "agent at work" line
 decides (each rule asks `agents.running == 0`), and the inbox (changes
 requested, CI red, conflicts) still comes first. Pushes after your approval
 bring the review back to you even if the agent forgets to turn the PR back
-into a draft; a merge of the base branch into it counts too. The timeline
+into a draft. A **clean merge of the base branch** ("Update branch", or
+`git merge origin/main` with no conflicts) does not count: a merge commit
+with one parent on the base (`origin/<base>` or `<base>`) whose tree is
+exactly the automatic merge of its parents, checked with local git
+(`git merge-tree --write-tree` on git 2.38 or later, a temporary index
+below it; never your working tree). A conflict resolved by hand, an extra
+edit in the merge, a merge of another branch, or any other commit counts;
+so does a force push, unless it changed the branch only by such merges. A
+merge GitHub made is fetched once (`git fetch origin <sha> <base>`, which
+also moves `origin/<base>`); when it cannot be checked, it counts. The timeline
 orders commits by their date, so a commit made before the PR was marked
 ready and pushed after it is caught only while the engine is running (it
 notices the head move). These facts are unknown when the PR could not be
