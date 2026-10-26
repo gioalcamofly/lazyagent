@@ -272,6 +272,18 @@ provider = "claude"
 # auto_delegate = []
 # auto_delegate_target = "owner"   # or "orchestrator"
 # auto_delegate_max_per_day = 10
+# Failing checks auto-delegation leaves alone: check, workflow or job names,
+# fnmatch globs, any case. A red made only of these is not delegated (Home
+# and Why? say "auto-delegation skipped: eval-suite is on the skip list"); with
+# other failing checks too, the agent is told to leave these alone. The
+# desktop's Auto-delegation menu shows the list. For checks that fail at
+# random, the `[ci] nondeterministic` attestations (proposal 0014, R5) will be
+# the long-term answer; this list is the switch until then.
+# auto_delegate_skip_checks = ["eval-suite", "label-*"]
+# The permission mode of an agent auto-delegation has to spawn (no agent ran
+# on the branch): the worktree's last recorded agent's mode when there is one,
+# else this (true: permission prompts bypassed, as spawn_agent's default).
+# auto_delegate_skip_permissions = true
 
 [orchestrator]
 # Caps on spawns made with an agent token (0 turns one off).
