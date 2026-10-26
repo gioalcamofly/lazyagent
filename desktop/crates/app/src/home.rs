@@ -24,6 +24,11 @@
 //! inbox items with it, in a group folded by default under In flight. Its
 //! questions and briefs go to the orchestrator when it may answer them;
 //! otherwise the parked line says it needs you.
+//!
+//! I4g: a deep item under a quicker top one is a **ghost line** in To sit
+//! down with ([`Line::ghost`]): a line of its own, a keyboard stop like any
+//! other, whose top is that deep item (its brief, its gestures). Home picks
+//! lines by [`Line::sel`], so a ghost is never its Round line.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -102,7 +107,9 @@ impl Top {
     /// A brief that failed validation: a quick "agent a2 asks: …", answered
     /// in the agent's terminal.
     pub fn asks(&self, decisions: Option<&Decision>) -> bool {
-        self.kind == "decision" && decisions.map(|d| !d.valid).unwrap_or(self.detail == "open terminal")
+        // The engine's own brief (auto-delegation failed) is answered here.
+        let engine = |d: &Decision| d.source.as_deref() == Some("auto_delegate");
+        self.kind == "decision" && decisions.map(|d| !d.valid && !engine(d)).unwrap_or(self.detail == "open terminal")
     }
 }
 
@@ -130,6 +137,34 @@ pub struct Line {
     pub brief: Option<Decision>,
     /// The orchestrator's latest decision on this work item (first responder).
     pub decided: Option<Decision>,
+    /// The items behind the top one, as the client has them.
+    pub under: Vec<Under>,
+    /// A ghost line (I4g): the deep item it stands for, under the top item
+    /// of the line of the same key.
+    pub ghost: Option<Ghost>,
+}
+
+/// What a ghost line stands for, and where its line is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ghost {
+    pub item: String,
+    /// Its line's zone (Now or Round) and verb: "under its Fix CI in the Round".
+    pub zone: Zone,
+    pub verb: String,
+}
+
+/// An item behind a line's top one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Under {
+    pub item: NeedsYouItem,
+    /// None when the client does not have the item (yet).
+    pub top: Option<Top>,
+    pub brief: Option<Decision>,
+}
+
+/// The selection id of a ghost line: its key and its item.
+pub fn ghost_sel(key: &str, item: &str) -> String {
+    format!("{key}\n{item}")
 }
 
 impl Line {
@@ -216,13 +251,45 @@ impl Line {
         Some(format!("+ {}", rest.join(", ")))
     }
 
-    /// A deep item under this line's quicker top one (a changes requested
-    /// under a red CI): it shows in To sit down with too, as a ghost line.
-    pub fn deep_under(&self) -> Option<&NeedsYouItem> {
-        if !matches!(self.zone, Zone::Now | Zone::Round) {
-            return None;
+    /// What Home selects and expands this line by: its key, or for a ghost
+    /// line its key and its item ([`ghost_sel`]).
+    pub fn sel(&self) -> String {
+        match &self.ghost {
+            Some(g) => ghost_sel(&self.key, &g.item),
+            None => self.key.clone(),
         }
-        self.items().iter().skip(1).find(|i| i.level == "deep")
+    }
+
+    /// The deep items under this line's quicker top one (a changes
+    /// requested under a red CI): each shows in To sit down with too, as a
+    /// ghost line.
+    pub fn deep_under(&self) -> impl Iterator<Item = &NeedsYouItem> {
+        let inbox = matches!(self.zone, Zone::Now | Zone::Round) && self.ghost.is_none();
+        self.items().iter().skip(1).filter(move |i| inbox && i.level == "deep")
+    }
+
+    /// The ghost line of `item` (one of [`Line::deep_under`]): the same
+    /// work item, in To sit down with, its top that item.
+    pub fn ghost_of(&self, item: &NeedsYouItem) -> Line {
+        let under = self.under.iter().find(|u| u.item.id == item.id);
+        Line {
+            zone: Zone::Deep,
+            state: item_words(item),
+            blocks_agent: false,
+            changed_at: item.since,
+            more: 0,
+            top: under.and_then(|u| u.top.clone()),
+            brief: under.and_then(|u| u.brief.clone()),
+            decided: None,
+            under: vec![],
+            ghost: Some(Ghost { item: item.id.clone(), zone: self.zone, verb: self.verb().to_string() }),
+            ..self.clone()
+        }
+    }
+
+    /// The item behind the top one with this id.
+    pub fn under_item(&self, id: &str) -> Option<&Under> {
+        self.under.iter().find(|u| u.item.id == id)
     }
 
     /// A routed question the orchestrator is on (first responder).
@@ -295,7 +362,9 @@ impl Line {
     /// verb) for a line with no item of a kind this table knows; else this
     /// table, the fallback for older engines.
     pub fn verb(&self) -> &str {
-        let engine = self.row.as_ref().and_then(|r| r.verb.as_deref()).filter(|v| !v.is_empty());
+        // The row's verb is its top item's, never a ghost's.
+        let engine =
+            self.row.as_ref().and_then(|r| r.verb.as_deref()).filter(|v| !v.is_empty() && self.ghost.is_none());
         let Some(top) = &self.top else {
             if let Some(v) = engine {
                 return v;
@@ -443,6 +512,16 @@ pub fn engine_lines(
         };
         let top = row.needs_you.as_ref().and_then(|n| items.get(&n.top)).map(top_of);
         let count = row.needs_you.as_ref().map(|n| n.count).unwrap_or(0);
+        let under: Vec<Under> = row
+            .needs_you
+            .iter()
+            .flat_map(|n| n.items.iter().filter(|i| i.id != n.top))
+            .map(|i| {
+                let top = items.get(&i.id).map(top_of);
+                let brief = top.as_ref().and_then(|t| t.decision_id.as_ref()).and_then(|id| decisions.get(id)).cloned();
+                Under { item: i.clone(), top, brief }
+            })
+            .collect();
         // A label is the user's word next to the fact: "QA · CI running".
         let label = row.gesture.as_ref().filter(|g| g["kind"] == "label").and_then(|g| g["text"].as_str());
         let mut state = match label {
@@ -495,6 +574,8 @@ pub fn engine_lines(
             row: Some(row.clone()),
             claim: row.claim.clone(),
             decided: decided_on(decisions, &row.key, now),
+            under,
+            ghost: None,
         });
     }
     out.extend(loose_lines(items.values().filter(|i| i.work_item.is_none()).map(|i| Loose {
@@ -555,6 +636,8 @@ fn loose_lines(items: impl Iterator<Item = Loose>) -> Vec<Line> {
                 claim: None,
                 brief: None,
                 decided: None,
+                under: vec![],
+                ghost: None,
             }
         })
         .collect()
@@ -668,6 +751,8 @@ pub fn fallback_lines(
             claim: None,
             brief: None,
             decided: None,
+            under: vec![],
+            ghost: None,
         });
     }
     changed.retain(|k, _| keys.contains(k));
@@ -724,6 +809,8 @@ pub fn cmp(a: &Line, b: &Line) -> std::cmp::Ordering {
 #[derive(Debug, Default)]
 pub struct Home {
     pub lines: HashMap<String, Line>,
+    /// The ghost lines (I4g), by [`Line::sel`]; made again with the lines.
+    pub ghosts: HashMap<String, Line>,
     order: [Vec<String>; 5],
     /// The Round as delivered at the last cut point.
     delivered: HashSet<String>,
@@ -733,9 +820,13 @@ pub struct Home {
     pub round_at: f64,
     /// Round lines that left on their own since the cut.
     pub resolved: u32,
+    /// The selected and the expanded line, by [`Line::sel`].
     pub selected: Option<String>,
     pub expanded: Option<String>,
-    /// The park choices are open on this line.
+    /// An item behind the top one opened in its expanded line (a brief
+    /// answered in place, I4g): the line's sel and the item's id.
+    pub item_open: Option<(String, String)>,
+    /// The park choices are open on this line (by sel).
     pub parking: Option<String>,
     /// The park menu parks the whole work item (not only its top item).
     pub park_whole: bool,
@@ -746,7 +837,7 @@ pub struct Home {
     pub done_open: bool,
     /// In flight's "N stale" group is unfolded (folded by default).
     pub stale_open: bool,
-    /// The close choices (done / dropped) are open on this line.
+    /// The close choices (done / dropped) are open on this line (by sel).
     pub closing: Option<String>,
     /// The label form is open on this line.
     pub labeling: Option<Label>,
@@ -766,6 +857,20 @@ pub struct Home {
 }
 
 impl Home {
+    /// A line by its [`Line::sel`]: a work item's, or a ghost.
+    pub fn get(&self, sel: &str) -> Option<&Line> {
+        self.lines.get(sel).or_else(|| self.ghosts.get(sel))
+    }
+
+    fn make_ghosts(&mut self) {
+        self.ghosts = self
+            .lines
+            .values()
+            .flat_map(|l| l.deep_under().map(|i| l.ghost_of(i)).collect::<Vec<_>>())
+            .map(|g| (g.sel(), g))
+            .collect();
+    }
+
     /// Where a line shows; None: under the Round, for the next one.
     fn shown(&self, line: &Line) -> Option<Zone> {
         match line.zone {
@@ -782,6 +887,7 @@ impl Home {
     /// a line leaving the inbox, or a line that is gone.
     pub fn update(&mut self, lines: Vec<Line>, now: f64) {
         self.lines = lines.into_iter().map(|l| (l.key.clone(), l)).collect();
+        self.make_ghosts();
         if !self.ready {
             self.cut(now);
             return;
@@ -885,19 +991,19 @@ impl Home {
         self.order[Zone::Flight as usize].iter().filter_map(|k| self.lines.get(k)).filter(|l| l.stale()).collect()
     }
 
-    /// The inbox lines with a deep item under their top one, drawn as ghost
-    /// lines in To sit down with (they open the line itself).
+    /// The ghost lines of the deep items under quicker lines, in their
+    /// lines' order, drawn at the end of To sit down with.
     pub fn deep_ghosts(&self) -> Vec<&Line> {
         let mut v: Vec<&Line> = self.shown_in(Zone::Now);
         v.extend(self.shown_in(Zone::Round));
         v.extend(self.next_round());
-        v.into_iter().filter(|l| l.deep_under().is_some()).collect()
+        v.into_iter().flat_map(|l| l.deep_under().filter_map(|i| self.ghosts.get(&ghost_sel(&l.key, &i.id)))).collect()
     }
 
     /// To sit down with as the engine counts it: its lines and the deep
     /// items under quicker ones.
     pub fn deep_count(&self) -> usize {
-        self.count(Zone::Deep) + self.lines.values().filter(|l| l.deep_under().is_some()).count()
+        self.count(Zone::Deep) + self.lines.values().map(|l| l.deep_under().count()).sum::<usize>()
     }
 
     /// The selectable lines, top to bottom.
@@ -906,6 +1012,7 @@ impl Home {
         v.extend(self.shown_in(Zone::Round));
         v.extend(self.next_round());
         v.extend(self.shown_in(Zone::Deep));
+        v.extend(self.deep_ghosts());
         if !folded {
             v.extend(self.shown_in(Zone::Flight));
             if self.done_open {
@@ -935,6 +1042,7 @@ impl Home {
     pub fn jump(&mut self, zone: Zone, folded: bool) -> bool {
         let first = match zone {
             Zone::Round => self.shown_in(Zone::Round).first().or(self.next_round().first()).map(|l| l.key.clone()),
+            Zone::Deep => self.shown_in(Zone::Deep).first().or(self.deep_ghosts().first()).map(|l| l.sel()),
             Zone::Flight if folded => None,
             z => self.shown_in(z).first().map(|l| l.key.clone()),
         };
@@ -952,7 +1060,7 @@ impl Home {
             .visible(folded)
             .iter()
             .filter(|l| matches!(l.zone, Zone::Now | Zone::Round | Zone::Deep))
-            .map(|l| l.key.clone())
+            .map(|l| l.sel())
             .collect();
         if keys.is_empty() {
             return false;
@@ -964,7 +1072,7 @@ impl Home {
     }
 
     pub fn select_next(&mut self, delta: i32, folded: bool) {
-        let keys: Vec<String> = self.visible(folded).iter().map(|l| l.key.clone()).collect();
+        let keys: Vec<String> = self.visible(folded).iter().map(|l| l.sel()).collect();
         if keys.is_empty() {
             self.selected = None;
             return;
@@ -980,9 +1088,19 @@ impl Home {
     /// The selected line (the first one when none is, or it went away).
     pub fn current(&mut self, folded: bool) -> Option<Line> {
         let visible = self.visible(folded);
-        let found = self.selected.as_ref().and_then(|s| visible.iter().find(|l| &l.key == s)).map(|l| (*l).clone());
+        let mut found =
+            self.selected.as_ref().and_then(|s| visible.iter().find(|l| &l.sel() == s)).map(|l| (*l).clone());
+        if found.is_none()
+            && let Some((key, item)) = self.selected.as_ref().and_then(|s| s.split_once('\n'))
+        {
+            // A ghost's item became its line's top: that line now.
+            found = visible
+                .iter()
+                .find(|l| l.key == key && l.top.as_ref().is_some_and(|t| t.id == item))
+                .map(|l| (*l).clone());
+        }
         let line = found.or_else(|| visible.first().map(|l| (*l).clone()));
-        self.selected = line.as_ref().map(|l| l.key.clone());
+        self.selected = line.as_ref().map(|l| l.sel());
         line
     }
 }

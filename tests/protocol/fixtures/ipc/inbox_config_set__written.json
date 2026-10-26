@@ -13,6 +13,7 @@
       "auto_delegate": [
         "conflict_with_base"
       ],
+      "auto_delegate_skip_checks": [],
       "auto_delegate_target": "owner",
       "repo": "repo"
     }

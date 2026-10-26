@@ -153,7 +153,7 @@ text = "Quick things that block nobody, and the reviews teammates asked of you. 
 id = "deep"
 name = "To sit down with"
 colour = "purple"
-text = "Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max)."
+text = "Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max). A deep item under a quicker line is a ↳ line of its own here: select it, Enter expands it on that item."
 
 [[zone]]
 id = "flight"
@@ -261,7 +261,7 @@ does = "Jump to Now, Round, To sit down with, In flight (on a brief: pick an opt
 [[key]]
 keys = "Enter"
 where = "home"
-does = "Expand (approve or answer there); open a brief"
+does = "Expand (approve or answer there); open a brief (a ↳ brief: expand it)"
 
 [[key]]
 keys = "Esc"
@@ -276,7 +276,7 @@ does = "On an approval: approve / deny (deny waits 5 s for Undo)"
 [[key]]
 keys = "Ctrl+Enter"
 where = "home"
-does = "On an expanded brief: answer"
+does = "On an expanded brief (or one opened with Answer here): answer"
 
 [[key]]
 keys = "v"

@@ -871,6 +871,7 @@
         "hold": {"oneOf": [{"$ref": "#/$defs/hold"}, {"type": "null"}], "description": "The orchestrator's own hold (orchestrator_hold, or the engine's for its workers' finished work; feature holds): state 'orchestrator · <note>', in flight."},
         "delegation": {"oneOf": [{"$ref": "#/$defs/delegation"}, {"type": "null"}], "description": "An inbox item the user delegated to the branch's agent (feature delegation)."},
         "suggestion": {"type": ["string", "null"], "description": "A hint for the user, never done for them, e.g. 'close PR #12: its head is in develop'."},
+        "auto_delegate": {"type": "string", "description": "I4g: why auto-delegation left the row's red CI alone, e.g. 'auto-delegation skipped: eval-suite is on the skip list'; absent otherwise."},
         "tracker": {
           "type": "object",
           "description": "The issue-tracker task linked by the branch name (optional adapters, [trackers]); absent when none is linked. Read-only: the engine never writes to a tracker.",
@@ -1691,7 +1692,8 @@
       "properties": {
         "repo": {"type": "string"},
         "auto_delegate": {"type": "array", "items": {"enum": ["conflict_with_base", "agent_dead", "ci_red"]}, "description": "ci_red is accepted but inactive until CI runs are read (I7)."},
-        "auto_delegate_target": {"enum": ["owner", "orchestrator"]}
+        "auto_delegate_target": {"enum": ["owner", "orchestrator"]},
+        "auto_delegate_skip_checks": {"type": "array", "items": {"type": "string"}, "description": "I4g: failing checks auto-delegation leaves alone (check, workflow or job names; fnmatch globs, any case)."}
       }
     },
     "inbox_config_set.params": {
@@ -1700,6 +1702,7 @@
         "repo": {"type": "string"},
         "auto_delegate": {"type": "array", "items": {"enum": ["conflict_with_base", "agent_dead", "ci_red"]}},
         "auto_delegate_target": {"enum": ["owner", "orchestrator"]},
+        "auto_delegate_skip_checks": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "I4g; left out, the file's list stays."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "None: the user's."}
       }
     },
@@ -2092,6 +2095,7 @@
         "answer": {"type": "string", "description": "I4f: one sentence for people, with the values it read: '“no activity”: the time since the last sign of work (2 d 6 h) is over the stalled threshold (24 h).'; for the queue, which item leads and what else is open."},
         "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "said": {"type": "string", "description": "R6: that condition in English (absent with value item or true)."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
         "items": {"type": "array", "description": "The row's open inbox items, top first."},
+        "auto_delegate": {"type": "string", "description": "I4g: as the row's auto_delegate; also the answer's last sentence."},
         "ci": {"type": "object", "required": ["unrelated", "summary", "checks", "others"], "description": "R4, while CI is red and a check has tests_from: mechanism A per failing check.", "properties": {"unrelated": {"type": ["boolean", "null"]}, "summary": {"type": "string"}, "checks": {"type": "array", "items": {"type": "object", "required": ["check", "job", "mechanism", "unrelated", "detail"], "properties": {"check": {"type": "string", "description": "<workflow file>/<job name>"}, "job": {"type": "string"}, "mechanism": {"const": "A"}, "unrelated": {"type": "boolean"}, "tests": {"type": ["array", "null"]}, "base_tests": {"type": ["array", "null"]}, "new": {"type": "array"}, "point": {"type": ["string", "null"]}, "compared": {"type": "string"}, "detail": {"type": "string", "description": "What decided it, or what was missing: 'junit: no JUnit artifact junit-*; pytest parser found 1 of 3 failures'."}, "base_fixed": {"type": ["boolean", "null"]}}}}, "others": {"type": "array", "description": "Failing checks with no test data (not Actions jobs): related."}}}
       }
     },

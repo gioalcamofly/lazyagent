@@ -6,6 +6,7 @@
     "id": "req-1",
     "result": {
       "auto_delegate": [],
+      "auto_delegate_skip_checks": [],
       "auto_delegate_target": "owner",
       "repo": "repo"
     }

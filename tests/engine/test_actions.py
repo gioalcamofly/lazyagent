@@ -591,6 +591,92 @@ async def test_ci_red_is_off_unless_listed():
     session.send_input.assert_not_called()
 
 
+# --- The skip list ([inbox] auto_delegate_skip_checks) ---------------------------
+
+
+def _skip_engine(gh: FakeGh, skip: list[str], pr: PrInfo | None = None):
+    engine, hub, clock = _engine(
+        gh, inbox=InboxConfig(auto_delegate=["ci_red"], auto_delegate_skip_checks=skip), pr=pr)
+    engine.autodelegate.teammate = AsyncMock(return_value=False)
+    return engine, hub, clock
+
+
+def _two_jobs_gh(workflow: str = "Tests") -> FakeGh:
+    gh = FakeGh([run_json(11, "feat", SHA_A, workflow=workflow)])
+    gh.jobs[11] = jobs_json(("eval-suite", "Run evals"), ("unit", "Run pytest"))
+    gh.logs[11] = failed_log("unit", "Run pytest", ["boom"])
+    return gh
+
+
+@pytest.mark.asyncio
+async def test_a_red_made_only_of_skipped_checks_is_not_delegated_and_says_why():
+    gh = _red_gh()
+    gh.jobs[11] = jobs_json(("eval-suite", "Run evals"))
+    engine, hub, _ = _skip_engine(gh, ["eval-suite"])
+    await hub.poll(["feat"])
+    session = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    session.send_input.assert_not_called()
+    rows = engine.status.flush()
+    text = "auto-delegation skipped: eval-suite is on the skip list"
+    assert rows[KEY]["auto_delegate"] == text
+    assert [i["id"] for i in _items(engine, "ci_failed")] == [CI_FAILED_ID], "still the user's"
+    out = engine.status.explain(KEY)
+    assert out["auto_delegate"] == text
+    assert out["answer"].endswith(" Auto-delegation skipped: eval-suite is on the skip list.")
+
+
+@pytest.mark.asyncio
+async def test_mixed_failing_checks_are_delegated_with_the_skipped_ones_named():
+    engine, hub, _ = _skip_engine(_two_jobs_gh(), ["EVAL-*"])
+    await hub.poll(["feat"])
+    session = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    [text] = [c.args[0] for c in session.send_input.await_args_list]
+    assert ("Leave the failing eval-suite alone: it is on the user's skip list "
+            "([inbox] auto_delegate_skip_checks), not yours to fix.") in text
+    assert "auto_delegate" not in engine.status.flush()[KEY]
+    assert engine.autodelegate.skipped == {}
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_glob_skips_every_job_of_its_run():
+    engine, hub, _ = _skip_engine(_two_jobs_gh(workflow="Label gate"), ["label*"])
+    await hub.poll(["feat"])
+    session = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    session.send_input.assert_not_called()
+    assert engine.status.flush()[KEY]["auto_delegate"] == (
+        "auto-delegation skipped: Label gate is on the skip list")
+
+
+@pytest.mark.asyncio
+async def test_a_failing_check_from_another_ci_counts_by_its_name():
+    gh = FakeGh([])
+    checks = [CiCheck("label-gate", "COMPLETED", "FAILURE", "https://ci.example.com/b/1"),
+              CiCheck("eval-suite", "COMPLETED", "ERROR", "https://ci.example.com/b/2")]
+    pr = PrInfo(7, "Feat", "OPEN", checks, head_sha=SHA_A)
+    engine, hub, _ = _skip_engine(gh, ["label-gate", "eval-*"], pr=pr)
+    await hub.poll(["feat"])
+    session = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    session.send_input.assert_not_called()
+    assert engine.status.flush()[KEY]["auto_delegate"] == (
+        "auto-delegation skipped: label-gate, eval-suite are on the skip list")
+    # One of them off the list: delegated, the other one named.
+    engine.config.inbox.auto_delegate_skip_checks = ["label-gate"]
+    await _pass(engine)
+    [text] = [c.args[0] for c in session.send_input.await_args_list]
+    assert "Leave the failing label-gate alone" in text
+
+
+def test_the_skip_list_in_the_inbox_table(tmp_path):
+    (tmp_path / ".lazyagent.toml").write_text(
+        '[inbox]\nauto_delegate_skip_checks = ["eval-suite", " ", 3, "label-*"]\n')
+    assert load_config(tmp_path).inbox.auto_delegate_skip_checks == ["eval-suite", "label-*"]
+    assert InboxConfig().auto_delegate_skip_checks == []
+
+
 # --- A brief's job: / run: log evidence --------------------------------------------
 
 

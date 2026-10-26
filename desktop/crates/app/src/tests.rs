@@ -5589,6 +5589,10 @@ mod how;
 // Home fixes from the second UX review (I4f).
 mod i4f;
 
+// I4g: ghost lines as keyboard stops, every brief answerable on its line,
+// the auto-delegation skip list.
+mod i4g;
+
 // "Prompts…": the agent prompts page and its screenshots.
 mod prompts;
 

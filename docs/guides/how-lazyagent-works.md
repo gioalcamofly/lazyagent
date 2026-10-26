@@ -45,7 +45,7 @@ One line per work item: a branch with its PR, its agents and its CI, or a teamma
 |---|---|---|
 | **Now** | yellow | An agent is blocked on you: an approval, a question. Shown at once. |
 | **Round** | orange | Quick things that block nobody, and the reviews teammates asked of you. Delivered in rounds, so nothing moves under your cursor. |
-| **To sit down with** | purple | Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max). |
+| **To sit down with** | purple | Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max). A deep item under a quicker line is a ↳ line of its own here: select it, Enter expands it on that item. |
 | **In flight** | cyan | The ball is not yours: who has it and since when. Done rows fold at its end for a day. |
 | **Parked** | purple | What you parked, folded until you open it (⇧Z). Says when it comes back. |
 
@@ -290,10 +290,10 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `j k ↓ ↑` | Next / previous line |
 | `Tab` | Next line that needs you |
 | `1 2 3 4` | Jump to Now, Round, To sit down with, In flight (on a brief: pick an option) |
-| `Enter` | Expand (approve or answer there); open a brief |
+| `Enter` | Expand (approve or answer there); open a brief (a ↳ brief: expand it) |
 | `Esc` | Close the form, else collapse |
 | `a  ⇧D` | On an approval: approve / deny (deny waits 5 s for Undo) |
-| `Ctrl+Enter` | On an expanded brief: answer |
+| `Ctrl+Enter` | On an expanded brief (or one opened with Answer here): answer |
 | `v` | The decision view |
 | `y  ⇧Y` | Explain this / restore its agent and explain |
 | `w` | Why is this line here? |

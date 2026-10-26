@@ -1129,6 +1129,19 @@ class Engine:
         )
         return info
 
+    def recorded_skip_permissions(self, path: str) -> bool | None:
+        """The permission mode of the worktree's most recent agent the
+        manifest records (running or restorable); None with none."""
+        if self.manifest is None:
+            return None
+        entries = [
+            e for e in (*self.manifest.agents.values(), *self.manifest.restorable.values())
+            if e.worktree_path == path and e.kind == AGENT_KIND
+        ]
+        if not entries:
+            return None
+        return max(entries, key=lambda e: e.started_at).skip_permissions
+
     def _last_orchestrator(self, provider_name: str) -> Entry | None:
         """The restorable orchestrator a "resume last" of the orchestrator
         brings back: its conversation and its notes, as a restore would.

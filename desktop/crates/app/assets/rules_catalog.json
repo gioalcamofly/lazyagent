@@ -198,7 +198,7 @@
     "where": "home"
    },
    {
-    "does": "Expand (approve or answer there); open a brief",
+    "does": "Expand (approve or answer there); open a brief (a ↳ brief: expand it)",
     "keys": "Enter",
     "where": "home"
    },
@@ -213,7 +213,7 @@
     "where": "home"
    },
    {
-    "does": "On an expanded brief: answer",
+    "does": "On an expanded brief (or one opened with Answer here): answer",
     "keys": "Ctrl+Enter",
     "where": "home"
    },
@@ -636,7 +636,7 @@
     "colour": "purple",
     "id": "deep",
     "name": "To sit down with",
-    "text": "Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max)."
+    "text": "Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max). A deep item under a quicker line is a ↳ line of its own here: select it, Enter expands it on that item."
    },
    {
     "colour": "cyan",

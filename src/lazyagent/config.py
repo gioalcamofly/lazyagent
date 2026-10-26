@@ -127,6 +127,12 @@ class InboxConfig:
     auto_delegate: list[str] = field(default_factory=list)
     auto_delegate_target: str = "owner"
     auto_delegate_max_per_day: int = 10
+    # Failing checks auto-delegation leaves alone (check, workflow or job
+    # names; fnmatch globs): a red made only of these is not delegated.
+    auto_delegate_skip_checks: list[str] = field(default_factory=list)
+    # The permission mode of an agent auto-delegation spawns when the
+    # worktree has none on record (else that agent's mode): bypass.
+    auto_delegate_skip_permissions: bool = True
 
 
 @dataclass
@@ -290,6 +296,14 @@ def _inbox_config(data: object) -> InboxConfig:
     per_day = data.get("auto_delegate_max_per_day")
     if type(per_day) is int and per_day >= 0:
         config.auto_delegate_max_per_day = per_day
+    bypass = data.get("auto_delegate_skip_permissions")
+    if isinstance(bypass, bool):
+        config.auto_delegate_skip_permissions = bypass
+    skip = data.get("auto_delegate_skip_checks")
+    if isinstance(skip, list):
+        config.auto_delegate_skip_checks = [
+            p.strip() for p in skip if isinstance(p, str) and p.strip()
+        ]
     return config
 
 
@@ -453,24 +467,26 @@ def set_table_keys(text: str, table: str, values: dict[str, object]) -> str:
 
 
 def write_inbox_config(
-    repo_root: str | Path, auto_delegate: list[str], auto_delegate_target: str
+    repo_root: str | Path, auto_delegate: list[str], auto_delegate_target: str,
+    skip_checks: list[str] | None = None,
 ) -> None:
-    """Write ``[inbox] auto_delegate`` / ``auto_delegate_target`` in the
-    repo's ``.lazyagent.toml`` (created when missing), keeping the rest of
-    the file. The result is parsed back before it replaces the file."""
+    """Write ``[inbox] auto_delegate`` / ``auto_delegate_target`` (and
+    ``auto_delegate_skip_checks`` when given) in the repo's
+    ``.lazyagent.toml`` (created when missing), keeping the rest of the
+    file. The result is parsed back before it replaces the file."""
     from lazyagent.engine.notes import _atomic_write
 
     path = Path(repo_root) / CONFIG_FILENAME
     text = path.read_text() if path.exists() else ""
-    new = set_table_keys(
-        text,
-        "inbox",
-        {"auto_delegate": list(auto_delegate), "auto_delegate_target": auto_delegate_target},
-    )
+    keys: dict[str, object] = {
+        "auto_delegate": list(auto_delegate), "auto_delegate_target": auto_delegate_target,
+    }
+    if skip_checks is not None:
+        keys["auto_delegate_skip_checks"] = list(skip_checks)
+    new = set_table_keys(text, "inbox", keys)
     if tomllib is not None:
         data = tomllib.loads(new)
         inbox = data.get("inbox", {})
-        if inbox.get("auto_delegate") != list(auto_delegate) or \
-                inbox.get("auto_delegate_target") != auto_delegate_target:
+        if any(inbox.get(k) != v for k, v in keys.items()):
             raise ValueError(f"could not write [inbox] in {CONFIG_FILENAME} safely")
     _atomic_write(path, new.encode())
