@@ -722,8 +722,9 @@ async def test_a_restart_keeps_the_decided_verdict(tmp_path):
 async def test_the_readme_owner_gate_merges_on_an_unrelated_red():
     gh = _gh()
     pr = _pr(review_decision="APPROVED", mergeable="MERGEABLE", is_draft=False, labels=[],
-             approved_by=["peer"], commits_after_ready=0)
+             approved_by=["peer"], commits_after_ready=0, author="me")
     engine, _, _ = _engine(gh, pr=pr)
+    engine.review_requests.viewer = "me"  # the recipe asks pr.mine
     await _upsert(engine)
     recipe = readme_recipe()
     assert '(ci.state in ["green", "none"] or ci.unrelated)' in recipe
@@ -737,6 +738,7 @@ async def test_the_readme_owner_gate_merges_on_an_unrelated_red():
     # One new failing test: Fix CI, no Merge.
     gh2 = _gh(branch_tests=[*TWO, "tests/test_c.py::test_new"])
     engine2, _, _ = _engine(gh2, pr=pr)
+    engine2.review_requests.viewer = "me"
     await _upsert(engine2)
     with _rules_files({GLOBAL_RULES: recipe + "\n" + CONFIG.replace("version = 1\n", "")}):
         engine2.rules.reload()

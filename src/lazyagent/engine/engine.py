@@ -96,6 +96,7 @@ from lazyagent.engine.rules.hub import RulesHub
 from lazyagent.engine.status import TICK as STATUS_TICK
 from lazyagent.engine.status import StatusProjection
 from lazyagent.engine.actions import ActionsHub
+from lazyagent.engine.review_requests import ReviewRequestHub
 from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
 from lazyagent.engine.work_items import WorkItems, work_items_path
 from lazyagent.engine.session import (
@@ -232,6 +233,9 @@ class Engine:
         # GitHub Actions runs on the worktrees' branches (I7): off until the
         # config loads.
         self.actions = ActionsHub()
+        # The open PRs that ask the user for a review: off until the config
+        # loads.
+        self.review_requests = ReviewRequestHub()
 
         self.events = EventBus()
         # persist_ids=False keeps agent ids in memory (tests, throwaway engines).
@@ -511,6 +515,13 @@ class Engine:
             self.actions = ActionsHub(root or "", poll_s=poll_s)
         else:
             self.actions.poll_s = poll_s
+        wanted = self.config.status.review_requests
+        if self.review_requests.repo_root != (root or ""):
+            self.review_requests = ReviewRequestHub(root or "", enabled=wanted)
+        elif not wanted:
+            self.review_requests.turn_off()
+        else:
+            self.review_requests.enabled_config = True
 
     def get_config(self) -> ConfigView:
         config = self.config

@@ -172,12 +172,25 @@ state_expr = 'with("needs you", report.note)'
 # --- The open PR -----------------------------------------------------------
 
 [[rule]]
+id = "review_request"
+num = 3
+says = "Without the queue: a teammate asked you for a review."
+when = 'not queue.enabled and pr.review_requested_from_me and not pr.mine'
+[rule.then]
+ball = "you"
+level = "round"
+state_expr = '"review requested by " + pr.author'
+verb = "Review"
+action = "open_pr"
+
+[[rule]]
 id = "merge"
 num = 4
 says = "Approved, CI green and mergeable: merging is yours, on the PR."
 when = '''
 pr.state == "open" and pr.review == "approved"
 and ci.state in ["green", "none"] and pr.mergeable == "mergeable"
+and (pr.mine or unknown(pr.mine))
 '''
 [rule.then]
 ball = "you"
@@ -310,6 +323,20 @@ when = 'tracker.ball != "you"'
 [rule.then]
 ball_expr = 'tracker.ball'
 state_expr = 'clip(tracker.state, 5)'
+
+[[rule]]
+id = "teammate_pr"
+num = 10
+says = "A teammate's PR (yours to review, not to drive): a request you set aside, else theirs."
+when = 'pr.state == "open" and not pr.mine'
+[rule.then]
+ball_expr = 'pr.review_requested_from_me ? "stalled" : "others"'
+state_expr = '''
+pr.review_requested_from_me ? "review requested · set aside"
+  : clip(pr.author + "'s PR"
+         + (pr.review == "approved" ? " · approved"
+            : pr.review == "changes_requested" ? " · changes requested" : ""), 5)
+'''
 
 [[rule]]
 id = "no_reviewer"
@@ -489,7 +516,10 @@ level = "deep"
 title = "Changes requested"
 rank = 5
 detector = "pr"
-when = 'pr.state == "open" and pr.review == "changes_requested"'
+says = "On your PR (a teammate's changes requested are theirs to address)."
+when = '''
+pr.state == "open" and pr.review == "changes_requested" and (pr.mine or unknown(pr.mine))
+'''
 state = "changes requested"
 
 [[kind]]
@@ -571,3 +601,15 @@ ci.head == "red" and empty(ci.related_failures) and not empty(ci.base_fixed)
 and agents.running == 0
 '''
 state_expr = 'with("Sync with base", ci.first_base_fixed)'
+
+[[kind]]
+id = "review_request"
+verb = "Review"
+action = "open_pr"
+level = "round"
+title = "Review requested"
+rank = 5
+detector = "review_requests"
+says = "A teammate's open PR (not a draft) asks you, or a team of yours, for a review; it goes when you review (approve, request changes or comment), the request is withdrawn or the PR closes."
+when = 'pr.review_requested_from_me and not pr.mine'
+state_expr = '"review requested by " + pr.author'

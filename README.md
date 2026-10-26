@@ -250,6 +250,10 @@ provider = "claude"
 # ticket_pattern = "(?i)\\b[a-z]+-\\d+"
 # Open work items per feeder source; a new one past it is refused (0: no cap).
 # max_open_per_source = 50
+# The open PRs where someone asked you (or a team of yours) for a review, as
+# Round lines: one GraphQL search per repo at the PR poll's pace (2 points of
+# GitHub's 5000 an hour). false turns it off.
+# review_requests = true
 # GitHub Actions runs on the worktrees' branches: one conditional REST call
 # per repo (`gh api`, answered by a 304 when nothing changed) this often, in
 # seconds (at least 15). A red run on a branch's head with no PR is an inbox
@@ -393,7 +397,9 @@ the same names). lazyagent never starts a task on its own: it shows them.
   (given, or read from the URL with `[status] ticket_pattern`), the item
   adds to Home's "N not started" (with the trackers' assigned issues, once
   per URL). Once a branch such as `SHOP-12-checkout` exists, it joins that
-  row with its title, priority and project.
+  row with its title, priority and project. A review someone asked of you
+  needs no branch: an item whose `url` is the PR's, or whose ticket key is
+  in the PR's head branch or title, joins the review request's line.
 - **Priority** (`high` · `medium` · `low`) orders the row and its inbox
   items inside their level, after "blocks a live agent".
 - **Waiting.** `waiting: {reason?, until?}` parks the row in Parked as
@@ -527,6 +533,7 @@ for the peer step, since an app can approve; the recipe reads these facts:
 
 | Fact | What it is |
 |---|---|
+| `pr.mine` | the PR is yours: its author is the account `gh` is logged in as (unknown until the engine has read it) |
 | `pr.draft` | the PR is a draft |
 | `pr.human_approvals` | reviewers whose latest review (comments aside) approves: a later "changes requested" or a dismissal cancels it; apps (`Bot` accounts, `…[bot]`), the PR's author and the logins in `[review] not_human` do not count |
 | `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening |
@@ -543,7 +550,7 @@ not_human = ["my-review-app"]      # accounts that review but are not people
 id = "merge"
 says = "Merge when a person approved what you approved, CI is fine and QA is done."
 when = '''
-pr.state == "open" and not pr.draft and pr.commits_after_ready == 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready == 0
 and pr.human_approvals >= 1 and (ci.state in ["green", "none"] or ci.unrelated)
 and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
 '''
@@ -557,7 +564,7 @@ state = "merge: peer approved, QA ok"
 [[rule]]
 id = "owner_review"
 after = "label"                     # your own label still wins
-when = 'pr.state == "open" and pr.draft and agents.running == 0'
+when = 'pr.state == "open" and pr.mine and pr.draft and agents.running == 0'
 [rule.then]
 ball = "you"
 verb = "Review"
@@ -568,7 +575,7 @@ state = "draft · your review"
 id = "owner_review_again"
 after = "owner_review"
 when = '''
-pr.state == "open" and not pr.draft and pr.commits_after_ready > 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready > 0
 and agents.running == 0
 '''
 [rule.then]
@@ -581,7 +588,7 @@ state = "new commits since your approval"
 id = "waiting_for_peer"
 after = "owner_review_again"
 when = '''
-pr.state == "open" and not pr.draft and pr.human_approvals == 0
+pr.state == "open" and pr.mine and not pr.draft and pr.human_approvals == 0
 and agents.running == 0
 '''
 [rule.then]
@@ -592,7 +599,7 @@ state = "waiting for peer review"
 id = "waiting_for_qa"
 after = "waiting_for_peer"
 when = '''
-pr.state == "open" and not pr.draft and pr.human_approvals >= 1
+pr.state == "open" and pr.mine and not pr.draft and pr.human_approvals >= 1
 and pr.commits_after_ready == 0 and tracker.qa == "pending" and agents.running == 0
 '''
 [rule.then]
@@ -612,6 +619,25 @@ read: none of these rules matches then, and the built-ins below decide.
 `pr.labels`, `pr.human_approvals` and `pr.commits_after_ready` cost one
 more GitHub query per PR poll (1 point of the rate limit for up to 25
 branches), made only while one of your rules reads them.
+
+Every rule asks `pr.mine`: checking out a teammate's branch (to try it,
+or for your review) must not read "waiting for peer review" when you are
+the peer. While `pr.mine` is unknown (the engine has not read your login
+yet) none of them matches.
+
+**Reviewing others' PRs.** A teammate who asks you (or a team you are in)
+for a review gets a Round line of its own, "Review" ·
+"review requested by <author>", with the PR's title and the time it was
+asked; `p` opens the PR. It needs no branch or worktree: the engine
+searches the repo's open PRs (`review-requested:@me`, drafts left out) at
+the PR poll's pace. The line goes when you submit a review (approve,
+request changes or comment), when the request is withdrawn, or when the PR
+closes or merges; asked again, it comes back. A worktree on that branch
+gets the line instead of a second one, and the built-ins read a teammate's
+PR as theirs (`pr.mine` false: no Merge, no "PR has no reviewer"; dismissed
+or parked, the request reads "review requested · set aside"). Your rules
+can read `pr.review_requested_from_me` and `pr.author`;
+`[status] review_requests = false` turns the search off.
 
 **CI red, but not the branch's fault.** A check that is red on the branch
 counts as **unrelated** only when its failing *tests* all fail on the base

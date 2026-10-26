@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -338,13 +339,13 @@ def _tracker(qa: str | None) -> TrackerFact:
 
 
 def _stage(catalog, pr: PrInfo, qa: str | None = None, *, running: bool = False,
-           queue: bool = True):
+           queue: bool = True, me: str | None = ME):
     """(rule id, ball, verb, state): the item rule a pass opens (ball you),
-    else what the row reads."""
+    else what the row reads. ``me``: the login gh is logged in as."""
     agents = (AgentFact("a1", "running" if running else "waiting"),)
     facts = Facts(key=KEY, repo="repo", branch=BRANCH, worktree_path=WT, pr=pr, agents=agents,
                   tracker=None if qa is None else _tracker(qa),
-                  actionables=() if queue else None)
+                  actionables=() if queue else None, me=me)
     ctx = RowContext(facts, NOW, NOW, 24, catalog.not_human)
     if queue:
         rule = catalog.first_item(ctx)
@@ -394,6 +395,27 @@ def test_every_stage_of_the_readme_recipe(queue):
         assert stage(pr, qa)[0] != "merge", (pr, qa)
 
 
+@pytest.mark.parametrize("queue", [True, False])
+def test_the_recipe_leaves_a_teammates_pr_on_a_local_branch_alone(queue):
+    # You checked out a teammate's branch: you are the peer, so the PR is
+    # not "waiting for peer review", not your review, not yours to merge.
+    cat = _recipe()
+    theirs = lambda **kw: replace(_pr(**kw), author="ana")  # noqa: E731
+    recipe = {"merge", "owner_review", "owner_review_again", "waiting_for_peer",
+              "waiting_for_qa"}
+    for pr, qa in ((theirs(approvals=()), None), (theirs(draft=True, approvals=()), None),
+                   (theirs(approvals=(), after=1), None), (theirs(), "pending"),
+                   (theirs(), "tested")):
+        rule_id, ball, _, state = _stage(cat, pr, qa, queue=queue)
+        assert rule_id not in recipe and state != "waiting for peer review", (pr, qa)
+    # A teammate's ready PR, nobody approved: the built-ins read it as theirs.
+    assert _stage(cat, theirs(approvals=(), review="REVIEW_REQUIRED"), queue=queue) == (
+        "teammate_pr", "others", None, "ana's PR")
+    # Your login not read yet: none of the recipe's rules guesses.
+    for qa in ("tested", "pending", None):
+        assert _stage(cat, _pr(approvals=()), qa, queue=queue, me=None)[0] not in recipe
+
+
 def test_a_failed_fetch_never_reads_as_no_approvals_or_not_a_draft():
     cat = _recipe()
     recipe = {"merge", "owner_review", "owner_review_again", "waiting_for_peer",
@@ -411,6 +433,7 @@ def test_a_failed_fetch_never_reads_as_no_approvals_or_not_a_draft():
 def test_the_recipe_end_to_end_with_why():
     engine = make_engine([worktree("/tmp/repo"), worktree(WT, BRANCH, is_main=False)])
     engine.worktree_service._pr_infos[WT] = _pr(draft=True, approvals=())
+    engine.review_requests.viewer = ME
     with _rules_files({GLOBAL_RULES: readme_recipe()}):
         result = engine.status.list()
         validation.validate_result("status_list", result, strict=True)

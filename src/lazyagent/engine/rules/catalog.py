@@ -26,8 +26,9 @@ A kind::
     rank = 1
     blocks_agent = true
     detector = "agents"           # the code that finds candidates (agents, pr, actions,
-                                  # exits, jobs, tracker, report, decision)
-    when = 'agent.status == "waiting_for_approval"'   # only for agents, pr, actions
+                                  # review_requests, exits, jobs, tracker, report, decision)
+    when = 'agent.status == "waiting_for_approval"'   # only for agents, pr, actions,
+                                                      # review_requests
     state_expr = 'with("approve", agent.detail)'      # or state
 
 An output that evaluates to unknown reads as empty text, no level, ball
@@ -77,7 +78,7 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "expand": ("Enter", "Expands the line"),
     "open_terminal": ("o", "The agent's terminal"),
     "open_notes": ("n", "The agent's notes"),
-    "open_pr": ("p", "The PR (for Merge: merging is done there, by you)"),
+    "open_pr": ("p", "The PR (you merge it, or review it, there)"),
     "open_tracker": ("p", "The tracker task"),
     "dismiss": ("x", "Dismiss this occurrence of the item"),
     "park": ("z", "Park the item or the work item"),
@@ -107,7 +108,8 @@ VERB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 '-]{0,11}$")
 # The detectors whose candidates a kind's condition decides, and the scope
 # its facts are read in. The others are fed by events or by their own
 # stores (exits, jobs, tracker items, reports, briefs).
-CONDITION_DETECTORS = {"agents": "item", "pr": "item", "actions": "item"}
+CONDITION_DETECTORS = {"agents": "item", "pr": "item", "actions": "item",
+                       "review_requests": "item"}
 DETECTORS = frozenset({*CONDITION_DETECTORS, "exits", "jobs", "tracker", "report", "decision"})
 
 

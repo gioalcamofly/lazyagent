@@ -44,7 +44,7 @@
           "value": "false"
         }
       ],
-      "answer": "\u201cmerge: approved, CI green\u201d: the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable.",
+      "answer": "\u201cmerge: approved, CI green\u201d: the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours).",
       "facts": [
         {
           "freshness": "per pass",
@@ -115,6 +115,13 @@
             "origin": "builtin",
             "said": "The inbox queue is off",
             "value": "false"
+          },
+          {
+            "failed": "not queue.enabled",
+            "id": "review_request",
+            "origin": "builtin",
+            "said": "The inbox queue is off",
+            "value": "false"
           }
         ],
         "action": "open_pr",
@@ -135,6 +142,14 @@
             "source": "PR poller",
             "unknown": false,
             "value": "mergeable"
+          },
+          {
+            "freshness": "\u2264 60 s",
+            "name": "pr.mine",
+            "shown": "unknown",
+            "source": "PR poller, gh's login",
+            "unknown": true,
+            "value": null
           },
           {
             "freshness": "\u2264 60 s",
@@ -163,7 +178,7 @@
         "replaces": null,
         "says": "Approved, CI green and mergeable: merging is yours, on the PR.",
         "verb": "Merge",
-        "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\""
+        "when": "pr.state == \"open\" and pr.review == \"approved\" and ci.state in [\"green\", \"none\"] and pr.mergeable == \"mergeable\" and (pr.mine or unknown(pr.mine))"
       },
       "items": [
         {

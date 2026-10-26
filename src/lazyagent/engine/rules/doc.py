@@ -210,6 +210,11 @@ def _sentence(n: Node) -> str:
         return _cmp(n)
     if n.op == "fact":
         return _phrase(n.value)
+    if n.op == "call" and n.value in ("known", "unknown") and n.args and n.args[0].op == "fact" \
+            and FACTS.get(n.args[0].value) is not None and str(FACTS[n.args[0].value].type) == "bool":
+        # A yes/no fact: "it is not known whether the PR is yours".
+        word = "it is known" if n.value == "known" else "it is not known"
+        return f"{word} whether {_phrase(n.args[0].value)}"
     if n.op == "call" and n.value in ("known", "unknown", "empty") and n.args:
         word = {"known": "is known", "unknown": "is unknown", "empty": "is empty"}[n.value]
         return f"{_value(n.args[0])} {word}"

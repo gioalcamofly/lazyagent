@@ -203,6 +203,22 @@ def _pr_attr(attr: str) -> Getter:
     return get
 
 
+def _mine(pr: Any, me: str | None) -> Any:
+    if pr is None or not pr.author or not me:
+        return UNKNOWN
+    return pr.author.casefold() == me.casefold()
+
+
+def _requested(pr: Any, request: Any, known: bool) -> Any:
+    if pr is None or not known:
+        return UNKNOWN
+    return request is not None
+
+
+def _author(pr: Any) -> Any:
+    return UNKNOWN if pr is None or not pr.author else pr.author
+
+
 def _labels(c: RowContext) -> Any:
     pr = c.facts.pr
     if pr is None or pr.labels is None:
@@ -519,6 +535,7 @@ _W = "worktree scan"
 _REG = "agent registry"
 _PRP = "PR poller"
 _PRR = "PR poller (review query)"
+_RQ = "review requests search"
 _OV = "overlay"
 
 _fact("item.key", TEXT, "the work item", _W, "on worktrees.changed", "free",
@@ -579,6 +596,16 @@ _fact("pr.reviews", NUM, "the PR's reviews", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("reviews"))
 _fact("pr.draft", BOOL, "the PR is a draft", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("is_draft"))
+_fact("pr.author", TEXT, "the PR's author (login)", _PRP, "≤ 60 s", "poll",
+      row=lambda c: _author(c.facts.pr), item=lambda c: _author(c.place.pr))
+_fact("pr.mine", BOOL, "the PR is yours (its author is the user gh is logged in as)",
+      "PR poller, gh's login", "≤ 60 s", "poll",
+      row=lambda c: _mine(c.facts.pr, c.facts.me),
+      item=lambda c: _mine(c.place.pr, c.place.me))
+_fact("pr.review_requested_from_me", BOOL,
+      "the PR asks you for a review (you, or a team of yours)", _RQ, "≤ 60 s", "poll",
+      row=lambda c: _requested(c.facts.pr, c.facts.review_request, c.facts.requests_known),
+      item=lambda c: _requested(c.place.pr, c.place.review_request, c.place.requests_known))
 _fact("pr.labels", LABELS, "the PR's labels (lower case)", _PRR, "≤ 60 s", "extra",
       row=_labels)
 _fact("pr.human_approvals", NUM,

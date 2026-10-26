@@ -164,6 +164,10 @@ FEATURES: tuple[str, ...] = (
     # The user's agent prompt files (lazyagent prompts): prompts_status
     # (with its outdated notice), prompts_plan, prompts_apply.
     "prompts",
+    # The open PRs where someone asked the user for a review: rows with no
+    # worktree, row review_request, the review_request kind, the facts
+    # pr.mine, pr.author and pr.review_requested_from_me.
+    "review_requests",
     # CI red but unrelated, mechanism A (proposal 0014 R4): status_list
     # fields ci_note, rules_explain ci, the sync_base kind, [ci.check] and
     # [ci_unrelated] in the rule files.
