@@ -5599,5 +5599,9 @@ mod prompts;
 // CI red but unrelated to the branch: the ci_note chip (proposal 0014 R4).
 mod r4;
 
+// Attestations for nondeterministic checks: the Confirm item, the chip,
+// Why? with Revoke (proposal 0014 R5).
+mod r5;
+
 // Review requests: a teammate's PR that asks for the user's review.
 mod review_requests;
