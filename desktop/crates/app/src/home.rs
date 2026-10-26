@@ -80,9 +80,23 @@ pub struct Top {
     pub verb: Option<String>,
     /// An `attestation_confirm` item's attestation (feature `ci_attest`).
     pub attestation: Option<Attestation>,
+    /// The engine's (feature `item_capabilities`); None from older ones.
+    pub delegable: Option<bool>,
+    pub passable: Option<bool>,
 }
 
 impl Top {
+    /// The branch's agent can resolve it (Delegate, d): the engine's
+    /// catalog says, else the kinds an older engine delegated.
+    pub fn delegable(&self) -> bool {
+        self.delegable.unwrap_or_else(|| !NOT_DELEGABLE.contains(&self.kind.as_str()))
+    }
+
+    /// The orchestrator can act on it (Pass, ⇧O); older engines: yes.
+    pub fn passable(&self) -> bool {
+        self.passable.unwrap_or(true)
+    }
+
     /// A red CI item: on a PR (`ci`) or on a branch with none (`ci_failed`).
     pub fn is_ci(&self) -> bool {
         matches!(self.kind.as_str(), "ci" | "ci_failed")
@@ -108,7 +122,11 @@ impl Top {
 
     /// A brief that failed validation: a quick "agent a2 asks: …", answered
     /// in the agent's terminal.
+    /// An agent's question in prose at the end of its turn (I4h): the same.
     pub fn asks(&self, decisions: Option<&Decision>) -> bool {
+        if self.kind == "turn_question" {
+            return true;
+        }
         // The engine's own brief (auto-delegation failed) is answered here.
         let engine = |d: &Decision| d.source.as_deref() == Some("auto_delegate");
         self.kind == "decision" && decisions.map(|d| !d.valid && !engine(d)).unwrap_or(self.detail == "open terminal")
@@ -216,6 +234,24 @@ impl Line {
     /// The user's gesture on the row: `label`, `park` or `close`.
     pub fn gesture(&self) -> Option<&serde_json::Value> {
         self.row.as_ref().and_then(|r| r.gesture.as_ref())
+    }
+
+    /// Delegate (d) applies: the top item is one the branch's agent can
+    /// resolve (CI red, a conflict, changes requested, a dead agent), not
+    /// the user's own review, merge, answer or approval (I4h).
+    pub fn delegable(&self) -> bool {
+        self.top.as_ref().is_some_and(Top::delegable)
+    }
+
+    /// Pass (⇧O) applies: the orchestrator can act on something on the
+    /// row. The engine says (status_list field `passable`); else the top
+    /// item; a row with neither, yes.
+    pub fn passable(&self) -> bool {
+        match (self.row.as_ref().and_then(|r| r.passable), &self.top) {
+            (Some(p), _) => p,
+            (None, Some(t)) => t.passable(),
+            (None, None) => true,
+        }
     }
 
     /// A done row (merged, closed): shown dimmed for a day.
@@ -395,6 +431,7 @@ impl Line {
         let text = match top.kind.as_str() {
             "approval" => top.detail.clone(),
             "question" => top.detail.clone(),
+            "turn_question" => top.label.clone(),
             "decision" => self.brief.as_ref().map(|d| d.brief.question.clone()).unwrap_or_else(|| top.label.clone()),
             _ => return None,
         };
@@ -412,15 +449,17 @@ impl Line {
     }
 }
 
-/// The items that are answered, never delegated.
-pub const NOT_DELEGABLE: [&str; 5] = ["approval", "question", "decision", "delegation", "review_request"];
+/// The items that are answered, never delegated, for an engine that does not
+/// say (feature `item_capabilities` says per item).
+pub const NOT_DELEGABLE: [&str; 6] =
+    ["approval", "question", "turn_question", "decision", "delegation", "review_request"];
 
 /// The verb of an inbox item's kind, always an imperative ("Look" for one
 /// this table does not know).
 pub fn kind_verb(kind: &str) -> &'static str {
     match kind {
         "approval" => "Approve",
-        "question" => "Answer",
+        "question" | "turn_question" => "Answer",
         "done" => "Review",
         "ci" | "ci_failed" => "Fix CI",
         "review" => "Address review",
@@ -463,6 +502,8 @@ fn top_of(item: &Actionable) -> Top {
         run: item.run.clone(),
         verb: item.verb.clone(),
         attestation: item.attestation.clone(),
+        delegable: item.delegable,
+        passable: item.passable,
     }
 }
 
@@ -532,6 +573,12 @@ pub fn engine_lines(
             Some(text) if !text.is_empty() => format!("{text} · {}", row.state),
             _ => row.state.clone(),
         };
+        // An agent's question in prose: the question, not five words of it (I4h).
+        if let Some(t) = top.as_ref().filter(|t| t.kind == "turn_question" && !t.label.is_empty())
+            && label.is_none_or(str::is_empty)
+        {
+            state = t.label.clone();
+        }
         // A feeder's dependencies still open: "waits on <title>".
         if !row.waits_on.is_empty() && row.ball != "done" {
             let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
@@ -694,6 +741,8 @@ pub fn fallback_lines(
         run: None,
         verb: None,
         attestation: None,
+        delegable: None,
+        passable: None,
     };
     let mut by_place: HashMap<&str, Vec<&attention::Item>> = HashMap::new();
     for i in items {

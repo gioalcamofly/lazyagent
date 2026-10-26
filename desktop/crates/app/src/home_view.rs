@@ -1011,12 +1011,18 @@ impl State {
             self.toast(Severity::Info, "Nothing to delegate: this line has no inbox item.");
             return;
         };
-        if matches!(top.kind.as_str(), "approval" | "question" | "decision" | "delegation") {
+        if matches!(top.kind.as_str(), "approval" | "question" | "turn_question" | "decision" | "delegation") {
             self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
             return;
         }
         if top.kind == "review_request" {
             self.toast(Severity::Info, "A teammate asked you for this review: open the PR (p) and review it there.");
+            return;
+        }
+        if !top.delegable() {
+            // The engine's catalog: an agent cannot do the user's review or merge.
+            let verb = line.verb().to_string();
+            self.toast(Severity::Info, format!("{verb} is yours to do: an agent cannot do it for you."));
             return;
         }
         if self.delegate_target(line) != DelegateTo::Agent {
@@ -1056,6 +1062,11 @@ impl State {
             return;
         }
         if line.row.is_none() || line.claim.is_some() {
+            return;
+        }
+        if !line.passable() {
+            let verb = line.verb().to_string();
+            self.toast(Severity::Info, format!("{verb} is yours: the orchestrator cannot act on it."));
             return;
         }
         let params = json!({"key": line.key, "kind": "delegate", "to": "orchestrator"});
@@ -1501,6 +1512,8 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
             match (l.zone, kind) {
                 (_, "approval") if c.approvals => keys.extend(["a approve", "⇧D deny", "Enter expand", "o terminal"]),
                 (_, "question") => keys.extend(["Enter answer", "o terminal"]),
+                // A question in prose: answered in the agent's terminal (I4h).
+                (_, "turn_question") => keys.extend(["Enter open", "o terminal"]),
                 // A ghost's brief is answered on it: Enter expands it (I4g).
                 (_, "decision") if c.decision_view && l.ghost.is_some() => {
                     let pick = l.brief.as_ref().is_some_and(|d| !d.brief.options.is_empty());
@@ -1519,7 +1532,7 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
             if l.top.as_ref().is_some_and(|t| t.is_ci()) && l.url.is_some() {
                 keys.push("p PR");
             }
-            if c.delegation && l.top.as_ref().is_some_and(|t| !home::NOT_DELEGABLE.contains(&t.kind.as_str())) {
+            if c.delegation && l.delegable() {
                 keys.push("d delegate");
             }
             if l.top.is_some() {
@@ -1530,7 +1543,7 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
             if c.decision_view && l.zone != Zone::Flight {
                 keys.push("y explain");
             }
-            if l.zone == Zone::Flight && has_row && c.pass {
+            if l.zone == Zone::Flight && has_row && c.pass && l.passable() {
                 keys.push("⇧O pass");
             }
             if c.gestures && has_row {
@@ -3080,7 +3093,8 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
         }
         let ci = l.top.as_ref().is_some_and(|t| t.is_ci());
-        let delegable_kind = l.top.as_ref().is_some_and(|t| !home::NOT_DELEGABLE.contains(&t.kind.as_str()));
+        // The engine's catalog: only what the branch's agent can resolve (I4h).
+        let delegable_kind = l.delegable();
         let live = match &l.row {
             Some(r) => !r.agents.is_empty(),
             // The client's own queue: its CI line sends the failures to
@@ -3102,7 +3116,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 "No agent runs here: it starts one, then hands it the item once its first turn ends"
             });
             buttons.push(b);
-        } else if ci && !c.delegation && live {
+        } else if ci && !c.delegation && live && delegable_kind {
             // Older engines: the failures go to the agent as a prompt.
             let mut b = button("Delegate to its agent  (d)", Act::SendCi(l.clone()));
             b.hover = Some("It comes back if the fact still holds");
@@ -3119,7 +3133,8 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         }
         if l.claim.is_some() || l.hold().is_some() {
             buttons.push(button("Take back  (u)", Act::TakeBack(l.clone())));
-        } else if (l.row.is_some() && !l.done()) || !c.engine {
+        } else if ((l.row.is_some() && !l.done()) || !c.engine) && l.passable() {
+            // Not where only the user may act: approve, answer, review, merge (I4h).
             let mut b = button("Pass to orchestrator  (⇧O)", Act::Pass(l.clone()));
             b.enabled = c.pass.is_ok() && l.row.is_some();
             buttons.push(b);
@@ -3180,6 +3195,7 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         if let Err(why) = c.pass
             && l.row.is_some()
             && !l.done()
+            && l.passable()
         {
             // On a line of its own: wrapped, never cut.
             ui.add(egui::Label::new(RichText::new(why).small().color(t.muted)).wrap());

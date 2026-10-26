@@ -662,6 +662,13 @@ pub struct StatusRow {
     /// unrelated to the branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci_note: Option<String>,
+    /// `status_list {fields}` only (feature `item_capabilities`, I4h): the
+    /// top item can go to the branch's agent; the orchestrator can act on
+    /// something on the row (one of its items, else its rule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passable: Option<bool>,
     /// Stale rows only (I4f): the worktree's uncommitted files, once git
     /// status is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1223,6 +1230,13 @@ pub struct Actionable {
     /// An `attestation_confirm` item's attestation (feature `ci_attest`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<Attestation>,
+    /// The branch's agent can resolve it (Delegate, d) / the orchestrator can
+    /// act on it (Pass, ⇧O): the catalog's (feature `item_capabilities`,
+    /// I4h). Older engines: absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passable: Option<bool>,
 }
 
 /// An agent's (or the orchestrator's) claim that a nondeterministic check's
@@ -1618,6 +1632,12 @@ pub struct CatalogKind {
     pub sentence: Option<String>,
     #[serde(default)]
     pub state_text: Option<String>,
+    /// I4h: its item can go to the branch's agent (d) / to the orchestrator
+    /// (⇧O). Older engines: absent.
+    #[serde(default)]
+    pub delegable: Option<bool>,
+    #[serde(default)]
+    pub passable: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

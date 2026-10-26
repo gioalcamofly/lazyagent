@@ -661,9 +661,9 @@ fn states(ui: &mut Ui, t: &Theme, catalog: &RulesCatalog, concepts: &Concepts, w
 }
 
 fn kinds(ui: &mut Ui, t: &Theme, catalog: &RulesCatalog, width: f32) {
-    let rest = (width - 120.0 - 170.0 - 70.0 - 60.0 - 50.0).max(140.0);
-    egui::Grid::new("how-kinds").num_columns(5).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-        for h in ["verb", "item", "level", "blocks", "key"] {
+    let rest = (width - 120.0 - 170.0 - 70.0 - 60.0 - 50.0 - 50.0).max(140.0);
+    egui::Grid::new("how-kinds").num_columns(6).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
+        for h in ["verb", "item", "level", "blocks", "d / ⇧O", "key"] {
             ui.label(RichText::new(h).small().color(t.muted));
         }
         ui.end_row();
@@ -677,6 +677,12 @@ fn kinds(ui: &mut Ui, t: &Theme, catalog: &RulesCatalog, width: f32) {
             wrap_cell(ui, 170.0, RichText::new(&k.title).color(t.text));
             ui.label(RichText::new(&k.level).small().color(col));
             ui.label(RichText::new(if k.blocks_agent { "an agent" } else { "" }).small().color(t.yellow));
+            // Who else can act on it: its agent (d), the orchestrator (⇧O).
+            let others: Vec<&str> = [("d", k.delegable), ("⇧O", k.passable)]
+                .into_iter()
+                .filter_map(|(w, ok)| ok.unwrap_or(false).then_some(w))
+                .collect();
+            ui.label(RichText::new(others.join(" · ")).small().color(t.muted));
             wrap_cell(ui, rest, RichText::new(action_cell(catalog, k.action.as_deref())).small().color(t.text));
             ui.end_row();
         }

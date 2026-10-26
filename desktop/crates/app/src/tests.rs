@@ -5593,6 +5593,10 @@ mod i4f;
 // the auto-delegation skip list.
 mod i4g;
 
+// I4h: an agent's question at the end of its turn leads its line; Delegate
+// and Pass only where an agent or the orchestrator can act.
+mod i4h;
+
 // "Prompts…": the agent prompts page and its screenshots.
 mod prompts;
 
