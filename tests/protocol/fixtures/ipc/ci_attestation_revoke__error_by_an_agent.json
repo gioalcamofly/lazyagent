@@ -1,0 +1,15 @@
+{
+  "case": "ci_attestation_revoke/error_by_an_agent",
+  "method": "ci_attestation_revoke",
+  "params": {
+    "caller": "tok-a3",
+    "id": "att1"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "ci_attestation_revoke is the user's (a client with no token)"
+    },
+    "id": "req-1"
+  }
+}

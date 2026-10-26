@@ -40,6 +40,8 @@ The rows themselves stay a projection (status.py); this store keeps only:
   (delegation.py).
 - **orchestrator_report**, the orchestrator's own last ``status_report``
   (``{note, at}``): what it says it is doing, tied to no work item.
+- **attestations**, agents' claims that a nondeterministic check's red is
+  not the branch's, with their evidence and state (engine/attest.py).
 
 Kept in ``$XDG_STATE_HOME/lazyagent/status/<repo hash>.json`` (0600, atomic)
 by the engine that owns the repo, written at most once per :data:`SAVE_EVERY`.
@@ -101,6 +103,9 @@ TIMELINE_KINDS = (
     "approval",
     # The user took back one gesture (status_gesture undo).
     "undo",
+    # An attestation filed, confirmed, rejected, revoked or expired
+    # (engine/attest.py).
+    "attest",
 )
 LABEL_CHARS = 40
 NOTE_CHARS = 200
@@ -244,6 +249,8 @@ class Overlay:
         self.spawned: dict[str, dict[str, Any]] = {}
         self.delegations: dict[str, dict[str, Any]] = {}
         self.orchestrator_report: dict[str, Any] | None = None
+        self.attestations: dict[str, dict[str, Any]] = {}
+        self.next_attestation = 1
         # key → the agent's turn its report was made in (status.turn); in
         # memory only, so a loaded report falls back to ``turn_over``.
         self._report_turns: dict[str, int] = {}
@@ -314,6 +321,15 @@ class Overlay:
         next_decision = data.get("next_decision")
         if type(next_decision) is int and next_decision > 0:
             self.next_decision = next_decision
+        self.attestations = {
+            k: a for k, a in table("attestations").items()
+            if isinstance(a.get("key"), str) and isinstance(a.get("at"), (int, float))
+            and isinstance(a.get("expires_at"), (int, float)) and isinstance(a.get("sha"), str)
+            and isinstance(a.get("checks"), list)
+        }
+        next_attestation = data.get("next_attestation")
+        if type(next_attestation) is int and next_attestation > 0:
+            self.next_attestation = next_attestation
         self.prune(self.clock())
         self._saved = self._serialize()
 
@@ -334,7 +350,9 @@ class Overlay:
                 "spawned": self.spawned,
                 "delegations": self.delegations,
                 "orchestrator_report": self.orchestrator_report,
-            },
+            }
+            | ({"attestations": self.attestations, "next_attestation": self.next_attestation}
+               if self.attestations or self.next_attestation > 1 else {}),
             indent=1,
             sort_keys=True,
         )
@@ -464,6 +482,8 @@ class Overlay:
             table.pop(key, None)
         for marks in self.seen.values():
             marks.pop(key, None)
+        for attestation_id in [i for i, a in self.attestations.items() if a.get("key") == key]:
+            del self.attestations[attestation_id]
         self.changed()
 
     # --- The orchestrator's ---

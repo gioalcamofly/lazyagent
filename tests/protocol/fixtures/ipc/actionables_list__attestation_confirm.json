@@ -1,0 +1,185 @@
+{
+  "case": "actionables_list/attestation_confirm",
+  "method": "actionables_list",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "counts": {
+        "deep": 0,
+        "deep_max": 5,
+        "now": 1,
+        "parked": 0,
+        "round": 2
+      },
+      "generated_at": 1700000000.0,
+      "items": [
+        {
+          "agent_id": "a1",
+          "blocks_agent": true,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "Bash",
+          "exit_code": null,
+          "id": "Approval:/tmp/repo-login/a1",
+          "job_id": null,
+          "kind": "approval",
+          "label": "Agent a1",
+          "level": "now",
+          "occurrence": "Approval:/tmp/repo-login/a1@1700000000.0",
+          "park": null,
+          "pr": null,
+          "priority": "medium",
+          "run": null,
+          "since": 1700000000.0,
+          "state": "approve: Bash",
+          "title": "Needs approval",
+          "work_item": "repo:login-ttl",
+          "worktree_path": "/tmp/repo-login"
+        },
+        {
+          "agent_id": "a3",
+          "attestation": {
+            "accepted_for": true,
+            "actor": "agent",
+            "actor_text": "agent a3",
+            "agent_id": "a3",
+            "at": 1700000000.0,
+            "branch": "evals-tune",
+            "check": "eval-suite",
+            "checks": [
+              "Tests/eval-suite"
+            ],
+            "comment": null,
+            "compared": "",
+            "confirm": "user",
+            "confirmed_by": null,
+            "decided_at": null,
+            "ended": null,
+            "evidence": {
+              "base_runs": [
+                {
+                  "passed": 70,
+                  "run_id": 410,
+                  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "total": 100
+                },
+                {
+                  "passed": 71,
+                  "run_id": 411,
+                  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "total": 100
+                },
+                {
+                  "passed": 72,
+                  "run_id": 412,
+                  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "total": 100
+                },
+                {
+                  "passed": 73,
+                  "run_id": 413,
+                  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "total": 100
+                },
+                {
+                  "passed": 74,
+                  "run_id": 414,
+                  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "total": 100
+                }
+              ],
+              "method": "range",
+              "own_runs": [
+                {
+                  "passed": 72,
+                  "total": 100,
+                  "where": "local"
+                },
+                {
+                  "passed": 72,
+                  "total": 100,
+                  "where": "local"
+                },
+                {
+                  "passed": 72,
+                  "total": 100,
+                  "where": "local"
+                }
+              ],
+              "range": {
+                "base_max": 0.74,
+                "base_min": 0.7,
+                "drop": 0.0,
+                "max_drop": 0.05,
+                "own_max": 0.72,
+                "own_min": 0.72,
+                "within": true
+              },
+              "reason": "pass rate within master's range; the failing cases differ every run",
+              "verdict": "unrelated"
+            },
+            "expires_at": 1700259200.0,
+            "id": "att1",
+            "key": "repo:evals-tune",
+            "name": "eval-suite",
+            "point": null,
+            "range_text": "drop 0 points vs max 5: within the base's range",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "pending",
+            "text": "base 5 runs 70-74 %, branch 3 runs (3 local) 72 %"
+          },
+          "blocks_agent": false,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "agent a3 says eval-suite's failure is unrelated: base 5 runs 70-74 %, branch 3 runs (3 local) 72 %; drop 0 points vs max 5: within the base's range",
+          "exit_code": null,
+          "id": "Attestation_confirm:/tmp/repo-evals:att1",
+          "job_id": null,
+          "kind": "attestation_confirm",
+          "label": "evals-tune",
+          "level": "round",
+          "occurrence": "Attestation_confirm:/tmp/repo-evals:att1@1700000000.0",
+          "park": null,
+          "pr": null,
+          "priority": "medium",
+          "run": null,
+          "since": 1700000000.0,
+          "state": "Confirm unrelated: eval-suite",
+          "title": "Confirm attestation",
+          "work_item": "repo:evals-tune",
+          "worktree_path": "/tmp/repo-evals"
+        },
+        {
+          "agent_id": null,
+          "blocks_agent": false,
+          "class": "quick",
+          "decision_id": null,
+          "detail": "Approved, CI green and mergeable: merging is yours, on the PR.",
+          "exit_code": null,
+          "id": "Rule:merge:repo:docs-index",
+          "job_id": null,
+          "kind": "rule",
+          "label": "#14 Index the docs",
+          "level": "round",
+          "occurrence": "Rule:merge:repo:docs-index@1700000000.0",
+          "park": null,
+          "pr": {
+            "number": 14,
+            "title": "Index the docs",
+            "url": "https://example.com/pull/14"
+          },
+          "priority": "medium",
+          "rule_id": "merge",
+          "run": null,
+          "since": 1700000000.0,
+          "state": "merge: approved, CI green",
+          "title": "Merge",
+          "verb": "Merge",
+          "work_item": "repo:docs-index",
+          "worktree_path": "/tmp/repo-docs"
+        }
+      ]
+    }
+  }
+}

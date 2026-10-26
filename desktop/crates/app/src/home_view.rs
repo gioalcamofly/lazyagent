@@ -29,8 +29,8 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, CiLogSummary, Decision, InboxConfig, Presence, RulesProblem, StatusGestureResult,
-    StatusRow, StatusTimeline, TimelineEntry,
+    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, InboxConfig, Presence, RulesProblem,
+    StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -163,6 +163,12 @@ enum Act {
     RestoreDelegate(Line),
     SpawnDelegate(Line),
     StartOrchestrator,
+    /// An attestation's Confirm item (R5): Accept, or Reject with a comment.
+    AttestAccept(String),
+    RejectOpen(String),
+    RejectEdit(String),
+    Reject(String, String),
+    RejectCancel,
 }
 
 /// `1h 40m`, `25m`: how long is left.
@@ -295,8 +301,13 @@ impl State {
         if take(Modifiers::NONE, Key::Escape) {
             // Esc closes the open form, else collapses the expanded line.
             let h = &mut self.home;
-            if h.closing.is_some() || h.labeling.is_some() || h.reverting.is_some() || h.answering.is_some() {
-                (h.closing, h.labeling, h.reverting, h.answering) = (None, None, None, None);
+            if h.closing.is_some()
+                || h.labeling.is_some()
+                || h.reverting.is_some()
+                || h.answering.is_some()
+                || h.rejecting.is_some()
+            {
+                (h.closing, h.labeling, h.reverting, h.answering, h.rejecting) = (None, None, None, None, None);
             } else if h.item_open.is_some() {
                 h.item_open = None;
             } else {
@@ -1099,6 +1110,35 @@ impl State {
         });
     }
 
+    /// Accept or reject an agent's attestation (R5, `ci_attestation_confirm`):
+    /// Reject sends the comment to the agent and brings Fix CI back.
+    pub fn confirm_attestation(&mut self, id: String, accept: bool, comment: String) {
+        self.home.rejecting = None;
+        let mut params = json!({"id": id, "accept": accept});
+        if !comment.trim().is_empty() {
+            params["comment"] = json!(comment.trim());
+        }
+        self.conn.request("ci_attestation_confirm", params, move |s, reply| match reply {
+            Ok(_) => {
+                s.inbox_gen += 1;
+                let what = if accept {
+                    "Accepted: the check no longer counts against the branch."
+                } else {
+                    "Rejected: the agent gets your comment, and Fix CI is back."
+                };
+                s.toast(Severity::Info, what);
+                s.fetch_inbox();
+            }
+            Err(e) => s.toast(Severity::Error, format!("Not recorded: {e}")),
+        });
+    }
+
+    /// Reject…: the comment form, focused.
+    pub fn open_reject(&mut self, id: String) {
+        self.home.rejecting = Some((id, String::new()));
+        self.home.focus_form = true;
+    }
+
     /// The Home toggle: `auto` · `present` · `away`.
     pub fn set_presence(&mut self, mode: &str) {
         let mode = mode.to_string();
@@ -1541,6 +1581,7 @@ impl App {
             closing: home.closing.clone(),
             labeling: home.labeling.clone(),
             reverting: home.reverting.clone(),
+            rejecting: home.rejecting.clone(),
             answering: home.answering.clone(),
             brief_choice: home.brief_choice.clone(),
             item_open: home.item_open.clone(),
@@ -1821,6 +1862,11 @@ impl App {
         {
             acts.insert(0, Act::AnswerEdit(key, text));
         }
+        if forms_out.rejecting != forms.rejecting
+            && let Some((_, text)) = forms_out.rejecting.clone()
+        {
+            acts.insert(0, Act::RejectEdit(text));
+        }
         for act in acts {
             match act {
                 Act::Select(k) => s.home.selected = Some(k),
@@ -1881,6 +1927,15 @@ impl App {
                 }
                 Act::Revert(id, comment) => s.revert(id, comment),
                 Act::RevertCancel => s.home.reverting = None,
+                Act::AttestAccept(id) => s.confirm_attestation(id, true, String::new()),
+                Act::RejectOpen(id) => s.open_reject(id),
+                Act::RejectEdit(text) => {
+                    if let Some(r) = s.home.rejecting.as_mut() {
+                        r.1 = text;
+                    }
+                }
+                Act::Reject(id, comment) => s.confirm_attestation(id, false, comment),
+                Act::RejectCancel => s.home.rejecting = None,
                 Act::Presence(mode) => s.set_presence(mode),
                 Act::Approve(l, allow) => s.answer_approval(&l, allow),
                 Act::AnswerEdit(key, text) => s.home.answering = Some((key, text)),
@@ -1906,6 +1961,7 @@ struct Forms {
     closing: Option<String>,
     labeling: Option<Label>,
     reverting: Option<(String, String)>,
+    rejecting: Option<(String, String)>,
     answering: Option<(String, String)>,
     brief_choice: Option<(String, String)>,
     item_open: Option<(String, String)>,
@@ -2080,9 +2136,28 @@ fn ball_text(c: &LineCtx, l: &Line, shown: Zone) -> (String, String, Color32) {
 
 /// `CI red · unrelated (base also red: 2 tests)` (feature ci_tests, R4):
 /// an informational chip, not an item; the full text on hover.
+/// The chip's words: the note, or when it is too long and an attestation
+/// explains part of the red, that part first: `CI red · eval-suite attested
+/// by agent a2 +1` (the full note on hover).
+pub fn chip_text(note: &str) -> String {
+    const MAX: usize = 48;
+    if note.chars().count() <= MAX {
+        return note.to_string();
+    }
+    let inner = note.split_once('(').map(|(_, r)| r.trim_end_matches(')')).unwrap_or(note);
+    let parts: Vec<&str> = inner.split("; ").collect();
+    match parts.iter().position(|p| p.contains(" attested by ")) {
+        Some(i) => {
+            let more = if parts.len() > 1 { format!(" +{}", parts.len() - 1) } else { String::new() };
+            home::middle_ellipsis(&format!("CI red · {}{more}", parts[i]), MAX)
+        }
+        None => home::middle_ellipsis(note, MAX),
+    }
+}
+
 fn ci_chip(ui: &mut Ui, t: &Theme, l: &Line) {
     let Some(note) = l.ci_note() else { return };
-    let short = home::middle_ellipsis(note, 48);
+    let short = chip_text(note);
     let r = egui::Frame::new()
         .fill(t.panel)
         .stroke(egui::Stroke::new(1.0, t.muted))
@@ -2499,6 +2574,146 @@ pub fn close_text(agents: &[String], stops: bool) -> String {
     )
 }
 
+/// `71 %`: a run's pass rate, as the engine rounds it.
+fn rate(run: &Value) -> Option<i64> {
+    let (passed, total) = (run["passed"].as_f64()?, run["total"].as_f64()?);
+    (total > 0.0).then(|| (100.0 * passed / total).round() as i64)
+}
+
+/// `71 %, 75 %, 78 %` with each run's id (or `local`) on hover.
+pub fn runs_text(runs: &[Value]) -> (String, String) {
+    let shown: Vec<String> = runs
+        .iter()
+        .filter_map(|r| {
+            let local = r["run_id"].is_null();
+            rate(r).map(|p| if local { format!("{p} % (local)") } else { format!("{p} %") })
+        })
+        .collect();
+    let hover: Vec<String> = runs
+        .iter()
+        .map(|r| match r["run_id"].as_i64() {
+            Some(id) => format!(
+                "run {id}{}",
+                r["sha"].as_str().map(|s| format!(" at {}", &s[..s.len().min(7)])).unwrap_or_default()
+            ),
+            None => format!("{} (the agent's claim)", r["where"].as_str().unwrap_or("local")),
+        })
+        .collect();
+    (shown.join(", "), hover.join("\n"))
+}
+
+/// The evidence lines of an attestation: what the agent read on the base,
+/// what it ran on the head, and the engine's recomputed comparison.
+pub fn evidence_rows(a: &Attestation) -> Vec<(&'static str, String, String)> {
+    let ev = &a.evidence;
+    let empty = vec![];
+    let base = ev["base_runs"].as_array().unwrap_or(&empty);
+    let own = ev["own_runs"].as_array().unwrap_or(&empty);
+    let rng = &ev["range"];
+    let pct = |k: &str| rng[k].as_f64().map(|x| (100.0 * x).round() as i64);
+    let span = |lo: Option<i64>, hi: Option<i64>| match (lo, hi) {
+        (Some(l), Some(h)) if l == h => format!("{l} %"),
+        (Some(l), Some(h)) => format!("{l}-{h} %"),
+        _ => "?".into(),
+    };
+    let (base_text, base_hover) = runs_text(base);
+    let (own_text, own_hover) = runs_text(own);
+    let sha = &a.sha[..a.sha.len().min(7)];
+    let mut rows = vec![
+        (
+            "base",
+            format!("{} runs: {base_text} · range {}", base.len(), span(pct("base_min"), pct("base_max"))),
+            base_hover,
+        ),
+        (
+            "branch",
+            format!("{} runs at {sha}: {own_text} · range {}", own.len(), span(pct("own_min"), pct("own_max"))),
+            own_hover,
+        ),
+    ];
+    if let (Some(drop), Some(max)) = (pct("drop"), pct("max_drop")) {
+        let within = if rng["within"].as_bool() == Some(true) { "within" } else { "outside" };
+        rows.push(("drop", format!("{drop} points vs max_drop {max}: {within} the base's range"), String::new()));
+    }
+    if let Some(m) = ev["method"].as_str().filter(|m| *m != "range") {
+        rows.push(("method", format!("{m}: the engine could not check it; read the reason"), String::new()));
+    }
+    rows
+}
+
+/// A Confirm item's evidence, and Accept / Reject (a comment for the agent).
+fn attestation_ui(ui: &mut Ui, t: &Theme, a: &Attestation, forms: &mut Forms, focus: bool, acts: &mut Vec<Act>) {
+    egui::Frame::new().fill(t.panel).corner_radius(4).inner_margin(8).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new(format!("{} says {}'s failure is not the branch's", a.actor_text, a.name))
+                .strong()
+                .color(t.text),
+        );
+        if let Some(reason) = a.evidence["reason"].as_str().filter(|r| !r.is_empty()) {
+            // The agent's words: shown as data.
+            ui.add(egui::Label::new(RichText::new(format!("“{reason}”")).italics().color(t.text)).wrap());
+        }
+        egui::Grid::new(("attestation", &a.id)).num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+            for (what, text, hover) in evidence_rows(a) {
+                ui.label(RichText::new(what).small().color(t.muted));
+                let colour = match what {
+                    "drop" if text.contains("within") => t.green,
+                    "drop" | "method" => t.yellow,
+                    _ => t.text,
+                };
+                let r = ui.label(RichText::new(text).small().monospace().color(colour));
+                if !hover.is_empty() {
+                    r.on_hover_text(hover);
+                }
+                ui.end_row();
+            }
+        });
+        match forms.rejecting.as_mut().filter(|r| r.0 == a.id) {
+            Some((id, comment)) => {
+                ui.horizontal(|ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(comment)
+                            .hint_text("why: the agent gets this comment")
+                            .desired_width((ui.available_width() - 180.0).max(200.0)),
+                    );
+                    if focus {
+                        edit.request_focus();
+                    }
+                    let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+                    let ok = !comment.trim().is_empty();
+                    if (ui.add_enabled(ok, egui::Button::new(RichText::new("Reject").color(t.red))).clicked() || enter)
+                        && ok
+                    {
+                        acts.push(Act::Reject(id.clone(), comment.clone()));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        acts.push(Act::RejectCancel);
+                    }
+                });
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("Accept").color(t.green))
+                        .on_hover_text("The check no longer counts against the branch, until a new commit")
+                        .clicked()
+                    {
+                        acts.push(Act::AttestAccept(a.id.clone()));
+                    }
+                    if ui
+                        .button(RichText::new("Reject…").color(t.red))
+                        .on_hover_text("Your comment goes to the agent; Fix CI comes back")
+                        .clicked()
+                    {
+                        acts.push(Act::RejectOpen(a.id.clone()));
+                    }
+                });
+            }
+        }
+    });
+}
+
 /// The confirmation of ⇧U: what reverting the orchestrator's decision does.
 pub fn revert_text(d: &Decision) -> String {
     let choice = d.choice().unwrap_or("?");
@@ -2543,7 +2758,9 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                     });
                     ui.label(RichText::new(&top.label).small().color(t.muted));
                 } else {
-                    let text = [top.label.as_str(), top.detail.as_str()]
+                    // A Confirm item's evidence has its own block below.
+                    let detail = if top.attestation.is_some() { "" } else { top.detail.as_str() };
+                    let text = [top.label.as_str(), detail]
                         .iter()
                         .filter(|x| !x.is_empty())
                         .map(|x| humanize(x))
@@ -2552,6 +2769,10 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 }
             }
             _ => {}
+        }
+        if let Some(a) = l.top.as_ref().filter(|t| t.kind == "attestation_confirm").and_then(|t| t.attestation.as_ref())
+        {
+            attestation_ui(ui, t, a, forms, focus, acts);
         }
         // Every open item, and which one leads the line. A brief behind
         // the top one is answered here too ("Answer here"): never a dead end.

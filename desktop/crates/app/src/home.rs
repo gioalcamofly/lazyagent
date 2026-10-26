@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lazyagent_proto::types::{Actionable, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow};
+use lazyagent_proto::types::{Actionable, Attestation, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow};
 
 use crate::attention::{self, Kind};
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -78,6 +78,8 @@ pub struct Top {
     pub run: Option<CiRun>,
     /// A `rule` item's verb (feature `rules`: Merge).
     pub verb: Option<String>,
+    /// An `attestation_confirm` item's attestation (feature `ci_attest`).
+    pub attestation: Option<Attestation>,
 }
 
 impl Top {
@@ -431,6 +433,7 @@ pub fn kind_verb(kind: &str) -> &'static str {
         "decision" => "Decide",
         "report" => "Read",
         "review_request" => "Review",
+        "attestation_confirm" => "Confirm",
         _ => "Look",
     }
 }
@@ -459,6 +462,7 @@ fn top_of(item: &Actionable) -> Top {
         decision_id: item.decision_id.clone(),
         run: item.run.clone(),
         verb: item.verb.clone(),
+        attestation: item.attestation.clone(),
     }
 }
 
@@ -689,6 +693,7 @@ pub fn fallback_lines(
         decision_id: None,
         run: None,
         verb: None,
+        attestation: None,
     };
     let mut by_place: HashMap<&str, Vec<&attention::Item>> = HashMap::new();
     for i in items {
@@ -843,6 +848,8 @@ pub struct Home {
     pub labeling: Option<Label>,
     /// The revert form (an optional comment) is open on this line.
     pub reverting: Option<(String, String)>,
+    /// The Reject form of an attestation (its id, the comment typed).
+    pub rejecting: Option<(String, String)>,
     /// Give the form just opened (label, revert, answer) the keyboard once.
     pub focus_form: bool,
     /// The answer field of a question line: its key and the text typed.

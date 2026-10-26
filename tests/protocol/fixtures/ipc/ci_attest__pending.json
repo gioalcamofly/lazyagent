@@ -1,0 +1,148 @@
+{
+  "case": "ci_attest/pending",
+  "method": "ci_attest",
+  "params": {
+    "base_runs": [
+      {
+        "passed": 70,
+        "run_id": 410,
+        "total": 100
+      },
+      {
+        "passed": 71,
+        "run_id": 411,
+        "total": 100
+      },
+      {
+        "passed": 72,
+        "run_id": 412,
+        "total": 100
+      },
+      {
+        "passed": 73,
+        "run_id": 413,
+        "total": 100
+      },
+      {
+        "passed": 74,
+        "run_id": 414,
+        "total": 100
+      }
+    ],
+    "caller": "tok-a3",
+    "check": "eval-suite",
+    "own_runs": [
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      },
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      },
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      }
+    ],
+    "reason": "pass rate within master's range; the failing cases differ every run",
+    "sha": "aaaaaaa"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "accepted_for": true,
+      "actor": "agent",
+      "actor_text": "agent a3",
+      "agent_id": "a3",
+      "at": 1700000000.0,
+      "branch": "evals-tune",
+      "check": "eval-suite",
+      "checks": [
+        "Tests/eval-suite"
+      ],
+      "comment": null,
+      "compared": "",
+      "confirm": "user",
+      "confirmed_by": null,
+      "decided_at": null,
+      "ended": null,
+      "evidence": {
+        "base_runs": [
+          {
+            "passed": 70,
+            "run_id": 410,
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "total": 100
+          },
+          {
+            "passed": 71,
+            "run_id": 411,
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "total": 100
+          },
+          {
+            "passed": 72,
+            "run_id": 412,
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "total": 100
+          },
+          {
+            "passed": 73,
+            "run_id": 413,
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "total": 100
+          },
+          {
+            "passed": 74,
+            "run_id": 414,
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "total": 100
+          }
+        ],
+        "method": "range",
+        "own_runs": [
+          {
+            "passed": 72,
+            "total": 100,
+            "where": "local"
+          },
+          {
+            "passed": 72,
+            "total": 100,
+            "where": "local"
+          },
+          {
+            "passed": 72,
+            "total": 100,
+            "where": "local"
+          }
+        ],
+        "range": {
+          "base_max": 0.74,
+          "base_min": 0.7,
+          "drop": 0.0,
+          "max_drop": 0.05,
+          "own_max": 0.72,
+          "own_min": 0.72,
+          "within": true
+        },
+        "reason": "pass rate within master's range; the failing cases differ every run",
+        "verdict": "unrelated"
+      },
+      "expires_at": 1700259200.0,
+      "id": "att1",
+      "key": "repo:evals-tune",
+      "message": "Recorded; the user is asked to confirm it (a Confirm item in their inbox). Until then the check counts as related.",
+      "name": "eval-suite",
+      "point": null,
+      "range_text": "drop 0 points vs max 5: within the base's range",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "pending",
+      "text": "base 5 runs 70-74 %, branch 3 runs (3 local) 72 %"
+    }
+  }
+}

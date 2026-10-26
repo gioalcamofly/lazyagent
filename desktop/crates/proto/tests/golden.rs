@@ -139,6 +139,10 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             }
             // The user's (CLI, the banner).
             "rules_allow" => continue,
+            // R5: the Confirm item's Accept / Reject and Why?'s Revoke
+            // (the app reads only that they answered); ci_attest is MCP-only.
+            "ci_attestation_confirm" | "ci_attestation_revoke" => round_trip::<Attestation>(case, result),
+            "ci_attest" => continue,
             // The Prompts page: decoded (it reads only part of the payload).
             "prompts_status" => {
                 let st: PromptsStatus = serde_json::from_value(result.clone()).unwrap();
@@ -218,6 +222,8 @@ const METHODS_USED: &[&str] = &[
     "decision_rebrief_request",
     "decision_evidence",
     "ci_log_summary",
+    "ci_attestation_confirm",
+    "ci_attestation_revoke",
     "approval_answer",
     "question_answer",
     "orchestrator_actions",

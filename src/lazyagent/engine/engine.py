@@ -70,6 +70,7 @@ from lazyagent.engine.manifest import (
     manifest_path,
 )
 from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
+from lazyagent.engine.attest import Attestations
 from lazyagent.engine.autodelegate import AutoDelegate
 from lazyagent.engine.claims import Claims
 from lazyagent.engine.delegation import Delegations
@@ -304,6 +305,8 @@ class Engine:
         self.decisions = Decisions(self)
         # Inbox items the user delegated to the branch's agent.
         self.delegations = Delegations(self)
+        # Attestations for nondeterministic CI checks (engine/attest.py).
+        self.attestations = Attestations(self)
         # The orchestrator as first responder: routing, presence, mandate,
         # caps, revert (engine/orchestrator.py); opt-in auto-delegation.
         self.first_responder = FirstResponder(self)

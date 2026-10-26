@@ -280,9 +280,10 @@ provider = "claude"
 # fnmatch globs, any case. A red made only of these is not delegated (Home
 # and Why? say "auto-delegation skipped: eval-suite is on the skip list"); with
 # other failing checks too, the agent is told to leave these alone. The
-# desktop's Auto-delegation menu shows the list. For checks that fail at
-# random, the `[ci] nondeterministic` attestations (proposal 0014, R5) will be
-# the long-term answer; this list is the switch until then.
+# desktop's Auto-delegation menu shows the list. A check that fails at random
+# can instead be listed in rules.toml's `[ci] nondeterministic`: off this list,
+# its brief asks the agent to investigate and attest (see "Nondeterministic
+# suites: attestations"); on both, this list wins and it stays yours.
 # auto_delegate_skip_checks = ["eval-suite", "label-*"]
 # The permission mode of an agent auto-delegation has to spawn (no agent ran
 # on the branch): the worktree's last recorded agent's mode when there is one,
@@ -313,7 +314,7 @@ provider = "claude"
 # publishing, force-pushing, deleting unpushed work and closing PRs are never
 # its to do alone). Actions: answer_quick, answer_reversible, answer_partly,
 # relay, restore_owner, ci_rerun, rebase_via_owner, spawn_worker,
-# next_project_task.
+# next_project_task, attest_ci.
 # away_allow = ["answer_quick", "relay"]
 # allow_outward = ["tracker", "github_comment", "pr_create"]
 
@@ -670,7 +671,8 @@ with no test data (no `tests_from`, no artifact, a parser that could not
 match the runner's own count, a build or lint failure, another CI's check),
 a check that exists only on the branch, or a base with no run at exactly
 that commit: related. Suites whose results vary run to run (LLM evals,
-noisy benchmarks) are never compared this way: they stay related.
+noisy benchmarks) are never compared this way: they stay related unless an
+agent attests them (below).
 
 ```toml
 # rules.toml (global or repo): where each check's failing-test ids come from
@@ -742,6 +744,69 @@ totals at the end of a long log are read. When the middle was dropped, only
 parsers that add totals up over the log (`go`, `cargo`, `junit-console`,
 `regex`) say the log was cut. Colour codes are stripped in either form,
 the ESC byte or the `^[` that `gh` writes into a pipe.
+
+**Nondeterministic suites: attestations.** A suite whose pass rate varies
+run to run cannot be compared by test ids. For the checks you list as
+nondeterministic, an agent that has read the suite's history on the base and
+run it on its own head files an **attestation** (MCP `ci_attest`): its
+evidence, which the engine checks as far as it can, and which your config
+decides on. Merging stays yours.
+
+```toml
+# rules.toml (global or repo)
+[ci]
+nondeterministic = ["eval-suite"]          # pass rate varies run to run; attestations are refused for any other check
+accept_attestation_for = ["eval-suite"]    # an accepted attestation explains the check (else: recorded, no effect)
+attestation_ttl = "72h"                    # also expires on a new commit and when the check's base point moves
+min_base_runs = 5                          # defaults for every check
+min_repetitions = 3
+max_drop = 0.05
+
+[ci.check."eval-suite"]
+confirm = "user"                           # default: you confirm each one; "none" accepts a valid one at once
+min_base_runs = 8                          # a check's own keys win over [ci]'s
+```
+
+| Key | Meaning |
+|---|---|
+| `[ci] nondeterministic` | Check names (job, job without matrix values, or `<workflow file>/<job>`; `*` and `?` work) whose red may be attested |
+| `[ci] accept_attestation_for` | The checks an accepted attestation takes out of `ci.related_failures` |
+| `[ci] attestation_ttl` | `"72h"` (default), `"3d"`, or seconds |
+| `min_base_runs`, `min_repetitions`, `max_drop` | In `[ci]` or per check: base runs cited (5), runs on the head (3), how far below the base's lowest pass rate the branch's lowest may be (0.05) |
+| `[ci.check."<name>"] confirm` | `"user"` (default) or `"none"`; an attestation whose method is not `range` always asks you |
+
+What the engine checks: the check is red on the head and listed; `sha` is
+the head; enough runs; every `run_id` is a run of that check's workflow with
+that job, base runs on the base branch and the agent's own on the head; pass
+rates are counts. It recomputes the range and refuses an attestation whose
+own numbers contradict it. Runs the agent made locally are recorded as its
+claim and shown as such.
+
+A worked example. CI is red on `9be01d4`: `unit-tests` (2 failing tests) and
+`eval-suite`. You press `d` on Fix CI. Mechanism A finds both unit tests
+failing on main too; the agent reads 5 runs of `eval-suite` on main (71-78
+%), runs it 3 times on its head (74-76 %) and calls `ci_attest`. A
+**Confirm** item takes Fix CI's place in Round: `agent a2 says eval-suite's
+failure is unrelated: base 5 runs 71-78 %, branch 3 runs 74-76 %; drop 0
+points vs max 5`, and the delegation ends `CI failures unrelated (base also
+red: 2 tests; eval-suite attested)`. **Accept**: every failing check is
+explained, the row carries `CI red · unrelated (base also red: 2 tests;
+eval-suite attested by agent a2)`, and your Merge rule (with `ci.unrelated`)
+shows **Merge**. **Reject** (with a comment): the comment goes to the agent
+(`Attestation att1 for eval-suite rejected by the user: …`) and Fix CI comes
+back as `CI red: eval-suite (attestation rejected)`. A new commit expires it:
+`CI red: eval-suite (attestation expired)`. Why? (`w`) lists the standing
+attestations with **Revoke**. Rules read `ci.attested`,
+`ci.attestation_pending` and `ci.first_attestation_pending`.
+
+Auto-delegation (`[inbox] auto_delegate = ["ci_red"]`) of a red listed here
+asks the agent to investigate, never to edit the test: read the base's runs,
+run the suite on the head (if its instructions define a slot or lock for
+running this suite, it requests it before each run and releases it after),
+then fix a real regression or attest. A check also on `[inbox]
+auto_delegate_skip_checks` is skipped instead: the skip list wins. The
+orchestrator may attest only within its mandate (`attest_ci`, while you are
+away).
 
 ```sh
 lazyagent rules check     # errors with file and line (exit 1), and what is in force instead

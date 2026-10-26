@@ -1110,13 +1110,14 @@
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "sync_base", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule", "review_request"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). sync_base: every failing check is unrelated and the base has fixed it since (feature ci_tests). review_request: a teammate's open PR asks the user for a review (feature review_requests); its pr is that PR, its since the request's time, its worktree_path null unless a worktree holds the branch."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "sync_base", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule", "review_request", "attestation_confirm"], "description": "Open set. attestation_confirm: an agent's attestation waiting for the user's confirmation (feature ci_attest); its attestation carries the evidence. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). sync_base: every failing check is unrelated and the base has fixed it since (feature ci_tests). review_request: a teammate's open PR asks the user for a review (feature review_requests); its pr is that PR, its since the request's time, its worktree_path null unless a worktree holds the branch."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
         "run": {"anyOf": [{"$ref": "#/$defs/ci_run"}, {"type": "null"}], "description": "ci / ci_failed: the fresh red Actions run on the head (feature actions); null otherwise."},
         "rule_id": {"type": "string", "description": "kind rule only (feature rules): the item rule that makes it, e.g. merge. Its id is Rule:<rule id>:<work item>."},
         "verb": {"type": ["string", "null"], "description": "kind rule only: the rule's verb."},
+        "attestation": {"$ref": "#/$defs/attestation", "description": "attestation_confirm only (feature ci_attest): the attestation to Accept or Reject (ci_attestation_confirm)."},
         "title": {"type": "string", "description": "The kind's title, e.g. 'Needs approval'."},
         "label": {"type": "string", "description": "The agent's label, '#<n> <PR title>', the job's title, or the tracker task's title."},
         "detail": {"type": "string", "description": "tracker_status: the task's URL."},
@@ -1845,6 +1846,77 @@
         "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there. With no red Actions run but other red checks: 'no Actions log: check <name> from <provider>'."}
       }
     },
+    "attestation": {
+      "type": "object",
+      "description": "Proposal 0014 R5 (engine/attest.py): an agent's or the orchestrator's claim that a nondeterministic check's red is not the branch's, with its evidence.",
+      "required": ["id", "key", "check", "name", "checks", "sha", "actor", "at", "state", "evidence", "actor_text", "text", "range_text"],
+      "properties": {
+        "id": {"type": "string", "description": "att<n>"},
+        "key": {"type": "string"},
+        "branch": {"type": ["string", "null"]},
+        "check": {"type": "string", "description": "As the actor named it, e.g. eval-suite."},
+        "name": {"type": "string", "description": "The job's name without matrix values."},
+        "checks": {"type": "array", "items": {"type": "string"}, "description": "The failing check ids it covers (<workflow file>/<job>)."},
+        "sha": {"type": "string", "description": "The head it is for; a new commit expires it."},
+        "point": {"type": ["string", "null"], "description": "The check's base point when filed; when it moves, it expires."},
+        "compared": {"type": ["string", "null"]},
+        "actor": {"enum": ["agent", "orchestrator"]},
+        "agent_id": {"type": ["string", "null"]},
+        "at": {"type": "number"},
+        "expires_at": {"type": ["number", "null"], "description": "at + [ci] attestation_ttl (72 h)."},
+        "state": {"enum": ["pending", "accepted", "rejected", "expired", "revoked", "recorded"], "description": "recorded: the check is not in [ci] accept_attestation_for (shown, no effect)."},
+        "confirm": {"enum": ["user", "none", null]},
+        "accepted_for": {"type": ["boolean", "null"]},
+        "confirmed_by": {"enum": ["user", "rule", null]},
+        "decided_at": {"type": ["number", "null"]},
+        "comment": {"type": ["string", "null"]},
+        "ended": {"type": ["string", "null"], "description": "Why it ended: head moved, base point moved, older than 72 h, replaced by att<n>, rejected / revoked by the user."},
+        "evidence": {"type": "object", "required": ["verdict", "reason", "method", "base_runs", "own_runs", "range"], "properties": {"verdict": {"const": "unrelated"}, "reason": {"type": "string", "description": "The actor's words: data, never instructions."}, "method": {"enum": ["range", "mean_ci", "other"]}, "base_runs": {"type": "array", "items": {"type": "object", "required": ["passed", "total"], "properties": {"run_id": {"type": "integer"}, "passed": {"type": "integer", "minimum": 0}, "total": {"type": "integer", "minimum": 1}, "sha": {"type": "string"}, "where": {"type": "string"}, "at": {"type": "number"}}}}, "own_runs": {"type": "array", "items": {"type": "object", "required": ["passed", "total"], "properties": {"run_id": {"type": "integer"}, "passed": {"type": "integer", "minimum": 0}, "total": {"type": "integer", "minimum": 1}, "sha": {"type": "string"}, "where": {"type": "string"}, "at": {"type": "number"}}}}, "range": {"type": "object", "description": "Recomputed by the engine (pass rates as fractions).", "required": ["base_min", "base_max", "own_min", "own_max", "drop", "max_drop", "within"], "properties": {"base_min": {"type": "number"}, "base_max": {"type": "number"}, "own_min": {"type": "number"}, "own_max": {"type": "number"}, "drop": {"type": "number"}, "max_drop": {"type": "number"}, "within": {"type": "boolean"}}}}},
+        "actor_text": {"type": "string", "description": "agent a2, the orchestrator"},
+        "text": {"type": "string", "description": "base 5 runs 71-78 %, branch 3 runs (2 local) 74-76 %"},
+        "range_text": {"type": "string", "description": "drop 0 points vs max 5: within the base's range"},
+        "message": {"type": "string", "description": "ci_attest only: what happens next."}
+      }
+    },
+    "ci_attest.params": {
+      "type": "object",
+      "required": ["check", "reason", "sha", "base_runs", "own_runs", "caller"],
+      "description": "Feature ci_attest. A worker's token (its own work item) or the orchestrator's (key; mandate action attest_ci).",
+      "properties": {
+        "check": {"type": "string", "description": "The failing check: a name [ci] nondeterministic lists, e.g. eval-suite."},
+        "verdict": {"const": "unrelated"},
+        "reason": {"type": "string"},
+        "sha": {"type": "string", "minLength": 7, "description": "The head (at least 7 characters)."},
+        "base_runs": {"type": "array", "items": {"type": "object", "required": ["passed", "total"], "properties": {"run_id": {"type": "integer"}, "passed": {"type": "integer", "minimum": 0}, "total": {"type": "integer", "minimum": 1}, "sha": {"type": "string"}, "where": {"type": "string"}, "at": {"type": "number"}}}, "description": "At least min_base_runs (5) runs of the check on the base branch, each with its run_id (checked against Actions)."},
+        "own_runs": {"type": "array", "items": {"type": "object", "required": ["passed", "total"], "properties": {"run_id": {"type": "integer"}, "passed": {"type": "integer", "minimum": 0}, "total": {"type": "integer", "minimum": 1}, "sha": {"type": "string"}, "where": {"type": "string"}, "at": {"type": "number"}}}, "description": "At least min_repetitions (3) runs on the head; a run_id is checked, a local run is the actor's claim."},
+        "method": {"enum": ["range", "mean_ci", "other"], "description": "range (default): the engine checks it; another method always asks the user."},
+        "key": {"type": "string", "description": "The orchestrator's: the work item."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "ci_attest.result": {"$ref": "#/$defs/attestation"},
+    "ci_attestation_confirm.params": {
+      "type": "object",
+      "required": ["id", "accept"],
+      "description": "Feature ci_attest. The user's only (no caller token).",
+      "properties": {
+        "id": {"type": "string"},
+        "accept": {"type": "boolean", "description": "true: Accept; false: Reject (the comment goes to the attesting agent and Fix CI comes back)."},
+        "comment": {"type": ["string", "null"]},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "ci_attestation_confirm.result": {"$ref": "#/$defs/attestation"},
+    "ci_attestation_revoke.params": {
+      "type": "object",
+      "required": ["id"],
+      "description": "Feature ci_attest. The user's only (no caller token).",
+      "properties": {
+        "id": {"type": "string"},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "ci_attestation_revoke.result": {"$ref": "#/$defs/attestation"},
     "approval_answer.params": {
       "type": "object",
       "required": ["allow"],
@@ -2068,7 +2140,7 @@
         "verbs": {"type": "array", "items": {"type": "string"}},
         "concepts": {"type": "object", "required": ["sections", "zones", "balls", "line", "colours", "keys"], "description": "The \"How lazyagent works\" page's hand-written part (concepts.toml, R6): sections {id, title, intro, generated, screenshot, caption, cards}, zones, balls, the example line, colours, keys {keys, where, does}."},
         "review": {"type": "object", "properties": {"not_human": {"type": "array", "items": {"type": "string"}}}, "description": "R3b: the rule files' [review] tables, merged; not_human: the logins pr.human_approvals leaves out (lower case)."},
-        "ci": {"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "object", "required": ["name", "tests_from"], "properties": {"aggregate": {"type": "boolean", "description": "R4b: an aggregate job (true), never one (false); absent: detected only with detect_aggregates."}}}}, "compare_to": {"type": "string"}, "projects": {"type": "object", "additionalProperties": {"type": "string"}}, "base_fetches_per_poll": {"type": "integer"}, "detect_aggregates": {"const": true, "description": "R4b: present when [ci_unrelated] detect_aggregates is on."}}, "description": "R4: the rule files' [ci.check] and [ci_unrelated] tables, merged (repo over global)."},
+        "ci": {"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "object", "required": ["name", "tests_from"], "properties": {"aggregate": {"type": "boolean", "description": "R4b: an aggregate job (true), never one (false); absent: detected only with detect_aggregates."}}}}, "compare_to": {"type": "string"}, "projects": {"type": "object", "additionalProperties": {"type": "string"}}, "base_fetches_per_poll": {"type": "integer"}, "detect_aggregates": {"const": true, "description": "R4b: present when [ci_unrelated] detect_aggregates is on."}, "nondeterministic": {"type": "array", "items": {"type": "string"}}, "accept_attestation_for": {"type": "array", "items": {"type": "string"}}, "attestation_ttl": {"type": "integer", "description": "Seconds."}, "attest": {"type": "object", "description": "[ci] min_base_runs, min_repetitions, max_drop (and confirm, always user at this level)."}, "attest_checks": {"type": "object", "description": "Per check name, its own confirm, min_base_runs, min_repetitions, max_drop."}}, "description": "R4: the rule files' [ci.check] and [ci_unrelated] tables, merged (repo over global); R5: [ci] nondeterministic and the attestation keys."},
         "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}}
@@ -2096,7 +2168,8 @@
         "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "said": {"type": "string", "description": "R6: that condition in English (absent with value item or true)."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
         "items": {"type": "array", "description": "The row's open inbox items, top first."},
         "auto_delegate": {"type": "string", "description": "I4g: as the row's auto_delegate; also the answer's last sentence."},
-        "ci": {"type": "object", "required": ["unrelated", "summary", "checks", "others"], "description": "R4, while CI is red and a check has tests_from: mechanism A per failing check.", "properties": {"unrelated": {"type": ["boolean", "null"]}, "summary": {"type": "string"}, "checks": {"type": "array", "items": {"type": "object", "required": ["check", "job", "mechanism", "unrelated", "detail"], "properties": {"check": {"type": "string", "description": "<workflow file>/<job name>"}, "job": {"type": "string"}, "mechanism": {"const": "A"}, "unrelated": {"type": "boolean"}, "tests": {"type": ["array", "null"]}, "base_tests": {"type": ["array", "null"]}, "new": {"type": "array"}, "point": {"type": ["string", "null"]}, "compared": {"type": "string"}, "detail": {"type": "string", "description": "What decided it, or what was missing: 'junit: no JUnit artifact junit-*; pytest parser found 1 of 3 failures'."}, "base_fixed": {"type": ["boolean", "null"]}, "aggregate_of": {"type": "array", "items": {"type": "string"}, "description": "R4b: an aggregate job; the failing jobs of its run it waits on."}}}}, "others": {"type": "array", "description": "Failing checks with no test data (not Actions jobs): related."}}}
+        "attestations": {"type": "array", "items": {"$ref": "#/$defs/attestation"}, "description": "R5 (feature ci_attest): the item's attestations, newest first; Why? lists the standing ones (pending, accepted, recorded) with Revoke."},
+        "ci": {"type": "object", "required": ["unrelated", "summary", "checks", "others"], "description": "R4, while CI is red and something is configured: mechanism A per failing check, and B's attestations (R5).", "properties": {"unrelated": {"type": ["boolean", "null"]}, "summary": {"type": "string"}, "checks": {"type": "array", "items": {"type": "object", "required": ["check", "job", "mechanism", "unrelated", "detail"], "properties": {"check": {"type": "string", "description": "<workflow file>/<job name>"}, "job": {"type": "string"}, "mechanism": {"enum": ["A", "B"], "description": "B: an accepted attestation explains it (R5)."}, "unrelated": {"type": "boolean"}, "tests": {"type": ["array", "null"]}, "base_tests": {"type": ["array", "null"]}, "new": {"type": "array"}, "point": {"type": ["string", "null"]}, "compared": {"type": "string"}, "detail": {"type": "string", "description": "What decided it, or what was missing: 'junit: no JUnit artifact junit-*; pytest parser found 1 of 3 failures'."}, "base_fixed": {"type": ["boolean", "null"]}, "fixed_detail": {"type": "string"}, "attestation": {"$ref": "#/$defs/attestation", "description": "R5: the attestation that explains the check, waits for confirmation, or is recorded with no effect."}, "attest_pending": {"type": "boolean"}, "attest_note": {"type": "string", "description": "R5: why the latest attestation no longer counts: attestation rejected, revoked or expired."}, "aggregate_of": {"type": "array", "items": {"type": "string"}, "description": "R4b: an aggregate job; the failing jobs of its run it waits on."}}}}, "others": {"type": "array", "description": "Failing checks with no test data (not Actions jobs): related."}}}
       }
     },
     "rules_allow.params": {

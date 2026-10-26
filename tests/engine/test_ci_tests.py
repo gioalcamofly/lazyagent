@@ -303,8 +303,10 @@ def test_config_tables_their_errors_and_the_later_keys():
     assert "unknown key 'bogus' in [ci]" in errors
     assert any("base_fetches_per_poll" in e for e in errors)
     assert any("not a ref name" in e for e in errors)
-    assert any("nondeterministic is read by a later version" in w for w in warnings)
-    assert any("confirm is read by a later version" in w for w in warnings)
+    # R5's keys are read now (engine/attest.py).
+    assert not warnings
+    assert part.attest == {"nondeterministic": ("evals",)}
+    assert part.attest_checks == {"evals": {"confirm": "user"}}
 
 
 def test_the_readmes_ci_example_loads_as_written():

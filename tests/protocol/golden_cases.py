@@ -923,6 +923,106 @@ async def _():
     return await _call(await _polled_actions_engine(), "ci_log_summary", {})
 
 
+def _attest_engine():
+    """A branch whose head's Tests run failed in eval-suite, listed as
+    nondeterministic; master's five recent runs of it; its agent a3 (token
+    ``tok-a3``). Call inside :func:`_rules_files` with ATTEST_RULES."""
+    from lazyagent.engine.actions import ActionsHub
+    from tests.engine import fake_gh
+
+    engine = _status_engine(_make_worktree("/tmp/repo-evals", "evals-tune", is_main=False))
+    runs = [fake_gh.run_json(401, "evals-tune", fake_gh.SHA_A)]
+    runs += [fake_gh.run_json(410 + i, "master", fake_gh.SHA_B, conclusion="success",
+                              created=f"2026-10-2{i}T08:00:00Z") for i in range(5)]
+    gh = fake_gh.FakeGh(runs)
+    gh.jobs[401] = fake_gh.jobs_json(("eval-suite", "Run evals"))
+    for i in range(5):
+        gh.jobs[410 + i] = fake_gh.jobs_json(passed=("eval-suite",))
+    hub = ActionsHub("/tmp/repo", run=gh, read_heads=lambda: {"evals-tune": fake_gh.SHA_A},
+                     clock=lambda: FIXED_TIME)
+    engine.actions = hub
+    add_session(engine, _session_in("/tmp/repo-evals", "a3"))
+    engine._tokens["tok-a3"] = ("/tmp/repo-evals", "a3")
+    engine.rules.reload()
+    # What the status pass hands the hub before each poll.
+    hub.tests.config = engine.status.catalog.ci
+    return engine, hub
+
+
+ATTEST_RULES = """version = 1
+
+[ci]
+nondeterministic = ["eval-suite"]
+accept_attestation_for = ["eval-suite"]
+"""
+
+ATTEST = {
+    "caller": "tok-a3", "check": "eval-suite",
+    "reason": "pass rate within master's range; the failing cases differ every run",
+    "sha": "a" * 7,
+    "base_runs": [{"run_id": 410 + i, "passed": 70 + i, "total": 100} for i in range(5)],
+    "own_runs": [{"passed": 72, "total": 100, "where": "local"}] * 3,
+}
+
+
+async def _attested():
+    engine, hub = _attest_engine()
+    await hub.poll(["evals-tune"])
+    await _call(engine, "ci_attest", ATTEST)
+    return engine
+
+
+@case("ci_attest/pending")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        engine, hub = _attest_engine()
+        await hub.poll(["evals-tune"])
+        return await _call(engine, "ci_attest", ATTEST)
+
+
+@case("ci_attest/error_not_nondeterministic")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES.replace('"eval-suite"', '"other"')}):
+        engine, hub = _attest_engine()
+        await hub.poll(["evals-tune"])
+        return await _call(engine, "ci_attest", ATTEST)
+
+
+@case("ci_attestation_confirm/accept")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        return await _call(await _attested(), "ci_attestation_confirm",
+                           {"id": "att1", "accept": True})
+
+
+@case("ci_attestation_confirm/reject")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        return await _call(await _attested(), "ci_attestation_confirm",
+                           {"id": "att1", "accept": False, "comment": "case 14 fails anew"})
+
+
+@case("ci_attestation_revoke/revoked")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        return await _call(await _attested(), "ci_attestation_revoke", {"id": "att1"})
+
+
+@case("ci_attestation_revoke/error_by_an_agent")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        return await _call(await _attested(), "ci_attestation_revoke",
+                           {"id": "att1", "caller": "tok-a3"})
+
+
+@case("actionables_list/attestation_confirm")
+async def _():
+    with _rules_files({GLOBAL_RULES: ATTEST_RULES}):
+        engine = await _attested()
+        engine.status.flush()
+        return await _call(engine, "actionables_list", {})
+
+
 @case("actionables_get/error_unknown")
 async def _():
     return await _call(_status_engine(), "actionables_get", {"id": "Approval:/nope/a9"})

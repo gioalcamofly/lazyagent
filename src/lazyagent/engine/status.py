@@ -738,6 +738,11 @@ class StatusProjection:
         if facts.ci_tests is not None and facts.ci_tests.red:
             # Mechanism A per failing check: what decided it, what was missing.
             out["ci"] = facts.ci_tests.to_dict()
+        attestations = self._engine.attestations.of_key(key)
+        if attestations:
+            # Mechanism B: the attestations on the item (Why? lists the
+            # standing ones with Revoke).
+            out["attestations"] = attestations
         out["items"] = [
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
             for i in facts.actionables or ()
@@ -936,6 +941,7 @@ class StatusProjection:
             if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
                 red_heads[wt.branch] = pr.head_sha
         hub.tests.config = self.catalog.ci
+        hub.tests.attestations = self._engine.attestations
         if hub.tests.config.configured:
             hub.tests.targets = {wt.branch: self._target(wt) for wt in members}
 
@@ -1131,6 +1137,7 @@ class StatusProjection:
         work_items = self._engine.work_items
         claims.check(now)
         self._engine.first_responder.check(now)
+        self._engine.attestations.check(now)
         overlay.expire_reports(now)
         work_items.expire(now)
         rows: dict[str, dict[str, Any]] = {}
@@ -1573,6 +1580,8 @@ class StatusProjection:
         out = []
         hub = getattr(engine, "actions", None)
         tests = hub.tests if hub is not None and hub.tests.config.configured else None
+        if tests is not None:
+            tests.attestations = engine.attestations
         for wt in self._members():
             agents = self._agents(wt.path, now)
             branch = wt.branch

@@ -65,6 +65,13 @@ not respond". A hold widens nothing: your mandate still applies.
 - **`status_report(note)`** — Say what you are doing now in one line \
 ("verifying feat-x's fix", "waiting for CI on api-retry") whenever that \
 changes: the user sees it on Home.
+- **Nondeterministic CI (attestations).** When a worker shows that a check \
+the user lists as nondeterministic (an eval suite) failed for reasons that \
+are not the branch's, it files `ci_attest` itself. You may file \
+`ci_attest(..., key=<item>)` only within your mandate (action `attest_ci`: \
+while the user is away), with the same evidence (≥ 5 base runs, ≥ 3 runs on \
+the head); it may make Merge appear, never merge. If the user's setup \
+serialises runs of that suite (a slot or lock), the runs go through it.
 - **PRs already merged.** A row "already merged into <branch>" is an open PR \
 whose head is in develop/main: suggest closing it to the user; closing or \
 reopening a PR is never yours to do alone.

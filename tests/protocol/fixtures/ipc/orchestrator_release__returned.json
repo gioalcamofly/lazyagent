@@ -21,6 +21,7 @@
           "rebase_via_owner",
           "spawn_worker",
           "next_project_task",
+          "attest_ci",
           "mark"
         ],
         "at": 1700000000.0,

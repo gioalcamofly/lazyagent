@@ -1008,6 +1008,71 @@ async def status_report(
 
 
 @mcp.tool()
+async def ci_attest(
+    check: str,
+    reason: str,
+    sha: str,
+    base_runs: list[dict],
+    own_runs: list[dict],
+    method: str = "range",
+    key: str | None = None,
+) -> dict:
+    """Attest that a nondeterministic check's red on your head is not your
+    branch's fault (an eval suite whose pass rate varies run to run), with
+    the evidence. The user's config decides what it counts for; by default
+    the user confirms it, and Merge may then appear. Merging stays theirs.
+
+    When to use: only for a check lazyagent calls nondeterministic (the
+    user's [ci] nondeterministic; the engine refuses any other: mechanism A
+    compares failing tests for those), after you have
+      1. read the suite's history on the base branch: at least 5 recent
+         runs of that check, with their pass rates (gh run list / view);
+      2. run the suite on your head yourself, at least 3 times, recording
+         each run's pass rate. Running it can take long on a shared stack:
+         if your instructions define a slot or lock for running this suite,
+         request it before each run and release it after;
+      3. compared: your lowest pass rate must be at most max_drop (0.05,
+         5 points) below the base's lowest.
+    If your runs are clearly worse, it is a regression: fix it instead.
+    Never edit the test to make it pass.
+
+    The engine checks what it can: the check fails on the head and is
+    listed; sha is the head; enough runs; each run_id is a run of that
+    check (base runs on the base branch, your runs on the head); it
+    recomputes the range and refuses numbers that contradict it. Local runs
+    are recorded as your claim. A new commit, a moved base point or 72 h
+    expires the attestation; the user may reject it (you get their
+    comment) or revoke it.
+
+    Args:
+        check: The failing check, e.g. "eval-suite".
+        reason: One or two sentences, e.g. "pass rate within the base's
+            range over 5 runs; the failing cases differ every run".
+        sha: Your head commit (at least 7 characters).
+        base_runs: [{"run_id": 123456, "passed": 71, "total": 100}, ...]
+            (≥ 5, each with its Actions run id).
+        own_runs: [{"passed": 74, "total": 100, "where": "local",
+            "at": 1792830000}, {"run_id": 123499, "passed": 76, "total":
+            100}] (≥ 3, on the head).
+        method: "range" (default; the engine checks it), or "mean_ci" /
+            "other" explained in reason (always confirmed by the user).
+        key: The orchestrator's only: the work item (within its mandate,
+            action attest_ci). A worker attests for its own work item.
+
+    Returns:
+        The attestation: id, state (pending: the user is asked; accepted;
+        recorded: shown, no effect for this check), the engine's range and
+        a message saying what happens next.
+    """
+    params: dict[str, Any] = {"check": check, "verdict": "unrelated", "reason": reason,
+                              "sha": sha, "base_runs": base_runs, "own_runs": own_runs,
+                              "method": method}
+    if key is not None:
+        params["key"] = key
+    return await _get_client().call("ci_attest", _add_caller(params))
+
+
+@mcp.tool()
 async def request_decision(
     question: str,
     options: list[dict],

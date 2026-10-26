@@ -117,9 +117,19 @@
   }
  ],
  "ci": {
+  "accept_attestation_for": [],
+  "attest": {
+   "confirm": "user",
+   "max_drop": 0.05,
+   "min_base_runs": 5,
+   "min_repetitions": 3
+  },
+  "attest_checks": {},
+  "attestation_ttl": 259200,
   "base_fetches_per_poll": 3,
   "checks": [],
   "compare_to": "build_base",
+  "nondeterministic": [],
   "projects": {}
  },
  "concepts": {
@@ -1322,6 +1332,45 @@
   },
   {
    "cost": "free",
+   "freshness": "per pass",
+   "name": "ci.attested",
+   "phrase": "the failing checks an accepted attestation explains",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "attestations (ci_attest, [ci] accept_attestation_for)",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "ci.attestation_pending",
+   "phrase": "the failing checks whose attestation waits for your confirmation",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "attestations (ci_attest, [ci] accept_attestation_for)",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "ci.first_attestation_pending",
+   "phrase": "the first check whose attestation waits for your confirmation",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "attestations (ci_attest, [ci] accept_attestation_for)",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
    "freshness": "static",
    "name": "queue.enabled",
    "phrase": "the inbox queue is on",
@@ -1839,12 +1888,12 @@
    "id": "ci",
    "level": "round",
    "rank": 5,
-   "says": "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4).",
-   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and there are no agents at work",
+   "says": "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
+   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work",
    "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failing",
    "verb": "Fix CI",
-   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and agents.running == 0",
+   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -1855,12 +1904,12 @@
    "id": "ci_failed",
    "level": "round",
    "rank": 5,
-   "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4).",
-   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and there are no agents at work",
+   "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
+   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work",
    "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failed",
    "verb": "Fix CI",
-   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and agents.running == 0",
+   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -2005,6 +2054,22 @@
    "title": "Review requested",
    "verb": "Review",
    "when": "pr.review_requested_from_me and not pr.mine",
+   "zone": "round"
+  },
+  {
+   "action": "expand",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "attest",
+   "id": "attestation_confirm",
+   "level": "round",
+   "rank": 5,
+   "says": "An agent says a nondeterministic check's red is not the branch's, with its evidence ([ci] confirm = \"user\"): Accept explains the check, Reject sends your comment to the agent and brings Fix CI back (R5).",
+   "sentence": "The failing checks whose attestation waits for your confirmation is not empty",
+   "state_text": "Confirm unrelated: ‹the first check whose attestation waits for your confirmation›",
+   "title": "Confirm attestation",
+   "verb": "Confirm",
+   "when": "not empty(ci.attestation_pending)",
    "zone": "round"
   }
  ],
@@ -2518,7 +2583,7 @@
    "queue_off": true,
    "replaces": null,
    "says": "",
-   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty",
+   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation)",
    "state_text": "CI red: ‹the first failing check›",
    "then": {
     "ball": "you",
@@ -2526,7 +2591,7 @@
     "state_expr": "with(\"CI red\", ci.first_failing)"
    },
    "verb": null,
-   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.related_failures)",
+   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending)",
    "zone": "round"
   },
   {

@@ -38,6 +38,16 @@ or its workflow while its jobs are unknown; a failing PR check that is not
 an Actions run counts by its name, and so does every failing PR check when
 Actions has no red run on the head.
 
+**Nondeterministic checks** (``[ci] nondeterministic`` in rules.toml,
+proposal 0014 R5). A red check listed there and *not* on the skip list is
+delegated like any other, but its brief asks the agent to investigate, not
+to "fix the test": read the suite's recent runs on the base, run it on the
+head itself (through the user's slot or lock for that suite, when its
+instructions define one), then fix a real regression or file ``ci_attest``
+with the evidence. A check on both lists is skipped: the skip list wins,
+the item stays the user's. To let agents attest a suite, take it off the
+skip list.
+
 **A failed attempt says why.** Each attempt's line in the final brief says
 what the agent did: whether it committed (the worktree's head before and
 after), its last ``status_report`` line, and the last bullets of its notes'
@@ -86,7 +96,8 @@ NOTES_BULLETS = 2
 
 
 def brief_text(branch: str, kind: str, state: str, attempt: int,
-               leave: list[str] | None = None) -> str:
+               leave: list[str] | None = None,
+               nondeterministic: list[str] | None = None) -> str:
     text = (
         f"lazyagent auto-delegation (attempt {attempt} of {MAX_ATTEMPTS}): branch "
         f"{branch} has {_WHAT.get(kind, kind)} ({state}). Fix it on this branch, then "
@@ -99,7 +110,39 @@ def brief_text(branch: str, kind: str, state: str, attempt: int,
             f"{'it is' if len(leave) == 1 else 'they are'} on the user's skip list "
             "([inbox] auto_delegate_skip_checks), not yours to fix."
         )
+    if nondeterministic:
+        one = len(nondeterministic) == 1
+        text += (
+            f" {_names(nondeterministic)} {'is' if one else 'are'} nondeterministic (the pass "
+            "rate varies run to run; the user's [ci] nondeterministic): do not edit the test "
+            "to make it pass. Investigate: read its recent runs on the base branch (at least "
+            "5, with their pass rates) and run it on this head yourself (at least 3 times; if "
+            "your instructions define a slot or lock for running this suite, request it "
+            "before each run and release it after). If your runs are clearly worse than the "
+            "base's, fix the regression; otherwise file ci_attest with that evidence."
+        )
     return text
+
+
+def nondeterministic_checks(engine: Any, key: str, names: list[str]) -> list[str]:
+    """Of ``names`` (failing checks as :func:`failing_checks` shows them),
+    those ``[ci] nondeterministic`` lists, by their job's name."""
+    from lazyagent.engine.ci_tests import bare_job, check_id
+
+    config = engine.status.catalog.ci
+    if not config.nondeterministic:
+        return []
+    try:
+        _, runs = actions.red_runs(engine, key)
+    except ValueError:
+        return []
+    out: list[str] = []
+    for run in runs:
+        for job in run.failed_jobs or ():
+            if job.name in names and config.is_nondeterministic(check_id(run, job.name), job.name) \
+                    and bare_job(job.name) not in out:
+                out.append(bare_job(job.name))
+    return out
 
 
 def _names(names: list[str]) -> str:
@@ -207,15 +250,17 @@ class AutoDelegate:
                 slot, {"count": 0, "in_flight": False, "agent": None, "tries": [], "briefed": False}
             )
             row = rows.get(slot[0])
-            if slot[1] in CI_KINDS and config.auto_delegate_skip_checks:
-                leave, rest = split_skipped(failing_checks(self._engine, slot[0]),
-                                            config.auto_delegate_skip_checks)
+            if slot[1] in CI_KINDS:
+                checks = failing_checks(self._engine, slot[0])
+                leave, rest = split_skipped(checks, config.auto_delegate_skip_checks or [])
                 if leave and not rest:
                     skipped[slot[0]] = skipped_text(leave)
                     if row is not None:
                         row["auto_delegate"] = skipped[slot[0]]
                     continue
                 attempt["leave"] = leave
+                # The skip list wins over [ci] nondeterministic.
+                attempt["nondeterministic"] = nondeterministic_checks(self._engine, slot[0], rest)
             if attempt["in_flight"] or slot in self._busy or attempt["briefed"] or attempt.get("skip"):
                 continue
             if row is None or row["worktree_path"] is None:
@@ -259,7 +304,8 @@ class AutoDelegate:
                 return
             await self._outcome(key, path, attempt)
             n = attempt["count"] + 1
-            text = brief_text(row["branch"], kind, item["state"], n, attempt.get("leave"))
+            text = brief_text(row["branch"], kind, item["state"], n, attempt.get("leave"),
+                              attempt.get("nondeterministic"))
             if kind in CI_KINDS:
                 text = await self._ci_summary(key, text)
             target = engine.config.inbox.auto_delegate_target

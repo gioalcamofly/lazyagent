@@ -262,8 +262,8 @@ def test_file_level_problems():
     bad = parse_file("[[rule]\nid = 1", "global", "/g")
     assert not bad.ok and bad.errors[0]["line"] == 1 and "not valid TOML" in bad.errors[0]["message"]
     assert not parse_file("version = 2", "global", "/g").ok
-    later = parse_file('version = 1\n[ci]\nnondeterministic = ["eval"]\n', "global", "/g")
-    assert later.ok and "later version" in later.warnings[0]["message"]
+    ci = parse_file('version = 1\n[ci]\nnondeterministic = ["eval"]\n', "global", "/g")
+    assert ci.ok and not ci.warnings and ci.ci.attest == {"nondeterministic": ("eval",)}
     dup = parse_file(rule("a") + rule("a"), "global", "/g")
     assert len(dup.entries) == 1 and "used twice" in dup.errors[0]["message"]
 
@@ -551,8 +551,9 @@ def test_the_readme_examples_do_what_the_readme_says():
     section = readme.split("### Your rules (rules.toml)")[1].split("\n### ")[0]
     blocks = re.findall(r"```toml\n(.*?)```", section, re.S)
     # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py;
-    # the fourth, [ci.check] and [ci_unrelated]: tests/engine/test_ci_tests.py.
-    assert len(blocks) == 4
+    # the fourth, [ci.check] and [ci_unrelated]: tests/engine/test_ci_tests.py;
+    # the fifth, [ci] nondeterministic and attestations: tests/engine/test_attest.py.
+    assert len(blocks) == 5
     cat, errors, warnings = catalog_of(("global", blocks[0]))
     assert errors == [] and warnings == []
     assert cat.by_id["merge"].origin == "global"

@@ -10,12 +10,15 @@
 //! as people read them ("2 d 6 h", "24 h"), then the open items and which
 //! one leads; the rules above that did not match are folded, the unknown
 //! ones (the suspicious ones) first.
+//!
+//! R5 (feature `ci_attest`): the item's attestations, the standing ones
+//! (pending, accepted, recorded) with Revoke.
 
 use eframe::egui::{self, CornerRadius, Key, Modifiers, RichText, Stroke, Ui};
-use lazyagent_proto::types::{CatalogRule, ExplainAbove, ExplainFact, RulesExplain};
+use lazyagent_proto::types::{Attestation, CatalogRule, ExplainAbove, ExplainFact, RulesExplain};
 use serde_json::{Value, json};
 
-use crate::app::{App, Severity, State};
+use crate::app::{App, Severity, State, unix_now};
 use crate::home::Line;
 use crate::theme::Theme;
 
@@ -40,6 +43,36 @@ impl State {
         }
         let key = line.key.clone();
         self.why = Some(WhyView { key: key.clone(), name: line.name.clone(), result: None });
+        self.conn.request("rules_explain", json!({"key": key.clone()}), move |s, reply| {
+            let result = reply
+                .and_then(|v| {
+                    serde_json::from_value::<RulesExplain>(v)
+                        .map_err(|e| lazyagent_proto::ClientError::Decode(e.to_string()))
+                })
+                .map_err(|e| e.to_string());
+            if let Some(view) = s.why.as_mut().filter(|v| v.key == key) {
+                view.result = Some(result);
+            }
+        });
+    }
+
+    /// Revoke a standing attestation from Why? (`ci_attestation_revoke`),
+    /// then ask again why the line is what it is.
+    pub fn revoke_attestation(&mut self, id: String) {
+        self.conn.request("ci_attestation_revoke", json!({"id": id}), move |s, reply| match reply {
+            Ok(_) => {
+                s.toast(Severity::Info, "Revoked: the check counts against the branch again.");
+                s.inbox_gen += 1;
+                s.fetch_inbox();
+                if let Some(view) = s.why.clone() {
+                    s.refresh_why(view.key);
+                }
+            }
+            Err(e) => s.toast(Severity::Error, format!("Not revoked: {e}")),
+        });
+    }
+
+    fn refresh_why(&mut self, key: String) {
         self.conn.request("rules_explain", json!({"key": key.clone()}), move |s, reply| {
             let result = reply
                 .and_then(|v| {
@@ -114,6 +147,7 @@ impl App {
             self.state.why = None;
             return;
         }
+        let mut revoke = None;
         egui::ScrollArea::vertical().id_salt("why").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(980.0));
             match &view.result {
@@ -123,10 +157,94 @@ impl App {
                 Some(Err(e)) => {
                     ui.label(RichText::new(format!("The engine could not say: {e}")).color(t.red));
                 }
-                Some(Ok(e)) => explained(ui, &t, e, &catalog),
+                Some(Ok(e)) => {
+                    explained(ui, &t, e, &catalog);
+                    revoke = attestations(ui, &t, &e.attestations, unix_now());
+                }
             }
         });
+        if let Some(id) = revoke {
+            self.state.revoke_attestation(id);
+        }
     }
+}
+
+/// `accepted · confirmed by you`, `expired: head moved`.
+pub fn attestation_state(a: &Attestation) -> String {
+    let by = match a.confirmed_by.as_deref() {
+        Some("user") => " · confirmed by you",
+        Some("rule") => " · accepted by your config (confirm = \"none\")",
+        _ => "",
+    };
+    match (a.state.as_str(), a.ended.as_deref()) {
+        ("pending", _) => "waiting for your confirmation".into(),
+        ("recorded", _) => "recorded: [ci] accept_attestation_for does not list it".into(),
+        ("accepted", _) => format!("accepted{by}"),
+        (state, Some(why)) => format!("{state}: {why}"),
+        (state, None) => state.to_string(),
+    }
+}
+
+/// The item's attestations (R5): the standing ones with Revoke, the
+/// ended ones folded. Returns the one to revoke.
+fn attestations(ui: &mut Ui, t: &Theme, list: &[Attestation], now: f64) -> Option<String> {
+    if list.is_empty() {
+        return None;
+    }
+    let mut revoke = None;
+    let (standing, ended): (Vec<&Attestation>, Vec<&Attestation>) = list.iter().partition(|a| a.standing());
+    ui.add_space(8.0);
+    ui.label(RichText::new(format!("Attestations · {} standing", standing.len())).small().strong().color(t.muted));
+    let row = |ui: &mut Ui, a: &Attestation, revoke: &mut Option<String>| {
+        egui::Frame::new()
+            .fill(t.surface)
+            .stroke(Stroke::new(1.0, if a.standing() { t.cyan } else { t.border }))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(&a.name).monospace().strong().color(t.text));
+                    ui.label(
+                        RichText::new(format!(
+                            "attested by {} at {} · {} ago",
+                            a.actor_text,
+                            &a.sha[..a.sha.len().min(7)],
+                            crate::home::age(now - a.at)
+                        ))
+                        .small()
+                        .color(t.muted),
+                    );
+                    ui.label(RichText::new(attestation_state(a)).small().strong().color(t.cyan));
+                    if a.standing()
+                        && ui
+                            .small_button("Revoke")
+                            .on_hover_text("The check counts against the branch again (Fix CI comes back)")
+                            .clicked()
+                    {
+                        *revoke = Some(a.id.clone());
+                    }
+                });
+                ui.label(RichText::new(&a.text).small().color(t.text));
+                if !a.range_text.is_empty() {
+                    ui.label(RichText::new(&a.range_text).small().color(t.muted));
+                }
+            });
+    };
+    for a in standing {
+        row(ui, a, &mut revoke);
+    }
+    if !ended.is_empty() {
+        egui::CollapsingHeader::new(RichText::new(format!("Ended · {}", ended.len())).small().color(t.muted))
+            .id_salt("why-attestations-ended")
+            .default_open(false)
+            .show(ui, |ui| {
+                for a in ended {
+                    row(ui, a, &mut revoke);
+                }
+            });
+    }
+    revoke
 }
 
 /// The open items of the line, top first, and which one leads.

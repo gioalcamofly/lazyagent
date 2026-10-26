@@ -1220,6 +1220,61 @@ pub struct Actionable {
     pub rule_id: Option<String>,
     #[serde(default)]
     pub verb: Option<String>,
+    /// An `attestation_confirm` item's attestation (feature `ci_attest`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<Attestation>,
+}
+
+/// An agent's (or the orchestrator's) claim that a nondeterministic check's
+/// red is not the branch's, with its evidence (proposal 0014 R5, feature
+/// `ci_attest`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attestation {
+    pub id: String,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub check: String,
+    /// The job's name without matrix values: `eval-suite`.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub sha: String,
+    /// `agent a2`, `the orchestrator`.
+    #[serde(default)]
+    pub actor_text: String,
+    /// `pending` · `accepted` · `rejected` · `expired` · `revoked` ·
+    /// `recorded` (the check is not accepted by config: no effect).
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub at: f64,
+    /// `base 5 runs 71-78 %, branch 3 runs (2 local) 74-76 %`.
+    #[serde(default)]
+    pub text: String,
+    /// `drop 0 points vs max 5: within the base's range`.
+    #[serde(default)]
+    pub range_text: String,
+    #[serde(default)]
+    pub confirmed_by: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
+    /// Why it ended: `head moved`, `rejected by the user`, ….
+    #[serde(default)]
+    pub ended: Option<String>,
+    /// `{verdict, reason, method, base_runs, own_runs, range}`.
+    #[serde(default)]
+    pub evidence: Value,
+    /// The rest as sent (branch, checks, point, actor, expires_at, …).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl Attestation {
+    /// Still standing: Why? offers Revoke.
+    pub fn standing(&self) -> bool {
+        matches!(self.state.as_str(), "pending" | "accepted" | "recorded")
+    }
 }
 
 /// A GitHub Actions run that went red on a branch's head (feature `actions`).
@@ -1606,6 +1661,9 @@ pub struct RulesExplain {
     /// One sentence for people, with the values it read (I4f engines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    /// The item's attestations, newest first (feature `ci_attest`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestations: Vec<Attestation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

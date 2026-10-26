@@ -109,7 +109,7 @@ VERB_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 '-]{0,11}$")
 # its facts are read in. The others are fed by events or by their own
 # stores (exits, jobs, tracker items, reports, briefs).
 CONDITION_DETECTORS = {"agents": "item", "pr": "item", "actions": "item",
-                       "review_requests": "item"}
+                       "review_requests": "item", "attest": "item"}
 DETECTORS = frozenset({*CONDITION_DETECTORS, "exits", "jobs", "tracker", "report", "decision"})
 
 
