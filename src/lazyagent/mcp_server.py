@@ -345,7 +345,14 @@ async def status_list(include_done: bool = False) -> dict:
     from lazyagent.engine.status import format_table
 
     params = _add_caller({"include_done": include_done})
-    result = await _get_client().call("status_list", params)
+    try:
+        # The "CI red · unrelated" note beside the state (R4).
+        result = await _get_client().call("status_list", {**params, "fields": ["ci_note"]})
+    except RuntimeError as e:
+        if "fields must be" not in str(e):
+            raise
+        # An engine before R4.
+        result = await _get_client().call("status_list", params)
     result["table"] = format_table(result, result.get("generated_at"))
     return result
 

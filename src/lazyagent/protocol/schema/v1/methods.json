@@ -805,6 +805,7 @@
         "rule_id": {"type": ["string", "null"], "description": "status_list fields only (feature rules): the catalog rule's id."},
         "verb": {"type": ["string", "null"], "description": "status_list fields only: the line's verb (Merge, Fix CI, ...), null when no rule gives one."},
         "action": {"type": ["string", "null"], "description": "status_list fields only: the primary action's id (rules_catalog actions)."},
+        "ci_note": {"type": ["string", "null"], "description": "status_list fields only (feature ci_tests, R4): 'CI red · unrelated (base also red: 2 tests)' while every failing check's tests also fail on the base at the commit compared; null otherwise."},
         "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
         "needs_you": {
           "type": ["object", "null"],
@@ -1030,7 +1031,7 @@
       "properties": {
         "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
         "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
-        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's."},
+        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
       }
     },
@@ -1094,7 +1095,7 @@
       "properties": {
         "id": {"type": "string", "description": "Stable while the condition holds, e.g. Approval:<worktree>/<agent_id>, Ci:<worktree>:<pr number>, tracker:<adapter>:<key>:<status>."},
         "occurrence": {"type": "string", "description": "<id>@<since>: what a dismissal hides; the same condition later is a new occurrence."},
-        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions)."},
+        "kind": {"type": "string", "x-known-values": ["approval", "question", "hanged", "failed", "exited", "ci", "ci_failed", "sync_base", "review", "conflict", "done", "job", "tracker_status", "delegation", "report", "decision", "rule"], "description": "Open set. ci_failed: a fresh red Actions run on the head of a branch with no PR (feature actions). sync_base: every failing check is unrelated and the base has fixed it since (feature ci_tests)."},
         "level": {"enum": ["now", "round", "deep"], "description": "Fixed per kind (tracker_status: the tracker mapping's; decision: the brief's). now: an agent is blocked on the user; deep: needs reading (To sit down with)."},
         "class": {"enum": ["quick", "deep"], "description": "deep exactly when the level is deep: fixed per kind, or the brief's."},
         "decision_id": {"type": ["string", "null"], "description": "decision items: the brief's id (decision_get)."},
@@ -2050,6 +2051,7 @@
         "verbs": {"type": "array", "items": {"type": "string"}},
         "concepts": {"type": "object", "required": ["sections", "zones", "balls", "line", "colours", "keys"], "description": "The \"How lazyagent works\" page's hand-written part (concepts.toml, R6): sections {id, title, intro, generated, screenshot, caption, cards}, zones, balls, the example line, colours, keys {keys, where, does}."},
         "review": {"type": "object", "properties": {"not_human": {"type": "array", "items": {"type": "string"}}}, "description": "R3b: the rule files' [review] tables, merged; not_human: the logins pr.human_approvals leaves out (lower case)."},
+        "ci": {"type": "object", "properties": {"checks": {"type": "array", "items": {"type": "object", "required": ["name", "tests_from"]}}, "compare_to": {"type": "string"}, "projects": {"type": "object", "additionalProperties": {"type": "string"}}, "base_fetches_per_poll": {"type": "integer"}}, "description": "R4: the rule files' [ci.check] and [ci_unrelated] tables, merged (repo over global)."},
         "files": {"type": "array", "items": {"$ref": "#/$defs/rules_file"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/rules_problem"}}
@@ -2075,7 +2077,8 @@
         "facts": {"type": "array", "items": {"type": "object", "required": ["name", "value", "unknown", "source", "freshness"]}, "description": "What the matched rule read; each fact's shown (I4f) is its value for people: '2 d 6 h', '24 h', '3 h ago', 'unknown'."},
         "answer": {"type": "string", "description": "I4f: one sentence for people, with the values it read: '“no activity”: the time since the last sign of work (2 d 6 h) is over the stalled threshold (24 h).'; for the queue, which item leads and what else is open."},
         "above": {"type": "array", "items": {"type": "object", "required": ["id", "origin", "failed", "value"], "properties": {"id": {"type": "string"}, "origin": {"enum": ["builtin", "global", "repo"]}, "failed": {"type": "string", "description": "The first top-level condition that was not true."}, "said": {"type": "string", "description": "R6: that condition in English (absent with value item or true)."}, "value": {"enum": ["false", "unknown", "item", "true"]}, "file": {"type": "string", "description": "A user rule's file (with line and facts, what it read)."}, "line": {"type": ["integer", "null"]}, "facts": {"type": "array"}}}},
-        "items": {"type": "array", "description": "The row's open inbox items, top first."}
+        "items": {"type": "array", "description": "The row's open inbox items, top first."},
+        "ci": {"type": "object", "required": ["unrelated", "summary", "checks", "others"], "description": "R4, while CI is red and a check has tests_from: mechanism A per failing check.", "properties": {"unrelated": {"type": ["boolean", "null"]}, "summary": {"type": "string"}, "checks": {"type": "array", "items": {"type": "object", "required": ["check", "job", "mechanism", "unrelated", "detail"], "properties": {"check": {"type": "string", "description": "<workflow file>/<job name>"}, "job": {"type": "string"}, "mechanism": {"const": "A"}, "unrelated": {"type": "boolean"}, "tests": {"type": ["array", "null"]}, "base_tests": {"type": ["array", "null"]}, "new": {"type": "array"}, "point": {"type": ["string", "null"]}, "compared": {"type": "string"}, "detail": {"type": "string", "description": "What decided it, or what was missing: 'junit: no JUnit artifact junit-*; pytest parser found 1 of 3 failures'."}, "base_fixed": {"type": ["boolean", "null"]}}}}, "others": {"type": "array", "description": "Failing checks with no test data (not Actions jobs): related."}}}
       }
     },
     "rules_allow.params": {

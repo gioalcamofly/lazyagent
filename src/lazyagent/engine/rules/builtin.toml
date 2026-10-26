@@ -213,7 +213,7 @@ id = "ci_red_no_agent"
 num = 5
 when = '''
 pr.state == "open" and not queue.enabled and agents.running == 0
-and ci.state == "red"
+and ci.state == "red" and not empty(ci.related_failures)
 '''
 [rule.then]
 ball = "you"
@@ -459,9 +459,12 @@ level = "round"
 title = "CI failing"
 rank = 5
 detector = "pr"
-says = "An open PR red on its head with no agent at work on it."
-when = 'pr.state == "open" and ci.pr_red and agents.running == 0'
-state_expr = 'with("CI red", ci.first_failing)'
+says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4)."
+when = '''
+pr.state == "open" and ci.pr_red and not empty(ci.related_failures)
+and agents.running == 0
+'''
+state_expr = 'with("CI red", ci.first_related)'
 
 [[kind]]
 id = "ci_failed"
@@ -471,9 +474,12 @@ level = "round"
 title = "CI failed"
 rank = 5
 detector = "actions"
-says = "A fresh red Actions run on the head of a branch with no PR (I7)."
-when = 'not pr.exists and ci.head == "red" and agents.running == 0'
-state_expr = 'with("CI red", ci.first_failing)'
+says = "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4)."
+when = '''
+not pr.exists and ci.head == "red" and not empty(ci.related_failures)
+and agents.running == 0
+'''
+state_expr = 'with("CI red", ci.first_related)'
 
 [[kind]]
 id = "review"
@@ -548,3 +554,20 @@ title = "Decide"
 rank = 2
 detector = "decision"
 says = "A brief: its level and blocks_agent are the item's own."
+
+# --- R4: every failing check unrelated, and the base fixed it since ---
+
+[[kind]]
+id = "sync_base"
+verb = "Sync"
+action = "delegate"
+level = "round"
+title = "Sync with base"
+rank = 5
+detector = "actions"
+says = "Every failing check also fails on the base at the commit compared, and the base has fixed it since: merge or rebase the base in (R4)."
+when = '''
+ci.head == "red" and empty(ci.related_failures) and not empty(ci.base_fixed)
+and agents.running == 0
+'''
+state_expr = 'with("Sync with base", ci.first_base_fixed)'
