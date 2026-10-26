@@ -35,7 +35,7 @@ you ⇄ desktop (Home) ⇄ engine ⇄ agents
 
 ## Home
 
-One line per work item: a branch with its PR, its agents and its CI. Nothing to keep up to date: the engine derives every line.
+One line per work item: a branch with its PR, its agents and its CI, or a teammate's PR that asks for your review. Nothing to keep up to date: the engine derives every line.
 
 ![Home: Now, the Round, To sit down with, In flight, and the Parked chip.](../../desktop/crates/app/assets/how/home.png)
 
@@ -44,7 +44,7 @@ One line per work item: a branch with its PR, its agents and its CI. Nothing to 
 | zone | colour | what |
 |---|---|---|
 | **Now** | yellow | An agent is blocked on you: an approval, a question. Shown at once. |
-| **Round** | orange | Quick things that block nobody. Delivered in rounds, so nothing moves under your cursor. |
+| **Round** | orange | Quick things that block nobody, and the reviews teammates asked of you. Delivered in rounds, so nothing moves under your cursor. |
 | **To sit down with** | purple | Things to read: a brief, changes requested, a finished branch. Against your limit (deep_max). |
 | **In flight** | cyan | The ball is not yours: who has it and since when. Done rows fold at its end for a day. |
 | **Parked** | purple | What you parked, folded until you open it (⇧Z). Says when it comes back. |
@@ -153,14 +153,15 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Fix job** | job failed | (jobs) |  |
 | **Update task** | Tracker | (tracker) | `p` The tracker task |
 | **Read** | Agent reports | (report) |  |
-| **Merge** | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable | `p` The PR (for Merge: merging is done there, by you) |
+| **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
+| **Merge** | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) | `p` The PR (you merge it, or review it, there) |
 | **Request reviewer** | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |  |
 
 ### To sit down with
 
 | verb | state | when | key |
 |---|---|---|---|
-| **Address review** | changes requested | The PR's state is open and the PR's review decision is changes requested | `d` Send the item to the branch's agent |
+| **Address review** | changes requested | The PR's state is open and the PR's review decision is changes requested and (the PR is yours or it is not known whether the PR is yours) | `d` Send the item to the branch's agent |
 | **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is |  |
 | **Decide** | Decide | (decision) | `v` Open the brief |
 
@@ -185,6 +186,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |  |
 | others | ‹the task's mapped state› | The task's mapped ball is others |  |
 | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |  |
+| stalled / others | review requested · set aside / ‹the PR's author›'s PR( · approved /  · changes requested) | The PR's state is open and the PR is not yours |  |
 | others | (PR open / review requested)(, CI green) | The PR's state is open and the PR's review decision is review required or none |  |
 | agent | waits: approve / waits: answer / waits: agent failed / waits: agent may hang / agent idle | There are agents |  |
 | stalled | agent to restore | There are agents to restore |  |
@@ -229,27 +231,29 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 13 | `agent_failed` *queue off* | you | agent failed | The inbox queue is off and the agents' statuses include failed |
 | 14 | `agent_may_hang` *queue off* | you | agent may hang | The inbox queue is off and the agents' statuses include possibly hanged |
 | 15 | `needs_you` *queue off* | you | needs you: ‹the agent's report note› | The inbox queue is off and the agent reported it needs you |
-| 16 | `merge` | you | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable |
-| 17 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and the inbox queue is off and the PR's review decision is changes requested |
-| 18 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting |
-| 19 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red |
-| 20 | `agent_finished` *queue off* | you | review: agent finished | The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty |
-| 21 | `label` | ‹your label's ball› | (the state below) | Your gesture is label |
-| 22 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
-| 23 | `ci_running` | agent | CI running | The PR's state is open and CI on the PR is running |
-| 24 | `reported_others` | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |
-| 25 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |
-| 26 | `tracker_you` *queue off* | you | ‹the task's mapped state› | The task's mapped ball is you and the task's mapped level is known and the inbox queue is off |
-| 27 | `tracker_others` | others | ‹the task's mapped state› | The task's mapped ball is others |
-| 28 | `tracker_ball` | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |
-| 29 | `no_reviewer` | you | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |
-| 30 | `review_requested` | others | (PR open / review requested)(, CI green) | The PR's state is open and the PR's review decision is review required or none |
-| 31 | `agent_idle` | agent | waits: approve / waits: answer / waits: agent failed / waits: agent may hang / agent idle | There are agents |
-| 32 | `restorable` | stalled | agent to restore | There are agents to restore |
-| 33 | `no_activity` | stalled | no activity | The time since the last sign of work is over the stalled threshold |
-| 34 | `approved_ready` | stalled | approved, CI green | The inbox queue is on and the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable |
-| 35 | `approved_not_mergeable` | stalled | approved, not mergeable | The PR's state is open and the PR's review decision is approved |
-| 36 | `no_agent` | stalled | no agent | Always |
+| 16 | `review_request` *queue off* | you | review requested by ‹the PR's author› | The inbox queue is off and the PR asks you for a review and the PR is not yours |
+| 17 | `merge` | you | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) |
+| 18 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and the inbox queue is off and the PR's review decision is changes requested |
+| 19 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting |
+| 20 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red |
+| 21 | `agent_finished` *queue off* | you | review: agent finished | The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty |
+| 22 | `label` | ‹your label's ball› | (the state below) | Your gesture is label |
+| 23 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
+| 24 | `ci_running` | agent | CI running | The PR's state is open and CI on the PR is running |
+| 25 | `reported_others` | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |
+| 26 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |
+| 27 | `tracker_you` *queue off* | you | ‹the task's mapped state› | The task's mapped ball is you and the task's mapped level is known and the inbox queue is off |
+| 28 | `tracker_others` | others | ‹the task's mapped state› | The task's mapped ball is others |
+| 29 | `tracker_ball` | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |
+| 30 | `teammate_pr` | stalled / others | review requested · set aside / ‹the PR's author›'s PR( · approved /  · changes requested) | The PR's state is open and the PR is not yours |
+| 31 | `no_reviewer` | you | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |
+| 32 | `review_requested` | others | (PR open / review requested)(, CI green) | The PR's state is open and the PR's review decision is review required or none |
+| 33 | `agent_idle` | agent | waits: approve / waits: answer / waits: agent failed / waits: agent may hang / agent idle | There are agents |
+| 34 | `restorable` | stalled | agent to restore | There are agents to restore |
+| 35 | `no_activity` | stalled | no activity | The time since the last sign of work is over the stalled threshold |
+| 36 | `approved_ready` | stalled | approved, CI green | The inbox queue is on and the PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable |
+| 37 | `approved_not_mergeable` | stalled | approved, not mergeable | The PR's state is open and the PR's review decision is approved |
+| 38 | `no_agent` | stalled | no agent | Always |
 
 ## Inbox items
 
@@ -271,6 +275,7 @@ What can land in your inbox, at which level, and the verb it shows.
 | **Update task** | Tracker | round | quick |  | `p` The tracker task |
 | **Read** | Agent reports | round | quick |  |  |
 | **Decide** | Decide | deep | deep |  | `v` Open the brief |
+| **Review** | Review requested | round | quick |  | `p` The PR (you merge it, or review it, there) |
 
 ## Keys and actions
 
@@ -344,7 +349,7 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `expand` | `Enter` | Expands the line |
 | `open_terminal` | `o` | The agent's terminal |
 | `open_notes` | `n` | The agent's notes |
-| `open_pr` | `p` | The PR (for Merge: merging is done there, by you) |
+| `open_pr` | `p` | The PR (you merge it, or review it, there) |
 | `open_tracker` | `p` | The tracker task |
 | `dismiss` | `x` | Dismiss this occurrence of the item |
 | `park` | `z` | Park the item or the work item |
@@ -414,6 +419,9 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `pr.review_requests` | the PR's requested reviewers | num | PR poller | ≤ 60 s | poll |
 | `pr.reviews` | the PR's reviews | num | PR poller | ≤ 60 s | poll |
 | `pr.draft` | the PR is a draft | bool | PR poller | ≤ 60 s | poll |
+| `pr.author` | the PR's author (login) | text | PR poller | ≤ 60 s | poll |
+| `pr.mine` | the PR is yours (its author is the user gh is logged in as) | bool | PR poller, gh's login | ≤ 60 s | poll |
+| `pr.review_requested_from_me` | the PR asks you for a review (you, or a team of yours) | bool | review requests search | ≤ 60 s | poll |
 | `pr.labels` | the PR's labels (lower case) | set label | PR poller (review query) | ≤ 60 s | extra |
 | `pr.human_approvals` | the PR's approvals by people (latest review each; no apps) | num | PR poller (review query) | ≤ 60 s | extra |
 | `pr.commits_after_ready` | the pushes since the PR was marked ready (0: a draft) | num | PR poller (review query) | ≤ 60 s | extra |
