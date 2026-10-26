@@ -1,0 +1,61 @@
+{
+  "case": "ci_attest/error_not_nondeterministic",
+  "method": "ci_attest",
+  "params": {
+    "base_runs": [
+      {
+        "passed": 70,
+        "run_id": 410,
+        "total": 100
+      },
+      {
+        "passed": 71,
+        "run_id": 411,
+        "total": 100
+      },
+      {
+        "passed": 72,
+        "run_id": 412,
+        "total": 100
+      },
+      {
+        "passed": 73,
+        "run_id": 413,
+        "total": 100
+      },
+      {
+        "passed": 74,
+        "run_id": 414,
+        "total": 100
+      }
+    ],
+    "caller": "tok-a3",
+    "check": "eval-suite",
+    "own_runs": [
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      },
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      },
+      {
+        "passed": 72,
+        "total": 100,
+        "where": "local"
+      }
+    ],
+    "reason": "pass rate within master's range; the failing cases differ every run",
+    "sha": "aaaaaaa"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "eval-suite is not listed in [ci] nondeterministic: attestations are only for checks whose pass rate varies run to run (mechanism A compares the others)"
+    },
+    "id": "req-1"
+  }
+}

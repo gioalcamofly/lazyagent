@@ -227,6 +227,7 @@ num = 5
 when = '''
 pr.state == "open" and not queue.enabled and agents.running == 0
 and ci.state == "red" and not empty(ci.related_failures)
+and not (ci.related_failures subset ci.attestation_pending)
 '''
 [rule.then]
 ball = "you"
@@ -486,9 +487,10 @@ level = "round"
 title = "CI failing"
 rank = 5
 detector = "pr"
-says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4)."
+says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5)."
 when = '''
 pr.state == "open" and ci.pr_red and not empty(ci.related_failures)
+and not (ci.related_failures subset ci.attestation_pending)
 and agents.running == 0
 '''
 state_expr = 'with("CI red", ci.first_related)'
@@ -501,9 +503,10 @@ level = "round"
 title = "CI failed"
 rank = 5
 detector = "actions"
-says = "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4)."
+says = "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5)."
 when = '''
 not pr.exists and ci.head == "red" and not empty(ci.related_failures)
+and not (ci.related_failures subset ci.attestation_pending)
 and agents.running == 0
 '''
 state_expr = 'with("CI red", ci.first_related)'
@@ -613,3 +616,17 @@ detector = "review_requests"
 says = "A teammate's open PR (not a draft) asks you, or a team of yours, for a review; it goes when you review (approve, request changes or comment), the request is withdrawn or the PR closes."
 when = 'pr.review_requested_from_me and not pr.mine'
 state_expr = '"review requested by " + pr.author'
+
+# --- R5: an agent's attestation for a nondeterministic check ---
+
+[[kind]]
+id = "attestation_confirm"
+verb = "Confirm"
+action = "expand"
+level = "round"
+title = "Confirm attestation"
+rank = 5
+detector = "attest"
+says = "An agent says a nondeterministic check's red is not the branch's, with its evidence ([ci] confirm = \"user\"): Accept explains the check, Reject sends your comment to the agent and brings Fix CI back (R5)."
+when = 'not empty(ci.attestation_pending)'
+state_expr = 'with("Confirm unrelated", ci.first_attestation_pending)'

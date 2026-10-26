@@ -92,6 +92,11 @@ LEGACY_METHODS: tuple[str, ...] = (
     "work_items_close",
     # The failed-log summary of a red CI run (proposal 0013 I7).
     "ci_log_summary",
+    # Attestations for nondeterministic checks (proposal 0014 R5), on the
+    # legacy socket for the ci_attest MCP tool.
+    "ci_attest",
+    "ci_attestation_confirm",
+    "ci_attestation_revoke",
     # Answers from Home and the orchestrator's log (proposal 0013 I4e).
     "approval_answer",
     "question_answer",

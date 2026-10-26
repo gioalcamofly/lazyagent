@@ -421,6 +421,7 @@ def ci_tests_of(engine: Any, key: str) -> Any:
     if hub is None or wt is None or not hub.tests.config.configured:
         return None
     pr = engine.get_pr_info(path)
+    hub.tests.attestations = getattr(engine, "attestations", None)
     return hub.tests.analysis(wt.branch, ci_verdict(engine, wt.branch, pr), pr)
 
 

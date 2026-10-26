@@ -224,6 +224,9 @@ class EngineMethods:
             "work_items_upsert": self.work_items_upsert,
             "work_items_close": self.work_items_close,
             "ci_log_summary": self.ci_log_summary,
+            "ci_attest": self.ci_attest,
+            "ci_attestation_confirm": self.ci_attestation_confirm,
+            "ci_attestation_revoke": self.ci_attestation_revoke,
             "approval_answer": self.approval_answer,
             "question_answer": self.question_answer,
             "orchestrator_actions": self.orchestrator_actions,
@@ -1565,6 +1568,51 @@ class EngineMethods:
         commit), a log's lines, a notes section; ``error`` when it cannot be
         read here."""
         return await self._engine.decisions.evidence(_decision_id(params), params.get("index"))
+
+    async def ci_attest(self, params: dict) -> Any:
+        """An attestation that a nondeterministic check's red on the head is
+        not the branch's (proposal 0014 mechanism B, engine/attest.py).
+        Params: check, verdict ("unrelated"), reason, sha (the head),
+        base_runs ([{run_id, passed, total, sha?}]), own_runs ([{run_id?,
+        passed, total, where?, at?}]), method (range | mean_ci | other),
+        caller (a worker's token: its own work item; the orchestrator's:
+        ``key``, within its mandate, action ``attest_ci``)."""
+        role, slot = self._caller(params)
+        engine = self._engine
+        if role == ORCHESTRATOR_BY:
+            key = params.get("key")
+            if not isinstance(key, str) or not key:
+                raise ValueError("key is required: the work item you attest for")
+            if engine.status.path_of(key) is None:
+                from lazyagent.engine.status import repo_name
+
+                if engine.status.path_of(f"{repo_name(engine)}:{key}") is not None:
+                    key = f"{repo_name(engine)}:{key}"
+            mandate = engine.first_responder.check_action("attest_ci", key)
+            assert slot is not None
+            out = await engine.attestations.attest(
+                params, key=key, actor=ORCHESTRATOR_BY, path=slot[0], agent_id=slot[1])
+            engine.first_responder.record_action(
+                key, "attest_ci", mandate=mandate, inverse=None,
+                text=f"attested {out['name']} unrelated ({out['id']})",
+                reason=out["evidence"]["reason"])
+            return out
+        path, agent_id, key = self._worker(params, "ci_attest")
+        return await engine.attestations.attest(params, key=key, actor=AGENT_BY, path=path,
+                                                agent_id=agent_id)
+
+    async def ci_attestation_confirm(self, params: dict) -> Any:
+        """Accept or reject a pending attestation (the Confirm item). Params:
+        id, accept (bool), comment (Reject: sent to the attesting agent).
+        The user's."""
+        self._user_only(params, "ci_attestation_confirm")
+        return self._engine.attestations.confirm(
+            params.get("id"), params.get("accept"), params.get("comment"))
+
+    async def ci_attestation_revoke(self, params: dict) -> Any:
+        """Revoke a standing attestation (Why?). Params: id. The user's."""
+        self._user_only(params, "ci_attestation_revoke")
+        return self._engine.attestations.revoke(params.get("id"))
 
     async def ci_log_summary(self, params: dict) -> Any:
         """The failed-log summary of a work item's red CI on its head

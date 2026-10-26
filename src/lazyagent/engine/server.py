@@ -172,6 +172,11 @@ FEATURES: tuple[str, ...] = (
     # fields ci_note, rules_explain ci, the sync_base kind, [ci.check] and
     # [ci_unrelated] in the rule files.
     "ci_tests",
+    # Attestations for nondeterministic checks (proposal 0014 R5):
+    # ci_attest, ci_attestation_confirm, ci_attestation_revoke, the
+    # attestation_confirm kind (item attestation), rules_explain
+    # attestations, [ci] nondeterministic and its keys.
+    "ci_attest",
 )
 
 STREAM_RESIZED = "stream.resized"

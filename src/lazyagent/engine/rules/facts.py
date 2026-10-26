@@ -499,9 +499,25 @@ def _base_fixed(c: Any) -> Any:
     return UNKNOWN if fixed is None else frozenset(x.lower() for x in fixed)
 
 
+def _attested(c: Any) -> Any:
+    t = _tests_of(c)
+    return frozenset() if t is None else frozenset(x.lower() for x in t.attested)
+
+
+def _attestation_pending(c: Any) -> Any:
+    t = _tests_of(c)
+    return frozenset() if t is None else frozenset(x.lower() for x in t.attestation_pending)
+
+
+def _first_attestation_pending(c: Any) -> Any:
+    t = _tests_of(c)
+    first = t.first_pending() if t is not None else None
+    return UNKNOWN if first is None else first
+
+
 def _first_related(c: Any) -> Any:
     t = _tests_of(c)
-    if t is not None and (t.unrelated_checks or any(r.new for r in t.checks)):
+    if t is not None and (t.unrelated_checks or any(r.new or r.attest_note for r in t.checks)):
         first = t.first_related()
         if first is not None:
             return first
@@ -664,6 +680,15 @@ _fact("ci.first_related", TEXT, "the first failing check not explained by the ba
       row=_first_related, item=_first_related)
 _fact("ci.first_base_fixed", TEXT, "the first check the base has fixed", "mechanism A",
       "≤ actions_poll_s", "extra", row=_first_base_fixed, item=_first_base_fixed)
+_AT = "attestations (ci_attest, [ci] accept_attestation_for)"
+_fact("ci.attested", CHECKS, "the failing checks an accepted attestation explains",
+      _AT, "per pass", "free", row=_attested, item=_attested)
+_fact("ci.attestation_pending", CHECKS,
+      "the failing checks whose attestation waits for your confirmation", _AT, "per pass",
+      "free", row=_attestation_pending, item=_attestation_pending)
+_fact("ci.first_attestation_pending", TEXT,
+      "the first check whose attestation waits for your confirmation", _AT, "per pass",
+      "free", row=_first_attestation_pending, item=_first_attestation_pending)
 
 _fact("queue.enabled", BOOL, "the inbox queue is on", "ActionableQueue", "static", "free",
       row=lambda c: c.facts.actionables is not None)

@@ -38,6 +38,11 @@ status_report with ball='agent', a note and until.
 comment), report it: status_report(outward={kind, ref, text}).
 - An answer arrives as "Decision <id>: <choice> ...": follow it. Withdraw a \
 brief you no longer need with decision_withdraw.
+- CI red in a check lazyagent calls nondeterministic (an eval suite whose pass \
+rate varies): never edit the test to pass. Read its recent runs on the base, \
+run it on your head (if your instructions define a slot or lock for running \
+this suite, request it before each run and release it after), then fix a real \
+regression or file ci_attest with the evidence.
 """
 
 

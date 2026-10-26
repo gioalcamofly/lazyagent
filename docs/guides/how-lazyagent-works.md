@@ -147,14 +147,15 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Check agent** | agent may hang | The agent's status is possibly hanged |  |
 | **Relaunch** | agent failed | The agent's status is failed |  |
 | **Relaunch** | agent exited | (exits) |  |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and there are no agents at work | `d` Send the item to the branch's agent |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and there are no agents at work | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work | `d` Send the item to the branch's agent |
 | **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and there are no agents at work | `d` Send the item to the branch's agent |
 | **Fix job** | job failed | (jobs) |  |
 | **Update task** | Tracker | (tracker) | `p` The tracker task |
 | **Read** | Agent reports | (report) |  |
 | **Sync** | Sync with base: ‹the first check the base has fixed› | Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work | `d` Send the item to the branch's agent |
 | **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
+| **Confirm** | Confirm unrelated: ‹the first check whose attestation waits for your confirmation› | The failing checks whose attestation waits for your confirmation is not empty | `Enter` Expands the line |
 | **Merge** | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) | `p` The PR (you merge it, or review it, there) |
 | **Request reviewer** | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |  |
 
@@ -236,7 +237,7 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 17 | `merge` | you | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) |
 | 18 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and the inbox queue is off and the PR's review decision is changes requested |
 | 19 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting |
-| 20 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty |
+| 20 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) |
 | 21 | `agent_finished` *queue off* | you | review: agent finished | The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty |
 | 22 | `label` | ‹your label's ball› | (the state below) | Your gesture is label |
 | 23 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
@@ -278,6 +279,7 @@ What can land in your inbox, at which level, and the verb it shows.
 | **Decide** | Decide | deep | deep |  | `v` Open the brief |
 | **Sync** | Sync with base | round | quick |  | `d` Send the item to the branch's agent |
 | **Review** | Review requested | round | quick |  | `p` The PR (you merge it, or review it, there) |
+| **Confirm** | Confirm attestation | round | quick |  | `Enter` Expands the line |
 
 ## Keys and actions
 
@@ -446,6 +448,9 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `ci.base_fixed` | the unrelated checks the base has fixed since | set check | the base's newest run in the Actions runs | ≤ actions_poll_s | extra |
 | `ci.first_related` | the first failing check not explained by the base | text | mechanism A, else the first failing check | per pass | poll |
 | `ci.first_base_fixed` | the first check the base has fixed | text | mechanism A | ≤ actions_poll_s | extra |
+| `ci.attested` | the failing checks an accepted attestation explains | set check | attestations (ci_attest, [ci] accept_attestation_for) | per pass | free |
+| `ci.attestation_pending` | the failing checks whose attestation waits for your confirmation | set check | attestations (ci_attest, [ci] accept_attestation_for) | per pass | free |
+| `ci.first_attestation_pending` | the first check whose attestation waits for your confirmation | text | attestations (ci_attest, [ci] accept_attestation_for) | per pass | free |
 | `queue.enabled` | the inbox queue is on | bool | ActionableQueue | static | free |
 | `items.count` | the open inbox items on the work item | num | ActionableQueue | per pass | free |
 | `items.top.kind` | the top inbox item's kind | text | ActionableQueue | per pass | free |

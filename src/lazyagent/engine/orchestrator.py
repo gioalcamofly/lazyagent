@@ -74,6 +74,9 @@ AWAY_ACTIONS = (
     "rebase_via_owner",
     "spawn_worker",
     "next_project_task",
+    # File an attestation that a nondeterministic check's red is not the
+    # branch's (engine/attest.py): it may make Merge appear, never merge.
+    "attest_ci",
 )
 PRESENT_ACTIONS = ("answer_quick", "relay", "restore_owner", "ci_rerun")
 # Outward but routine, as its instructions say (best effort: the engine

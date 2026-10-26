@@ -70,7 +70,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -153,9 +153,34 @@ class CheckConfig:
 
 
 @dataclass(frozen=True)
+class AttestRules:
+    """What an attestation for a nondeterministic check must show (proposal
+    0014 mechanism B, engine/attest.py): ``[ci]`` defaults, per check
+    ``[ci.check."<name>"]``."""
+
+    confirm: str = "user"
+    min_base_runs: int = 5
+    min_repetitions: int = 3
+    max_drop: float = 0.05
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"confirm": self.confirm, "min_base_runs": self.min_base_runs,
+                "min_repetitions": self.min_repetitions, "max_drop": self.max_drop}
+
+
+ATTEST_DEFAULTS = AttestRules()
+DEFAULT_ATTESTATION_TTL = 72 * 3600
+
+
+def _matches(pattern: str, check: str, job: str) -> bool:
+    return any(fnmatch.fnmatchcase(x.lower(), pattern.lower())
+               for x in (check, job, bare_job(job)))
+
+
+@dataclass(frozen=True)
 class CiConfig:
-    """The effective ``[ci.check]`` and ``[ci_unrelated]`` of the rule
-    files (repo over global)."""
+    """The effective ``[ci]``, ``[ci.check]`` and ``[ci_unrelated]`` of the
+    rule files (repo over global)."""
 
     checks: tuple[CheckConfig, ...] = ()
     # The repo file's, else the global file's, else build_base; with where
@@ -165,13 +190,31 @@ class CiConfig:
     # I6 project id → compare_to (the repo's over the global's).
     projects: Mapping[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int = DEFAULT_BASE_FETCHES
+    # Mechanism B (R5): the checks whose pass rate varies run to run, those
+    # an accepted attestation explains, how long one lasts, and what one
+    # must show ([ci] defaults; per check name, its own keys only).
+    nondeterministic: tuple[str, ...] = ()
+    accept_attestation_for: tuple[str, ...] = ()
+    attestation_ttl: int = DEFAULT_ATTESTATION_TTL
+    attest_defaults: AttestRules = ATTEST_DEFAULTS
+    attest_checks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def configured(self) -> bool:
-        return bool(self.checks)
+        return bool(self.checks or self.nondeterministic)
 
     def check(self, check: str, job: str) -> CheckConfig | None:
         return next((c for c in self.checks if c.matches(check, job)), None)
+
+    def is_nondeterministic(self, check: str, job: str) -> bool:
+        return any(_matches(p, check, job) for p in self.nondeterministic)
+
+    def accepts(self, check: str, job: str) -> bool:
+        return any(_matches(p, check, job) for p in self.accept_attestation_for)
+
+    def attest_rules(self, check: str, job: str) -> AttestRules:
+        own = next((v for k, v in self.attest_checks.items() if _matches(k, check, job)), {})
+        return replace(self.attest_defaults, **own) if own else self.attest_defaults
 
     def compare_for(self, project: str | None) -> tuple[str, str]:
         """``(compare_to, why)``: the project's, else the files'."""
@@ -190,18 +233,22 @@ class CiConfig:
             "compare_to": self.compare_to,
             "projects": dict(sorted(self.projects.items())),
             "base_fetches_per_poll": self.base_fetches_per_poll,
+            "nondeterministic": list(self.nondeterministic),
+            "accept_attestation_for": list(self.accept_attestation_for),
+            "attestation_ttl": self.attestation_ttl,
+            "attest": self.attest_defaults.to_dict(),
+            "attest_checks": {k: dict(v) for k, v in sorted(self.attest_checks.items())},
         }
 
 
 NO_CONFIG = CiConfig()
 
-# [ci] keys R5 reads (attestations): accepted with a warning.
-LATER_CI_KEYS = frozenset({
-    "nondeterministic", "accept_attestation_for", "attestation_ttl",
+CI_KEYS = frozenset({
+    "check", "nondeterministic", "accept_attestation_for", "attestation_ttl",
     "min_base_runs", "min_repetitions", "max_drop",
 })
-LATER_CHECK_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
-CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex"})
+ATTEST_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
+CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex"}) | ATTEST_KEYS
 UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project"})
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
@@ -214,6 +261,44 @@ class CiPart:
     compare_to: str | None = None
     projects: dict[str, str] = field(default_factory=dict)
     base_fetches_per_poll: int | None = None
+    # Mechanism B: each [ci] key the file sets, and per check name its own
+    # attestation keys.
+    attest: dict[str, Any] = field(default_factory=dict)
+    attest_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+_TTL = re.compile(r"^(\d+)\s*([smhd])$")
+_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _names(key: str, value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ValueError(f'{key} must be a list of check names, such as ["eval-suite"]')
+    return tuple(v.strip() for v in value)
+
+
+def _ttl(value: Any) -> int:
+    if type(value) is int and value > 0:
+        return value
+    m = _TTL.match(value.strip()) if isinstance(value, str) else None
+    if m is None or int(m[1]) <= 0:
+        raise ValueError('attestation_ttl must be a duration such as "72h" or "3d" (or seconds)')
+    return int(m[1]) * _UNITS[m[2]]
+
+
+def _attest_value(key: str, value: Any) -> Any:
+    """One attestation key's value, checked (ValueError)."""
+    if key == "confirm":
+        if value not in ("user", "none"):
+            raise ValueError('confirm must be "user" (the default) or "none"')
+        return value
+    if key in ("min_base_runs", "min_repetitions"):
+        if type(value) is not int or not 1 <= value <= 100:
+            raise ValueError(f"{key} must be a number from 1 to 100")
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError("max_drop must be a fraction from 0 to 1, such as 0.05")
+    return float(value)
 
 
 def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]:
@@ -224,11 +309,18 @@ def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]
         if not isinstance(ci, dict):
             errors.append("[ci] must be a table")
         else:
-            for key in sorted(set(ci) - {"check"}):
-                if key in LATER_CI_KEYS:
-                    warnings.append(f"[ci] {key} is read by a later version; ignored for now")
-                else:
-                    errors.append(f"unknown key {key!r} in [ci]")
+            for key in sorted(set(ci) - CI_KEYS):
+                errors.append(f"unknown key {key!r} in [ci]")
+            for key in sorted(set(ci) & (CI_KEYS - {"check"})):
+                try:
+                    if key in ("nondeterministic", "accept_attestation_for"):
+                        part.attest[key] = _names(f"[ci] {key}", ci[key])
+                    elif key == "attestation_ttl":
+                        part.attest[key] = _ttl(ci[key])
+                    else:
+                        part.attest[key] = _attest_value(key, ci[key])
+                except ValueError as e:
+                    errors.append(f"[ci] {e}")
             checks = ci.get("check", {})
             if not isinstance(checks, dict):
                 errors.append('[ci] check must be tables ([ci.check."<name>"])')
@@ -237,11 +329,14 @@ def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]
                 where = f'[ci.check."{name}"]'
                 try:
                     check = _check_config(name, table, where, warnings)
+                    own = {k: _attest_value(k, table[k]) for k in sorted(ATTEST_KEYS & set(table))}
                 except ValueError as e:
                     errors.append(f"{where}: {e}")
                     continue
                 if check is not None:
                     part.checks.append(check)
+                if own:
+                    part.attest_checks[name] = own
     if unrelated is not None:
         if not isinstance(unrelated, dict):
             errors.append("[ci_unrelated] must be a table")
@@ -291,10 +386,7 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
     if not isinstance(table, dict):
         raise ValueError("must be a table")
     for key in sorted(set(table) - CHECK_KEYS):
-        if key in LATER_CHECK_KEYS:
-            warnings.append(f"{where} {key} is read by a later version; ignored for now")
-        else:
-            raise ValueError(f"unknown key {key!r}")
+        raise ValueError(f"unknown key {key!r}")
     sources = table.get("tests_from")
     if sources is None:
         return None
@@ -325,6 +417,8 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
     checks: list[CheckConfig] = []
     compare_to, compare_from, fetches = None, "", None
     projects: dict[str, str] = {}
+    attest: dict[str, Any] = {}
+    attest_checks: dict[str, dict[str, Any]] = {}
     for scope, part in parts:
         names = {c.name for c in checks}
         checks += [c for c in part.checks if c.name not in names]
@@ -334,10 +428,20 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
             fetches = part.base_fetches_per_poll
         for pid, ref in part.projects.items():
             projects.setdefault(pid, ref)
-    if not checks and compare_to is None and not projects and fetches is None:
+        for key, value in part.attest.items():
+            attest.setdefault(key, value)
+        for name, own in part.attest_checks.items():
+            attest_checks.setdefault(name, own)
+    if not checks and compare_to is None and not projects and fetches is None \
+            and not attest and not attest_checks:
         return NO_CONFIG
+    defaults = AttestRules(**{k: attest[k] for k in ATTEST_KEYS - {"confirm"} if k in attest})
     return CiConfig(tuple(checks), compare_to or BUILD_BASE, compare_from, projects,
-                    DEFAULT_BASE_FETCHES if fetches is None else fetches)
+                    DEFAULT_BASE_FETCHES if fetches is None else fetches,
+                    nondeterministic=attest.get("nondeterministic", ()),
+                    accept_attestation_for=attest.get("accept_attestation_for", ()),
+                    attestation_ttl=attest.get("attestation_ttl", DEFAULT_ATTESTATION_TTL),
+                    attest_defaults=defaults, attest_checks=attest_checks)
 
 
 # ----------------------------------------------------------------------
@@ -768,6 +872,19 @@ class CheckResult:
     fixed_detail: str = ""
     # Some data is still to be read (not a failure to read it).
     pending: bool = False
+    # Mechanism B (engine/attest.py): "B" when an accepted attestation
+    # explains the check; the attestation behind it, or the one waiting
+    # for the user's confirmation (attest_pending); why the latest one no
+    # longer counts ("attestation rejected", "head moved, attestation
+    # expired").
+    mechanism: str = "A"
+    attestation: Mapping[str, Any] | None = None
+    attest_pending: bool = False
+    attest_note: str = ""
+
+    @property
+    def name(self) -> str:
+        return bare_job(self.job)
 
     @property
     def known_related(self) -> bool:
@@ -780,7 +897,7 @@ class CheckResult:
             "job": self.job,
             "workflow": self.workflow,
             "run_id": self.run_id,
-            "mechanism": "A",
+            "mechanism": self.mechanism,
             "unrelated": self.unrelated,
             "tests": None if self.tests is None else sorted(self.tests),
             "base_tests": None if self.base_tests is None else sorted(self.base_tests),
@@ -790,7 +907,9 @@ class CheckResult:
             "detail": self.detail,
             "base_fixed": self.base_fixed,
             "fixed_detail": self.fixed_detail,
-        }
+        } | ({"attestation": dict(self.attestation), "attest_pending": self.attest_pending}
+             if self.attestation is not None else {}) \
+          | ({"attest_note": self.attest_note} if self.attest_note else {})
 
 
 def _plural(n: int, word: str) -> str:
@@ -816,6 +935,16 @@ class CiTests:
         return frozenset(c.check for c in self.checks if c.unrelated)
 
     @property
+    def attested(self) -> frozenset[str]:
+        """The checks an accepted attestation explains (mechanism B)."""
+        return frozenset(c.check for c in self.checks if c.unrelated and c.mechanism == "B")
+
+    @property
+    def attestation_pending(self) -> frozenset[str]:
+        """The checks whose attestation waits for the user's confirmation."""
+        return frozenset(c.check for c in self.checks if c.attest_pending)
+
+    @property
     def related(self) -> list[str]:
         return [c.check for c in self.checks if not c.unrelated] + [o for o, _ in self.others]
 
@@ -833,12 +962,29 @@ class CiTests:
 
     @property
     def summary(self) -> str:
-        """``base also red: 3 tests`` (empty: nothing explained)."""
+        """``base also red: 3 tests``, ``eval-suite attested by agent a2``
+        (empty: nothing explained)."""
         tests = set()
         for c in self.checks:
-            if c.unrelated and c.tests:
+            if c.unrelated and c.mechanism == "A" and c.tests:
                 tests |= c.tests
-        return f"base also red: {_plural(len(tests), 'test')}" if tests else ""
+        parts = [f"base also red: {_plural(len(tests), 'test')}"] if tests else []
+        parts += [f"{c.name} attested by {(c.attestation or {}).get('actor_text', 'an agent')}"
+                  for c in self.checks if c.unrelated and c.mechanism == "B"]
+        return "; ".join(parts)
+
+    def settled(self) -> str:
+        """What explains the red when every failing check is unrelated or
+        waits for the user to confirm an attestation (``base also red: 2
+        tests; eval-suite attested``); empty otherwise. A delegated Fix CI
+        that cleared this way did not leave CI red to the user."""
+        if self.unrelated is True:
+            return self.summary
+        if self.others or not self.checks \
+                or not all(c.unrelated or c.attest_pending for c in self.checks):
+            return ""
+        pending = sorted({c.name for c in self.checks if c.attest_pending})
+        return "; ".join([x for x in (self.summary,) if x] + [f"{n} attested" for n in pending])
 
     @property
     def note(self) -> str | None:
@@ -860,8 +1006,13 @@ class CiTests:
         for c in self.checks:
             if not c.unrelated:
                 # Short: the row's state has five words.
+                if c.attest_note:
+                    return f"{c.name} ({c.attest_note})"
                 return f"{bare_job(c.job)} ({len(c.new)} new)" if c.new else bare_job(c.job)
         return self.others[0][1] if self.others else None
+
+    def first_pending(self) -> str | None:
+        return next((c.name for c in self.checks if c.attest_pending), None)
 
     def first_fixed(self) -> str | None:
         return next((bare_job(c.job) for c in self.checks if c.base_fixed), None)
@@ -981,6 +1132,9 @@ class CiTestsHub:
         self._runs_seen: list[WorkflowRun] | None = None
         self._memo: dict[Any, CiTests | None] = {}
         self._loaded = False
+        # Mechanism B (engine/attest.py): the engine's attestations, applied
+        # on top of A's verdict.
+        self.attestations: Any = None
 
     # --- State ---
 
@@ -1057,6 +1211,11 @@ class CiTestsHub:
                 target = self.targets.get(branch)
                 if v.state != "red" or target is None:
                     continue
+                for run in self._attested_runs(branch, v):
+                    try:
+                        await self._point_now(run, target)
+                    except (TrackerError, OSError, ValueError) as e:
+                        log.info("ci_tests: %s", e)
                 for run, job, check in self._failing(v):
                     try:
                         await self._branch_tests(run, job, check)
@@ -1109,6 +1268,50 @@ class CiTestsHub:
         _put(self._failed, (run.id, run.attempt), names)
         self._changed()
         return names
+
+    def _attested_runs(self, branch: str, v: CiVerdict) -> list[WorkflowRun]:
+        """The red runs on the head whose failing jobs an attestation covers:
+        their base point is read, so a moved point expires it."""
+        attest = self.attestations
+        if attest is None:
+            return []
+        covered = attest.covered(branch)
+        return [r for r in v.red
+                if any(check_id(r, j.name) in covered for j in r.failed_jobs or ())]
+
+    async def _point_now(self, run: WorkflowRun, target: Target) -> tuple[str | None, str, str]:
+        """``(P, compared, why unknown)`` for ``run``, reading the build
+        base (and the compare_to merge-base) when it is not cached yet."""
+        build, why = await self._build_base(run, target)
+        if build is None:
+            return None, "", why
+        ref, _ = self.config.compare_for(target.project)
+        if ref != BUILD_BASE:
+            point, why = await self._merge_base_of(build, ref)
+            if point is None:
+                return None, "", why
+        point, _, compared, why = self._point_of(run, target)
+        return point, compared, why
+
+    async def point_for(self, run: WorkflowRun, target: Target) -> tuple[str | None, str, str]:
+        """:meth:`_point_now` outside a poll (an attestation being filed):
+        at most two calls, inside the hub's caps."""
+        self._load()
+        before, self._budget = self._budget, 2
+        try:
+            return await self._point_now(run, target)
+        except _Budget:
+            return None, "", "GitHub calls are spent for this minute"
+        except (TrackerError, OSError, ValueError) as e:
+            return None, "", str(e)
+        finally:
+            self._budget = before
+            if self.version:
+                self._save()
+
+    def point_of(self, run: WorkflowRun, target: Target) -> str | None:
+        """The base point from what is cached (None: unknown)."""
+        return self._point_of(run, target)[0]
 
     def _failed_of(self, run: WorkflowRun) -> frozenset[str] | None:
         slot = (run.id, run.attempt)
@@ -1366,12 +1569,16 @@ class CiTestsHub:
             self._runs_seen = self.hub.runs
             self._memo.clear()
         target = target or self.targets.get(branch)
+        attest = self.attestations
         key = (branch, v, None if pr is None else (pr.head_sha, pr.state, tuple(
-            (c.name, c.conclusion, c.details_url) for c in pr.checks)), target, self.version)
+            (c.name, c.conclusion, c.details_url) for c in pr.checks)), target, self.version,
+            None if attest is None else attest.version)
         if key in self._memo:
             return self._memo[key]
         self._load()
         result = self._analyze(branch, v, target, pr)
+        if result is not None and attest is not None and v is not None:
+            result = attest.apply(branch, v.head, result, self.config)
         if len(self._memo) > 256:
             self._memo.clear()
         self._memo[key] = result
@@ -1519,7 +1726,7 @@ def state_file(repo_root: str) -> Path:
 
 
 __all__ = [
-    "BUILD_BASE", "CheckConfig", "CheckResult", "CiConfig", "CiTests", "CiTestsHub", "Found",
+    "BUILD_BASE", "AttestRules", "CheckConfig", "CheckResult", "CiConfig", "CiTests", "CiTestsHub", "Found",
     "NO_CONFIG", "PARSERS", "Target", "bare_job", "check_id", "compile_re2", "merge_parts",
     "parse_junit_xml", "parse_log", "parse_tables", "pick_artifacts",
 ]

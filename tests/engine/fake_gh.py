@@ -78,6 +78,9 @@ class FakeGh:
         self.artifact_files: dict[str, dict[str, str]] = {}
         # PR number → the parents of refs/pull/<n>/merge.
         self.merge_refs: dict[int, list[str]] = {}
+        # run id → the run (``actions/runs/<id>``), for runs not in the
+        # window.
+        self.run_details: dict[int, dict[str, Any]] = {}
 
     def set_runs(self, runs: list[dict[str, Any]], etag: str) -> None:
         self.runs, self.etag = runs, etag
@@ -141,6 +144,13 @@ class FakeGh:
                 return http(404, {"message": "Not Found"})
             return http(200, {"sha": "m" * 40,
                               "parents": [{"sha": p} for p in self.merge_refs[number]]})
+        if path.rstrip("/").split("/actions/runs/")[-1].isdigit():
+            run_id = int(path.rstrip("/").split("/actions/runs/")[-1])
+            found = self.run_details.get(run_id) or next(
+                (r for r in self.runs if r["id"] == run_id), None)
+            if found is None:
+                return http(404, {"message": "Not Found"})
+            return http(200, found)
         if "/jobs" in path:
             run_id = int(path.split("/runs/")[1].split("/")[0])
             if run_id not in self.jobs:

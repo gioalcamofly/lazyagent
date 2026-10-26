@@ -20,8 +20,10 @@ A CI item (``ci``, ``ci_failed``) carries the failed-log summary of its red
 runs on the head (engine/actions.py) after the line: at once when it is
 cached, else once ``gh run view --log-failed`` answers. A CI item that
 clears because every failing check turned out unrelated to the branch
-(engine/ci_tests.py) ends the delegation with ``CI failures unrelated
-(base also red: 2 tests)``, not "still CI red".
+(engine/ci_tests.py), or waits for the user to confirm the agent's
+attestation (engine/attest.py), ends the delegation with ``CI failures
+unrelated (base also red: 2 tests; eval-suite attested)``, not "still CI
+red".
 
 Every step is a ``delegate`` timeline entry. A returned delegation ends when
 its item resolves or is dismissed, or with a new delegation; the user's
@@ -265,12 +267,13 @@ class Delegations:
         engine.status.mark_dirty()
 
     def _unrelated(self, key: str, d: dict[str, Any]) -> str:
-        """``base also red: 2 tests`` when a CI item cleared because every
-        failing check is unrelated to the branch."""
+        """``base also red: 2 tests; eval-suite attested`` when a CI item
+        cleared because every failing check is unrelated to the branch, or
+        waits for the user to confirm an attestation."""
         if str(d.get("item", "")).split(":", 1)[0].lower() not in CI_KINDS:
             return ""
         tests = actions.ci_tests_of(self._engine, key)
-        return tests.summary if tests is not None and tests.unrelated is True else ""
+        return tests.settled() if tests is not None else ""
 
     def _dismissed(self, item: Item) -> Callable[[], None] | None:
         key = item.work_item

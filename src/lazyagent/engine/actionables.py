@@ -145,6 +145,8 @@ CI = KINDS["ci"]
 CI_FAILED = KINDS["ci_failed"]
 # Every failing check is unrelated, and the base has fixed it since (R4).
 SYNC_BASE = KINDS["sync_base"]
+# R5: confirm an agent's attestation (engine/attest.py).
+ATTESTATION_CONFIRM = KINDS["attestation_confirm"]
 REVIEW = KINDS["review"]
 CONFLICT = KINDS["conflict"]
 REVIEW_REQUEST = KINDS["review_request"]
@@ -192,6 +194,8 @@ class Item:
     rule_id: str | None = None
     verb: str | None = None
     title: str | None = None
+    # attestation_confirm: the attestation and its evidence (attest.public).
+    attestation: dict[str, Any] | None = None
 
     @property
     def occurrence(self) -> str:
@@ -222,7 +226,8 @@ class Item:
             "park": park,
             "decision_id": self.decision_id,
             "run": self.run,
-        } | ({"rule_id": self.rule_id, "verb": self.verb} if self.rule_id is not None else {})
+        } | ({"rule_id": self.rule_id, "verb": self.verb} if self.rule_id is not None else {}) \
+          | ({"attestation": self.attestation} if self.attestation is not None else {})
 
 
 # The kinds read from the PR info (and the item rules on it, the built-in
@@ -394,7 +399,8 @@ def _explained(place: Place) -> bool:
     """Mechanism A has explained part of the red, or named new failing
     tests: the item's detail says which checks are the branch's."""
     t = place.tests
-    return t is not None and bool(t.unrelated_checks or any(c.new for c in t.checks))
+    return t is not None and bool(t.unrelated_checks or any(
+        c.new or c.attest_note or c.attestation is not None for c in t.checks))
 
 
 def pr_items(snap: Snapshot) -> Iterable[Item]:
@@ -455,6 +461,39 @@ def actions_items(snap: Snapshot) -> Iterable[Item]:
                 work_item=place.work_item,
                 worktree_path=place.path,
                 run=run_info(run),
+            )
+
+
+def attest_items(snap: Snapshot) -> Iterable[Item]:
+    """An agent's attestation waiting for the user's confirmation (R5, the
+    catalog's ``attest`` kinds): one item per work item, for its first
+    pending attestation; a newer one is a new item."""
+    kinds = _CATALOG.kinds_of("attest")
+    for place in snap.places:
+        t = place.tests
+        if t is None or not t.attestation_pending:
+            continue
+        ctx = ItemContext(place)
+        for rule in kinds:
+            if not rule.matches(ctx):
+                continue
+            kind = KINDS[rule.id]
+            c = next(c for c in t.checks if c.attest_pending)
+            att = dict(c.attestation or {})
+            pr = place.pr
+            yield Item(
+                _id(kind, f"{place.path}:{att.get('id')}"),
+                kind.name,
+                rule.state_of(ctx),
+                label=f"#{pr.number} {pr.title}" if pr is not None else (
+                    place.ci.branch if place.ci is not None else ""),
+                detail=f"{att.get('actor_text')} says {c.name}'s failure is unrelated: "
+                       f"{att.get('text')}; {att.get('range_text')}",
+                work_item=place.work_item,
+                worktree_path=place.path,
+                agent_id=att.get("agent_id"),
+                pr={"number": pr.number, "title": pr.title, "url": pr.url} if pr else None,
+                attestation=att,
             )
 
 
@@ -525,6 +564,7 @@ def job_items(snap: Snapshot) -> Iterable[Item]:
 
 DEFAULT_DETECTORS: tuple[Detector, ...] = (
     agent_items, pr_items, actions_items, review_request_items, exit_items, job_items,
+    attest_items,
 )
 
 
@@ -830,6 +870,8 @@ class ActionableQueue:
         tests = getattr(hub, "tests", None)
         if tests is not None and not tests.config.configured:
             tests = None
+        if tests is not None:
+            tests.attestations = getattr(engine, "attestations", None)
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
