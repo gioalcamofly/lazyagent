@@ -234,6 +234,12 @@ class WorkflowJob:
     step: str = ""
     url: str = ""
     conclusion: str = ""
+    # When it started and ended (Unix time, 0: unknown) and its steps
+    # other than GitHub's own ("Set up job", "Complete job", "Post …"):
+    # what tells an aggregate job (one that waits on the others) apart.
+    started_at: float = 0.0
+    completed_at: float = 0.0
+    own_steps: int = 0
 
 
 @dataclass(frozen=True)
