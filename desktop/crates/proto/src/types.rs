@@ -653,6 +653,11 @@ pub struct StatusRow {
     pub verb: Option<String>,
     #[serde(default)]
     pub action: Option<String>,
+    /// `status_list {fields}` only (feature `ci_tests`, R4): `CI red ·
+    /// unrelated (base also red: 2 tests)` while every failing check is
+    /// unrelated to the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_note: Option<String>,
     /// Stale rows only (I4f): the worktree's uncommitted files, once git
     /// status is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]

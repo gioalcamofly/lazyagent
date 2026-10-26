@@ -2002,6 +2002,21 @@ fn ball_text(c: &LineCtx, l: &Line, shown: Zone) -> (String, String, Color32) {
     }
 }
 
+/// `CI red · unrelated (base also red: 2 tests)` (feature ci_tests, R4):
+/// an informational chip, not an item; the full text on hover.
+fn ci_chip(ui: &mut Ui, t: &Theme, l: &Line) {
+    let Some(note) = l.ci_note() else { return };
+    let short = home::middle_ellipsis(note, 48);
+    let r = egui::Frame::new()
+        .fill(t.panel)
+        .stroke(egui::Stroke::new(1.0, t.muted))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(6, 0))
+        .show(ui, |ui| ui.label(RichText::new(short).small().color(t.muted)))
+        .response;
+    r.on_hover_text(note);
+}
+
 fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
     let selected = c.selected == Some(l.key.as_str());
@@ -2030,6 +2045,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     cell(ui, 110.0, RichText::new(ball).small().color(color));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
+                        ci_chip(ui, t, l);
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             ui.add(egui::Label::new(RichText::new(state).color(t.muted)).truncate());
                         });
@@ -2065,6 +2081,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     let age = c.now - l.top.as_ref().map(|t| t.since).unwrap_or(l.changed_at);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(age)).small().color(t.muted));
+                        ci_chip(ui, t, l);
                         // "+ changes requested": what is behind the top item.
                         if let Some(more) = l.more_text() {
                             let r = ui.add(

@@ -165,6 +165,9 @@ class Facts:
     # commit, a notes edit, a report, a step by someone other than the
     # engine, an agent status change the engine saw happen.
     activity_at: float | None = None
+    # Mechanism A on the head (engine/ci_tests.py): None while no check has
+    # tests_from.
+    ci_tests: Any = None
 
 
 def evolve(facts: Facts, **changes: Any) -> Facts:
@@ -714,6 +717,9 @@ class StatusProjection:
                          catalog.not_human)
         out = catalog.explain(ctx)
         out["key"] = key
+        if facts.ci_tests is not None and facts.ci_tests.red:
+            # Mechanism A per failing check: what decided it, what was missing.
+            out["ci"] = facts.ci_tests.to_dict()
         out["items"] = [
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
             for i in facts.actionables or ()
@@ -725,17 +731,21 @@ class StatusProjection:
         return out
 
     def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
-        """The opt-in row fields (Q-R20): rule_id, verb, action. A row the
-        queue decides takes its top item's."""
+        """The opt-in row fields (Q-R20): rule_id, verb, action (a row the
+        queue decides takes its top item's), and ci_note: ``CI red ·
+        unrelated (base also red: 2 tests)`` while every failing check is
+        explained (R4, Q-R23)."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
         rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
+        facts = self._facts_by_key.get(key)
+        tests = facts.ci_tests if facts is not None else None
         out: dict[str, Any] = {"rule_id": rule.id if rule is not None else None,
-                               "verb": None, "action": None}
+                               "verb": None, "action": None,
+                               "ci_note": tests.note if tests is not None else None}
         if rule is None:
             return out
         out["verb"], out["action"] = rule.verb, rule.action
-        facts = self._facts_by_key.get(key)
         if rule.id == "queue" and facts is not None and facts.actionables:
             top = facts.actionables[0]
             kind = catalog.kind.get(top["kind"])
@@ -883,12 +893,31 @@ class StatusProjection:
             pr = self._engine.get_pr_info(wt.path)
             if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
                 red_heads[wt.branch] = pr.head_sha
+        hub.tests.config = self.catalog.ci
+        if hub.tests.config.configured:
+            hub.tests.targets = {wt.branch: self._target(wt) for wt in members}
 
         async def poll() -> None:
             if await hub.poll(branches, red_heads=red_heads):
                 self.mark_dirty()
 
         self._spawn(poll())
+
+    def _target(self, wt: Any) -> Any:
+        """What mechanism A compares a branch with: its open PR's base
+        (else the default branch) and its I6 project."""
+        from lazyagent.engine.ci_tests import Target
+
+        pr = self._engine.get_pr_info(wt.path)
+        is_open = pr is not None and pr.state.upper() == "OPEN"
+        base = ((pr.base_ref if is_open and pr.base_ref else None)
+                or self._engine.config.default_branch or "main")
+        feeder = self._feeder(wt.branch) or {}
+        project = feeder.get("project")
+        if isinstance(project, dict):
+            project = project.get("id")
+        return Target(wt.branch, base, pr.number if is_open else None,
+                      project if isinstance(project, str) else None)
 
     def _poll_trackers(self) -> None:
         """Poll the tracker adapters that are due (a new branch's key at
@@ -1471,6 +1500,8 @@ class StatusProjection:
             for entry in engine._offerable():
                 restorable[entry.worktree_path] = restorable.get(entry.worktree_path, 0) + 1
         out = []
+        hub = getattr(engine, "actions", None)
+        tests = hub.tests if hub is not None and hub.tests.config.configured else None
         for wt in self._members():
             agents = self._agents(wt.path, now)
             branch = wt.branch
@@ -1496,9 +1527,16 @@ class StatusProjection:
                     feeder=self._feeder(branch),
                     head=head,
                     merged_into=merged,
+                    ci_tests=self._ci_tests(tests, wt, pr) if tests is not None else None,
                 )
             )
         return out
+
+    def _ci_tests(self, tests: Any, wt: Any, pr: PrInfo | None) -> Any:
+        from lazyagent.engine.actions import ci_verdict
+
+        return tests.analysis(wt.branch, ci_verdict(self._engine, wt.branch, pr), pr,
+                              tests.targets.get(wt.branch) or (self._target(wt) if wt.branch else None))
 
     def _feeder(self, branch: str | None) -> dict[str, Any] | None:
         record = self._engine.work_items.link(branch)
@@ -1647,6 +1685,8 @@ def state_text(row: dict[str, Any], now: float) -> str:
         state = f"{gesture['text']} · {state}"
     if row.get("waits_on") and row["ball"] != "done":
         state += " · waits on " + ", ".join(w["title"] for w in row["waits_on"])
+    if row.get("ci_note"):
+        state += f" · {row['ci_note']}"
     tracker = row.get("tracker")
     if not tracker or not tracker["state"]:
         return state

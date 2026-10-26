@@ -132,6 +132,13 @@ pub struct Line {
     pub decided: Option<Decision>,
 }
 
+impl Line {
+    /// The row's `ci_note`: every failing check is unrelated to the branch.
+    pub fn ci_note(&self) -> Option<&str> {
+        self.row.as_ref().and_then(|r| r.ci_note.as_deref()).filter(|n| !n.is_empty())
+    }
+}
+
 /// The project a line belongs to (a feeder's `project`): In flight groups
 /// by it.
 pub fn project_of(line: &Line) -> Option<&lazyagent_proto::types::RowProject> {

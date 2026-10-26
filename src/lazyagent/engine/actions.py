@@ -156,6 +156,8 @@ def parse_runs(body: str) -> list[WorkflowRun]:
                 created_at=_timestamp(r.get("created_at")),
                 attempt=int(r.get("run_attempt") or 1),
                 workflow_id=int(r.get("workflow_id") or 0),
+                path=str(r.get("path") or ""),
+                event=str(r.get("event") or ""),
             )
             for r in items
             if isinstance(r, dict)
@@ -410,6 +412,18 @@ def red_runs(engine: Any, key: str) -> tuple[str, list[WorkflowRun]]:
     return wt.branch or key, list(v.red) if v is not None and v.state == "red" else []
 
 
+def ci_tests_of(engine: Any, key: str) -> Any:
+    """The work item's mechanism-A verdict now (engine/ci_tests.py); None
+    when nothing is configured or the work item is gone."""
+    hub = getattr(engine, "actions", None)
+    path = engine.status.path_of(key)
+    wt = engine.worktree(path) if path is not None else None
+    if hub is None or wt is None or not hub.tests.config.configured:
+        return None
+    pr = engine.get_pr_info(path)
+    return hub.tests.analysis(wt.branch, ci_verdict(engine, wt.branch, pr), pr)
+
+
 def _other_checks_of(engine: Any, key: str) -> list[dict[str, str]]:
     path = engine.status.path_of(key)
     pr = engine.get_pr_info(path) if path is not None else None
@@ -489,6 +503,11 @@ class ActionsHub:
         # (run id, attempt) → failed jobs / the parsed failed log
         self._jobs: OrderedDict[tuple[int, int], tuple[WorkflowJob, ...]] = OrderedDict()
         self._logs: OrderedDict[tuple[int, int], list[dict[str, Any]]] = OrderedDict()
+        # Mechanism A's test data (proposal 0014 R4): nothing until a rule
+        # file gives a check tests_from.
+        from lazyagent.engine.ci_tests import CiTestsHub, state_file
+
+        self.tests = CiTestsHub(self, state_path=state_file(repo_root) if repo_root else None)
 
     @property
     def enabled(self) -> bool:
@@ -595,6 +614,13 @@ class ActionsHub:
                 self._failed(self.clock(), e)
             changed |= await self._fetch_heads()
             changed |= await self._fetch_jobs()
+            if self.tests.config.configured:
+                verdicts = {}
+                for branch in sorted(self.tracked):
+                    v = self.verdict(branch, self.red_heads.get(branch))
+                    if v is not None:
+                        verdicts[branch] = v
+                changed |= await self.tests.fetch(verdicts)
         finally:
             self._polling = False
         return changed

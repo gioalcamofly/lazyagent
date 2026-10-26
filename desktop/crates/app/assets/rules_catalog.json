@@ -116,6 +116,12 @@
    "label": "Fold Parked"
   }
  ],
+ "ci": {
+  "base_fetches_per_poll": 3,
+  "checks": [],
+  "compare_to": "build_base",
+  "projects": {}
+ },
  "concepts": {
   "balls": [
    {
@@ -1134,6 +1140,136 @@
    ]
   },
   {
+   "cost": "extra",
+   "freshness": "once per run attempt",
+   "name": "ci.failing_tests",
+   "phrase": "the failing tests on the head (lower case)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "JUnit artifacts or log parsers ([ci.check] tests_from)",
+   "type": "set test",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per head",
+   "name": "ci.base_point",
+   "phrase": "the base commit the head is compared with",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "git and Actions run metadata ([ci_unrelated] compare_to)",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "once per base sha",
+   "name": "ci.base_failing_tests",
+   "phrase": "the tests failing on the base at that commit",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "JUnit artifacts or log parsers ([ci.check] tests_from)",
+   "type": "set test",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per pass",
+   "name": "ci.unrelated_checks",
+   "phrase": "the failing checks whose tests all fail on the base too",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "per pass",
+   "name": "ci.related_failures",
+   "phrase": "the failing checks not explained by the base",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "failing checks minus ci.unrelated_checks",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "per pass",
+   "name": "ci.unrelated",
+   "phrase": "CI is red only for reasons unrelated to the branch",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "ci.unrelated_summary",
+   "phrase": "what explains the red (empty: nothing)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.base_fixed",
+   "phrase": "the unrelated checks the base has fixed since",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "the base's newest run in the Actions runs",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "poll",
+   "freshness": "per pass",
+   "name": "ci.first_related",
+   "phrase": "the first failing check not explained by the base",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A, else the first failing check",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ actions_poll_s",
+   "name": "ci.first_base_fixed",
+   "phrase": "the first check the base has fixed",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "mechanism A",
+   "type": "text",
+   "values": []
+  },
+  {
    "cost": "free",
    "freshness": "static",
    "name": "queue.enabled",
@@ -1555,6 +1691,10 @@
    "name": "waiting_text"
   },
   {
+   "doc": "ci.failing_tests_of(\"<check>\"): the failing tests of that check (a check id, a job name, or a job name without its matrix values; unknown with no test data)",
+   "name": "ci.failing_tests_of"
+  },
+  {
    "doc": "agents.detail_of(\"<status>\"): the detail line of the first agent in that status",
    "name": "agents.detail_of"
   }
@@ -1648,12 +1788,12 @@
    "id": "ci",
    "level": "round",
    "rank": 5,
-   "says": "An open PR red on its head with no agent at work on it.",
-   "sentence": "The PR's state is open and the PR's checks are red on its head and there are no agents at work",
-   "state_text": "CI red: ‹the first failing check›",
+   "says": "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4).",
+   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failing",
    "verb": "Fix CI",
-   "when": "pr.state == \"open\" and ci.pr_red and agents.running == 0",
+   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -1664,12 +1804,12 @@
    "id": "ci_failed",
    "level": "round",
    "rank": 5,
-   "says": "A fresh red Actions run on the head of a branch with no PR (I7).",
-   "sentence": "There is no PR and Actions on the head is red and there are no agents at work",
-   "state_text": "CI red: ‹the first failing check›",
+   "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4).",
+   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and there are no agents at work",
+   "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failed",
    "verb": "Fix CI",
-   "when": "not pr.exists and ci.head == \"red\" and agents.running == 0",
+   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and agents.running == 0",
    "zone": "round"
   },
   {
@@ -1783,6 +1923,22 @@
    "verb": "Decide",
    "when": null,
    "zone": "deep"
+  },
+  {
+   "action": "delegate",
+   "blocks_agent": false,
+   "class": "quick",
+   "detector": "actions",
+   "id": "sync_base",
+   "level": "round",
+   "rank": 5,
+   "says": "Every failing check also fails on the base at the commit compared, and the base has fixed it since: merge or rebase the base in (R4).",
+   "sentence": "Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work",
+   "state_text": "Sync with base: ‹the first check the base has fixed›",
+   "title": "Sync with base",
+   "verb": "Sync",
+   "when": "ci.head == \"red\" and empty(ci.related_failures) and not empty(ci.base_fixed) and agents.running == 0",
+   "zone": "round"
   }
  ],
  "review": {
@@ -2269,7 +2425,7 @@
    "queue_off": true,
    "replaces": null,
    "says": "",
-   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red",
+   "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty",
    "state_text": "CI red: ‹the first failing check›",
    "then": {
     "ball": "you",
@@ -2277,7 +2433,7 @@
     "state_expr": "with(\"CI red\", ci.first_failing)"
    },
    "verb": null,
-   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\"",
+   "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.related_failures)",
    "zone": "round"
   },
   {

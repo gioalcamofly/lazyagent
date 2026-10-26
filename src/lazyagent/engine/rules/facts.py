@@ -16,8 +16,8 @@ source spells. A getter returns :data:`UNKNOWN` when the fact is not there
 absence (no gesture, no report) is a value. Facts are memoised per context,
 so a pass reads each one once per row.
 
-The facts that later phases bring (``ci.failing_tests``, ``ci.unrelated``
-…) join this list with their phases (docs/design/
+The facts that later phases bring (``ci.attested`` …) join this list with
+their phases (docs/design/
 rules-plan.md); rules cannot define facts.
 """
 
@@ -70,6 +70,9 @@ CI_HEAD = enum("ci_head", ("green", "red", "running", "moved", "none"))
 TRACKER_QA = enum("tracker_qa", QA_VALUES)
 # Any name: lower case, as GitHub matches labels.
 LABELS = open_set("label")
+# Check ids (``<workflow file>/<job>``) and test ids, lower case.
+CHECKS = open_set("check")
+TESTS = open_set("test")
 GESTURE_KIND = enum("gesture_kind", ("label", "park", "close", "none"))
 
 _PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
@@ -383,6 +386,118 @@ def _item_first_failing(c: ItemContext) -> Any:
     return UNKNOWN if pr is None else _failing_check(pr)
 
 
+# --- Mechanism A (proposal 0014 R4, engine/ci_tests.py) ---
+# A context's CiTests: None when no check has tests_from, and then the
+# facts read as before A: every failing check is related.
+
+_RED_CONCLUSIONS = ("FAILURE", "ERROR", "TIMED_OUT")
+
+
+def _pr_failing(pr: Any) -> set[str]:
+    if pr is None or pr.state.upper() != "OPEN":
+        return set()
+    return {c.name.lower() for c in pr.checks if c.conclusion.upper() in _RED_CONCLUSIONS}
+
+
+def _tests_of(c: Any) -> Any:
+    return c.facts.ci_tests if isinstance(c, RowContext) else c.place.tests
+
+
+def _red(c: Any) -> bool:
+    """CI is red where the context looks: the PR's checks on a row, the
+    PR's (made precise by Actions) or Actions' on an inbox item."""
+    if isinstance(c, RowContext):
+        return _row_ci_state(c) == "red"
+    place = c.place
+    if place.pr is not None and place.pr.state.upper() == "OPEN":
+        from lazyagent.engine.actionables import pr_red
+
+        if pr_red(place.pr, place.ci):
+            return True
+    return place.ci is not None and place.ci.state == "red"
+
+
+def _related(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is not None:
+        return frozenset(x.lower() for x in t.related)
+    if not _red(c):
+        return frozenset()
+    names = _pr_failing(c.facts.pr if isinstance(c, RowContext) else c.place.pr)
+    if not isinstance(c, RowContext) and c.place.ci is not None and c.place.ci.state == "red":
+        from lazyagent.engine.ci_tests import check_id
+
+        for run in c.place.ci.red:
+            names |= {check_id(run, j.name).lower() for j in run.failed_jobs or ()} or {
+                (run.path or run.workflow).lower()}
+    return frozenset(names or {"ci"})
+
+
+def _unrelated(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is None:
+        return UNKNOWN if _red(c) else False
+    value = t.unrelated
+    return UNKNOWN if value is None else value
+
+
+def _unrelated_checks(c: Any) -> Any:
+    t = _tests_of(c)
+    return frozenset() if t is None else frozenset(x.lower() for x in t.unrelated_checks)
+
+
+def _failing_tests(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is None:
+        return UNKNOWN if _red(c) else frozenset()
+    if t.others or any(r.tests is None for r in t.checks):
+        return UNKNOWN
+    return frozenset(x.lower() for r in t.checks for x in r.tests or ())
+
+
+def _base_failing_tests(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is None:
+        return UNKNOWN if _red(c) else frozenset()
+    if t.others or any(r.base_tests is None for r in t.checks):
+        return UNKNOWN
+    return frozenset(x.lower() for r in t.checks for x in r.base_tests or ())
+
+
+def _base_point(c: Any) -> Any:
+    t = _tests_of(c)
+    points = {r.point for r in t.checks} if t is not None else set()
+    return points.pop() if len(points) == 1 and None not in points else UNKNOWN
+
+
+def _unrelated_summary(c: Any) -> str:
+    t = _tests_of(c)
+    return "" if t is None else t.summary
+
+
+def _base_fixed(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is None:
+        return frozenset()
+    fixed = t.base_fixed
+    return UNKNOWN if fixed is None else frozenset(x.lower() for x in fixed)
+
+
+def _first_related(c: Any) -> Any:
+    t = _tests_of(c)
+    if t is not None and (t.unrelated_checks or any(r.new for r in t.checks)):
+        first = t.first_related()
+        if first is not None:
+            return first
+    return c.fact("ci.first_failing")
+
+
+def _first_base_fixed(c: Any) -> Any:
+    t = _tests_of(c)
+    first = t.first_fixed() if t is not None else None
+    return UNKNOWN if first is None else first
+
+
 def _agent(attr: str) -> Getter:
     def get(c: ItemContext) -> Any:
         return UNKNOWN if c.agent is None else getattr(c.agent, attr)
@@ -491,6 +606,32 @@ _fact("ci.pr_red", BOOL, "the PR's checks are red on its head",
       "PR checks, made precise by Actions", "≤ actions_poll_s", "poll", item=_item_pr_red)
 _fact("ci.head", CI_HEAD, "Actions on the head", "Actions runs (I7)", "≤ actions_poll_s",
       "poll", item=lambda c: c.place.ci.state if c.place.ci is not None else "none")
+
+_CT = "JUnit artifacts or log parsers ([ci.check] tests_from)"
+_fact("ci.failing_tests", TESTS, "the failing tests on the head (lower case)", _CT,
+      "once per run attempt", "extra", row=_failing_tests, item=_failing_tests)
+_fact("ci.base_point", TEXT, "the base commit the head is compared with", "git and Actions "
+      "run metadata ([ci_unrelated] compare_to)", "per head", "extra", row=_base_point,
+      item=_base_point)
+_fact("ci.base_failing_tests", TESTS, "the tests failing on the base at that commit", _CT,
+      "once per base sha", "extra", row=_base_failing_tests, item=_base_failing_tests)
+_fact("ci.unrelated_checks", CHECKS, "the failing checks whose tests all fail on the base too",
+      "mechanism A", "per pass", "extra", row=_unrelated_checks, item=_unrelated_checks)
+_fact("ci.related_failures", CHECKS, "the failing checks not explained by the base",
+      "failing checks minus ci.unrelated_checks", "per pass", "poll",
+      row=_related, item=_related)
+_fact("ci.unrelated", BOOL, "CI is red only for reasons unrelated to the branch",
+      "mechanism A", "per pass", "extra", row=_unrelated, item=_unrelated)
+_fact("ci.unrelated_summary", TEXT, "what explains the red (empty: nothing)", "mechanism A",
+      "per pass", "free", row=_unrelated_summary, item=_unrelated_summary)
+_fact("ci.base_fixed", CHECKS, "the unrelated checks the base has fixed since",
+      "the base's newest run in the Actions runs", "≤ actions_poll_s", "extra",
+      row=_base_fixed, item=_base_fixed)
+_fact("ci.first_related", TEXT, "the first failing check not explained by the base",
+      "mechanism A, else the first failing check", "per pass", "poll",
+      row=_first_related, item=_first_related)
+_fact("ci.first_base_fixed", TEXT, "the first check the base has fixed", "mechanism A",
+      "≤ actions_poll_s", "extra", row=_first_base_fixed, item=_first_base_fixed)
 
 _fact("queue.enabled", BOOL, "the inbox queue is on", "ActionableQueue", "static", "free",
       row=lambda c: c.facts.actionables is not None)
@@ -612,6 +753,30 @@ def _detail_of(ctx: Any, status: Any) -> Any:
     return UNKNOWN
 
 
+def _failing_tests_of(ctx: Any, name: Any) -> Any:
+    """The failing tests of the checks ``name`` matches (a check id, a job
+    name, or a job name without its matrix values)."""
+    import fnmatch
+
+    from lazyagent.engine.ci_tests import bare_job
+
+    t = _tests_of(ctx)
+    if t is None or name is UNKNOWN:
+        return UNKNOWN
+    name = str(name).lower()
+    hits = [r for r in t.checks
+            if any(fnmatch.fnmatchcase(x.lower(), name) for x in (r.check, r.job, bare_job(r.job)))]
+    if not hits or any(r.tests is None for r in hits):
+        return UNKNOWN
+    return frozenset(x.lower() for r in hits for x in r.tests or ())
+
+
+_FAILING_TESTS_OF = Function(
+    "ci.failing_tests_of", ("literal:check",), TESTS, _failing_tests_of,
+    doc='ci.failing_tests_of("<check>"): the failing tests of that check (a check id, a job '
+        "name, or a job name without its matrix values; unknown with no test data)",
+)
+
 FUNCTIONS: dict[str, Function] = {
     f.name: f
     for f in (
@@ -625,6 +790,7 @@ FUNCTIONS: dict[str, Function] = {
                  doc='waiting_text(source, reason): "waiting: <reason>", "waiting (<source>)"'),
     )
 }
+FUNCTIONS["ci.failing_tests_of"] = _FAILING_TESTS_OF
 ROW_FUNCTIONS = {
     **FUNCTIONS,
     "agents.detail_of": Function(

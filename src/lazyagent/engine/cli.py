@@ -53,6 +53,9 @@ async def _request(socket: Path, method: str, **params: Any) -> Any:
 
     client = await Client.connect(socket, client="cli", client_version=__version__)
     try:
+        if method == "status_list" and "ci_tests" in client.hello.capabilities:
+            # The "CI red · unrelated" note beside the state (R4).
+            params = {**params, "fields": ["ci_note"]}
         return await client.request(method, **params)
     finally:
         await client.close()
