@@ -128,6 +128,10 @@ def format_explain(result: dict[str, Any]) -> str:
         out.append("  items  " + "; ".join(
             f"{i['id']} ({i['level']}: {i['state']})" for i in result["items"]))
     _facts(out, "  facts it read", result["facts"])
+    approval = result.get("owner_approval")
+    if approval:
+        out.append(f"  owner  {approval.get('text') or 'you approved ' + approval['sha'][:7]}")
+        out.append(f"         revoke: lazyagent pr approve {result['key']} --revoke")
     ci = result.get("ci")
     if ci:
         out.append("  CI     " + ("unrelated: " + ci["summary"] if ci["unrelated"] is True

@@ -158,3 +158,25 @@ async def test_rules_explain_and_rules_catalog_answer_from_the_engine(engine, mo
     assert [r["id"] for r in catalog["rules"]][:1] == ["closed.merged"]
     assert {"pr.review", "tracker.linked"} <= {f["name"] for f in catalog["facts"]}
     assert catalog["errors"] == []
+
+
+async def test_owner_approve_records_the_agents_pr_head_and_refuses_the_orchestrator(
+        engine, monkeypatch):
+    from lazyagent.models import PrInfo
+
+    feat = engine.feat
+    engine.worktree_service._gh_available = False
+    engine.worktree_service._pr_infos[feat] = PrInfo(7, "Feat", "OPEN", [], head_sha="a" * 40,
+                                                     base_ref="main")
+    worker = await engine.spawn_agent(feat)
+    _as_agent(engine, worker, monkeypatch)
+
+    out = await mcp_server.owner_approve(note="approved in chat")
+
+    assert (out["key"], out["sha"], out["source"]) == ("repo:feat", "a" * 40, "agent")
+    assert engine.overlay.owner_approvals["repo:feat"]["note"] == "approved in chat"
+
+    orchestrator = await engine.spawn_agent("", kind="orchestrator")
+    _as_agent(engine, orchestrator, monkeypatch)
+    with pytest.raises(Exception, match="the orchestrator cannot approve"):
+        await mcp_server.owner_approve()

@@ -1080,6 +1080,31 @@ async def ci_attest(
 
 
 @mcp.tool()
+async def owner_approve(note: str = "") -> dict:
+    """Record that the user approved your PR as it is now (its head on
+    GitHub), when they review outside GitHub and say so in this
+    conversation ("approved", "LGTM, approve").
+
+    When to use: right after the user says they approve, before you move
+    the PR on (e.g. out of draft). Only on their word: never on a bot's
+    approval or your own judgment. lazyagent counts the commits pushed after
+    this point (pr.commits_after_owner_approval in their rules), so a later
+    real commit asks for their review again; a clean merge of the base does
+    not. Nothing is written to GitHub.
+
+    For your own work item only; the orchestrator cannot approve.
+
+    Args:
+        note: Optional, one line (e.g. "approved after the retry fix").
+
+    Returns:
+        The approval: key, pr, sha (the head approved), at, source "agent";
+        a warning when your worktree's head is not what is pushed.
+    """
+    return await _get_client().call("owner_approve", _add_caller({"note": note}))
+
+
+@mcp.tool()
 async def request_decision(
     question: str,
     options: list[dict],

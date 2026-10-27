@@ -5607,5 +5607,9 @@ mod r4;
 // Why? with Revoke (proposal 0014 R5).
 mod r5;
 
+// The owner's approval of a PR head outside GitHub: ⇧A, Undo, Why? with
+// Revoke (proposal 0014 R3d).
+mod r3d;
+
 // Review requests: a teammate's PR that asks for the user's review.
 mod review_requests;

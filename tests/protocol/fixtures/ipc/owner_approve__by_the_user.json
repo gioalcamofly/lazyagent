@@ -1,0 +1,27 @@
+{
+  "case": "owner_approve/by_the_user",
+  "method": "owner_approve",
+  "params": {
+    "key": "docs-index",
+    "sha": "ddddddd",
+    "source": "home"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "after": null,
+      "agent_id": null,
+      "at": 1700000000.0,
+      "branch": "docs-index",
+      "has_previous": false,
+      "key": "repo:docs-index",
+      "merges": null,
+      "note": "",
+      "pr": 14,
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "source": "home",
+      "state": "head",
+      "text": "you approved ddddddd (home): the PR's head, no commits since"
+    }
+  }
+}

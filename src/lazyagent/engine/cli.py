@@ -620,6 +620,88 @@ def _prompts_notice(root: str) -> None:
 
 
 # ----------------------------------------------------------------------
+# lazyagent pr
+# ----------------------------------------------------------------------
+
+
+def build_pr_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lazyagent pr",
+        description="Your pull requests as lazyagent sees them. Asks the repo's "
+        "engine (exit 3: none runs).",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="{approve}")
+    approve = commands.add_parser(
+        "approve", help="Record that you approved a PR at its current head",
+        description="Record that you reviewed a PR outside GitHub and approve it as it "
+        "is now: pr.commits_after_owner_approval counts from its head. Nothing is "
+        "written to GitHub.")
+    approve.add_argument("target", help="The branch, its row key, or #<PR number>")
+    approve.add_argument("repo", nargs="?", default=None,
+                         help="Path to git repository (default: auto-detect from cwd)")
+    approve.add_argument("--sha", help="Only if the PR's head is still this commit "
+                         "(the one you reviewed)")
+    approve.add_argument("--note", default="", help="One line kept with the approval")
+    approve.add_argument("--revoke", action="store_true",
+                         help="Take your approval back instead")
+    approve.add_argument("--json", action="store_true", help="Print the engine's JSON")
+    return parser
+
+
+def pr_main(argv: list[str] | None = None) -> int:
+    """``lazyagent pr approve``: owner_approve / owner_approval_revoke."""
+    from lazyagent.engine.client import RequestError
+    from lazyagent.worktree_manager import WorktreeManagerError
+
+    parser = build_pr_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 2
+
+    def error(message: str) -> None:
+        print(f"lazyagent pr: {message}", file=sys.stderr, flush=True)
+
+    try:
+        root = launcher.resolve_repo_root(args.repo)
+    except WorktreeManagerError as e:
+        error(str(e))
+        return 1
+    socket = launcher.find(root)
+    if socket is None:
+        error(f"no engine running for {root} (start one: lazyagent engine start)")
+        return NOT_RUNNING
+    if args.revoke:
+        method, params = "owner_approval_revoke", {"key": args.target}
+        if args.sha:
+            params["sha"] = args.sha
+    else:
+        method, params = "owner_approve", {"key": args.target, "source": "cli",
+                                           "note": args.note}
+        if args.sha:
+            params["sha"] = args.sha
+    try:
+        result = asyncio.run(_request(socket, method, **params))
+    except RequestError as e:
+        if e.code == "UNKNOWN_METHOD":
+            error(f"this engine predates {method}; restart it "
+                  "(lazyagent engine restart --restore)")
+        else:
+            error(e.message)
+        return 1
+    except (OSError, ConnectionError) as e:
+        error(f"could not reach the engine: {e}")
+        return 1
+    if args.json:
+        print(json.dumps(result))
+    elif args.revoke:
+        print(f"{result['key']}: approval of {result['sha'][:7]} taken back", flush=True)
+    else:
+        print(f"{result['key']}: approved #{result['pr']} at {result['sha'][:7]}", flush=True)
+    return 0
+
+
+# ----------------------------------------------------------------------
 # lazyagent rules
 # ----------------------------------------------------------------------
 

@@ -299,6 +299,7 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `Enter` | Expand (approve or answer there); open a brief (a ↳ brief: expand it) |
 | `Esc` | Close the form, else collapse |
 | `a  ⇧D` | On an approval: approve / deny (deny waits 5 s for Undo) |
+| `⇧A` | On your own PR waiting for your review: approve the head shown (Undo 5 s) |
 | `Ctrl+Enter` | On an expanded brief (or one opened with Answer here): answer |
 | `v` | The decision view |
 | `y  ⇧Y` | Explain this / restore its agent and explain |
@@ -435,6 +436,9 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `pr.human_approvals` | the PR's approvals by people (latest review each; no apps) | num | PR poller (review query) | ≤ 60 s | extra |
 | `pr.commits_after_ready` | the pushes since the PR was marked ready (0: a draft; clean merges of the base left out) | num | PR poller (review query) | ≤ 60 s | extra |
 | `pr.base_merges_after_ready` | the clean merges of the base since the PR was marked ready (not counted in pr.commits_after_ready) | num | PR poller (review query) | ≤ 60 s | extra |
+| `pr.commits_after_owner_approval` | the pushes since the newer of the PR's ready event and your approval of its head (0: a draft; clean merges of the base left out) | num | your approval (owner_approve, Approve, lazyagent pr approve) and git, PR poller (review query) | ≤ 60 s | extra |
+| `pr.owner_approved` | you approved a commit still in the PR's history (lazyagent's record, not GitHub's) | bool | your approval (owner_approve, Approve, lazyagent pr approve) and git | per head | free |
+| `pr.owner_approved_sha` | the commit you approved (empty: none) | text | your approval (owner_approve, Approve, lazyagent pr approve) and git | on approval | free |
 | `pr.number` | the PR's number | num | PR poller | ≤ 60 s | poll |
 | `pr.base` | the PR's base branch | text | PR poller | ≤ 60 s | poll |
 | `pr.head_sha` | the PR's head commit | text | PR poller | ≤ 60 s | poll |
