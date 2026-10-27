@@ -1,0 +1,15 @@
+{
+  "case": "owner_approve/error_head_moved",
+  "method": "owner_approve",
+  "params": {
+    "key": "docs-index",
+    "sha": "eeeeeee"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "The PR's head is ddddddd now, not eeeeeee: it moved since you looked. Review it again, then approve."
+    },
+    "id": "req-1"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "case": "owner_approve/error_by_the_orchestrator",
+  "method": "owner_approve",
+  "params": {
+    "caller": "tok-orch"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "owner_approve is the owner's: the orchestrator cannot approve"
+    },
+    "id": "req-1"
+  }
+}

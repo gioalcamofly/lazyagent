@@ -229,6 +229,11 @@
             "where": "home"
           },
           {
+            "does": "On your own PR waiting for your review: approve the head shown (Undo 5 s)",
+            "keys": "\u21e7A",
+            "where": "home"
+          },
+          {
             "does": "On an expanded brief (or one opened with Answer here): answer",
             "keys": "Ctrl+Enter",
             "where": "home"
@@ -1107,6 +1112,42 @@
           ],
           "source": "PR poller (review query)",
           "type": "num",
+          "values": []
+        },
+        {
+          "cost": "extra",
+          "freshness": "\u2264 60 s",
+          "name": "pr.commits_after_owner_approval",
+          "phrase": "the pushes since the newer of the PR's ready event and your approval of its head (0: a draft; clean merges of the base left out)",
+          "scopes": [
+            "row"
+          ],
+          "source": "your approval (owner_approve, Approve, lazyagent pr approve) and git, PR poller (review query)",
+          "type": "num",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "per head",
+          "name": "pr.owner_approved",
+          "phrase": "you approved a commit still in the PR's history (lazyagent's record, not GitHub's)",
+          "scopes": [
+            "row"
+          ],
+          "source": "your approval (owner_approve, Approve, lazyagent pr approve) and git",
+          "type": "bool",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "on approval",
+          "name": "pr.owner_approved_sha",
+          "phrase": "the commit you approved (empty: none)",
+          "scopes": [
+            "row"
+          ],
+          "source": "your approval (owner_approve, Approve, lazyagent pr approve) and git",
+          "type": "text",
           "values": []
         },
         {

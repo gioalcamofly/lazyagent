@@ -1,0 +1,23 @@
+{
+  "case": "owner_approval_revoke/revoked",
+  "method": "owner_approval_revoke",
+  "params": {
+    "key": "repo:docs-index"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "agent_id": null,
+      "at": 1700000000.0,
+      "branch": "docs-index",
+      "has_previous": false,
+      "key": "repo:docs-index",
+      "note": "",
+      "pr": 14,
+      "revoked": true,
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "source": "cli",
+      "standing": null
+    }
+  }
+}

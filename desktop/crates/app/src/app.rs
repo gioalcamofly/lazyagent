@@ -641,6 +641,10 @@ impl State {
                 // Where Delegate and Pass apply (I4h).
                 fields.extend(["delegable", "passable"]);
             }
+            if self.has("owner_approve") {
+                // Where Approve (⇧A) applies (R3d).
+                fields.push("approvable");
+            }
             p["fields"] = json!(fields);
         }
         p

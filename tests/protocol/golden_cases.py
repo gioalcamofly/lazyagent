@@ -1055,6 +1055,46 @@ async def _():
     )
 
 
+# --- owner_approve / owner_approval_revoke (R3d) ----------------------------
+
+APPROVED_HEAD = "d" * 40
+
+
+def _owner_engine():
+    """The status engine (an orchestrator running) with docs-index's PR at
+    a known head."""
+    from dataclasses import replace
+
+    engine = _claims_engine()
+    pr = engine.worktree_service._pr_infos["/tmp/repo-docs"]
+    engine.worktree_service._pr_infos["/tmp/repo-docs"] = replace(pr, head_sha=APPROVED_HEAD)
+    return engine
+
+
+@case("owner_approve/by_the_user")
+async def _():
+    return await _call(_owner_engine(), "owner_approve",
+                       {"key": "docs-index", "sha": APPROVED_HEAD[:7], "source": "home"})
+
+
+@case("owner_approve/error_head_moved")
+async def _():
+    return await _call(_owner_engine(), "owner_approve",
+                       {"key": "docs-index", "sha": "e" * 7})
+
+
+@case("owner_approve/error_by_the_orchestrator")
+async def _():
+    return await _call(_owner_engine(), "owner_approve", {"caller": "tok-orch"})
+
+
+@case("owner_approval_revoke/revoked")
+async def _():
+    engine = _owner_engine()
+    await _call(engine, "owner_approve", {"key": "#14", "source": "cli"})
+    return await _call(engine, "owner_approval_revoke", {"key": "repo:docs-index"})
+
+
 # --- status_gesture / orchestrator_release (Pass to orchestrator) -------------
 
 

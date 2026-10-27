@@ -169,6 +169,27 @@ class BaseMerges:
             self._moves[key] = len(gained)
         return len(gained)
 
+    def commits_since(self, root: str, since: str, head: str,
+                      base: str) -> tuple[int, int] | None:
+        """``(commits, clean base merges)`` on ``head`` after ``since``, the
+        clean merges not counted in the first (the base's own commits they
+        bring are not counted either); None when ``since`` is not in
+        ``head``'s history (a force push dropped it) or it cannot tell."""
+        if not root or not _is_sha(since) or not _is_sha(head) or not base \
+                or base.startswith("-"):
+            return None
+        if since == head:
+            return 0, 0
+        if not (self._have(root, since) and self._have(root, head)):
+            self._fetch_once(root, (since, head), base)
+        if self._git(root, ["merge-base", "--is-ancestor", since, head])[0] != 0:
+            return None
+        commits = self._rev_list(root, head, since, *self._base_refs(root, base))
+        if commits is None or len(commits) > MAX_RANGE:
+            return None
+        merges = sum(self.is_clean_base_merge(root, c, base) for c in commits)
+        return len(commits) - merges, merges
+
     def adjust(self, root: str, info: PrInfo | None) -> PrInfo | None:
         """``info`` without the clean base merges (and the force pushes that
         moved the head only by them) in ``commits_after_ready``, and with

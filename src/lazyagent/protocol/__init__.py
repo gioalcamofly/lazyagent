@@ -97,6 +97,10 @@ LEGACY_METHODS: tuple[str, ...] = (
     "ci_attest",
     "ci_attestation_confirm",
     "ci_attestation_revoke",
+    # The owner's approval of a PR head (proposal 0014 R3d), on the legacy
+    # socket for the owner_approve MCP tool and the CLI.
+    "owner_approve",
+    "owner_approval_revoke",
     # Answers from Home and the orchestrator's log (proposal 0013 I4e).
     "approval_answer",
     "question_answer",

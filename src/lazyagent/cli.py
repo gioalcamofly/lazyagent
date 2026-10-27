@@ -30,7 +30,7 @@ import sys
 
 from lazyagent import __version__
 
-SUBCOMMANDS = ("engine", "status", "rules", "prompts", "host", "mcp", "desktop", "update")
+SUBCOMMANDS = ("engine", "status", "rules", "pr", "prompts", "host", "mcp", "desktop", "update")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
         "(the engine that owns the agents); lazyagent status [repo] [--json] "
         "[--all] [--why KEY] (every branch: who has the ball, its state and age); "
         "lazyagent rules {check,show,allow,doc} [repo] (your rules.toml); "
+        "lazyagent pr approve <branch|#n> [repo] [--revoke] (your approval of a PR's "
+        "head, outside GitHub); "
         "lazyagent prompts {install,status,uninstall,diff} (lazyagent's guidance in "
         "your agent prompts); "
         "lazyagent host [repo] (the web "
@@ -85,6 +87,10 @@ def main(argv: list[str] | None = None) -> None:
         from lazyagent.engine.cli import rules_main
 
         sys.exit(rules_main(argv[1:]))
+    if argv[:1] == ["pr"]:
+        from lazyagent.engine.cli import pr_main
+
+        sys.exit(pr_main(argv[1:]))
     if argv[:1] == ["prompts"]:
         from lazyagent.prompts.cli import main as prompts_main
 
