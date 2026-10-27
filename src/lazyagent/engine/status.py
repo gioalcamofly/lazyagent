@@ -177,6 +177,9 @@ class Facts:
     # Mechanism A on the head (engine/ci_tests.py): None while no check has
     # tests_from.
     ci_tests: Any = None
+    # The user's approval of the PR's head (engine/owner_approvals.py,
+    # ApprovalFact), if one stands.
+    owner_approval: Any = None
 
 
 def evolve(facts: Facts, **changes: Any) -> Facts:
@@ -326,6 +329,9 @@ def fingerprint(facts: Facts, derived: Derived, user: list[Any] | None = None) -
         data.append(["delegation", facts.delegation["at"], facts.delegation.get("phase")])
     if facts.merged_into is not None:
         data.append(["merged_into", facts.merged_into])
+    if facts.owner_approval is not None:
+        a = facts.owner_approval
+        data.append(["owner_approval", a.sha, a.at, a.state, a.after])
     if facts.tracker is not None:
         data.append([facts.tracker.status, facts.tracker.level])
     if facts.gesture is not None:
@@ -338,6 +344,9 @@ def fingerprint(facts: Facts, derived: Derived, user: list[Any] | None = None) -
     raw = json.dumps(data, sort_keys=True).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
 
+
+# A line whose rule reads these is the owner's review: Home offers Approve.
+APPROVAL_FACTS = frozenset({"pr.commits_after_ready", "pr.commits_after_owner_approval"})
 
 # Facts whose value moves on its own (the clock): never a fingerprint input.
 _CLOCK_KINDS = ("duration", "time")
@@ -745,6 +754,11 @@ class StatusProjection:
             # Mechanism B: the attestations on the item (Why? lists the
             # standing ones with Revoke).
             out["attestations"] = attestations
+        approval = self._engine.owner_approvals.of_key(key, facts.pr)
+        if approval is not None:
+            # The user's approval outside GitHub (R3d): Why? shows it with
+            # Revoke.
+            out["owner_approval"] = approval
         out["items"] = [
             {k: i.get(k) for k in ("id", "kind", "level", "state", "rule_id")}
             for i in facts.actionables or ()
@@ -766,7 +780,8 @@ class StatusProjection:
         unrelated (base also red: 2 tests)`` while every failing check is
         explained (R4, Q-R23); delegable (its top item can go to the branch's
         agent) and passable (the orchestrator can act on something there:
-        one of its items, else its rule), the catalog's (I4h)."""
+        one of its items, else its rule), the catalog's (I4h); approvable
+        (R3d): see :meth:`approvable`."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
         rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
@@ -779,6 +794,7 @@ class StatusProjection:
                                "delegable": bool(items) and items[0].get("delegable", False),
                                "passable": any(i.get("passable", True) for i in items)
                                if items else rule is None or rule.can_pass}
+        out["approvable"] = self.approvable(facts, rule, catalog) if facts is not None else None
         if rule is None:
             return out
         out["verb"], out["action"] = rule.verb, rule.action
@@ -792,6 +808,28 @@ class StatusProjection:
             elif kind is not None:
                 out["verb"], out["action"] = kind.verb, kind.action
         return out
+
+    def approvable(self, facts: Facts, rule: Any, catalog: Any) -> dict[str, Any] | None:
+        """``{sha, pr, approved}`` when Home offers Approve on the row (R3d):
+        the user's own open PR in a worktree, a draft or a line whose rule
+        (the top item's, under the queue) reads the commits after ready or
+        after the owner's approval. ``sha`` is the head shown, ``approved``
+        whether the user's approval is of it."""
+        from lazyagent.engine.rules.facts import _mine
+
+        pr = facts.pr
+        if pr is None or pr.state != "OPEN" or not pr.head_sha or facts.worktree_path is None \
+                or _mine(pr, facts.me) is not True:
+            return None
+        if rule is not None and rule.id == "queue" and facts.actionables:
+            top_rule = facts.actionables[0].get("rule_id")
+            rule = catalog.by_id.get(top_rule) if top_rule else None
+        reads = rule.facts if rule is not None else frozenset()
+        if not pr.is_draft and not reads & APPROVAL_FACTS:
+            return None
+        approval = facts.owner_approval
+        return {"sha": pr.head_sha, "pr": pr.number,
+                "approved": approval is not None and approval.state == "head"}
 
     # --- Lifecycle ---
 
@@ -839,6 +877,8 @@ class StatusProjection:
         elif event.event == "pr_info.updated":
             # A new PR head may already be in develop (cached per head).
             self._spawn(self.refresh_merged())
+            # The commits since the user's approval (cached per head).
+            self._spawn(self._engine.owner_approvals.refresh())
         elif event.event == "notes.updated":
             self._notes_entry(event.data if isinstance(event.data, dict) else {})
         self.mark_dirty()
@@ -1626,6 +1666,7 @@ class StatusProjection:
                     review_request=request.to_dict() if request is not None else None,
                     requests_known=known,
                     ci_tests=self._ci_tests(tests, wt, pr) if tests is not None else None,
+                    owner_approval=engine.owner_approvals.fact(key, pr),
                 )
             )
         out += self._request_facts(repo, requests, out, me)

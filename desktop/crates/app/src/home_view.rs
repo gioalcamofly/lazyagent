@@ -103,6 +103,9 @@ pub enum UndoAct {
     /// A deny not sent yet (the approval item's id, its command): Undo
     /// keeps it from being sent; past [`UNDO_FOR`] it goes.
     Deny(String, String),
+    /// `owner_approval_revoke {undo}` (the work item, the head approved):
+    /// the approval it replaced, if any, stands again.
+    Unapprove(String, String),
 }
 
 /// The stalled kinds auto-delegation offers (Q-B33), with their labels.
@@ -126,6 +129,8 @@ enum Act {
     ParkedFold,
     Delegate(Line),
     Pass(Line),
+    /// Approve the PR's head shown (R3d).
+    OwnerApprove(Line),
     TakeBack(Line),
     SendCi(Line),
     CiLog(String, (i64, i64)),
@@ -392,6 +397,9 @@ impl State {
             } else {
                 self.toggle_line(&line.sel());
             }
+        } else if !after_g && take(Modifiers::SHIFT, Key::A) {
+            // ⇧A before a: a shortcut without Shift also takes Shift.
+            self.approve_head(&line);
         } else if approval && !after_g && take(Modifiers::NONE, Key::A) {
             // (g a is Home: the g came first.)
             self.answer_approval(&line, true);
@@ -656,6 +664,7 @@ impl State {
             UndoAct::Undismiss(id) => ("actionables_mark", json!({"id": id, "action": "undismiss"})),
             UndoAct::Unpark(id) => ("actionables_mark", json!({"id": id, "action": "unpark"})),
             UndoAct::Gesture(key, what) => ("status_gesture", json!({"key": key, "kind": "undo", "what": what})),
+            UndoAct::Unapprove(key, sha) => ("owner_approval_revoke", json!({"key": key, "sha": sha, "undo": true})),
             UndoAct::Deny(..) => {
                 // Never sent: nothing to ask the engine.
                 self.toast(Severity::Info, "Not denied: the command still waits for you.");
@@ -1073,6 +1082,38 @@ impl State {
         let params = json!({"key": line.key, "kind": "delegate", "to": "orchestrator"});
         let undo = (format!("Passed {} to the orchestrator", line.name), UndoAct::Gesture(line.key.clone(), "pass"));
         self.gesture_undo(&line.sel(), params, "Could not pass it to the orchestrator", Some(undo));
+    }
+
+    /// `⇧A`: record the user's approval of the line's PR at the head shown
+    /// (`owner_approve`, R3d); the engine refuses it when the head moved.
+    /// Undo brings back the approval it replaced, if any.
+    pub fn approve_head(&mut self, line: &Line) {
+        let Some(a) = line.approvable().cloned() else {
+            self.toast(Severity::Info, "⇧A approves your own PR while it waits for your review: not this line.");
+            return;
+        };
+        let short = a.sha[..a.sha.len().min(7)].to_string();
+        if a.approved {
+            self.toast(Severity::Info, format!("You approved #{} at {short} already.", a.pr));
+            return;
+        }
+        let (key, name, sel) = (line.key.clone(), line.name.clone(), line.sel());
+        let params = json!({"key": key, "sha": a.sha, "source": "home"});
+        self.conn.request("owner_approve", params, move |s, reply| match reply {
+            Ok(_) => {
+                s.inbox_gen += 1;
+                s.fetch_inbox();
+                s.home.cut(unix_now());
+                let text = format!("Approved {name} at {short}");
+                if s.has(F_UNDO) {
+                    s.set_undo(text, UndoAct::Unapprove(key, a.sha.clone()));
+                } else {
+                    s.toast(Severity::Info, text);
+                }
+            }
+            Err(e) => s.toast(Severity::Error, format!("Not approved: {e}")),
+        });
+        self.home.expanded = Some(sel);
     }
 
     /// `u`: take a pass back, or drop the user's label / park / close.
@@ -1530,6 +1571,9 @@ pub fn line_keys(c: &KeysCtx, line: Option<&Line>) -> String {
                 _ if l.verb() == "Merge" || kind == "review_request" => keys.extend(["p PR", "Enter expand"]),
                 _ => keys.extend(["Enter expand", "o terminal"]),
             }
+            if l.approvable().is_some_and(|a| !a.approved) {
+                keys.push("⇧A approve");
+            }
             if l.top.as_ref().is_some_and(|t| t.is_ci()) && l.url.is_some() {
                 keys.push("p PR");
             }
@@ -1913,6 +1957,7 @@ impl App {
                 Act::StartOrchestrator => s.spawn_agent(None),
                 Act::Delegate(l) => s.delegate_line(&l),
                 Act::Pass(l) => s.pass_line(&l),
+                Act::OwnerApprove(l) => s.approve_head(&l),
                 Act::TakeBack(l) => s.take_back(&l),
                 Act::SendCi(l) => s.send_ci(&l),
                 Act::CiLog(key, run) => s.fetch_ci_log(key, run),
@@ -2379,7 +2424,12 @@ fn park_until_text(g: &Value, now: f64) -> String {
 fn timeline_line(e: &TimelineEntry, now: f64) -> String {
     let actor = if e.actor == "engine" { String::new() } else { format!(" · {}", e.actor) };
     let text = if e.kind == "ball" { ball_words(&e.text) } else { e.text.clone() };
-    let kind = if e.kind == "ball" { "now" } else { e.kind.as_str() };
+    let kind = match e.kind.as_str() {
+        "ball" => "now",
+        // "you approved abc1234" (R3d).
+        "owner_approval" => "review",
+        other => other,
+    };
     format!("{} ago  {kind}  {text}{actor}", home::age(now - e.at),)
 }
 
@@ -3088,6 +3138,14 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             // A teammate's PR: the review is done on the PR page.
             let mut b = button("Open PR to review  (p)", Act::Pr(url.clone()));
             b.hover = Some("Approve, request changes or comment there: the line goes once you do");
+            buttons.push(b);
+        }
+        if l.verb() == "Review" && l.approvable().is_some_and(|a| !a.approved) {
+            // The user's own review, done outside GitHub (R3d): a button only
+            // where Review is the verb (it replaces nothing there); ⇧A
+            // works on every approvable line.
+            let mut b = button("Approve  (⇧A)", Act::OwnerApprove(l.clone()));
+            b.hover = Some("You reviewed this head: only commits after it bring the review back");
             buttons.push(b);
         }
         if l.place.is_some() {

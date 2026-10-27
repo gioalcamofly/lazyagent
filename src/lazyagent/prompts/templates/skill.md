@@ -29,6 +29,9 @@ chatter.
 | You end your turn while work goes on in the background (a build, a watch, a subagent) | `status_report(note="...", ball="agent", until="45m")` |
 | After an action outside the repo (tracker comment, PR, PR comment) | `status_report(outward={"kind": "pr_create", "ref": "<url>", "text": "..."})` |
 
+When the user says they approve your PR ("approved", "LGTM, approve"), call
+`owner_approve()` right away: lazyagent records the pushed head as reviewed.
+
 `until` is a duration (at most 8 h; 2 h by default for `ball="agent"`) or a
 Unix time. Past it, or once you end a later turn without a new report, the
 engine reads your status again.

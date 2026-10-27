@@ -814,6 +814,7 @@
         "action": {"type": ["string", "null"], "description": "status_list fields only: the primary action's id (rules_catalog actions)."},
         "delegable": {"type": "boolean", "description": "status_list fields only (feature item_capabilities, I4h): the row's top inbox item can go to the branch's agent."},
         "passable": {"type": "boolean", "description": "status_list fields only (feature item_capabilities, I4h): the orchestrator can act on something on the row (one of its items, else its rule): status_gesture delegate to: orchestrator accepts it."},
+        "approvable": {"type": ["object", "null"], "required": ["sha", "pr", "approved"], "properties": {"sha": {"type": "string"}, "pr": {"type": "integer"}, "approved": {"type": "boolean"}}, "description": "status_list fields only (feature owner_approve, R3d): Home offers Approve (owner_approve with this sha): the user's own open PR in a worktree, a draft or a line whose rule reads pr.commits_after_ready or pr.commits_after_owner_approval. approved: the user's approval is of this head. null otherwise."},
         "ci_note": {"type": ["string", "null"], "description": "status_list fields only (feature ci_tests, R4): 'CI red · unrelated (base also red: 2 tests)' while every failing check's tests also fail on the base at the commit compared; null otherwise."},
         "blocks_agent": {"type": "boolean", "description": "An agent waits on the user's answer: first in its level."},
         "needs_you": {
@@ -1055,7 +1056,7 @@
       "properties": {
         "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
         "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
-        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note", "delegable", "passable"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note; delegable and passable (feature item_capabilities): Delegate and Pass apply."},
+        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note", "delegable", "passable", "approvable"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note; delegable and passable (feature item_capabilities): Delegate and Pass apply; approvable (feature owner_approve): Approve applies."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
       }
     },
@@ -1365,7 +1366,7 @@
       "required": ["at", "kind", "actor", "text"],
       "properties": {
         "at": {"type": "number", "description": "When it happened (a commit: its commit time)."},
-        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward", "action", "delegate", "approval", "undo"]},
+        "kind": {"type": "string", "x-known-values": ["commit", "ci", "ball", "state", "notes", "decision", "review", "outward", "action", "delegate", "approval", "undo", "attest", "owner_approval"]},
         "actor": {"type": "string", "description": "user, agent:<id>, orchestrator or engine (what the engine saw)."},
         "text": {"type": "string", "description": "At most 200 characters."},
         "ref": {"type": "string", "description": "A commit sha, a decision id, a notes id, or an outward action's ref."},
@@ -1857,6 +1858,29 @@
         "error": {"type": "string", "description": "What could not be read (the log, the jobs); the rest is still there. With no red Actions run but other red checks: 'no Actions log: check <name> from <provider>'."}
       }
     },
+    "owner_approval": {
+      "type": "object",
+      "required": ["key", "sha", "at", "source"],
+      "description": "R3d: the user's approval of a PR head, recorded by lazyagent (never on GitHub).",
+      "properties": {
+        "key": {"type": "string"},
+        "branch": {"type": ["string", "null"]},
+        "pr": {"type": ["integer", "null"]},
+        "sha": {"type": "string"},
+        "at": {"type": "number"},
+        "source": {"enum": ["home", "agent", "cli"]},
+        "note": {"type": ["string", "null"]},
+        "agent_id": {"type": ["string", "null"], "description": "source agent: the agent that recorded it."},
+        "has_previous": {"type": "boolean", "description": "It replaced an earlier approval (owner_approval_revoke undo brings that back)."},
+        "state": {"enum": ["head", "counted", "lost", "pending"], "description": "head: the PR's head is the approved commit; counted: after commits since; lost: the commit is no longer in the PR's history; pending: not counted yet."},
+        "after": {"type": ["integer", "null"], "description": "counted: the real commits since (clean merges of the base left out)."},
+        "merges": {"type": ["integer", "null"], "description": "counted: the clean merges of the base since, not counted."},
+        "text": {"type": "string", "description": "One line for Why?: 'you approved abc1234 (home): 1 commit since'."},
+        "warning": {"type": "string", "description": "owner_approve by an agent whose worktree head is not the PR's head."},
+        "revoked": {"const": true, "description": "owner_approval_revoke: this approval was taken back."},
+        "standing": {"type": ["object", "null"], "description": "owner_approval_revoke: the approval standing now (undo: the one it replaced), else null."}
+      }
+    },
     "attestation": {
       "type": "object",
       "description": "Proposal 0014 R5 (engine/attest.py): an agent's or the orchestrator's claim that a nondeterministic check's red is not the branch's, with its evidence.",
@@ -1928,6 +1952,30 @@
       }
     },
     "ci_attestation_revoke.result": {"$ref": "#/$defs/attestation"},
+    "owner_approve.params": {
+      "type": "object",
+      "description": "Feature owner_approve (R3d). A worker's token: its own work item (the orchestrator's is refused). No token (the user's): key, sha, source.",
+      "properties": {
+        "key": {"type": "string", "description": "The user's: a row key, a branch or #<PR number>."},
+        "sha": {"type": ["string", "null"], "description": "The user's: the head they reviewed (≥ 7 characters); refused when the PR's head moved."},
+        "source": {"enum": ["home", "cli"], "description": "The user's: where the approval was given (default home)."},
+        "note": {"type": ["string", "null"]},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "owner_approve.result": {"$ref": "#/$defs/owner_approval"},
+    "owner_approval_revoke.params": {
+      "type": "object",
+      "required": ["key"],
+      "description": "Feature owner_approve. The user's only (no caller token).",
+      "properties": {
+        "key": {"type": "string", "description": "A row key, a branch or #<PR number>."},
+        "sha": {"type": ["string", "null"], "description": "Only when the standing approval is of this commit."},
+        "undo": {"type": "boolean", "description": "The approval it replaced, if any, stands again (Home's Undo)."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "owner_approval_revoke.result": {"$ref": "#/$defs/owner_approval"},
     "approval_answer.params": {
       "type": "object",
       "required": ["allow"],
@@ -2182,6 +2230,7 @@
         "items": {"type": "array", "description": "The row's open inbox items, top first."},
         "auto_delegate": {"type": "string", "description": "I4g: as the row's auto_delegate; also the answer's last sentence."},
         "attestations": {"type": "array", "items": {"$ref": "#/$defs/attestation"}, "description": "R5 (feature ci_attest): the item's attestations, newest first; Why? lists the standing ones (pending, accepted, recorded) with Revoke."},
+        "owner_approval": {"$ref": "#/$defs/owner_approval", "description": "R3d (feature owner_approve): the user's standing approval, with its text; Why? shows it with Revoke."},
         "ci": {"type": "object", "required": ["unrelated", "summary", "checks", "others"], "description": "R4, while CI is red and something is configured: mechanism A per failing check, and B's attestations (R5).", "properties": {"unrelated": {"type": ["boolean", "null"]}, "summary": {"type": "string"}, "checks": {"type": "array", "items": {"type": "object", "required": ["check", "job", "mechanism", "unrelated", "detail"], "properties": {"check": {"type": "string", "description": "<workflow file>/<job name>"}, "job": {"type": "string"}, "mechanism": {"enum": ["A", "B"], "description": "B: an accepted attestation explains it (R5)."}, "unrelated": {"type": "boolean"}, "tests": {"type": ["array", "null"]}, "base_tests": {"type": ["array", "null"]}, "new": {"type": "array"}, "point": {"type": ["string", "null"]}, "compared": {"type": "string"}, "detail": {"type": "string", "description": "What decided it, or what was missing: 'junit: no JUnit artifact junit-*; pytest parser found 1 of 3 failures'."}, "base_fixed": {"type": ["boolean", "null"]}, "fixed_detail": {"type": "string"}, "attestation": {"$ref": "#/$defs/attestation", "description": "R5: the attestation that explains the check, waits for confirmation, or is recorded with no effect."}, "attest_pending": {"type": "boolean"}, "attest_note": {"type": "string", "description": "R5: why the latest attestation no longer counts: attestation rejected, revoked or expired."}, "aggregate_of": {"type": "array", "items": {"type": "string"}, "description": "R4b: an aggregate job; the failing jobs of its run it waits on."}}}}, "others": {"type": "array", "description": "Failing checks with no test data (not Actions jobs): related."}}}
       }
     },

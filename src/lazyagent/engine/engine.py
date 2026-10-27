@@ -74,6 +74,7 @@ from lazyagent.engine.manifest import (
 )
 from lazyagent.engine.actionables import ActionableQueue, actionables_path, tracker_items
 from lazyagent.engine.attest import Attestations
+from lazyagent.engine.owner_approvals import OwnerApprovals
 from lazyagent.engine.autodelegate import AutoDelegate
 from lazyagent.engine.claims import Claims
 from lazyagent.engine.delegation import Delegations
@@ -310,6 +311,8 @@ class Engine:
         self.delegations = Delegations(self)
         # Attestations for nondeterministic CI checks (engine/attest.py).
         self.attestations = Attestations(self)
+        # The user's approvals of PR heads, outside GitHub (R3d).
+        self.owner_approvals = OwnerApprovals(self)
         # The orchestrator as first responder: routing, presence, mandate,
         # caps, revert (engine/orchestrator.py); opt-in auto-delegation.
         self.first_responder = FirstResponder(self)

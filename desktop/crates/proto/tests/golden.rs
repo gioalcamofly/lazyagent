@@ -143,6 +143,9 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
             // (the app reads only that they answered); ci_attest is MCP-only.
             "ci_attestation_confirm" | "ci_attestation_revoke" => round_trip::<Attestation>(case, result),
             "ci_attest" => continue,
+            // R3d: Home's Approve (⇧A) and Why?'s Revoke; the agent's
+            // owner_approve goes through MCP.
+            "owner_approve" | "owner_approval_revoke" => round_trip::<OwnerApproval>(case, result),
             // The Prompts page: decoded (it reads only part of the payload).
             "prompts_status" => {
                 let st: PromptsStatus = serde_json::from_value(result.clone()).unwrap();

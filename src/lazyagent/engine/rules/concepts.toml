@@ -274,6 +274,11 @@ where = "home"
 does = "On an approval: approve / deny (deny waits 5 s for Undo)"
 
 [[key]]
+keys = "⇧A"
+where = "home"
+does = "On your own PR waiting for your review: approve the head shown (Undo 5 s)"
+
+[[key]]
 keys = "Ctrl+Enter"
 where = "home"
 does = "On an expanded brief (or one opened with Answer here): answer"
