@@ -259,6 +259,13 @@ def _human_approvals(c: RowContext) -> Any:
     return sum(1 for login in pr.approved_by if login.lower() not in c.not_human)
 
 
+def _item_human_approvals(c: ItemContext) -> Any:
+    pr = c.place.pr
+    if pr is None or pr.approved_by is None:
+        return UNKNOWN
+    return sum(1 for login in pr.approved_by if login.lower() not in c.place.not_human)
+
+
 def _row_ci_state(c: RowContext) -> str:
     from lazyagent.engine.status import ci_state
 
@@ -680,7 +687,7 @@ _fact("pr.labels", LABELS, "the PR's labels (lower case)", _PRR, "≤ 60 s", "ex
       row=_labels)
 _fact("pr.human_approvals", NUM,
       "the PR's approvals by people (latest review each; no apps)", _PRR, "≤ 60 s", "extra",
-      row=_human_approvals)
+      row=_human_approvals, item=_item_human_approvals)
 _fact("pr.commits_after_ready", NUM,
       "the pushes since the PR was marked ready (0: a draft; clean merges of the base left out)",
       _PRR, "≤ 60 s", "extra",

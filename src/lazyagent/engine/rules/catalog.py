@@ -490,7 +490,11 @@ class Catalog:
         # [ci.check] and [ci_unrelated] (engine/ci_tests.CiConfig).
         self.ci = NO_CONFIG if ci is None else ci
         # A rule reads a fact the PR poll fetches only on demand.
-        self.reads_review = any(r.facts & REVIEW_FACTS for r in rules)
+        # A kind reads them only while a [ci.check] makes it reachable: a
+        # policy check (ci_policy, R4c).
+        self.reads_review = any(r.facts & REVIEW_FACTS for r in rules) or (
+            any(c.policy for c in self.ci.checks)
+            and any(k.when is not None and k.when.facts & REVIEW_FACTS for k in kinds))
         self.kind = {k.id: k for k in kinds}
         self.by_id = {r.id: r for r in rules}
         self._tests = [r.test for r in rules]

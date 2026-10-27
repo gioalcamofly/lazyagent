@@ -48,7 +48,8 @@ policy = true
 """
 
 LABEL = CiCheck("label-check", "COMPLETED", "FAILURE", "https://checks.example.com/label/1")
-READY = dict(review_decision="APPROVED", mergeable="MERGEABLE", is_draft=False)
+READY = dict(review_decision="APPROVED", mergeable="MERGEABLE", is_draft=False,
+             approved_by=["peer"])
 
 
 # ----------------------------------------------------------------------
@@ -124,6 +125,15 @@ async def test_a_policy_check_waits_until_the_merge_is_next():
         await _poll(engine)
         assert _items(engine) == []
         assert (await _rows(engine))[KEY]["ci_note"] == "label-check red · policy"
+    # GitHub's "approved" from an app is not a person's approval; nor is an
+    # account in [review] not_human, nor approvals not read yet.
+    for approved_by in ([], ["review-app"], None):
+        bot = _pr(checks=[LABEL], **(READY | {"approved_by": approved_by}))
+        engine, _, _ = _engine(FakeGh([]), pr=bot)
+        with _rules_files({GLOBAL_RULES: POLICY + '[review]\nnot_human = ["review-app"]\n'}):
+            engine.rules.reload()
+            await _poll(engine)
+            assert _items(engine) == [], approved_by
     ready = _pr(checks=[LABEL], **READY)
     engine, _, _ = _engine(FakeGh([]), pr=ready)
     with _rules_files({GLOBAL_RULES: POLICY}):
@@ -131,6 +141,8 @@ async def test_a_policy_check_waits_until_the_merge_is_next():
         await _poll(engine)
         [item] = _items(engine)
         assert (item["kind"], item["state"]) == ("ci_policy", "Fix label-check")
+        # pr.human_approvals is read (the review query) only with a policy check.
+        assert engine.rules.catalog.reads_review
         assert item["detail"] == "policy check red: label-check; the rest is ready to merge"
     # A gating red beside it: Fix CI, not the policy check.
     both = _pr(checks=[LABEL, CiCheck("e2e", "COMPLETED", "FAILURE", "https://ci.example.com/1")],
@@ -382,3 +394,13 @@ def test_the_readmes_r4c_examples_load_as_written():
     assert cat.generated_paths == ("**/generated-map.json", "docs/api/*.lock")
     assert [(c.name, c.gate) for c in cat.ci.checks] == [
         ("eval-suite", "nongating"), ("label-check", "policy")]
+
+
+def test_the_review_query_is_made_for_ci_policy_only_with_a_policy_check():
+    from lazyagent.engine.rules import builtin
+    from lazyagent.engine.rules.user import compose, parse_file
+
+    assert not builtin().reads_review
+    for text, wanted in ((NONGATING, False), (POLICY, True)):
+        f = parse_file(text, "global", GLOBAL_RULES)
+        assert compose(builtin(), [f]).catalog.reads_review is wanted

@@ -310,6 +310,8 @@ class Place:
     # Mechanism A on the head (engine/ci_tests.py): None while no check has
     # tests_from.
     tests: Any = None
+    # [review] not_human of the rule files (pr.human_approvals).
+    not_human: frozenset[str] = frozenset()
 
     @property
     def running(self) -> bool:
@@ -908,6 +910,8 @@ class ActionableQueue:
             tests = None
         if tests is not None:
             tests.attestations = getattr(engine, "attestations", None)
+        catalog = getattr(getattr(engine, "status", None), "catalog", None)
+        not_human = getattr(catalog, "not_human", frozenset())
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
@@ -931,6 +935,7 @@ class ActionableQueue:
                     me=me,
                     review_request=request.to_dict() if request is not None else None,
                     requests_known=known,
+                    not_human=not_human,
                 )
             )
         # The review requests no worktree holds: places with no path.

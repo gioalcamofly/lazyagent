@@ -1084,7 +1084,8 @@
           "name": "pr.human_approvals",
           "phrase": "the PR's approvals by people (latest review each; no apps)",
           "scopes": [
-            "row"
+            "row",
+            "item"
           ],
           "source": "PR poller (review query)",
           "type": "num",
@@ -2263,12 +2264,12 @@
           "level": "round",
           "passable": true,
           "rank": 5,
-          "says": "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: the PR is approved and mergeable, and no check that gates the merge is red (R4c).",
-          "sentence": "The PR's state is open and the failing policy checks is not empty and the failing checks that gate the merge is empty and the PR's review decision is approved and the PR's mergeability is mergeable",
+          "says": "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: a person approved the PR (an app's approval does not count), it is mergeable, and no check that gates the merge is red (R4c).",
+          "sentence": "The PR's state is open and the failing policy checks is not empty and the failing checks that gate the merge is empty and the PR's approvals by people is at least 1 and the PR's mergeability is mergeable",
           "state_text": "Fix \u2039the first failing policy check\u203a",
           "title": "Policy check failing",
           "verb": "Fix",
-          "when": "pr.state == \"open\" and not empty(ci.policy_failures) and empty(ci.gating_failures) and pr.review == \"approved\" and pr.mergeable == \"mergeable\"",
+          "when": "pr.state == \"open\" and not empty(ci.policy_failures) and empty(ci.gating_failures) and pr.human_approvals >= 1 and pr.mergeable == \"mergeable\"",
           "zone": "round"
         }
       ],

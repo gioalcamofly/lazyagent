@@ -763,7 +763,7 @@ compare_to = "origin/main"                 # main's run at the newest main commi
 | `[ci_unrelated] base_fetches_per_poll` | 3 |
 | `[ci_unrelated] detect_aggregates` | `false` (default). `true`: a job with no `aggregate` key may be taken for one from the run's jobs (see below). The repo file's wins over the global one |
 | `[ci.check."<name>"] gating` | `true` (default). `false`: not a merge gate (an eval suite that fails on the base too and your repo's own fan-in job does not require, a "branch sync" check a fast base never lets pass): its red alone raises no Fix CI; the row in flight says `eval-suite red · not gating`. With `tests_from`, a failing test that passes at the base point makes it gate again (the PR's own failure still reaches you); with test data unknown it stays non-gating, which is the trade-off of setting it |
-| `[ci.check."<name>"] policy` | `true`: a process check (a label policy). Not in Round until the merge is next: the PR is approved (`pr.review`), mergeable, and no gating check is red; then **Fix** `Fix label-check`. `gating = true` beside it is an error |
+| `[ci.check."<name>"] policy` | `true`: a process check (a label policy). Not in Round until the merge is next: a person approved the PR (`pr.human_approvals >= 1`: an app's approval does not count), it is mergeable, and no gating check is red; then **Fix** `Fix label-check`. `gating = true` beside it is an error |
 
 ```toml
 # rules.toml (global or repo): checks that are not merge gates

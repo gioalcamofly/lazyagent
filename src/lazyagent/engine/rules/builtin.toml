@@ -661,9 +661,9 @@ level = "round"
 title = "Policy check failing"
 rank = 5
 detector = "pr"
-says = "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: the PR is approved and mergeable, and no check that gates the merge is red (R4c)."
+says = "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: a person approved the PR (an app's approval does not count), it is mergeable, and no check that gates the merge is red (R4c)."
 when = '''
 pr.state == "open" and not empty(ci.policy_failures) and empty(ci.gating_failures)
-and pr.review == "approved" and pr.mergeable == "mergeable"
+and pr.human_approvals >= 1 and pr.mergeable == "mergeable"
 '''
 state_expr = '"Fix " + ci.first_policy'
