@@ -272,7 +272,11 @@ provider = "claude"
 # "ci_red" (a red GitHub Actions run on the branch's head; its brief carries
 # the failed log's tail). At most 2 attempts per item, never on the default
 # branch or a teammate's; after 2 failures the item becomes a brief in To sit
-# down with. The desktop writes these keys too.
+# down with (one per item; it closes itself once the item clears, or when the
+# agent files a brief of its own). Nothing is sent, and no attempt counted,
+# while the branch's agent runs or holds the ball by its own status_report; an
+# attempt whose agent ends its turn waiting on you (a brief, a question, an
+# approval) is waiting, not failed. The desktop writes these keys too.
 # auto_delegate = []
 # auto_delegate_target = "owner"   # or "orchestrator"
 # auto_delegate_max_per_day = 10
@@ -483,6 +487,27 @@ Answer, Decide, Review, Merge and Confirm are not passable; a verb of your
 own is neither delegable nor kept from the orchestrator. A rule's `then`
 may say either (`delegable = true`); the engine refuses a delegate or a pass
 where it is false, and Home does not offer it.
+
+Delegate sends **every** delegable item of the row to its agent in one
+letter, a numbered list (the button reads "Delegate all (2)" when there are
+several; an item about the agent itself, its own Hanged?, is left out); in
+the expanded line, "delegate this one" on an item's own line sends it alone.
+A letter goes once the agent's turn is over. Until then the row says why it
+waits ("waiting for a5 to be free (possibly hanged)"), and after a minute
+the expanded line offers **Send anyway** (typed at once, whatever the agent
+is doing). Delegating again on the same row adds the new items to the letter
+still waiting, or sends them in a follow-up once it went: nothing pending is
+dropped. Each item comes back on its own when the agent finishes with it
+still true ("agent a5 finished; still CI red"); the others cleared.
+
+**The ball principle.** An item the branch's agent can resolve (conflict,
+CI red, Sync with base) does not reach your inbox while that agent has the
+ball: it runs, or its `status_report` holds it (`ball: "agent"`, or
+`"others"` with an `until`; the fact `place.agent_holds`). The row reads
+`agent a5 · conflict · <note> · until 14:05` in flight, and the item comes
+back when the until lapses, the agent dies or exits, or it asks you
+(`request_decision`, a question). Approvals, questions, briefs, your Review
+and Merge, review requests and `needs_user` reports interrupt as before.
 
 An agent whose turn ends with a question to you in prose ("Should I fix it
 in this PR, or open a separate task?") gets an **Asks you** item (verb
