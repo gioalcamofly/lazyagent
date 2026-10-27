@@ -212,6 +212,18 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     detail="asking a question",
                 )
             return None
+        if event_name == "SessionStart" and not data.get("agent_id"):
+            if data.get("source") == "compact":
+                return None  # mid-turn: the turn goes on
+            # At its prompt before any turn: a restore (``--resume``) types
+            # nothing, so without this its first output left it running
+            # until the hang check called it possibly hanged.
+            self._turn_open = False
+            return AgentLifecycleEvent(
+                status=AgentStatus.WAITING,
+                confidence=LifecycleConfidence.HIGH,
+                detail="at its prompt",
+            )
         if event_name == "UserPromptSubmit":
             self._turn_open = True
             self._question = ""

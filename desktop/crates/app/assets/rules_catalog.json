@@ -910,6 +910,18 @@
   {
    "cost": "free",
    "freshness": "per pass",
+   "name": "place.agent_holds",
+   "phrase": "an agent there has the ball (at work, or its report holds it)",
+   "scopes": [
+    "item"
+   ],
+   "source": "overlay",
+   "type": "bool",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
    "name": "agent.reported",
    "phrase": "the agent's report says where the ball is (it works on)",
    "scopes": [
@@ -1779,6 +1791,18 @@
   {
    "cost": "free",
    "freshness": "per pass",
+   "name": "delegation.held",
+   "phrase": "why its letter waits (empty: sent)",
+   "scopes": [
+    "row"
+   ],
+   "source": "delegation",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
    "name": "report.needs_user",
    "phrase": "the agent reported it needs you",
    "scopes": [
@@ -1821,6 +1845,30 @@
     "row"
    ],
    "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "per pass",
+   "name": "report.until",
+   "phrase": "when the reported ball lapses, HH:MM (empty: none)",
+   "scopes": [
+    "row"
+   ],
+   "source": "overlay",
+   "type": "text",
+   "values": []
+  },
+  {
+   "cost": "free",
+   "freshness": "≤ 60 s",
+   "name": "held.what",
+   "phrase": "what an agent holding the ball folds: conflict, CI red (empty: nothing)",
+   "scopes": [
+    "row"
+   ],
+   "source": "PR poller",
    "type": "text",
    "values": []
   }
@@ -1900,11 +1948,11 @@
    "passable": true,
    "rank": 3,
    "says": "",
-   "sentence": "The agent's status is possibly hanged",
+   "sentence": "The agent's status is possibly hanged and the agent's report does not say where the ball is",
    "state_text": "agent may hang",
    "title": "Hanged?",
    "verb": "Check agent",
-   "when": "agent.status == \"possibly_hanged\"",
+   "when": "agent.status == \"possibly_hanged\" and not agent.reported",
    "zone": "round"
   },
   {
@@ -1953,12 +2001,12 @@
    "level": "round",
    "passable": true,
    "rank": 5,
-   "says": "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
-   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work",
+   "says": "An open PR red on its head with no agent holding it (at work, or its status_report holds the ball); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
+   "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
    "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failing",
    "verb": "Fix CI",
-   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and agents.running == 0",
+   "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and not place.agent_holds",
    "zone": "round"
   },
   {
@@ -1972,11 +2020,11 @@
    "passable": true,
    "rank": 5,
    "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
-   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work",
+   "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
    "state_text": "CI red: ‹the first failing check not explained by the base›",
    "title": "CI failed",
    "verb": "Fix CI",
-   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and agents.running == 0",
+   "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and not place.agent_holds",
    "zone": "round"
   },
   {
@@ -2008,11 +2056,11 @@
    "passable": true,
    "rank": 5,
    "says": "",
-   "sentence": "The PR's state is open and the PR's mergeability is conflicting and there are no agents at work",
+   "sentence": "The PR's state is open and the PR's mergeability is conflicting and no agent there has the ball",
    "state_text": "conflict with base",
    "title": "Merge conflict",
    "verb": "Resolve conflict",
-   "when": "pr.state == \"open\" and pr.mergeable == \"conflicting\" and agents.running == 0",
+   "when": "pr.state == \"open\" and pr.mergeable == \"conflicting\" and not place.agent_holds",
    "zone": "round"
   },
   {
@@ -2116,11 +2164,11 @@
    "passable": true,
    "rank": 5,
    "says": "Every failing check also fails on the base at the commit compared, and the base has fixed it since: merge or rebase the base in (R4).",
-   "sentence": "Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work",
+   "sentence": "Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and no agent there has the ball",
    "state_text": "Sync with base: ‹the first check the base has fixed›",
    "title": "Sync with base",
    "verb": "Sync",
-   "when": "ci.head == \"red\" and empty(ci.related_failures) and not empty(ci.base_fixed) and agents.running == 0",
+   "when": "ci.head == \"red\" and empty(ci.related_failures) and not empty(ci.base_fixed) and not place.agent_holds",
    "zone": "round"
   },
   {
@@ -2393,14 +2441,14 @@
    "queue_off": false,
    "replaces": null,
    "says": "",
-   "sentence": "The orchestrator holds it",
+   "sentence": "The orchestrator holds it and not ((the agents' statuses include running or the agents' statuses include starting))",
    "state_text": "orchestrator · (holding / ‹the orchestrator's hold note›)",
    "then": {
     "ball": "agent",
     "state_expr": "clip(\"orchestrator · \" + (hold.note == \"\" ? \"holding\" : hold.note), 8)"
    },
    "verb": null,
-   "when": "hold.active",
+   "when": "hold.active and not (\"running\" in agents.statuses or \"starting\" in agents.statuses)",
    "zone": "flight"
   },
   {
@@ -2448,10 +2496,10 @@
    "replaces": null,
    "says": "",
    "sentence": "The delegation's phase is on it",
-   "state_text": "agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›)",
+   "state_text": "‹why its letter waits› / agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›)",
    "then": {
     "ball": "agent",
-    "state_expr": "clip(\"agent \" + delegation.agent + \" · fixing \" + (delegation.fact == \"\" ? \"it\" : delegation.fact), 8)"
+    "state_expr": "delegation.held != \"\" ? clip(delegation.held, 10) : clip(\"agent \" + delegation.agent + \" · fixing \" + (delegation.fact == \"\" ? \"it\" : delegation.fact), 8)"
    },
    "verb": null,
    "when": "delegation.phase == \"on_it\"",
@@ -2895,10 +2943,10 @@
    "replaces": null,
    "says": "Ball agent: it works on in the background (its turn is over).",
    "sentence": "The agent's reported ball is not empty",
-   "state_text": "agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note›",
+   "state_text": "agent ‹the agent that reported› · (‹what an agent holding the ball folds: conflict, CI red› · )(working / ‹the agent's report note›)( · until ‹when the reported ball lapses, HH:MM›) / reported: ‹the agent's reported ball› / ‹the agent's report note›",
    "then": {
     "ball_expr": "report.ball",
-    "state_expr": "report.ball == \"agent\" ? clip(\"agent \" + report.agent + \" · \" + (report.note == \"\" ? \"working\" : report.note), 8) : clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
+    "state_expr": "report.ball == \"agent\" ? clip(\"agent \" + report.agent + \" · \" + (held.what == \"\" ? \"\" : held.what + \" · \") + (report.note == \"\" ? \"working\" : report.note) + (report.until == \"\" ? \"\" : \" · until \" + report.until), 16) : clip(report.note == \"\" ? \"reported: \" + report.ball : report.note, 5)"
    },
    "verb": null,
    "when": "report.ball != \"\"",

@@ -642,6 +642,10 @@ impl State {
                 // Where Delegate and Pass apply (I4h).
                 fields.extend(["delegable", "passable"]);
             }
+            if self.has("delegate_all") {
+                // What Delegate all sends (I4i).
+                fields.push("delegates");
+            }
             if self.has("owner_approve") {
                 // Where Approve (⇧A) applies (R3d).
                 fields.push("approvable");

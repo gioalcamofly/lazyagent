@@ -25,7 +25,11 @@ responder's routing. The engine holds on its own, for the orchestrator, the
 hold_spawned_ttl_min``, 60; 0 turns it off), once per item occurrence and
 once per agent turn (a release is not undone by the same idle turn), and
 only while the worktree and the agent are there; a hold that expires comes
-back to the user as "orchestrator did not respond". ``orchestrator_release``
+back to the user as "orchestrator did not respond". A hold also ends on its own
+(``hold ended: …`` on the timeline) when the orchestrator escalates a brief
+of that item to the user, or when any brief there is answered: the item is
+the user's, or the agent's again. While an agent of the branch runs, the
+row's ball is the agent's; the hold shows only as a note. ``orchestrator_release``
 ends a pass or a hold; its note stays on the row (``orchestrator: <note>``)
 and on the timeline. Releasing what already ended is ``nothing_to_release``,
 not an error.
@@ -437,6 +441,21 @@ class Claims:
         )
         self._changed()
         return claim
+
+    def end_hold(self, key: str, why: str) -> Claim | None:
+        """The engine ends the orchestrator's hold on ``key`` (an answer to
+        a brief there, an escalation to the user): a ``hold ended: <why>``
+        timeline line, nothing comes back to the user. None with no hold."""
+        hold = self.holds.pop(key, None)
+        if hold is None:
+            return None
+        self._wakes = [w for w in self._wakes if w.key != key]
+        self._engine.overlay.add(key, "delegate", "engine", f"hold ended: {why}")
+        self._engine.events.emit(
+            CLAIM_RELEASED, {"key": key, "outcome": "done", "note": why, "claim": hold.to_dict()}
+        )
+        self._changed()
+        return hold
 
     def _changed(self) -> None:
         self._engine.status.mark_dirty()

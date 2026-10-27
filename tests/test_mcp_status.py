@@ -82,7 +82,8 @@ async def test_the_orchestrator_holds_an_item_while_it_verifies_it(engine, monke
 
     assert (result["hold"]["note"], result["hold"]["by"]) == ("verifying tests", "orchestrator")
     [row] = (await mcp_server.status_list())["rows"]
-    assert (row["zone"], row["state"]) == ("in_flight", "orchestrator · verifying tests")
+    # Its agent at work has the ball (I4i): the hold is the row's note.
+    assert (row["zone"], row["ball"], row["hold"]["note"]) == ("in_flight", "agent", "verifying tests")
     result = await mcp_server.orchestrator_release("repo:feat", "done", "tests pass")
     assert (result["claim"], result["hold"]["key"]) == (None, "repo:feat")
     [row] = (await mcp_server.status_list())["rows"]

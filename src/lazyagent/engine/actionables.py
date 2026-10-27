@@ -305,6 +305,8 @@ class Place:
     me: str | None = None
     review_request: dict[str, Any] | None = None
     requests_known: bool = False
+    # The agent holds the ball by its own report (overlay.holding, I4i).
+    report_holds: bool = False
     # Mechanism A on the head (engine/ci_tests.py): None while no check has
     # tests_from.
     tests: Any = None
@@ -312,6 +314,11 @@ class Place:
     @property
     def running(self) -> bool:
         return any(a.status in _RUNNING for a in self.agents)
+
+    @property
+    def agent_holds(self) -> bool:
+        """An agent here has the item's ball: it runs, or its report holds."""
+        return self.running or self.report_holds
 
 
 @dataclass(frozen=True)
@@ -880,8 +887,9 @@ class ActionableQueue:
         wt = next((w for w in engine.worktrees if w.path == path), None)
         return work_item_key(repo_name(engine), wt) if wt is not None else None
 
-    def snapshot(self) -> Snapshot:
+    def snapshot(self, now: float | None = None) -> Snapshot:
         engine = self._engine
+        now = self.clock() if now is None else now
         repo = repo_name(engine)
         # The live agents' labels, for the exit that may come next.
         self._labels = {}
@@ -920,6 +928,7 @@ class ActionableQueue:
                     me=me,
                     review_request=request.to_dict() if request is not None else None,
                     requests_known=known,
+                    report_holds=overlay is not None and overlay.holding(key, now) is not None,
                 )
             )
         # The review requests no worktree holds: places with no path.
@@ -927,9 +936,12 @@ class ActionableQueue:
         for key, facts in (getattr(status, "remote", None) or {}).items():
             places.append(Place("", key, (), facts.pr, me=me,
                                 review_request=facts.review_request, requests_known=True))
-        # An exit is answered once an agent runs in its slot again.
+        # An exit is answered once an agent runs in its slot again, or
+        # another one runs on its worktree (I4i).
         live = {(p.path, a.agent_id) for p in places for a in p.agents}
-        self._exits = [e for e in self._exits if (e.path, e.agent_id) not in live]
+        busy = {p.path for p in places if p.running}
+        self._exits = [e for e in self._exits
+                       if (e.path, e.agent_id) not in live and e.path not in busy]
         return Snapshot(places, list(self._exits), list(self._jobs))
 
     def _agents(self, path: str) -> tuple[AgentSeen, ...]:
@@ -953,7 +965,7 @@ class ActionableQueue:
         """Re-derive the queue, emit what changed, and return the visible
         items, sorted."""
         now = self.clock() if now is None else now
-        snap = self.snapshot()
+        snap = self.snapshot(now)
         found = derive(snap, self.detectors)
         for keep in self.filters:
             keep(found)

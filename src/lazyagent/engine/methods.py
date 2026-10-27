@@ -168,7 +168,8 @@ class SpawnCaps:
 
 
 # status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
-ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "passable", "approvable")
+ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable",
+              "approvable")
 
 
 class EngineMethods:
@@ -1188,8 +1189,11 @@ class EngineMethods:
           reason (``text``);
         - ``close``: ``how`` (done, dropped), for what the engine cannot see;
         - ``delegate``: pass it to the orchestrator (``to: "orchestrator"``,
-          optional ``ttl_s``), or hand one inbox item to the branch's agent
-          (``to: "agent"``, optional ``item``, ``agent_id``, ``text``);
+          optional ``ttl_s``), or hand the row's delegable items (or only
+          ``item``) to the branch's agent in one letter (``to: "agent"``,
+          optional ``item``, ``agent_id``, ``text``); ``send_now: true``
+          types a letter still waiting for the agent to be free (Send
+          anyway);
         - ``clear``: drop the gesture, take back a pass or a hold, and end a
           delegation;
         - ``undo``: take back one thing only, ``what``: ``park`` (the
@@ -1217,6 +1221,8 @@ class EngineMethods:
         undo: dict[str, Any] | None = None
         if kind == "undo":
             undo = self._undo_gesture(key, params.get("what"))
+        elif kind == "delegate" and params.get("to") == "agent" and params.get("send_now"):
+            delegation = engine.delegations.send_now(key, by=role)
         elif kind == "delegate" and params.get("to") == "agent":
             delegation = engine.delegations.delegate(
                 key, item_id=params.get("item"), agent_id=params.get("agent_id"),

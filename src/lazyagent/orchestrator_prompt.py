@@ -61,7 +61,9 @@ done, changes requested) of the workers you spawned and wakes you with one \
 line "Item <key>: agent <id> (spawned by you) — …; held for you until HH:MM". \
 Verify, then `orchestrator_release(key, "done", note)` or `"returned"` with \
 what the user must do; unanswered, it goes to the user as "orchestrator did \
-not respond". A hold widens nothing: your mandate still applies.
+not respond". A hold widens nothing: your mandate still applies. Don't hold \
+an item you escalate: escalating hands it to the user; the engine ends your \
+hold (and when a brief there is answered).
 - **`status_report(note)`** — Say what you are doing now in one line \
 ("verifying feat-x's fix", "waiting for CI on api-retry") whenever that \
 changes: the user sees it on Home.

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from lazyagent.config import Config, InboxConfig, load_config, set_table_keys
+from lazyagent.engine.autodelegate import RESET_AFTER
 from lazyagent.engine.methods import EngineMethods
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
 from lazyagent.models import AgentState, AgentStatus, PrInfo
@@ -114,13 +115,17 @@ async def test_two_attempts_to_the_owner_then_a_brief_to_sit_down_with():
 
 
 async def test_a_cleared_condition_resets_the_attempts():
-    engine, _ = _engine()
+    engine, clock = _engine()
     agent = _agent(engine, "a1", "waiting")
     await _pass(engine)
     _agent(engine, "a1", "running")
     await _pass(engine)
     engine.worktree_service._pr_infos[FEAT] = PrInfo(7, "Feat", "OPEN", [], mergeable="MERGEABLE")
     _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    # Not at once: the item may come back (I4i).
+    assert (KEY, "conflict") in engine.autodelegate.attempts
+    clock.now += RESET_AFTER
     await _pass(engine)
     assert engine.autodelegate.attempts == {}
     engine.worktree_service._pr_infos[FEAT] = PrInfo(7, "Feat", "OPEN", [], mergeable="CONFLICTING")
@@ -347,3 +352,170 @@ async def test_with_no_agent_on_record_the_inbox_key_decides_bypass_by_default(t
     assert engine.autodelegate.permissions(FEAT) == "plan", "normal: the configured mode"
     engine.config.agent.permission_mode = "bypass"
     assert engine.autodelegate.permissions(FEAT) == "cli", "never bypass when the user says so"
+
+
+# --- I4i: waiting is not failing; the engine's brief closes itself --------------
+
+
+def _agent_brief(engine, clock, agent_id="a1"):
+    record, _ = engine.decisions.request(
+        {"question": "Merge develop or rebase before pushing?", "blocking": True,
+         "options": [{"key": "A", "label": "Merge"}, {"key": "B", "label": "Rebase"}],
+         "recommendation": "A", "tried": "both conflict in app.py",
+         "evidence": [{"kind": "notes", "section": "Doubts"}], "reversible": "yes",
+         "impact_if_wrong": "a messy history"},
+        key=KEY, worktree_path=FEAT, agent_id=agent_id, head=None, now=clock.now,
+    )
+    engine.status.mark_dirty()
+    return record
+
+
+async def _two_failures(engine):
+    """Two attempts end with the conflict still there: the engine's brief."""
+    for _ in range(2):
+        await _pass(engine)
+        _agent(engine, "a1", "running")
+        await _pass(engine)
+        _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    [brief] = [d for d in engine.decisions.list() if d.get("source") == "auto_delegate"]
+    return brief
+
+
+async def test_an_attempt_waiting_on_the_users_brief_is_not_a_failure():
+    engine, clock = _engine()
+    agent = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    _agent(engine, "a1", "running")
+    await _pass(engine)
+    # The agent needs the owner's choice before pushing the merge.
+    _agent_brief(engine, clock)
+    _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    await _pass(engine)
+    assert len(_sent(agent)) == 1, "not retried while its brief is open"
+    attempt = engine.autodelegate.attempts[(KEY, "conflict")]
+    assert (attempt["count"], attempt["in_flight"]) == (1, True)
+    assert not [d for d in engine.decisions.list() if d.get("source") == "auto_delegate"]
+
+
+@pytest.mark.parametrize("status", ["waiting_for_user", "waiting_for_approval"])
+async def test_an_attempt_whose_agent_waits_on_the_user_is_not_a_failure(status):
+    engine, _ = _engine()
+    agent = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    _agent(engine, "a1", "running")
+    await _pass(engine)
+    _agent(engine, "a1", status)
+    await _pass(engine)
+    await _pass(engine)
+    assert len(_sent(agent)) == 1
+    assert engine.autodelegate.attempts[(KEY, "conflict")]["in_flight"]
+
+
+async def test_the_engines_brief_closes_once_its_item_clears():
+    engine, _ = _engine()
+    _agent(engine, "a1", "waiting")
+    brief = await _two_failures(engine)
+    assert brief["state"] == "open"
+    engine.worktree_service._pr_infos[FEAT] = PrInfo(7, "Feat", "OPEN", [], mergeable="MERGEABLE")
+    await _pass(engine)
+    assert engine.decisions.store[brief["id"]]["state"] == "resolved"
+    assert not any(i["kind"] == "decision" for i in engine.actionables.list()["items"])
+    assert any(e["kind"] == "decision" and e["text"].startswith("resolved: its item no longer holds")
+               for e in engine.overlay.entries(KEY))
+
+
+async def test_the_engines_brief_stays_while_an_agent_works_on_it():
+    engine, _ = _engine()
+    _agent(engine, "a1", "waiting")
+    brief = await _two_failures(engine)
+    _agent(engine, "a1", "running")
+    await _pass(engine)
+    assert engine.decisions.store[brief["id"]]["state"] == "open"
+
+
+async def test_the_engines_brief_gives_way_to_the_agents_own():
+    engine, clock = _engine()
+    _agent(engine, "a1", "waiting")
+    brief = await _two_failures(engine)
+    clock.now += 60
+    mine = _agent_brief(engine, clock)
+    await _pass(engine)
+    record = engine.decisions.store[brief["id"]]
+    assert (record["state"], record["superseded_by"]) == ("superseded", mine["id"])
+
+
+async def test_nothing_is_sent_while_the_agent_holds_the_ball_by_its_report():
+    engine, clock = _engine()
+    agent = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    _agent(engine, "a1", "running")
+    await _pass(engine)
+    # A long build in the background: the agent says it is at it.
+    engine.overlay.report(KEY, FEAT, "a1", note="handling the conflict", ball="agent",
+                          needs_user=False, label="Agent a1", now=clock.now + 1,
+                          until=clock.now + 3600)
+    _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    await _pass(engine)
+    assert len(_sent(agent)) == 1, "no attempt 2 while it holds the ball"
+    assert engine.autodelegate.attempts[(KEY, "conflict")]["count"] == 1
+    assert not [d for d in engine.decisions.list() if d.get("source") == "auto_delegate"]
+    # Past its until: the engine reads it again, and that attempt failed.
+    clock.now += 3700
+    await _pass(engine)
+    assert len(_sent(agent)) == 2 and "attempt 2 of 2" in _sent(agent)[1]
+
+
+async def test_nothing_is_sent_to_a_running_agent():
+    engine, _ = _engine()
+    agent = _agent(engine, "a1", "running")
+    await _pass(engine)
+    await _pass(engine)
+    agent.send_input.assert_not_called()
+
+
+async def test_never_a_second_engine_brief_for_the_same_item():
+    engine, _ = _engine()
+    _agent(engine, "a1", "waiting")
+    brief = await _two_failures(engine)
+    # An engine restart forgets its attempts; the brief is kept.
+    engine.autodelegate.attempts.clear()
+    for _ in range(3):
+        _agent(engine, "a1", "running")
+        await _pass(engine)
+        _agent(engine, "a1", "waiting")
+        await _pass(engine)
+    briefs = [d for d in engine.decisions.list() if d.get("source") == "auto_delegate"]
+    assert [b["id"] for b in briefs] == [brief["id"]]
+
+
+async def test_an_item_back_for_a_moment_after_a_turn_is_not_a_new_round():
+    """The agent ends its turn; the conflict reads unknown for a minute,
+    then conflicting again: the same attempt, not attempt 1 again."""
+    engine, clock = _engine()
+    agent = _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    _agent(engine, "a1", "running")
+    await _pass(engine)
+    engine.worktree_service._pr_infos[FEAT] = PrInfo(7, "Feat", "OPEN", [], mergeable="UNKNOWN")
+    _agent(engine, "a1", "waiting")
+    await _pass(engine)
+    clock.now += 60
+    engine.worktree_service._pr_infos[FEAT] = PrInfo(7, "Feat", "OPEN", [], mergeable="CONFLICTING")
+    await _pass(engine)
+    assert len(_sent(agent)) == 2 and "attempt 2 of 2" in _sent(agent)[-1]
+
+
+async def test_a_report_with_ball_others_and_an_until_folds_the_item():
+    engine, clock = _engine()
+    agent = _agent(engine, "a1", "waiting")
+    engine.overlay.report(KEY, FEAT, "a1", note="waiting on the build", ball="others",
+                          needs_user=False, label="Agent a1", now=clock.now, until=clock.now + 1800)
+    await _pass(engine)
+    agent.send_input.assert_not_called()
+    assert not [i for i in engine.actionables.list()["items"] if i["kind"] == "conflict"]
+    clock.now += 1801
+    await _pass(engine)
+    assert len(_sent(agent)) == 1

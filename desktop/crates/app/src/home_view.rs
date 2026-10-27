@@ -29,7 +29,7 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, InboxConfig, Presence, RulesProblem,
+    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, InboxConfig, Presence, RulesProblem,
     StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
@@ -128,6 +128,10 @@ enum Act {
     Park(Line, Park, bool),
     ParkedFold,
     Delegate(Line),
+    /// One item of the line alone (its id), from the expanded items.
+    DelegateItem(Line, String),
+    /// Send anyway: a delegation's letter held by a busy agent.
+    SendAnyway(Line),
     Pass(Line),
     /// Approve the PR's head shown (R3d).
     OwnerApprove(Line),
@@ -1021,15 +1025,18 @@ impl State {
             self.toast(Severity::Info, "Nothing to delegate: this line has no inbox item.");
             return;
         };
-        if matches!(top.kind.as_str(), "approval" | "question" | "turn_question" | "decision" | "delegation") {
+        // Delegate all: the engine says which items go; the top one may
+        // be the user's (I4i).
+        let all = line.delegates().is_some_and(|d| !d.is_empty());
+        if !all && matches!(top.kind.as_str(), "approval" | "question" | "turn_question" | "decision" | "delegation") {
             self.toast(Severity::Info, "That one is answered, not delegated: open the agent's terminal (o).");
             return;
         }
-        if top.kind == "review_request" {
+        if !all && top.kind == "review_request" {
             self.toast(Severity::Info, "A teammate asked you for this review: open the PR (p) and review it there.");
             return;
         }
-        if !top.delegable() {
+        if !all && !top.delegable() {
             // The engine's catalog: an agent cannot do the user's review or merge.
             let verb = line.verb().to_string();
             self.toast(Severity::Info, format!("{verb} is yours to do: an agent cannot do it for you."));
@@ -1052,6 +1059,21 @@ impl State {
     fn send_delegate(&mut self, line: &Line) {
         let Some(top) = line.top.clone() else { return };
         let mut params = json!({"key": line.key, "kind": "delegate", "to": "agent", "item": top.id});
+        if let Some(all) = line.delegates().filter(|d| !d.is_empty()) {
+            // Every delegable item, in one letter (I4i).
+            params.as_object_mut().expect("an object").remove("item");
+            let undo = (
+                format!(
+                    "Delegated {} item{} of {} to its agent",
+                    all.len(),
+                    if all.len() == 1 { "" } else { "s" },
+                    line.name
+                ),
+                UndoAct::Gesture(line.key.clone(), "delegate"),
+            );
+            self.gesture_undo(&line.sel(), params, "Not delegated", Some(undo));
+            return;
+        }
         // With CI tracking the engine writes the failures itself (failed
         // jobs, steps, the last lines of their logs).
         if top.kind == "ci"
@@ -1063,6 +1085,24 @@ impl State {
         }
         let undo = (format!("Delegated {} to its agent", line.name), UndoAct::Gesture(line.key.clone(), "delegate"));
         self.gesture_undo(&line.sel(), params, "Not delegated", Some(undo));
+    }
+
+    /// One item of the line alone, from its own line in the expanded
+    /// items (feature `delegate_all`).
+    pub fn delegate_item(&mut self, line: &Line, item: &str) {
+        let params = json!({"key": line.key, "kind": "delegate", "to": "agent", "item": item});
+        let undo = (
+            format!("Delegated one item of {} to its agent", line.name),
+            UndoAct::Gesture(line.key.clone(), "delegate"),
+        );
+        self.gesture_undo(&line.sel(), params, "Not delegated", Some(undo));
+    }
+
+    /// Send anyway: the delegation's letter, typed now whatever the
+    /// agent's status (it waited for the agent to be free).
+    pub fn send_anyway(&mut self, line: &Line) {
+        let params = json!({"key": line.key, "kind": "delegate", "to": "agent", "send_now": true});
+        self.gesture_undo(&line.sel(), params, "Not sent", None);
     }
 
     /// Pass to orchestrator: a claim with a timeout (the engine's).
@@ -1668,6 +1708,7 @@ impl App {
             gestures: s.gestures(),
             first_responder: s.first_responder(),
             delegation: s.engine_inbox() && s.has("delegation"),
+            delegate_all: s.engine_inbox() && s.has("delegate_all"),
             parks: s.parks(),
             selected: selected.as_deref(),
             timelines: &s.timelines,
@@ -1956,6 +1997,8 @@ impl App {
                 Act::RestoreDelegate(l) | Act::SpawnDelegate(l) => s.delegate_after_start(&l),
                 Act::StartOrchestrator => s.spawn_agent(None),
                 Act::Delegate(l) => s.delegate_line(&l),
+                Act::DelegateItem(l, id) => s.delegate_item(&l, &id),
+                Act::SendAnyway(l) => s.send_anyway(&l),
                 Act::Pass(l) => s.pass_line(&l),
                 Act::OwnerApprove(l) => s.approve_head(&l),
                 Act::TakeBack(l) => s.take_back(&l),
@@ -2036,6 +2079,8 @@ struct LineCtx<'a> {
     gestures: bool,
     first_responder: bool,
     delegation: bool,
+    /// Delegate all, held letters and Send anyway (feature `delegate_all`).
+    delegate_all: bool,
     parks: &'static [(&'static str, Park)],
     selected: Option<&'a str>,
     timelines: &'a std::collections::HashMap<String, StatusTimeline>,
@@ -2430,7 +2475,11 @@ fn timeline_line(e: &TimelineEntry, now: f64) -> String {
         "owner_approval" => "review",
         other => other,
     };
-    format!("{} ago  {kind}  {text}{actor}", home::age(now - e.at),)
+    let times = match e.count {
+        Some(n) if n > 1 => format!(" ×{n}"),
+        _ => String::new(),
+    };
+    format!("{} ago  {kind}  {text}{times}{actor}", home::age(now - e.at),)
 }
 
 /// A ball change in words: "stalled → agent: working" → "with the agent
@@ -2522,6 +2571,15 @@ fn engine_brief(d: &Decision) -> bool {
     d.source.as_deref() == Some("auto_delegate")
 }
 
+/// What answering the engine's brief does: "sends this to agent a5".
+pub fn engine_answer_text(d: &Decision) -> String {
+    if d.agent.is_empty() {
+        "sends this to the branch's agent".into()
+    } else {
+        format!("sends this to agent {}", d.agent)
+    }
+}
+
 /// The brief: its options (1-4 pick one when it can be answered here,
 /// Ctrl+Enter answers), what was tried, reversibility, evidence.
 fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool, picked: Option<&str>, acts: &mut Vec<Act>, l: &Line) {
@@ -2593,6 +2651,10 @@ fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool, picked: Option<&st
                 Some(c) if !words => format!("Answer {c}  (Ctrl+Enter)"),
                 _ => "Answer  (Ctrl+Enter)".into(),
             };
+            if engine_brief(d) {
+                // Written by the engine, not the agent: the answer goes to it.
+                ui.label(RichText::new(engine_answer_text(d)).small().color(t.cyan));
+            }
             if (ui.add_enabled(chosen.is_some(), egui::Button::new(what)).clicked() || send) && chosen.is_some() {
                 acts.push(Act::BriefAnswer(d.clone()));
             }
@@ -2611,17 +2673,65 @@ fn brief_ui(ui: &mut Ui, t: &Theme, d: &Decision, view: bool, picked: Option<&st
     }
 }
 
-/// A button under an expanded line, and where it goes (the first
-/// [`PRIMARY_BUTTONS`] show, the rest are under "More…").
+/// Send anyway is offered once a letter waited this long (seconds).
+pub const SEND_ANYWAY_AFTER: f64 = 60.0;
+
+/// "waiting for a1 to be free (possibly hanged) · 2m": a delegation whose
+/// letter has not reached the agent yet.
+pub fn hold_text(d: &Delegation, now: f64) -> Option<String> {
+    if d.held.is_empty() || d.phase != "on_it" {
+        return None;
+    }
+    Some(match d.held_since {
+        Some(at) => format!("{} · {}", d.held, home::age(now - at)),
+        None => d.held.clone(),
+    })
+}
+
+/// Send anyway applies: the letter has waited [`SEND_ANYWAY_AFTER`].
+pub fn send_anyway(d: &Delegation, now: f64) -> bool {
+    hold_text(d, now).is_some() && d.held_since.is_some_and(|at| now - at >= SEND_ANYWAY_AFTER)
+}
+
+/// A button under an expanded line, and where it goes (see [`bar`]).
 struct Button {
     text: String,
     hover: Option<&'static str>,
     enabled: bool,
+    /// Always under "More…", never in the bar (Why?, Notes).
+    more: bool,
     act: Act,
 }
 
 fn button(text: impl Into<String>, act: Act) -> Button {
-    Button { text: text.into(), hover: None, enabled: true, act }
+    Button { text: text.into(), hover: None, enabled: true, more: false, act }
+}
+
+/// The bar under an expanded line and "More…": the bar keeps the first
+/// [`PRIMARY_BUTTONS`] primary verbs, in order; the rest, and every button
+/// marked `more`, go under "More…" (the owner's rule: a short bar).
+fn bar<T>(buttons: Vec<T>, more: impl Fn(&T) -> bool) -> (Vec<T>, Vec<T>) {
+    let (mut shown, mut rest): (Vec<T>, Vec<T>) = (vec![], vec![]);
+    let mut forced = vec![];
+    for b in buttons {
+        if more(&b) {
+            forced.push(b);
+        } else if shown.len() < PRIMARY_BUTTONS {
+            shown.push(b);
+        } else {
+            rest.push(b);
+        }
+    }
+    rest.extend(forced);
+    (shown, rest)
+}
+
+/// The texts of [`bar`]'s two halves, for tests.
+#[cfg(test)]
+pub fn bar_texts(buttons: &[(&str, bool)]) -> (Vec<String>, Vec<String>) {
+    let (shown, rest) = bar(buttons.to_vec(), |b| b.1);
+    let texts = |v: Vec<(&str, bool)>| v.into_iter().map(|b| b.0.to_string()).collect();
+    (texts(shown), texts(rest))
 }
 
 /// The confirmation of ⇧X: exactly what closing does, and what it never
@@ -2856,8 +2966,16 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 text.push_str(&format!(" · {}", home::age(c.now - item.since)));
                 let open = forms.item_open.as_ref().is_some_and(|(s, id)| *s == sel && *id == item.id);
                 let brief = (i > 0 && item.kind == "decision" && mine.is_none()).then(|| l.under_item(&item.id)).flatten();
+                let alone = c.delegate_all
+                    && l.delegates().is_some_and(|d| d.len() > 1 && d.contains(&item.id))
+                    && l.row.as_ref().is_some_and(|r| !r.agents.is_empty());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
+                    if alone
+                        && ui.small_button("delegate this one").on_hover_text("Only this item, to the branch's agent").clicked()
+                    {
+                        acts.push(Act::DelegateItem(l.clone(), item.id.clone()));
+                    }
                     if brief.is_some() {
                         let what = if open { "hide" } else { "Answer here" };
                         if ui.small_button(what).clicked() {
@@ -3026,6 +3144,21 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 _ => d.state.clone(),
             };
             ui.label(RichText::new(text).small().color(t.cyan));
+            if let Some(held) = hold_text(d, c.now) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(held).small().color(t.yellow));
+                    if send_anyway(d, c.now) {
+                        if ui
+                            .small_button("Send anyway")
+                            .on_hover_text("Type it into the agent's terminal now, whatever it is doing")
+                            .clicked()
+                        {
+                            acts.push(Act::SendAnyway(l.clone()));
+                        }
+                        ui.label(RichText::new("or open its terminal (o)").small().color(t.muted));
+                    }
+                });
+            }
         }
         if l.zone == Zone::Parked
             && let Some(g) = l.gesture()
@@ -3165,7 +3298,10 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             // or start one, first.
             let restorable = l.place.as_ref().is_some_and(|p| c.restorable.contains(p));
             let mut b = match (live, restorable) {
-                (true, _) => button("Delegate to its agent  (d)", if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) }),
+                (true, _) => button(
+                    format!("{}  (d)", l.delegate_label()),
+                    if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) },
+                ),
                 (false, true) => button("Restore agent and delegate", Act::RestoreDelegate(l.clone())),
                 (false, false) => button("Spawn an agent for this", Act::SpawnDelegate(l.clone())),
             };
@@ -3203,7 +3339,9 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             buttons.push(button(unpark, Act::TakeBack(l.clone())));
         }
         if l.place.is_some() {
-            buttons.push(button("Notes  (n)", Act::Notes(l.clone())));
+            let mut b = button("Notes  (n)", Act::Notes(l.clone()));
+            b.more = true;
+            buttons.push(b);
         }
         if let Some(url) = &l.url
             && l.verb() != "Merge"
@@ -3222,8 +3360,14 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         if c.gestures && l.row.is_some() && l.unseen(c.look) {
             buttons.push(button("Seen  (m)", Act::SeenLine(l.clone())));
         }
+        if c.why && l.row.is_some() {
+            let mut b = button("Why?  (w)", Act::Why(l.clone()));
+            b.hover = Some("The rule that put it here, and the facts it saw");
+            b.more = true;
+            buttons.push(b);
+        }
+        let (buttons, mut rest) = bar(buttons, |b| b.more);
         ui.horizontal_wrapped(|ui| {
-            let mut rest = buttons.split_off(buttons.len().min(PRIMARY_BUTTONS));
             for b in buttons {
                 let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
                 if let Some(h) = b.hover {
@@ -3237,18 +3381,16 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 ui.menu_button("More…", |ui| {
                     ui.set_min_width(220.0);
                     for b in rest.drain(..) {
-                        if ui.add_enabled(b.enabled, egui::Button::new(b.text)).clicked() {
+                        let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
+                        if let Some(h) = b.hover {
+                            r = r.on_hover_text(h);
+                        }
+                        if r.clicked() {
                             acts.push(b.act);
                             ui.close();
                         }
                     }
                 });
-            }
-            if c.why
-                && l.row.is_some()
-                && ui.button("Why?  (w)").on_hover_text("The rule that put it here, and the facts it saw").clicked()
-            {
-                acts.push(Act::Why(l.clone()));
             }
         });
         if let Err(why) = c.pass

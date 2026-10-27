@@ -684,6 +684,10 @@ pub struct StatusRow {
     pub delegable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passable: Option<bool>,
+    /// `status_list {fields}` only (feature `delegate_all`, I4i): the items
+    /// Delegate sends to the branch's agent, in one letter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegates: Option<Vec<String>>,
     /// `status_list {fields}` only (feature `owner_approve`, R3d): Approve
     /// (⇧A) applies, at this head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -744,7 +748,7 @@ pub struct Hold {
     pub auto: bool,
 }
 
-/// One inbox item the user handed to the branch's agent.
+/// The inbox items the user handed to the branch's agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delegation {
     pub agent: String,
@@ -763,6 +767,28 @@ pub struct Delegation {
     pub ran: bool,
     #[serde(default)]
     pub state: String,
+    /// Feature `delegate_all` (I4i): every item, in the order the agent
+    /// got them; empty from older engines (`item` alone).
+    #[serde(default)]
+    pub items: Vec<DelegatedItem>,
+    /// Why a letter waits ("waiting for a1 to be free (possibly hanged)");
+    /// empty once every letter reached the agent.
+    #[serde(default)]
+    pub held: String,
+    #[serde(default)]
+    pub held_since: Option<f64>,
+}
+
+/// One item of a [`Delegation`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DelegatedItem {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub fact: String,
+    #[serde(default)]
+    pub sent_at: Option<f64>,
 }
 
 /// A row's tracker task: read-only, the last good value when `stale`.
@@ -977,6 +1003,9 @@ pub struct TimelineEntry {
     pub text: String,
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// Said again by the same actor (feature `delegate_all`): how many times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

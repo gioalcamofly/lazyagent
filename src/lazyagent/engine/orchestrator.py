@@ -193,6 +193,8 @@ class Mailbox:
         self._engine = engine
         self._letters: list[_Letter] = []
         self._sending: set[tuple[str, str]] = set()
+        # Typed into the agent's terminal right now.
+        self._in_flight: list[_Letter] = []
 
     def post(self, slot: tuple[str, str], text: str, **kw: Any) -> None:
         self._letters.append(_Letter(slot, text, **kw))
@@ -202,6 +204,31 @@ class Mailbox:
 
     def has(self, tag: str) -> bool:
         return any(x.tag == tag for x in self._letters)
+
+    def pending(self, tag: str) -> bool:
+        """Waiting, or being typed now."""
+        return self.has(tag) or any(x.tag == tag for x in self._in_flight)
+
+    def amend(self, tag: str, text: str) -> bool:
+        """Rewrite a letter still waiting; False when none is."""
+        for letter in self._letters:
+            if letter.tag == tag:
+                letter.text = text
+                return True
+        return False
+
+    def send_now(self, slot: tuple[str, str]) -> bool:
+        """Type ``slot``'s letters now, idle or not (the user's Send
+        anyway); False when there are none, or they are being typed."""
+        letters = [x for x in self._letters if x.slot == slot]
+        if not letters or slot in self._sending:
+            return False
+        self._send(slot, letters)
+        return True
+
+    def ready(self, slot: tuple[str, str]) -> bool:
+        """``slot``'s letters go on the next flush: its agent is free."""
+        return self._idle(slot) is True
 
     def _idle(self, slot: tuple[str, str]) -> bool | None:
         """True idle, False busy, None gone."""
@@ -240,8 +267,13 @@ class Mailbox:
     def _send(self, slot: tuple[str, str], letters: list[_Letter]) -> None:
         self._letters = [x for x in self._letters if x.slot != slot]
         self._sending.add(slot)
+        self._in_flight.extend(letters)
         text = "\n".join(x.text for x in letters)
         engine = self._engine
+
+        def landed() -> None:
+            self._sending.discard(slot)
+            self._in_flight = [x for x in self._in_flight if all(x is not y for y in letters)]
 
         async def send() -> None:
             try:
@@ -254,12 +286,12 @@ class Mailbox:
                     if letter.on_sent is not None:
                         letter.on_sent()
             finally:
-                self._sending.discard(slot)
+                landed()
 
         try:
             engine._spawn(send())
         except RuntimeError:  # no loop (a sync test): on the next pass
-            self._sending.discard(slot)
+            landed()
             self._letters = letters + self._letters
 
 
@@ -464,6 +496,8 @@ class FirstResponder:
         if suggestion is not None:
             suggestion = self._choice(record, suggestion)[0]
         self._escalate(record, now, "orchestrator", note, suggestion)
+        # Escalating hands the item to the user: the orchestrator's hold ends.
+        self._engine.claims.end_hold(record["key"], f"escalated {decision_id} to you")
         self._engine.status.by(record["key"], "orchestrator")
         return dict(record)
 
@@ -588,6 +622,9 @@ class FirstResponder:
             inverse=inverse or None if by == "orchestrator" else None,
         )
         engine.status.by(key, actor)
+        # Answered: the agent has what it waited for, the hold is over.
+        engine.claims.end_hold(key, f"{'orchestrator' if by == 'orchestrator' else 'you'} "
+                                    f"answered {decision_id}")
         engine.events.emit(DECISION_ANSWERED, {"decision": dict(record)})
         engine.decisions.changed()
         self.mailbox.flush()

@@ -144,16 +144,16 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 
 | verb | state | when | key |
 |---|---|---|---|
-| **Check agent** | agent may hang | The agent's status is possibly hanged |  |
+| **Check agent** | agent may hang | The agent's status is possibly hanged and the agent's report does not say where the ball is |  |
 | **Relaunch** | agent failed | The agent's status is failed |  |
 | **Relaunch** | agent exited | (exits) |  |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work | `d` Send the item to the branch's agent |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and there are no agents at work | `d` Send the item to the branch's agent |
-| **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and there are no agents at work | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
+| **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Fix job** | job failed | (jobs) |  |
 | **Update task** | Tracker | (tracker) | `p` The tracker task |
 | **Read** | Agent reports | (report) |  |
-| **Sync** | Sync with base: ‹the first check the base has fixed› | Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and there are no agents at work | `d` Send the item to the branch's agent |
+| **Sync** | Sync with base: ‹the first check the base has fixed› | Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
 | **Confirm** | Confirm unrelated: ‹the first check whose attestation waits for your confirmation› | The failing checks whose attestation waits for your confirmation is not empty | `Enter` Expands the line |
 | **Answer** | answer: ‹the question the agent's finished turn ends with› | The agent's status is completed, waiting or interrupted and the question the agent's finished turn ends with is not empty and not the orchestrator's own place | `o` The agent's terminal |
@@ -179,14 +179,14 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | verb | state | when | key |
 |---|---|---|---|
 | orchestrator | orchestrator · looking | You passed it to the orchestrator |  |
-| orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |  |
+| orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it and not ((the agents' statuses include running or the agents' statuses include starting)) |  |
 | orchestrator | orchestrator · looking | Who holds a routed item here is orchestrator |  |
-| agent | agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |  |
+| agent | ‹why its letter waits› / agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |  |
 | ‹your label's ball› | (the state below) | Your gesture is label |  |
 | agent | fixing CI / starting / working | There are agents at work |  |
 | agent | CI running | The PR's state is open and CI on the PR is running |  |
 | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |  |
-| ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |  |
+| ‹the agent's reported ball› | agent ‹the agent that reported› · (‹what an agent holding the ball folds: conflict, CI red› · )(working / ‹the agent's report note›)( · until ‹when the reported ball lapses, HH:MM›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |  |
 | others | ‹the task's mapped state› | The task's mapped ball is others |  |
 | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |  |
 | stalled / others | review requested · set aside / ‹the PR's author›'s PR( · approved /  · changes requested) | The PR's state is open and the PR is not yours |  |
@@ -226,9 +226,9 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 5 | `park` (locked) | (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park |
 | 6 | `queue` (locked) | you | ‹the top inbox item's state› | There are open inbox items on the work item |
 | 7 | `claim` (locked) | orchestrator | orchestrator · looking | You passed it to the orchestrator |
-| 8 | `hold` (locked) | orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it |
+| 8 | `hold` (locked) | orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it and not ((the agents' statuses include running or the agents' statuses include starting)) |
 | 9 | `held` (locked) | orchestrator | orchestrator · looking | Who holds a routed item here is orchestrator |
-| 10 | `delegated` (locked) | agent | agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |
+| 10 | `delegated` (locked) | agent | ‹why its letter waits› / agent ‹the agent it was delegated to› · fixing (it / ‹what the agent is fixing›) | The delegation's phase is on it |
 | 11 | `approve` *queue off* | you | approve: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for approval |
 | 12 | `answer` *queue off* | you | answer: ‹the agent's detail› | The inbox queue is off and the agents' statuses include waiting for user |
 | 13 | `agent_failed` *queue off* | you | agent failed | The inbox queue is off and the agents' statuses include failed |
@@ -244,7 +244,7 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 23 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
 | 24 | `ci_running` | agent | CI running | The PR's state is open and CI on the PR is running |
 | 25 | `reported_others` | ‹the agent's reported ball› | reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is others |
-| 26 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (working / ‹the agent's report note›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |
+| 26 | `reported_ball` | ‹the agent's reported ball› | agent ‹the agent that reported› · (‹what an agent holding the ball folds: conflict, CI red› · )(working / ‹the agent's report note›)( · until ‹when the reported ball lapses, HH:MM›) / reported: ‹the agent's reported ball› / ‹the agent's report note› | The agent's reported ball is not empty |
 | 27 | `tracker_you` *queue off* | you | ‹the task's mapped state› | The task's mapped ball is you and the task's mapped level is known and the inbox queue is off |
 | 28 | `tracker_others` | others | ‹the task's mapped state› | The task's mapped ball is others |
 | 29 | `tracker_ball` | ‹the task's mapped ball› | ‹the task's mapped state› | The task's mapped ball is not you |
@@ -421,6 +421,7 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `agent.detail` | the agent's detail line | text | agent registry | on agent.* events | free |
 | `agent.question` | the question the agent's finished turn ends with | text | agent registry | on agent.* events | free |
 | `place.is_orchestrator` | the orchestrator's own place | bool | agent registry | static | free |
+| `place.agent_holds` | an agent there has the ball (at work, or its report holds it) | bool | overlay | per pass | free |
 | `agent.reported` | the agent's report says where the ball is (it works on) | bool | overlay | per pass | free |
 | `pr.exists` | there is a PR | bool | PR poller | ≤ 60 s | poll |
 | `pr.state` | the PR's state | enum pr_state (open, merged, closed, none) | PR poller | ≤ 60 s | poll |
@@ -487,7 +488,10 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `delegation.phase` | the delegation's phase | text | delegation | per pass | free |
 | `delegation.agent` | the agent it was delegated to | text | delegation | per pass | free |
 | `delegation.fact` | what the agent is fixing (empty: unsaid) | text | delegation | per pass | free |
+| `delegation.held` | why its letter waits (empty: sent) | text | delegation | per pass | free |
 | `report.needs_user` | the agent reported it needs you | bool | overlay | per pass | free |
 | `report.ball` | the agent's reported ball (empty: none) | text | overlay | per pass | free |
 | `report.note` | the agent's report note (empty: none) | text | overlay | per pass | free |
 | `report.agent` | the agent that reported (empty: none) | text | overlay | per pass | free |
+| `report.until` | when the reported ball lapses, HH:MM (empty: none) | text | overlay | per pass | free |
+| `held.what` | what an agent holding the ball folds: conflict, CI red (empty: nothing) | text | PR poller | ≤ 60 s | free |

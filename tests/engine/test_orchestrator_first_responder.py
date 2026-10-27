@@ -606,3 +606,62 @@ async def test_the_wake_waits_for_a_loop():
     engine.first_responder.mailbox.flush()
     assert engine.first_responder.mailbox._letters
     await asyncio.sleep(0)
+
+
+# --- I4i: a hold ends when its item goes to the user or is answered -----------
+
+
+def _hold_lines(engine):
+    return [e["text"] for e in engine.overlay.entries(KEY) if e["text"].startswith("hold ended")]
+
+
+async def test_escalating_ends_the_orchestrators_hold():
+    engine, _ = _engine()
+    _orchestrator(engine)
+    _agent(engine, FEAT, "a1", "running")
+    record = await _ask(engine, **{"class": "deep"})
+    engine.claims.hold(KEY, "checking the brief")
+    await EngineMethods(engine).decision_escalate(
+        {"id": record["id"], "note": "product call", "caller": "tok-orch"})
+    assert engine.claims.get_hold(KEY) is None
+    assert _hold_lines(engine) == [f"hold ended: escalated {record['id']} to you"]
+
+
+async def test_an_answer_ends_the_hold_and_the_working_agent_has_the_ball():
+    engine, _ = _engine()
+    _orchestrator(engine)
+    _agent(engine, FEAT, "a1", "running")
+    record = await _ask(engine, **{"class": "deep"})
+    await EngineMethods(engine).decision_escalate(
+        {"id": record["id"], "note": "product call", "caller": "tok-orch"})
+    engine.claims.hold(KEY, "waiting on the owner")
+    await EngineMethods(engine).decision_answer({"id": record["id"], "choice": "A"})
+    assert engine.claims.get_hold(KEY) is None
+    assert _hold_lines(engine)[-1] == f"hold ended: you answered {record['id']}"
+
+
+async def test_a_running_agent_has_the_ball_over_a_hold():
+    engine, _ = _engine()
+    _orchestrator(engine)
+    _agent(engine, FEAT, "a1", "waiting")
+    engine.claims.hold(KEY, "verifying tests")
+    assert _row(engine)["state"] == "orchestrator · verifying tests"
+    _agent(engine, FEAT, "a1", "running")
+    row = _row(engine)
+    assert row["state"] != "orchestrator · verifying tests"
+    assert (row["ball"], row["hold"]["note"]) == ("agent", "verifying tests")
+
+
+async def test_an_auto_hold_ends_on_an_answer_too():
+    engine, _ = _engine()
+    _orchestrator(engine)
+    engine.overlay.set_spawned(KEY, "a1", "orchestrator", NOW)
+    _agent(engine, FEAT, "a1", "completed")
+    assert _row(engine)["hold"]["auto"] is True
+    record = await _ask(engine, **{"class": "deep"})
+    if record["holder"] == "orchestrator":
+        await EngineMethods(engine).decision_escalate(
+            {"id": record["id"], "note": "yours", "caller": "tok-orch"})
+    else:
+        await EngineMethods(engine).decision_answer({"id": record["id"], "choice": "A"})
+    assert engine.claims.get_hold(KEY) is None
