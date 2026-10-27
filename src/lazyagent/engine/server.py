@@ -52,8 +52,9 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent import __version__
 from lazyagent.engine.events import EngineEvent
-from lazyagent.engine.methods import EngineMethods, check_env, classify
+from lazyagent.engine.methods import EngineMethods, check_env, classify, with_fields
 from lazyagent.engine.registry import ORCHESTRATOR_KEY
+from lazyagent.engine.status import STATUS_UPDATED
 from lazyagent.engine.runtime import (  # noqa: F401  (re-exported)
     INFO_NAME,
     SOCKET_NAME,
@@ -190,6 +191,13 @@ FEATURES: tuple[str, ...] = (
     # R3d): owner_approve, owner_approval_revoke, the row field approvable,
     # rules_explain owner_approval, the owner_approval timeline kind.
     "owner_approve",
+    # I4j: status.updated carries the opt-in fields this connection's last
+    # status_list asked for (and is sent when only they change);
+    # status_gesture {fields}; the row field review_commits.
+    "row_fields_events",
+    # I4j: status_gesture delegate to: agent with restore / spawn: the items
+    # read first, the agent started, the letter sent once it is at its prompt.
+    "delegate_start",
     # settings_get / settings_set: the desktop's Settings page ([agents]
     # permission_mode in the global config.toml or the repo's file).
     "settings",
@@ -340,6 +348,9 @@ class _Connection:
         self._unsubscribe: Callable[[], None] | None = None
         # Set while this client is a hosted UI (attach_ui).
         self.detach_ui: Callable[[], None] | None = None
+        # The opt-in row fields of this client's last status_list: its
+        # status.updated events carry them.
+        self.row_fields: tuple[str, ...] = ()
         self._tasks: set[asyncio.Task] = set()
         self._writer_task: asyncio.Task | None = None
 
@@ -464,6 +475,16 @@ class _Connection:
         self.send_message(
             Response(request_id, error=ErrorInfo(code, message, data)).to_dict()
         )
+
+    def send_engine_event(self, event: EngineEvent) -> None:
+        """A bus event; a row update with this client's opt-in fields, read
+        now (a replayed one too: the latest values)."""
+        data = event.data
+        if event.event == STATUS_UPDATED and self.row_fields and isinstance(data, dict) \
+                and isinstance(data.get("row"), dict):
+            data = {**data, "row": with_fields(self.server.engine.status, dict(data["row"]),
+                                               self.row_fields)}
+        self.send_event(event.event, data, event.seq)
 
     def send_event(self, name: str, data: Any, seq: int | None = None) -> None:
         if seq is None:
@@ -607,7 +628,7 @@ class _Connection:
 
         def deliver(event: EngineEvent) -> None:
             if names is None or event.event in names:
-                self.send_event(event.event, event.data, event.seq)
+                self.send_engine_event(event)
 
         replay: list[EngineEvent] = []
         truncated = False
@@ -663,6 +684,7 @@ class V1Server:
                 "list_worktrees": self.handle_list_worktrees,
                 "spawn_agent": self._spawn_agent(legacy["spawn_agent"]),
                 "list_agents": self._list_agents(legacy["list_agents"]),
+                "status_list": self._status_list(legacy["status_list"]),
                 "subscribe": self.handle_subscribe,
                 "unsubscribe": self.handle_unsubscribe,
                 "attach_stream": self.handle_attach_stream,
@@ -786,6 +808,8 @@ class V1Server:
     def forget(self, conn: _Connection) -> None:
         self._connections.discard(conn)
         self.engine.set_interest((), conn.interest_client)
+        if conn.row_fields:
+            self.engine.status.watch_fields(conn.interest_client, False)
         if conn.detach_ui is not None:
             conn.detach_ui()
             conn.detach_ui = None
@@ -841,6 +865,16 @@ class V1Server:
 
         return call
 
+    def _status_list(self, handler: Callable[[dict], Awaitable[Any]]) -> Handler:
+        async def call(conn: _Connection, params: dict) -> Any:
+            result = await handler(params)
+            # Its row updates from now on carry the same fields (I4j).
+            conn.row_fields = tuple(params.get("fields") or ())
+            self.engine.status.watch_fields(conn.interest_client, bool(conn.row_fields))
+            return result
+
+        return call
+
     def _list_agents(self, handler: Callable[[dict], Awaitable[Any]]) -> Handler:
         async def call(conn: _Connection, params: dict) -> Any:
             result = await handler(params)
@@ -882,7 +916,7 @@ class V1Server:
 
         def send_replay() -> None:
             for event in replay:
-                conn.send_event(event.event, event.data, event.seq)
+                conn.send_engine_event(event)
 
         return _Reply(
             {"cursor": cursor, "replayed": len(replay), "truncated": truncated},

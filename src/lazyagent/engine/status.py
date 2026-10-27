@@ -680,6 +680,10 @@ class StatusProjection:
         self._started = False
         # key → the last pass's Derived (status_list {fields}).
         self._derived: dict[str, Derived] = {}
+        # The clients that read the opt-in fields, and each row's fields at
+        # the last pass while there is one (watch_fields).
+        self._field_watchers: set[str] = set()
+        self._fields: dict[str, dict[str, Any]] = {}
 
     @property
     def catalog(self) -> Any:
@@ -791,7 +795,10 @@ class StatusProjection:
         explained (R4, Q-R23); delegable (its top item can go to the branch's
         agent), delegates (the items Delegate sends, I4i) and passable (the
         orchestrator can act on something there: one of its items, else its
-        rule), the catalog's (I4h); approvable (R3d): see :meth:`approvable`."""
+        rule), the catalog's (I4h); approvable (R3d): see :meth:`approvable`;
+        review_commits (I4j), on an approvable line whose rule reads the
+        commits after ready or after the approval: what to review
+        (engine/review_commits.py)."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
         rule = catalog.by_id.get(derived.rule_id) if derived is not None else None
@@ -806,6 +813,10 @@ class StatusProjection:
                                "passable": any(i.get("passable", True) for i in items)
                                if items else rule is None or rule.can_pass}
         out["approvable"] = self.approvable(facts, rule, catalog) if facts is not None else None
+        out["review_commits"] = (
+            self._engine.review_commits.of(facts.pr, facts.owner_approval)
+            if out["approvable"] is not None and self._reads(facts, rule, catalog) & APPROVAL_FACTS
+            else None)
         if rule is None:
             return out
         out["verb"], out["action"] = rule.verb, rule.action
@@ -832,15 +843,30 @@ class StatusProjection:
         if pr is None or pr.state != "OPEN" or not pr.head_sha or facts.worktree_path is None \
                 or _mine(pr, facts.me) is not True:
             return None
-        if rule is not None and rule.id == "queue" and facts.actionables:
-            top_rule = facts.actionables[0].get("rule_id")
-            rule = catalog.by_id.get(top_rule) if top_rule else None
-        reads = rule.facts if rule is not None else frozenset()
-        if not pr.is_draft and not reads & APPROVAL_FACTS:
+        if not pr.is_draft and not self._reads(facts, rule, catalog) & APPROVAL_FACTS:
             return None
         approval = facts.owner_approval
         return {"sha": pr.head_sha, "pr": pr.number,
                 "approved": approval is not None and approval.state == "head"}
+
+    @staticmethod
+    def _reads(facts: Facts, rule: Any, catalog: Any) -> frozenset[str]:
+        """The facts the line's rule reads (the top item's, under the queue)."""
+        if rule is not None and rule.id == "queue" and facts.actionables:
+            top_rule = facts.actionables[0].get("rule_id")
+            rule = catalog.by_id.get(top_rule) if top_rule else None
+        return rule.facts if rule is not None else frozenset()
+
+    def watch_fields(self, client: str, on: bool) -> None:
+        """``client`` reads the opt-in fields (a v1 connection that asked
+        status_list for them): a pass also emits ``status.updated`` for a
+        row whose fields alone changed, and the connection adds them."""
+        if on:
+            self._field_watchers.add(client)
+        else:
+            self._field_watchers.discard(client)
+            if not self._field_watchers:
+                self._fields.clear()
 
     # --- Lifecycle ---
 
@@ -1117,12 +1143,20 @@ class StatusProjection:
         self._passed_at = self.clock()
         self._passed_versions = self._versions()
         events = self._engine.events
+        watched = bool(self._field_watchers)
+        catalog = self.catalog if watched else None
         for key, row in rows.items():
-            if self._rows.get(key) != row:
+            changed = self._rows.get(key) != row
+            if watched:
+                extra = self.fields_of(key, catalog)
+                changed |= self._fields.get(key) != extra
+                self._fields[key] = extra
+            if changed:
                 events.emit(STATUS_UPDATED, {"row": row})
         for key in self._rows:
             if key not in rows:
                 events.emit(STATUS_REMOVED, {"key": key})
+                self._fields.pop(key, None)
         self._rows = rows
         return rows
 

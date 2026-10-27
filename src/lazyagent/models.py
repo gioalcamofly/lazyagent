@@ -199,6 +199,9 @@ class PrInfo:
     # that is unknown).
     after_ready_merges: tuple[str, ...] = ()
     after_ready_pushes: tuple[tuple[str, str], ...] = ()
+    # The head at the last ready event ("" without one: opened ready, or
+    # no commit before it in the window): where the review starts.
+    ready_sha: str = ""
     base_merges_after_ready: int | None = None
     # Of those, the ones whose tree differs from the automatic merge only in
     # [review] generated_paths.

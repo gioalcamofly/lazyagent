@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use lazyagent_proto::types::{
-    Actionable, Approvable, Attestation, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow,
+    Actionable, Approvable, Attestation, CiRun, Claim, Decision, NeedsYouItem, PrInfo, ReviewCommits, StatusRow,
 };
 
 use crate::attention::{self, Kind};
@@ -269,6 +269,12 @@ impl Line {
     /// field `approvable`, R3d).
     pub fn approvable(&self) -> Option<&Approvable> {
         self.row.as_ref().and_then(|r| r.approvable.as_ref()).filter(|_| !self.done() && self.ghost.is_none())
+    }
+
+    /// What to review on the line (status_list field `review_commits`,
+    /// I4j): only where Approve applies.
+    pub fn review_commits(&self) -> Option<&ReviewCommits> {
+        self.approvable().and(self.row.as_ref().and_then(|r| r.review_commits.as_ref()))
     }
 
     pub fn passable(&self) -> bool {

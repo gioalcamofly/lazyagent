@@ -29,8 +29,8 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, InboxConfig, Presence, RulesProblem,
-    StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
+    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, InboxConfig, Presence, ReviewCommit,
+    ReviewCommits, RulesProblem, StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -204,6 +204,10 @@ pub const F_QUESTION: &str = "question_answer";
 pub const F_UNDO: &str = "undo";
 pub const F_ORCHESTRATOR: &str = "orchestrator_activity";
 pub const F_CLOSE_STOP: &str = "close_stop";
+/// I4j: row updates carry the opt-in fields; Delegate restores or spawns
+/// the agent in the engine's one step.
+pub const F_ROW_FIELDS: &str = "row_fields_events";
+pub const F_DELEGATE_START: &str = "delegate_start";
 
 fn zone_name(zone: Zone) -> &'static str {
     match zone {
@@ -897,8 +901,12 @@ impl State {
 
     /// A gesture, and once the engine took it, an Undo for it (feature
     /// `undo`); the line `sel` stays expanded.
-    fn gesture_undo(&mut self, sel: &str, params: Value, what: &'static str, undo: Option<(String, UndoAct)>) {
+    fn gesture_undo(&mut self, sel: &str, mut params: Value, what: &'static str, undo: Option<(String, UndoAct)>) {
         let undo = undo.filter(|_| self.has(F_UNDO));
+        if let Some(fields) = self.gesture_fields() {
+            // Its row with the opt-in fields, as status_list's (I4j).
+            params["fields"] = fields;
+        }
         self.conn.request("status_gesture", params, move |s, reply| {
             match reply.and_then(|v| {
                 serde_json::from_value::<StatusGestureResult>(v)
@@ -906,8 +914,7 @@ impl State {
             }) {
                 Ok(r) => {
                     if let Some(row) = r.row {
-                        s.status_rows.insert(row.key.clone(), row);
-                        s.inbox_gen += 1;
+                        s.put_row(row);
                         s.refresh_home(true);
                     }
                     s.home.cut(unix_now());
@@ -986,6 +993,29 @@ impl State {
             self.toast(Severity::Info, "Nothing to delegate to: this item has no worktree.");
             return;
         };
+        if self.has(F_DELEGATE_START) && self.has("delegation") {
+            // One step in the engine: the items read before the agent runs
+            // (a running agent takes the row out of the inbox), the letter
+            // sent once it is at its prompt (I4j).
+            let mut params = json!({"key": line.key, "kind": "delegate", "to": "agent", "env": self.env_json()});
+            match self.delegate_target(line) {
+                DelegateTo::Agent => return self.delegate_line(line),
+                DelegateTo::Restore(id) => params["restore"] = json!(id),
+                // No mode: the configured one, else the CLI's own default.
+                DelegateTo::Spawn => {
+                    params["spawn"] = json!({"default_permission_mode": "cli", "env": self.env_json()})
+                }
+            }
+            if line.delegates().is_none_or(|d| d.is_empty())
+                && let Some(top) = &line.top
+            {
+                params["item"] = json!(top.id);
+            }
+            let undo =
+                (format!("Delegated {} to its agent", line.name), UndoAct::Gesture(line.key.clone(), "delegate"));
+            self.gesture_undo(&line.sel(), params, "Not delegated", Some(undo));
+            return;
+        }
         let key = line.key.clone();
         let then = move |s: &mut State, what: &str, reply: Result<Value, lazyagent_proto::ClientError>| match reply {
             Ok(_) => match s.home.lines.get(&key).cloned() {
@@ -1151,7 +1181,11 @@ impl State {
                     s.toast(Severity::Info, text);
                 }
             }
-            Err(e) => s.toast(Severity::Error, format!("Not approved: {e}")),
+            Err(e) => {
+                // The head moved (or the line changed): show the new one.
+                s.fetch_inbox();
+                s.toast(Severity::Error, format!("Not approved: {e}"));
+            }
         });
         self.home.expanded = Some(sel);
     }
@@ -2907,6 +2941,54 @@ pub fn revert_text(d: &Decision) -> String {
 
 /// The expanded line: the ask in full, who is on it, the agent's note, and
 /// the actions.
+/// The heading of what to review (I4j): "3 commits since your approval
+/// (1a2b3c4)", "since the PR was opened: 3 commits".
+pub fn review_heading(rc: &ReviewCommits) -> String {
+    let n = format!("{} commit{}", rc.count, if rc.count == 1 { "" } else { "s" });
+    let from = &rc.from[..rc.from.len().min(7)];
+    let merges = match rc.base_merges {
+        0 => String::new(),
+        1 => " · 1 base merge not counted".into(),
+        m => format!(" · {m} base merges not counted"),
+    };
+    match rc.since.as_str() {
+        "approval" => format!("To review: {n} since your approval ({from}){merges}"),
+        "ready" => format!("To review: {n} since it was marked ready ({from}){merges}"),
+        _ => format!("To review: since the PR was opened: {n}{merges}"),
+    }
+}
+
+/// One commit of the list: `1a2b3c4  subject · author · 2026-10-27`; a
+/// merge of the base reads "base merge, not counted".
+pub fn review_commit_text(c: &ReviewCommit) -> String {
+    let sha = &c.sha[..c.sha.len().min(7)];
+    let date = c.date.get(..10).unwrap_or(&c.date);
+    match &c.base_merge {
+        Some(_) => format!("{sha}  {} · base merge, not counted", c.subject),
+        None => format!("{sha}  {} · {} · {date}", c.subject, c.author),
+    }
+}
+
+fn review_commits_ui(ui: &mut Ui, t: &Theme, rc: &ReviewCommits, acts: &mut Vec<Act>) {
+    ui.label(RichText::new(review_heading(rc)).small().strong().color(t.muted));
+    for c in &rc.commits {
+        let color = if c.base_merge.is_some() { t.muted } else { t.text };
+        let r =
+            ui.add(egui::Label::new(RichText::new(review_commit_text(c)).small().monospace().color(color)).truncate());
+        if let Some(why) = &c.base_merge {
+            r.on_hover_text(why);
+        }
+    }
+    if rc.more > 0 {
+        ui.label(RichText::new(format!("and {} more", rc.more)).small().color(t.muted));
+    }
+    if let Some(url) = &rc.compare_url
+        && ui.link(RichText::new("Compare on GitHub").small()).on_hover_text(url).clicked()
+    {
+        acts.push(Act::Pr(url.clone()));
+    }
+}
+
 fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
     let focus = std::mem::take(&mut forms.focus);
@@ -2995,6 +3077,9 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                     });
                 }
             }
+        }
+        if let Some(rc) = l.review_commits() {
+            review_commits_ui(ui, t, rc, acts);
         }
         if kind == "approval" && c.approvals {
             ui.horizontal(|ui| {

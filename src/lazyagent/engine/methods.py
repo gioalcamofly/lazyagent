@@ -169,7 +169,24 @@ class SpawnCaps:
 
 # status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
 ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable",
-              "approvable")
+              "approvable", "review_commits")
+
+
+def row_fields(params: dict) -> list[str] | None:
+    """A request's ``fields`` (status_list, status_gesture), checked."""
+    fields = params.get("fields")
+    if fields is not None and (not isinstance(fields, list)
+                               or any(f not in ROW_FIELDS for f in fields)):
+        raise ValueError(f"fields must be a list of {', '.join(ROW_FIELDS)}")
+    return fields or None
+
+
+def with_fields(status: Any, row: dict[str, Any], fields: Any,
+                catalog: Any = None) -> dict[str, Any]:
+    """``row`` plus the opt-in ``fields`` (Q-R20), in place."""
+    extra = status.fields_of(row["key"], catalog)
+    row.update({f: extra[f] for f in fields})
+    return row
 
 
 class EngineMethods:
@@ -1001,18 +1018,14 @@ class EngineMethods:
             role = "unknown"
         # The 0013 gate's metric: how often the table is asked for, by whom.
         diag.event(log, "status.list", by=role)
-        fields = params.get("fields")
-        if fields is not None and (not isinstance(fields, list)
-                                   or any(f not in ROW_FIELDS for f in fields)):
-            raise ValueError(f"fields must be a list of {', '.join(ROW_FIELDS)}")
+        fields = row_fields(params)
         status = self._engine.status
         result = status.list(repo=repo or None, include_done=include_done)
         if fields:
             # Opt-in (Q-R20): the rows without fields stay as they were.
             catalog = status.catalog
             for row in result["rows"]:
-                extra = status.fields_of(row["key"], catalog)
-                row.update({f: extra[f] for f in fields})
+                with_fields(status, row, fields, catalog)
         return result
 
     # --- Rules (proposal 0014 R2) ---
@@ -1205,12 +1218,16 @@ class EngineMethods:
 
         ``close`` with ``stop_agents: true`` also stops every agent of the
         item's worktree (their notes kept); the worktree, the branch and
-        the PR are left alone. The user's only (no token)."""
+        the PR are left alone. ``fields``, as for status_list: the reply's
+        row carries them. ``delegate to: agent`` with ``restore`` (an id)
+        or ``spawn`` (spawn_agent's params) starts the agent first (see
+        :meth:`_delegate_starting`). The user's only (no token)."""
         role, _ = self._caller(params)
         if role != USER_BY:
             raise ValueError("Only the user makes gestures on work items")
         key = self._key(params)
         kind = params.get("kind")
+        fields = row_fields(params)
         engine = self._engine
         claims = engine.claims
         status = engine.status
@@ -1225,6 +1242,9 @@ class EngineMethods:
             undo = self._undo_gesture(key, params.get("what"))
         elif kind == "delegate" and params.get("to") == "agent" and params.get("send_now"):
             delegation = engine.delegations.send_now(key, by=role)
+        elif kind == "delegate" and params.get("to") == "agent" and (
+                params.get("restore") is not None or params.get("spawn") is not None):
+            delegation = await self._delegate_starting(key, params, role)
         elif kind == "delegate" and params.get("to") == "agent":
             delegation = engine.delegations.delegate(
                 key, item_id=params.get("item"), agent_id=params.get("agent_id"),
@@ -1293,6 +1313,8 @@ class EngineMethods:
             )
         status.flush()
         row = status.row(key)
+        if row is not None and fields:
+            row = with_fields(status, dict(row), fields)
         result = {
             "key": key,
             "claim": claim.to_dict() if claim is not None else claims.get(key),
@@ -1307,6 +1329,37 @@ class EngineMethods:
         if undo is not None:
             result.update(undo)
         return result
+
+    async def _delegate_starting(self, key: str, params: dict, role: str) -> dict[str, Any]:
+        """``delegate to: agent`` with ``restore`` (a restorable entry's id)
+        or ``spawn`` (spawn_agent's params, in the row's worktree): the
+        items are read first, since a running agent takes the row out of
+        the inbox; the agent starts; the letter waits in the mailbox until
+        it is at its prompt."""
+        engine = self._engine
+        delegations = engine.delegations
+        restore, spawn = params.get("restore"), params.get("spawn")
+        if restore is not None and spawn is not None:
+            raise ValueError("restore or spawn, not both")
+        if restore is not None and (not isinstance(restore, str) or not restore):
+            raise ValueError("restore must be a restorable agent's id")
+        if spawn is not None and not isinstance(spawn, dict):
+            raise ValueError("spawn must be an object of spawn_agent params")
+        found = delegations.pick(key, params.get("item"))
+        path = engine.status.path_of(key)
+        if restore is not None:
+            result = await engine.restore_agents([restore], env=check_env(params.get("env")))
+            started = [r for r in result["restored"] if r.get("worktree_path") == path]
+            if not started:
+                why = "; ".join(f["reason"] for f in result["failed"]) or "not restored"
+                raise ValueError(f"Could not restore the agent: {why}")
+            agent_id = started[0]["agent_id"]
+        else:
+            # An agent of the row's worktree, as the user's own spawn.
+            spawn = {k: v for k, v in spawn.items() if k not in ("caller", "kind")}
+            agent_id = (await self.spawn_agent({**spawn, "worktree_path": path}))["agent_id"]
+        return delegations.delegate(key, agent_id=agent_id, text=params.get("text"), by=role,
+                                    found=found)
 
     def _undo_gesture(self, key: str, what: Any) -> dict[str, Any]:
         """``status_gesture undo``: reverse only ``what`` on ``key``."""
