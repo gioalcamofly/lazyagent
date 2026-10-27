@@ -37,6 +37,7 @@
         "detail": {"type": "string"},
         "session_id": {"type": "string", "description": "v1"},
         "kind": {"enum": ["agent", "orchestrator"], "description": "v1"},
+        "permission_mode": {"$ref": "#/$defs/permission_mode", "description": "The mode it was spawned in."},
         "size": {
           "type": "object",
           "description": "v1: current PTY size",
@@ -116,7 +117,9 @@
         "worktree_path": {"type": "string"},
         "instruction": {"type": ["string", "null"]},
         "initial_prompt": {"type": ["string", "null"], "description": "Deprecated alias of instruction."},
-        "skip_permissions": {"type": "boolean", "default": true},
+        "skip_permissions": {"type": "boolean", "description": "true: bypass; false: [agents] permission_mode unless that is bypass, else cli. Under permission_mode."},
+        "permission_mode": {"$ref": "#/$defs/permission_mode", "description": "The mode to spawn in; wins over skip_permissions."},
+        "default_permission_mode": {"$ref": "#/$defs/permission_mode", "default": "bypass", "description": "The mode when neither permission_mode nor skip_permissions is given and [agents] permission_mode is not set."},
         "label": {"type": ["string", "null"]},
         "resume_mode": {"enum": ["new", "pick", "last"], "default": "new"},
         "kind": {"enum": ["agent", "orchestrator"], "default": "agent", "description": "v1"},
@@ -461,7 +464,8 @@
         "agent_provider": {"type": "string"},
         "default_branch": {"type": "string"},
         "has_custom_create": {"type": "boolean"},
-        "has_custom_remove": {"type": "boolean"}
+        "has_custom_remove": {"type": "boolean"},
+        "permission_mode": {"$ref": "#/$defs/permission_mode", "description": "[agents] permission_mode; cli when not set."}
       }
     },
 
@@ -559,6 +563,7 @@
         "label": {"type": "string"},
         "session_name": {"type": "string"},
         "skip_permissions": {"type": "boolean"},
+        "permission_mode": {"$ref": "#/$defs/permission_mode", "description": "The mode a restore brings it back in: the one it ran in; for an older engine's entry, bypass or the configured mode."},
         "conversation_id": {"type": ["string", "null"], "description": "The provider's conversation id when it reported one; a restore resumes exactly it, else the provider's last conversation."},
         "instruction": {"type": ["string", "null"], "description": "The last instruction sent to it, when known (first 4,096 characters)."},
         "started_at": {"type": "number"},
@@ -578,7 +583,8 @@
       "type": "object",
       "properties": {
         "ids": {"$ref": "#/$defs/restore_ids"},
-        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "The environment the agents start from (the calling client's, D5); default: the engine's."}
+        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "The environment the agents start from (the calling client's, D5); default: the engine's."},
+        "permission_mode": {"$ref": "#/$defs/permission_mode", "description": "Restore every one in this mode; default: the mode each ran in."}
       }
     },
     "restore_agents.result": {"$ref": "events.json#/$defs/engine.restored"},
@@ -588,6 +594,7 @@
       "required": ["dismissed"],
       "properties": {"dismissed": {"type": "array", "items": {"type": "string"}}}
     },
+    "permission_mode": {"enum": ["cli", "bypass", "acceptEdits", "plan", "dontAsk", "auto", "default"], "description": "cli: the agent CLI's own default (no flag); bypass: its dangerous flag; the rest are Claude's --permission-mode values (Codex and Gemini start in their default)."},
     "notes_mode": {"type": "string", "x-known-values": ["manual", "propose", "free"], "description": "manual: the agent writes only when the user asks (advisory); propose: its writes are proposals (behaves as manual until propose lands); free: it writes directly."},
     "notes_by": {"type": ["string", "null"], "x-known-values": ["user", "agent", "orchestrator", null], "description": "Who wrote last; null for the untouched template."},
     "notes_caller": {"type": ["string", "null"], "description": "The calling agent's token (LAZYAGENT_AGENT_TOKEN in its MCP server's env). Without worktree_path the target is the caller's own notes. Another agent's token may read but not write; the orchestrator's token writes as the orchestrator, no token as the user."},

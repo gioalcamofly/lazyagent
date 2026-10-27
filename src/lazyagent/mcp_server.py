@@ -187,7 +187,8 @@ async def list_worktrees() -> list[dict]:
     """List all git worktrees with their agent status and git status.
 
     Returns a list of worktree objects with fields: path, branch, head,
-    is_main, is_bare, agent_status, and optionally git_status.
+    is_main, is_bare, agent_status, agents (each with its permission_mode),
+    and optionally git_status.
     """
     return await _get_client().call("list_worktrees")
 
@@ -263,10 +264,11 @@ async def remove_worktree(worktree_path: str, force: bool = False) -> dict:
 async def spawn_agent(
     worktree_path: str,
     instruction: str | None = None,
-    skip_permissions: bool = True,
+    skip_permissions: bool | None = None,
     resume_mode: str = "new",
     label: str | None = None,
     notes_mode: str | None = None,
+    permission_mode: str | None = None,
 ) -> dict:
     """Spawn a NEW coding agent in a worktree.
 
@@ -278,9 +280,10 @@ async def spawn_agent(
     Args:
         worktree_path: Absolute path of the worktree.
         instruction: Optional initial instruction passed to the agent CLI.
-        skip_permissions: If True (default), the agent runs in "dangerous" mode
-            with permission prompts bypassed. Set to False for normal mode where
-            the agent asks before sensitive actions.
+        skip_permissions: True: the agent runs in "dangerous" mode with
+            permission prompts bypassed. False: not bypassed (the repo's
+            ``[agents] permission_mode`` unless that is "bypass", else the
+            CLI's own default). Omitted: the configured mode, else bypass.
         resume_mode: Session mode — "new" (default) starts a fresh session,
             "last" resumes the most recent session for this worktree. Interactive
             "pick from list" mode is not supported over MCP. **Combining
@@ -293,6 +296,10 @@ async def spawn_agent(
             (only when the user asks), "propose" or "free" (directly).
             Default: the repo's ``[notes] mode``. Spawn workers you
             orchestrate with "free", so their notes tell you where they are.
+        permission_mode: Over skip_permissions: "cli" (pass nothing: the
+            CLI's own default), "bypass", or Claude's ``--permission-mode``
+            values "acceptEdits", "plan", "dontAsk", "auto", "default"
+            (Codex and Gemini: anything but "bypass" is their default).
 
     The engine caps the spawns an agent (you included) asks for: at most
     ``max_concurrent_agents`` running and ``max_spawns_per_day`` in 24 h
@@ -306,9 +313,12 @@ async def spawn_agent(
     """
     params: dict[str, Any] = {
         "worktree_path": worktree_path,
-        "skip_permissions": skip_permissions,
         "resume_mode": resume_mode,
     }
+    if skip_permissions is not None:
+        params["skip_permissions"] = skip_permissions
+    if permission_mode is not None:
+        params["permission_mode"] = permission_mode
     if instruction is not None:
         params["instruction"] = instruction
     if label is not None:
@@ -575,7 +585,8 @@ async def list_agents(worktree_path: str) -> dict:
 
     Returns:
         Object with worktree_path and an ``agents`` list; each entry has
-        agent_id, label, status, confidence, and detail.
+        agent_id, label, status, confidence, detail, and permission_mode
+        (the mode it was spawned in).
     """
     return await _get_client().call(
         "list_agents",
@@ -762,7 +773,8 @@ async def list_restorable() -> dict:
     Returns:
         Object with ``agents``: each has ``id`` (what restore_agents takes),
         worktree_path, agent_id, kind ("agent" or "orchestrator"), provider,
-        label, session_name, skip_permissions, conversation_id (null when the
+        label, session_name, permission_mode (the mode it comes back in),
+        skip_permissions, conversation_id (null when the
         provider never reported one: the restore then resumes the provider's
         last conversation in that worktree), instruction (the last one sent
         to it, when known), started_at and ended_at.
@@ -771,14 +783,18 @@ async def list_restorable() -> dict:
 
 
 @mcp.tool()
-async def restore_agents(ids: list[str] | None = None) -> dict:
+async def restore_agents(
+    ids: list[str] | None = None, permission_mode: str | None = None
+) -> dict:
     """Bring back agents from list_restorable (all of them when ``ids`` is
     omitted). Each is spawned again in its worktree with its provider, label
-    and permissions, the same agent id when it is free, and resumes its
+    and permission mode, the same agent id when it is free, and resumes its
     conversation.
 
     Args:
         ids: The ``id`` values from list_restorable to restore. Omit for all.
+        permission_mode: Restore every one in this mode instead (see
+            spawn_agent); omit for the mode each ran in.
 
     Returns:
         Object with ``restored`` (id, worktree_path, agent_id, session_id,
@@ -791,6 +807,8 @@ async def restore_agents(ids: list[str] | None = None) -> dict:
     params: dict[str, Any] = {}
     if ids is not None:
         params["ids"] = ids
+    if permission_mode is not None:
+        params["permission_mode"] = permission_mode
     return await _get_client().call("restore_agents", params)
 
 

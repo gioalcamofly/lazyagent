@@ -100,7 +100,8 @@
         "session_id": {"type": "string"},
         "label": {"type": "string"},
         "session_name": {"type": "string"},
-        "kind": {"enum": ["agent", "orchestrator", "shell"]}
+        "kind": {"enum": ["agent", "orchestrator", "shell"]},
+        "permission_mode": {"$ref": "methods.json#/$defs/permission_mode"}
       }
     },
     "agent.exited": {
@@ -234,6 +235,7 @@
               "label": {"type": "string"},
               "session_name": {"type": "string"},
               "kind": {"type": "string", "x-known-values": ["agent", "orchestrator"]},
+              "permission_mode": {"$ref": "methods.json#/$defs/permission_mode"},
               "resumed": {"type": "string", "x-known-values": ["conversation", "last"], "description": "conversation: the exact one its provider reported; last: the provider's last conversation in that directory."}
             }
           }

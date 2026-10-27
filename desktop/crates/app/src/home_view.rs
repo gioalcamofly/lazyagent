@@ -989,7 +989,8 @@ impl State {
                 self.conn.request("restore_agents", params, move |s, reply| then(s, "Agent restored", reply));
             }
             DelegateTo::Spawn => {
-                let params = json!({"worktree_path": place, "skip_permissions": false, "env": self.env_json()});
+                // No mode: the configured one, else the CLI's own default.
+                let params = json!({"worktree_path": place, "default_permission_mode": "cli", "env": self.env_json()});
                 self.conn.request("spawn_agent", params, move |s, reply| {
                     if let Ok(v) = &reply {
                         s.spawned(&place, v);

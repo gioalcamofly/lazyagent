@@ -488,7 +488,7 @@ fn the_spawn_dialog_passes_instruction_and_permissions() {
     h.run_steps(2);
     h.event(egui::Event::Text("write the tests".into()));
     h.run_steps(2);
-    h.get_by_label("Skip permissions (d)").click();
+    h.state_mut().state.dialog.as_mut().unwrap().mode = "bypass".into();
     h.run_steps(3);
     h.get_by_label("Spawn").click();
     step_until(&mut h, "an agent", |a| a.state.store.agent_count() == 1);
@@ -5585,6 +5585,9 @@ fn a_rule_item_shows_its_rules_verb() {
 
 // "How lazyagent works", the Why? view and their screenshots (R6).
 mod how;
+
+// The permission mode agents are spawned in (A1).
+mod a1;
 
 // Home fixes from the second UX review (I4f).
 mod i4f;
