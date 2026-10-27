@@ -560,7 +560,10 @@ and_when = 'item.branch != "release" and tracker.linked'
 and open PRs as you, GitHub never shows your own approval: the PR stays a
 draft while you review (looping with the agent), and the agent marks it
 ready for review when you approve. A peer then reviews (looping too), QA
-tests it if needed, and you merge. `pr.review == "approved"` is not enough
+tests it if needed, and you merge. lazyagent keeps your approval itself
+(never on GitHub): when you tell the agent you approve, it calls
+`owner_approve`; in Home, ⇧A approves the line's PR at the head shown; from
+a terminal, `lazyagent pr approve <branch|#n>`. `pr.review == "approved"` is not enough
 for the peer step, since an app can approve; the recipe reads these facts:
 
 | Fact | What it is |
@@ -569,6 +572,8 @@ for the peer step, since an app can approve; the recipe reads these facts:
 | `pr.draft` | the PR is a draft |
 | `pr.human_approvals` | reviewers whose latest review (comments aside) approves: a later "changes requested" or a dismissal cancels it; apps (`Bot` accounts, `…[bot]`), the PR's author and the logins in `[review] not_human` do not count |
 | `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening. Clean merges of the base branch are left out (see below) |
+| `pr.commits_after_owner_approval` | the same count from the newer of the ready event and your approval of a head: approving a PR that is already ready (after a CI fix, say) brings it to 0 without a round trip through draft, and a PR opened ready stops counting from its opening. If the commit you approved is gone (a force push), it counts from the ready event again; while the engine has not counted yet, unknown |
+| `pr.owner_approved`, `pr.owner_approved_sha` | you approved a commit still in the PR's history; the commit you approved (empty: none) |
 | `pr.base_merges_after_ready` | the clean merges of the base branch since then, which `pr.commits_after_ready` left out: for a state text such as `state_expr = 'pr.base_merges_after_ready > 0 ? "base merged since, not counted" : "waiting for peer review"'` |
 | `pr.labels` | the label names, lower case: `"qa:skip" in pr.labels` |
 
@@ -583,7 +588,7 @@ not_human = ["my-review-app"]      # accounts that review but are not people
 id = "merge"
 says = "Merge when a person approved what you approved, CI is fine and QA is done."
 when = '''
-pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready == 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_owner_approval == 0
 and pr.human_approvals >= 1 and (ci.state in ["green", "none"] or ci.unrelated)
 and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
 '''
@@ -608,7 +613,7 @@ state = "draft · your review"
 id = "owner_review_again"
 after = "owner_review"
 when = '''
-pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready > 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_owner_approval > 0
 and agents.running == 0
 '''
 [rule.then]
@@ -633,7 +638,7 @@ id = "waiting_for_qa"
 after = "waiting_for_peer"
 when = '''
 pr.state == "open" and pr.mine and not pr.draft and pr.human_approvals >= 1
-and pr.commits_after_ready == 0 and tracker.qa == "pending" and agents.running == 0
+and pr.commits_after_owner_approval == 0 and tracker.qa == "pending" and agents.running == 0
 '''
 [rule.then]
 ball = "others"
@@ -658,9 +663,20 @@ orders commits by their date, so a commit made before the PR was marked
 ready and pushed after it is caught only while the engine is running (it
 notices the head move). These facts are unknown when the PR could not be
 read: none of these rules matches then, and the built-ins below decide.
-`pr.labels`, `pr.human_approvals` and `pr.commits_after_ready` cost one
-more GitHub query per PR poll (1 point of the rate limit for up to 25
+`pr.labels`, `pr.human_approvals`, `pr.commits_after_ready` and
+`pr.commits_after_owner_approval` cost one more GitHub query per PR poll (1 point of the rate limit for up to 25
 branches), made only while one of your rules reads them.
+
+**Recording your approval.** Say "approved" to the agent (its prompt
+asks it to call `owner_approve` then), press ⇧A on the line in Home (on
+your own open PR, a draft or a line one of these rules decides; refused
+when the head moved since the line was drawn; Ctrl+Z undoes it), or run
+`lazyagent pr approve feat-x` (`--revoke` takes it back). It is the PR's
+head at that moment; the orchestrator cannot record one. The line's
+timeline says "you approved <sha>", and Why? (`w`, `lazyagent status --why`)
+shows the approval, what the count starts from, and Revoke. A later real
+commit brings "new commits since your approval" back; a clean merge of the
+base does not.
 
 Every rule asks `pr.mine`: checking out a teammate's branch (to try it,
 or for your review) must not read "waiting for peer review" when you are
