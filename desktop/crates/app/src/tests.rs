@@ -1826,6 +1826,18 @@ fn notes_edited_in_the_panel_reach_the_file_and_the_agents_next_turn() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(on_disk(), draft, "the engine wrote the panel's text");
+    // The engine writes the meta after the text, and the hook reads its rev.
+    let meta_rev = || {
+        std::fs::read_to_string(path.with_extension("json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|m| m["rev"].as_i64())
+            .unwrap_or(0)
+    };
+    while meta_rev() < 1 && Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(meta_rev() >= 1, "the engine wrote the notes' meta");
     // The agent's next turn: N3's hook (as Claude runs it) prints the notice.
     let hook = lazyagent_testkit::source_root().join("src/lazyagent/notes_hook.py");
     let mut child = std::process::Command::new(&world.python)
