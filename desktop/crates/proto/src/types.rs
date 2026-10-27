@@ -67,6 +67,10 @@ pub struct Agent {
     pub size: Option<Size>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached_clients: Option<u32>,
+    /// The mode it was spawned in ("cli", "bypass", Claude's modes); absent
+    /// from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +242,10 @@ pub struct ConfigView {
     pub default_branch: String,
     pub has_custom_create: bool,
     pub has_custom_remove: bool,
+    /// `[agents] permission_mode` ("cli" when not set); absent from older
+    /// engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +297,9 @@ pub struct RestorableAgent {
     pub label: String,
     pub session_name: String,
     pub skip_permissions: bool,
+    /// The mode a restore brings it back in; absent from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     pub conversation_id: Option<String>,
     pub instruction: Option<String>,
     pub started_at: f64,
@@ -314,6 +325,8 @@ pub struct RestoredAgent {
     pub session_name: String,
     pub kind: String,
     pub resumed: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -460,6 +473,8 @@ pub struct AgentSpawned {
     pub label: String,
     pub session_name: String,
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

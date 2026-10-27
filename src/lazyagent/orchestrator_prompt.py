@@ -131,7 +131,8 @@ fail if an agent is running — stop it first.
 - **`spawn_agent(worktree_path, instruction?, skip_permissions=true, resume_mode="new")`** \
 — Starts a coding agent in the given worktree. The `instruction` is the task prompt \
 the agent will execute. Make it specific and self-contained — the agent has no context \
-beyond what you write here. Set `skip_permissions=false` for normal permission mode. \
+beyond what you write here. Set `skip_permissions=false` for normal permission mode, \
+or `permission_mode` for another (`"cli"`, `"bypass"`, Claude's `"acceptEdits"`, `"plan"`, ...). \
 Use `resume_mode="last"` to resume the most recent session. **Note:** combining \
 `resume_mode="last"` with an `instruction` resumes the prior session and *also* sends \
 the new instruction as an additional turn — it does not replace the original task. \

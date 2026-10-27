@@ -150,6 +150,8 @@ fn delegating_with_no_live_agent_restores_one_or_starts_one_first() {
     let spawn = calls_of(&calls, "spawn_agent");
     assert_eq!(spawn.len(), 1);
     assert_eq!(spawn[0]["worktree_path"], "/r/repo-tax");
+    assert_eq!(spawn[0]["default_permission_mode"], "cli", "no mode: the configured one applies");
+    assert!(spawn[0].get("skip_permissions").is_none());
     assert_eq!(calls_of(&calls, "status_gesture")[0]["kind"], "delegate");
     // A restorable agent there: restore it, then delegate.
     h.state_mut().state.restorable = vec![

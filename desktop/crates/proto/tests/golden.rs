@@ -319,6 +319,7 @@ fn required_fields_of_our_result_types_match_the_schema() {
                 default_branch: "main".into(),
                 has_custom_create: false,
                 has_custom_remove: false,
+                permission_mode: None,
             }),
         ),
     ] {

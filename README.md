@@ -242,6 +242,18 @@ provider = "claude"
 # its notes): Claude as an appended system prompt, Codex and Gemini before the
 # instruction. Replace the text here, or turn it off with "".
 # worker_preamble = ""
+# The permission mode agents are spawned in when the spawn names none (also
+# read from $XDG_CONFIG_HOME/lazyagent/config.toml, ~/.config by default, for
+# every repo; this file wins). "cli" passes nothing: the agent CLI's own
+# default, e.g. Claude's `permissions.defaultMode` in your settings (which, as
+# "dontAsk", silently denies every tool not on your allowlist). "bypass" is the
+# provider's dangerous flag. Claude also takes its --permission-mode values:
+# "acceptEdits", "plan", "dontAsk", "auto", "default"; Codex and Gemini start
+# in their own default for those. Any other value is ignored with a warning.
+# Unset: the desktop spawns with "cli"; MCP's spawn_agent (the
+# orchestrator) with "bypass", as before. A restore brings an agent back in the
+# mode it ran in. See "Permission modes" below.
+# permission_mode = "acceptEdits"
 
 [status]
 # A branch's ticket key, which links a feeder's work item (work_items_upsert)
@@ -287,7 +299,8 @@ provider = "claude"
 # auto_delegate_skip_checks = ["eval-suite", "label-*"]
 # The permission mode of an agent auto-delegation has to spawn (no agent ran
 # on the branch): the worktree's last recorded agent's mode when there is one,
-# else this (true: permission prompts bypassed, as spawn_agent's default).
+# else this (true: permission prompts bypassed, as spawn_agent's default;
+# false: [agents] permission_mode, unless that is "bypass", else "cli").
 # auto_delegate_skip_permissions = true
 
 [orchestrator]
@@ -331,6 +344,29 @@ remove = "git worktree remove ../{name}"
 # (lazyagent engine restore).
 # restore_on_start = true
 ```
+
+### Permission modes
+
+Every spawn resolves one mode, in this order:
+
+1. `permission_mode` given to the spawn (MCP and IPC `spawn_agent`, the
+   desktop's spawn dialog, which preselects the configured mode);
+2. `skip_permissions` given to the spawn: `true` is `"bypass"`; `false` means
+   "not bypass": the configured mode unless that is `"bypass"`, else `"cli"`
+   (the TUI's spawn dialog sends one or the other);
+3. `[agents] permission_mode` (the repo's `.lazyagent.toml`, else the global
+   `config.toml`);
+4. the spawning path's own default: `"bypass"` for MCP's `spawn_agent` and a
+   bare IPC call (unchanged for orchestrators), `"cli"` for the desktop's
+   quick spawn and Delegate → Spawn (the IPC parameter
+   `default_permission_mode` names it).
+
+The mode is recorded per agent: `list_agents`, `list_worktrees` and
+`list_restorable` show it as `permission_mode`, the desktop's agent tab shows
+it when it is not `"cli"`, and a restore (or an auto-delegation spawn in the
+same worktree) reuses it. `restore_agents` takes a `permission_mode` to bring
+them all back in another one. An agent an older engine recorded has only
+"bypass or not": not bypass resolves as `skip_permissions = false` above.
 
 ### Issue trackers (optional)
 
@@ -908,7 +944,7 @@ lazyagent ships an MCP server (`lazyagent mcp`) that exposes its worktree and ag
 | `list_worktrees` | Worktrees with their agents, statuses and session names |
 | `create_worktree` | New worktree and branch; without `base_branch` it uses `default_branch` when a worktree has it checked out, else the main worktree's branch |
 | `remove_worktree` | Remove a worktree (`force` for a dirty one) |
-| `spawn_agent` | Start a new agent (instruction, permissions, resume mode, label) |
+| `spawn_agent` | Start a new agent (instruction, permission mode, resume mode, label) |
 | `list_agents` / `get_agent_status` | A worktree's agents / one agent's status |
 | `read_agent_output` / `send_agent_input` | Read an agent's screen / type into it |
 | `stop_agent` | Stop an agent |

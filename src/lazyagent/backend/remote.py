@@ -33,7 +33,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import Any
 
 from lazyagent import __version__
-from lazyagent.agent_providers import ResumeMode
+from lazyagent.agent_providers import PERMISSION_CLI, ResumeMode
 from lazyagent.backend import (
     BACKEND_CONNECTED,
     BACKEND_DISCONNECTED,
@@ -405,6 +405,7 @@ class RemoteBackend(Backend):
             default_branch=config["default_branch"],
             has_custom_create=config["has_custom_create"],
             has_custom_remove=config["has_custom_remove"],
+            permission_mode=config.get("permission_mode", PERMISSION_CLI),
         )
         if engine_changed:
             for session in self._sessions.values():
@@ -525,7 +526,13 @@ class RemoteBackend(Backend):
                     ORCHESTRATOR_KIND if key == ORCHESTRATOR_KEY else AGENT_KIND
                 )
                 self._agents.setdefault(key, {})[agent_id] = AgentInfo(
-                    key, agent_id, session_id, label, session_name, kind
+                    key,
+                    agent_id,
+                    session_id,
+                    label,
+                    session_name,
+                    kind,
+                    entry.get("permission_mode") or PERMISSION_CLI,
                 )
             if entry.get("status") == STARTING_STATUS:
                 continue  # running, but no status to show yet
@@ -584,6 +591,7 @@ class RemoteBackend(Backend):
                 data.get("label") or "",
                 data.get("session_name") or "",
                 data.get("kind") or AGENT_KIND,
+                data.get("permission_mode") or PERMISSION_CLI,
             )
         elif name == AGENT_UPDATED:
             key, agent_id = data["worktree_path"], data["agent_id"]
@@ -803,7 +811,8 @@ class RemoteBackend(Backend):
         worktree_path: str,
         instruction: str | None = None,
         *,
-        skip_permissions: bool = False,
+        skip_permissions: bool | None = None,
+        permission_mode: str | None = None,
         resume_mode: ResumeMode = ResumeMode.NEW,
         kind: str = AGENT_KIND,
         env: Mapping[str, str] | None = None,
@@ -811,10 +820,16 @@ class RemoteBackend(Backend):
     ) -> AgentInfo:
         params: dict[str, Any] = {
             "worktree_path": worktree_path,
-            "skip_permissions": skip_permissions,
             "resume_mode": resume_mode.value,
             "kind": kind,
+            # Neither given: the configured mode, else cli (not the RPC's
+            # bypass, which is for MCP's orchestrators).
+            "default_permission_mode": PERMISSION_CLI,
         }
+        if skip_permissions is not None:
+            params["skip_permissions"] = skip_permissions
+        if permission_mode is not None:
+            params["permission_mode"] = permission_mode
         if instruction:
             params["instruction"] = instruction
         if env is not None:
