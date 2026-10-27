@@ -242,6 +242,18 @@ provider = "claude"
 # its notes): Claude as an appended system prompt, Codex and Gemini before the
 # instruction. Replace the text here, or turn it off with "".
 # worker_preamble = ""
+# The permission mode agents are spawned in when the spawn names none (also
+# read from $XDG_CONFIG_HOME/lazyagent/config.toml, ~/.config by default, for
+# every repo; this file wins). "cli" passes nothing: the agent CLI's own
+# default, e.g. Claude's `permissions.defaultMode` in your settings (which, as
+# "dontAsk", silently denies every tool not on your allowlist). "bypass" is the
+# provider's dangerous flag. Claude also takes its --permission-mode values:
+# "acceptEdits", "plan", "dontAsk", "auto", "default"; Codex and Gemini start
+# in their own default for those. Any other value is ignored with a warning.
+# Unset: the desktop spawns with "cli"; MCP's spawn_agent (the
+# orchestrator) with "bypass", as before. A restore brings an agent back in the
+# mode it ran in. See "Permission modes" below.
+# permission_mode = "acceptEdits"
 
 [status]
 # A branch's ticket key, which links a feeder's work item (work_items_upsert)
@@ -291,7 +303,8 @@ provider = "claude"
 # auto_delegate_skip_checks = ["eval-suite", "label-*"]
 # The permission mode of an agent auto-delegation has to spawn (no agent ran
 # on the branch): the worktree's last recorded agent's mode when there is one,
-# else this (true: permission prompts bypassed, as spawn_agent's default).
+# else this (true: permission prompts bypassed, as spawn_agent's default;
+# false: [agents] permission_mode, unless that is "bypass", else "cli").
 # auto_delegate_skip_permissions = true
 
 [orchestrator]
@@ -335,6 +348,29 @@ remove = "git worktree remove ../{name}"
 # (lazyagent engine restore).
 # restore_on_start = true
 ```
+
+### Permission modes
+
+Every spawn resolves one mode, in this order:
+
+1. `permission_mode` given to the spawn (MCP and IPC `spawn_agent`, the
+   desktop's spawn dialog, which preselects the configured mode);
+2. `skip_permissions` given to the spawn: `true` is `"bypass"`; `false` means
+   "not bypass": the configured mode unless that is `"bypass"`, else `"cli"`
+   (the TUI's spawn dialog sends one or the other);
+3. `[agents] permission_mode` (the repo's `.lazyagent.toml`, else the global
+   `config.toml`);
+4. the spawning path's own default: `"bypass"` for MCP's `spawn_agent` and a
+   bare IPC call (unchanged for orchestrators), `"cli"` for the desktop's
+   quick spawn and Delegate → Spawn (the IPC parameter
+   `default_permission_mode` names it).
+
+The mode is recorded per agent: `list_agents`, `list_worktrees` and
+`list_restorable` show it as `permission_mode`, the desktop's agent tab shows
+it when it is not `"cli"`, and a restore (or an auto-delegation spawn in the
+same worktree) reuses it. `restore_agents` takes a `permission_mode` to bring
+them all back in another one. An agent an older engine recorded has only
+"bypass or not": not bypass resolves as `skip_permissions = false` above.
 
 ### Issue trackers (optional)
 
@@ -585,7 +621,10 @@ and_when = 'item.branch != "release" and tracker.linked'
 and open PRs as you, GitHub never shows your own approval: the PR stays a
 draft while you review (looping with the agent), and the agent marks it
 ready for review when you approve. A peer then reviews (looping too), QA
-tests it if needed, and you merge. `pr.review == "approved"` is not enough
+tests it if needed, and you merge. lazyagent keeps your approval itself
+(never on GitHub): when you tell the agent you approve, it calls
+`owner_approve`; in Home, ⇧A approves the line's PR at the head shown; from
+a terminal, `lazyagent pr approve <branch|#n>`. `pr.review == "approved"` is not enough
 for the peer step, since an app can approve; the recipe reads these facts:
 
 | Fact | What it is |
@@ -594,6 +633,8 @@ for the peer step, since an app can approve; the recipe reads these facts:
 | `pr.draft` | the PR is a draft |
 | `pr.human_approvals` | reviewers whose latest review (comments aside) approves: a later "changes requested" or a dismissal cancels it; apps (`Bot` accounts, `…[bot]`), the PR's author and the logins in `[review] not_human` do not count |
 | `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening. Clean merges of the base branch are left out (see below) |
+| `pr.commits_after_owner_approval` | the same count from the newer of the ready event and your approval of a head: approving a PR that is already ready (after a CI fix, say) brings it to 0 without a round trip through draft, and a PR opened ready stops counting from its opening. If the commit you approved is gone (a force push), it counts from the ready event again; while the engine has not counted yet, unknown |
+| `pr.owner_approved`, `pr.owner_approved_sha` | you approved a commit still in the PR's history; the commit you approved (empty: none) |
 | `pr.base_merges_after_ready` | the clean merges of the base branch since then, which `pr.commits_after_ready` left out: for a state text such as `state_expr = 'pr.base_merges_after_ready > 0 ? "base merged since, not counted" : "waiting for peer review"'` |
 | `pr.labels` | the label names, lower case: `"qa:skip" in pr.labels` |
 
@@ -608,7 +649,7 @@ not_human = ["my-review-app"]      # accounts that review but are not people
 id = "merge"
 says = "Merge when a person approved what you approved, CI is fine and QA is done."
 when = '''
-pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready == 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_owner_approval == 0
 and pr.human_approvals >= 1 and (ci.state in ["green", "none"] or ci.unrelated)
 and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
 '''
@@ -633,7 +674,7 @@ state = "draft · your review"
 id = "owner_review_again"
 after = "owner_review"
 when = '''
-pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_ready > 0
+pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_owner_approval > 0
 and agents.running == 0
 '''
 [rule.then]
@@ -658,7 +699,7 @@ id = "waiting_for_qa"
 after = "waiting_for_peer"
 when = '''
 pr.state == "open" and pr.mine and not pr.draft and pr.human_approvals >= 1
-and pr.commits_after_ready == 0 and tracker.qa == "pending" and agents.running == 0
+and pr.commits_after_owner_approval == 0 and tracker.qa == "pending" and agents.running == 0
 '''
 [rule.then]
 ball = "others"
@@ -683,9 +724,20 @@ orders commits by their date, so a commit made before the PR was marked
 ready and pushed after it is caught only while the engine is running (it
 notices the head move). These facts are unknown when the PR could not be
 read: none of these rules matches then, and the built-ins below decide.
-`pr.labels`, `pr.human_approvals` and `pr.commits_after_ready` cost one
-more GitHub query per PR poll (1 point of the rate limit for up to 25
+`pr.labels`, `pr.human_approvals`, `pr.commits_after_ready` and
+`pr.commits_after_owner_approval` cost one more GitHub query per PR poll (1 point of the rate limit for up to 25
 branches), made only while one of your rules reads them.
+
+**Recording your approval.** Say "approved" to the agent (its prompt
+asks it to call `owner_approve` then), press ⇧A on the line in Home (on
+your own open PR, a draft or a line one of these rules decides; refused
+when the head moved since the line was drawn; Ctrl+Z undoes it), or run
+`lazyagent pr approve feat-x` (`--revoke` takes it back). It is the PR's
+head at that moment; the orchestrator cannot record one. The line's
+timeline says "you approved <sha>", and Why? (`w`, `lazyagent status --why`)
+shows the approval, what the count starts from, and Revoke. A later real
+commit brings "new commits since your approval" back; a clean merge of the
+base does not.
 
 Every rule asks `pr.mine`: checking out a teammate's branch (to try it,
 or for your review) must not read "waiting for peer review" when you are
@@ -917,7 +969,7 @@ lazyagent ships an MCP server (`lazyagent mcp`) that exposes its worktree and ag
 | `list_worktrees` | Worktrees with their agents, statuses and session names |
 | `create_worktree` | New worktree and branch; without `base_branch` it uses `default_branch` when a worktree has it checked out, else the main worktree's branch |
 | `remove_worktree` | Remove a worktree (`force` for a dirty one) |
-| `spawn_agent` | Start a new agent (instruction, permissions, resume mode, label) |
+| `spawn_agent` | Start a new agent (instruction, permission mode, resume mode, label) |
 | `list_agents` / `get_agent_status` | A worktree's agents / one agent's status |
 | `read_agent_output` / `send_agent_input` | Read an agent's screen / type into it |
 | `stop_agent` | Stop an agent |

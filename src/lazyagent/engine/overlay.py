@@ -42,6 +42,9 @@ The rows themselves stay a projection (status.py); this store keeps only:
   (``{note, at}``): what it says it is doing, tied to no work item.
 - **attestations**, agents' claims that a nondeterministic check's red is
   not the branch's, with their evidence and state (engine/attest.py).
+- **owner_approvals**, per work item the head the user approved outside
+  GitHub (``{sha, pr, at, source, note, previous?}``): where
+  ``pr.commits_after_owner_approval`` counts from (engine/owner_approvals.py).
 
 Kept in ``$XDG_STATE_HOME/lazyagent/status/<repo hash>.json`` (0600, atomic)
 by the engine that owns the repo, written at most once per :data:`SAVE_EVERY`.
@@ -106,6 +109,9 @@ TIMELINE_KINDS = (
     # An attestation filed, confirmed, rejected, revoked or expired
     # (engine/attest.py).
     "attest",
+    # The user approved a head, or took the approval back
+    # (engine/owner_approvals.py).
+    "owner_approval",
 )
 LABEL_CHARS = 40
 NOTE_CHARS = 200
@@ -254,6 +260,7 @@ class Overlay:
         self.orchestrator_report: dict[str, Any] | None = None
         self.attestations: dict[str, dict[str, Any]] = {}
         self.next_attestation = 1
+        self.owner_approvals: dict[str, dict[str, Any]] = {}
         # key → the agent's turn its report was made in (status.turn); in
         # memory only, so a loaded report falls back to ``turn_over``.
         self._report_turns: dict[str, int] = {}
@@ -333,6 +340,10 @@ class Overlay:
         next_attestation = data.get("next_attestation")
         if type(next_attestation) is int and next_attestation > 0:
             self.next_attestation = next_attestation
+        self.owner_approvals = {
+            k: a for k, a in table("owner_approvals").items()
+            if isinstance(a.get("sha"), str) and isinstance(a.get("at"), (int, float))
+        }
         self.prune(self.clock())
         self._saved = self._serialize()
 
@@ -355,7 +366,8 @@ class Overlay:
                 "orchestrator_report": self.orchestrator_report,
             }
             | ({"attestations": self.attestations, "next_attestation": self.next_attestation}
-               if self.attestations or self.next_attestation > 1 else {}),
+               if self.attestations or self.next_attestation > 1 else {})
+            | ({"owner_approvals": self.owner_approvals} if self.owner_approvals else {}),
             indent=1,
             sort_keys=True,
         )
@@ -490,7 +502,7 @@ class Overlay:
     def forget(self, key: str) -> None:
         """A tombstone ran out: drop what was kept for the item."""
         for table in (self.gestures, self.reports, self.closed, self.timeline, self.kept,
-                      self.released, self.spawned, self.delegations):
+                      self.released, self.spawned, self.delegations, self.owner_approvals):
             table.pop(key, None)
         for marks in self.seen.values():
             marks.pop(key, None)

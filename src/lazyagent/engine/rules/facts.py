@@ -203,6 +203,32 @@ def _pr_attr(attr: str) -> Getter:
     return get
 
 
+def _after_owner_approval(c: RowContext) -> Any:
+    from lazyagent.engine.owner_approvals import after_owner_approval
+
+    pr = c.facts.pr
+    if pr is None:
+        return UNKNOWN
+    after = after_owner_approval(pr, c.facts.owner_approval)
+    return UNKNOWN if after is None else after
+
+
+def _owner_approved(c: RowContext) -> Any:
+    approval = c.facts.owner_approval
+    if c.facts.pr is None:
+        return UNKNOWN
+    if approval is None:
+        return False
+    return {"head": True, "counted": True, "lost": False}.get(approval.state, UNKNOWN)
+
+
+def _owner_approved_sha(c: RowContext) -> Any:
+    if c.facts.pr is None:
+        return UNKNOWN
+    approval = c.facts.owner_approval
+    return approval.sha if approval is not None else ""
+
+
 def _mine(pr: Any, me: str | None) -> Any:
     if pr is None or not pr.author or not me:
         return UNKNOWN
@@ -668,6 +694,16 @@ _fact("pr.base_merges_after_ready", NUM,
       "the clean merges of the base since the PR was marked ready (not counted in "
       "pr.commits_after_ready)", _PRR, "≤ 60 s", "extra",
       row=_pr_attr("base_merges_after_ready"))
+_OA = "your approval (owner_approve, Approve, lazyagent pr approve) and git"
+_fact("pr.commits_after_owner_approval", NUM,
+      "the pushes since the newer of the PR's ready event and your approval of its head "
+      "(0: a draft; clean merges of the base left out)", _OA + ", PR poller (review query)",
+      "≤ 60 s", "extra", row=_after_owner_approval)
+_fact("pr.owner_approved", BOOL,
+      "you approved a commit still in the PR's history (lazyagent's record, not GitHub's)",
+      _OA, "per head", "free", row=_owner_approved)
+_fact("pr.owner_approved_sha", TEXT, "the commit you approved (empty: none)", _OA,
+      "on approval", "free", row=_owner_approved_sha)
 _fact("pr.number", NUM, "the PR's number", _PRP, "≤ 60 s", "poll",
       row=_pr_attr("number"))
 _fact("pr.base", TEXT, "the PR's base branch", _PRP, "≤ 60 s", "poll",
@@ -898,7 +934,7 @@ ROW_FUNCTIONS = {
 
 # What the PR poll's second query fetches, only while a rule reads it.
 REVIEW_FACTS = frozenset({"pr.labels", "pr.human_approvals", "pr.commits_after_ready",
-                          "pr.base_merges_after_ready"})
+                          "pr.base_merges_after_ready", "pr.commits_after_owner_approval"})
 
 RowContext.getters = {n: f.row for n, f in FACTS.items() if f.row is not None}
 ItemContext.getters = {n: f.item for n, f in FACTS.items() if f.item is not None}

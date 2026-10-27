@@ -13,9 +13,12 @@
 //!
 //! R5 (feature `ci_attest`): the item's attestations, the standing ones
 //! (pending, accepted, recorded) with Revoke.
+//!
+//! R3d (feature `owner_approve`): the user's approval of the PR's head, what
+//! the count starts from, with Revoke.
 
 use eframe::egui::{self, CornerRadius, Key, Modifiers, RichText, Stroke, Ui};
-use lazyagent_proto::types::{Attestation, CatalogRule, ExplainAbove, ExplainFact, RulesExplain};
+use lazyagent_proto::types::{Attestation, CatalogRule, ExplainAbove, ExplainFact, OwnerApproval, RulesExplain};
 use serde_json::{Value, json};
 
 use crate::app::{App, Severity, State, unix_now};
@@ -62,6 +65,23 @@ impl State {
         self.conn.request("ci_attestation_revoke", json!({"id": id}), move |s, reply| match reply {
             Ok(_) => {
                 s.toast(Severity::Info, "Revoked: the check counts against the branch again.");
+                s.inbox_gen += 1;
+                s.fetch_inbox();
+                if let Some(view) = s.why.clone() {
+                    s.refresh_why(view.key);
+                }
+            }
+            Err(e) => s.toast(Severity::Error, format!("Not revoked: {e}")),
+        });
+    }
+
+    /// Revoke the user's approval from Why? (`owner_approval_revoke`, only
+    /// while it is still of that head), then ask again.
+    pub fn revoke_owner_approval(&mut self, key: String, sha: String) {
+        let params = json!({"key": key.clone(), "sha": sha});
+        self.conn.request("owner_approval_revoke", params, move |s, reply| match reply {
+            Ok(_) => {
+                s.toast(Severity::Info, "Revoked: the commits count from the ready event again.");
                 s.inbox_gen += 1;
                 s.fetch_inbox();
                 if let Some(view) = s.why.clone() {
@@ -148,6 +168,7 @@ impl App {
             return;
         }
         let mut revoke = None;
+        let mut unapprove = None;
         egui::ScrollArea::vertical().id_salt("why").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(980.0));
             match &view.result {
@@ -159,6 +180,11 @@ impl App {
                 }
                 Some(Ok(e)) => {
                     explained(ui, &t, e, &catalog);
+                    if let Some(a) = &e.owner_approval
+                        && owner_approval(ui, &t, a, unix_now())
+                    {
+                        unapprove = Some((a.key.clone(), a.sha.clone()));
+                    }
                     revoke = attestations(ui, &t, &e.attestations, unix_now());
                 }
             }
@@ -166,7 +192,61 @@ impl App {
         if let Some(id) = revoke {
             self.state.revoke_attestation(id);
         }
+        if let Some((key, sha)) = unapprove {
+            self.state.revoke_owner_approval(key, sha);
+        }
     }
+}
+
+/// `home` → `in Home`: where the approval was given.
+fn approval_source(source: &str) -> &str {
+    match source {
+        "home" => "in Home",
+        "agent" => "to its agent",
+        "cli" => "from the CLI",
+        other => other,
+    }
+}
+
+/// The user's approval of the PR's head (R3d), with Revoke. True: revoke.
+fn owner_approval(ui: &mut Ui, t: &Theme, a: &OwnerApproval, now: f64) -> bool {
+    let mut revoke = false;
+    ui.add_space(8.0);
+    ui.label(RichText::new("Your approval").small().strong().color(t.muted));
+    egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, if a.state.as_deref() == Some("lost") { t.border } else { t.cyan }))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&a.sha[..a.sha.len().min(7)]).monospace().strong().color(t.text));
+                ui.label(
+                    RichText::new(format!(
+                        "approved {} · {} ago",
+                        approval_source(&a.source),
+                        crate::home::age(now - a.at)
+                    ))
+                    .small()
+                    .color(t.muted),
+                );
+                if ui
+                    .small_button("Revoke")
+                    .on_hover_text("The commits count from the PR's ready event again")
+                    .clicked()
+                {
+                    revoke = true;
+                }
+            });
+            if let Some(text) = a.text.as_deref().filter(|x| !x.is_empty()) {
+                ui.label(RichText::new(text).small().color(t.text));
+            }
+            if let Some(note) = a.note.as_deref().filter(|x| !x.is_empty()) {
+                ui.label(RichText::new(note).small().italics().color(t.muted));
+            }
+        });
+    revoke
 }
 
 /// `accepted · confirmed by you`, `expired: head moved`.

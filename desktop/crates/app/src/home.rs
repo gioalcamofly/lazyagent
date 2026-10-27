@@ -32,7 +32,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lazyagent_proto::types::{Actionable, Attestation, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow};
+use lazyagent_proto::types::{
+    Actionable, Approvable, Attestation, CiRun, Claim, Decision, NeedsYouItem, PrInfo, StatusRow,
+};
 
 use crate::attention::{self, Kind};
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -263,6 +265,12 @@ impl Line {
     /// Pass (⇧O) applies: the orchestrator can act on something on the
     /// row. The engine says (status_list field `passable`); else the top
     /// item; a row with neither, yes.
+    /// Approve (⇧A) applies here, at this head: the engine says (status_list
+    /// field `approvable`, R3d).
+    pub fn approvable(&self) -> Option<&Approvable> {
+        self.row.as_ref().and_then(|r| r.approvable.as_ref()).filter(|_| !self.done() && self.ghost.is_none())
+    }
+
     pub fn passable(&self) -> bool {
         match (self.row.as_ref().and_then(|r| r.passable), &self.top) {
             (Some(p), _) => p,

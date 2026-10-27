@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
-from lazyagent.agent_providers import ResumeMode
+from lazyagent.agent_providers import (
+    PERMISSION_BYPASS,
+    ResumeMode,
+    check_permission_mode,
+)
 from lazyagent.engine import actions, approvals
 from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.claims import NOTHING_TO_RELEASE
@@ -164,7 +168,8 @@ class SpawnCaps:
 
 
 # status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
-ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable")
+ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable",
+              "approvable")
 
 
 class EngineMethods:
@@ -227,6 +232,8 @@ class EngineMethods:
             "ci_attest": self.ci_attest,
             "ci_attestation_confirm": self.ci_attestation_confirm,
             "ci_attestation_revoke": self.ci_attestation_revoke,
+            "owner_approve": self.owner_approve,
+            "owner_approval_revoke": self.owner_approval_revoke,
             "approval_answer": self.approval_answer,
             "question_answer": self.question_answer,
             "orchestrator_actions": self.orchestrator_actions,
@@ -350,7 +357,11 @@ class EngineMethods:
 
     async def spawn_agent(self, params: dict) -> Any:
         """Spawn a NEW agent in a worktree. Params: worktree_path, instruction
-        (optional), skip_permissions (optional), resume_mode (optional),
+        (optional), permission_mode (optional: agent_providers.
+        PERMISSION_MODES), skip_permissions (optional, under
+        permission_mode), default_permission_mode (optional: the mode when
+        neither is given and ``[agents] permission_mode`` is not set;
+        bypass by default), resume_mode (optional),
         label (optional), env (optional: the environment the agent starts
         from instead of the engine's), kind (optional: ``"orchestrator"``
         starts the repo's orchestrator, ignoring worktree_path and label),
@@ -371,7 +382,15 @@ class EngineMethods:
                 raise ValueError(f"Unknown worktree: {worktree_path}")
 
         instruction = params.get("instruction") or params.get("initial_prompt")
-        skip_permissions = params.get("skip_permissions", True)
+        permission_mode = params.get("permission_mode")
+        if permission_mode is not None:
+            check_permission_mode(permission_mode)
+        skip_permissions = params.get("skip_permissions")
+        if skip_permissions is not None and not isinstance(skip_permissions, bool):
+            raise ValueError("skip_permissions must be a boolean")
+        default_mode = check_permission_mode(
+            params.get("default_permission_mode", PERMISSION_BYPASS)
+        )
         label = params.get("label")
         resume_mode_str = params.get("resume_mode", "new")
         try:
@@ -418,6 +437,8 @@ class EngineMethods:
                     worktree_path,
                     instruction,
                     skip_permissions=skip_permissions,
+                    permission_mode=permission_mode,
+                    default_permission_mode=default_mode,
                     resume_mode=resume_mode,
                     label=label,
                     kind=kind,
@@ -683,13 +704,25 @@ class EngineMethods:
 
     async def list_restorable(self, params: dict) -> Any:
         """Agents earlier engines ran when they ended (restart manifest)."""
-        return {"agents": [e.to_dict() for e in self._engine.list_restorable()]}
+        engine = self._engine
+        return {
+            "agents": [
+                {**e.to_dict(), "permission_mode": engine.entry_permission_mode(e)}
+                for e in engine.list_restorable()
+            ]
+        }
 
     async def restore_agents(self, params: dict) -> Any:
         """Spawn restorable agents again (all of them without ``ids``), each
-        resuming its conversation. Params: ids, env (both optional)."""
+        resuming its conversation. Params: ids, env, permission_mode (all
+        optional; without permission_mode, each in the mode it recorded)."""
         env = check_env(params.get("env"))
-        return await self._engine.restore_agents(self._ids(params), env=env)
+        mode = params.get("permission_mode")
+        if mode is not None:
+            check_permission_mode(mode)
+        return await self._engine.restore_agents(
+            self._ids(params), env=env, permission_mode=mode
+        )
 
     async def dismiss_restorable(self, params: dict) -> Any:
         """Stop offering restorable agents (all of them without ``ids``)."""
@@ -1618,6 +1651,66 @@ class EngineMethods:
         """Revoke a standing attestation (Why?). Params: id. The user's."""
         self._user_only(params, "ci_attestation_revoke")
         return self._engine.attestations.revoke(params.get("id"))
+
+    async def owner_approve(self, params: dict) -> Any:
+        """Record the user's approval of a PR's current head, outside GitHub
+        (R3d, engine/owner_approvals.py): ``pr.commits_after_owner_approval``
+        counts from it. Params: note (optional), caller (a worker's token:
+        its own work item, right after the user said they approve; the
+        orchestrator is refused, approval is the owner's); with no token
+        (the user's): key (a row key, a branch or ``#<PR number>``), sha
+        (the head the user saw: refused when it moved), source (home | cli)."""
+        role, _ = self._caller(params)
+        approvals = self._engine.owner_approvals
+        if role == ORCHESTRATOR_BY:
+            raise ValueError("owner_approve is the owner's: the orchestrator cannot approve")
+        if role == AGENT_BY:
+            _, agent_id, key = self._worker(params, "owner_approve")
+            return await approvals.approve(key, source="agent", note=params.get("note", ""),
+                                           agent_id=agent_id)
+        source = params.get("source", "home")
+        if source not in ("home", "cli"):
+            raise ValueError("source must be home or cli")
+        return await approvals.approve(self._approval_key(params), source=source,
+                                       sha=params.get("sha"), note=params.get("note", ""))
+
+    async def owner_approval_revoke(self, params: dict) -> Any:
+        """Take back the user's approval (Why?, ``lazyagent pr approve
+        --revoke``). Params: key (as for owner_approve), sha (only when it is
+        still that one), undo (bool: the approval it replaced stands again).
+        The user's."""
+        self._user_only(params, "owner_approval_revoke")
+        undo = params.get("undo", False)
+        if type(undo) is not bool:
+            raise ValueError("undo must be a boolean")
+        return self._engine.owner_approvals.revoke(self._approval_key(params),
+                                                   sha=params.get("sha"), undo=undo)
+
+    def _approval_key(self, params: dict) -> str:
+        """A live work item key from ``key``: the key itself, a branch, or
+        ``#<PR number>``."""
+        from lazyagent.engine.status import repo_name
+
+        key = params.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("key is required: the work item (its key, branch or #<PR number>)")
+        key = key.strip()
+        engine = self._engine
+        status = engine.status
+        if status.path_of(key) is not None:
+            return key
+        full = f"{repo_name(engine)}:{key}"
+        if status.path_of(full) is not None:
+            return full
+        if key.startswith("#") and key[1:].isdigit():
+            number = int(key[1:])
+            for wt in engine.worktrees:
+                pr = engine.get_pr_info(wt.path)
+                found = status.key_of(wt.path)
+                if pr is not None and pr.number == number and found is not None \
+                        and status.path_of(found) is not None:
+                    return found
+        raise ValueError(f"No work item {key!r} (a row key, a branch or #<PR number>)")
 
     async def ci_log_summary(self, params: dict) -> Any:
         """The failed-log summary of a work item's red CI on its head

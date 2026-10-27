@@ -32,6 +32,8 @@ class AgentInfo:
     label: str
     session_name: str
     kind: str
+    # The mode it was spawned in (agent_providers.PERMISSION_MODES).
+    permission_mode: str = "cli"
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -45,6 +47,9 @@ class ConfigView:
     default_branch: str
     has_custom_create: bool
     has_custom_remove: bool
+    # [agents] permission_mode, "cli" when not configured: what a spawn
+    # dialog preselects.
+    permission_mode: str = "cli"
 
 
 @dataclass(frozen=True)

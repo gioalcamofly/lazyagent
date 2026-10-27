@@ -91,7 +91,7 @@ struct NowNote {
 struct PendingLaunch {
     path: String,
     instruction: String,
-    skip: bool,
+    mode: String,
     job: Option<String>,
 }
 
@@ -418,6 +418,7 @@ impl State {
         }
         self.dialog_seq += 1;
         let mut d = Dialog::new(kind, self.dialog_seq, target.clone());
+        d.mode = crate::dialogs::configured_mode(self.store.config.as_ref());
         match kind {
             Kind::Create => {
                 d.target = String::new();
@@ -468,7 +469,7 @@ impl State {
         }
     }
 
-    pub fn after_create(&mut self, r: CreateWorktreeResult, launch: Option<(String, bool)>) {
+    pub fn after_create(&mut self, r: CreateWorktreeResult, launch: Option<(String, String)>) {
         if let Some(w) = &r.warning
             && r.job_id.is_none()
         {
@@ -479,8 +480,8 @@ impl State {
             self.jobs_open = true;
         }
         self.pending_select = Some(r.path.clone());
-        if let Some((instruction, skip)) = launch {
-            self.pending_launch = Some(PendingLaunch { path: r.path, instruction, skip, job: r.job_id });
+        if let Some((instruction, mode)) = launch {
+            self.pending_launch = Some(PendingLaunch { path: r.path, instruction, mode, job: r.job_id });
         }
         self.conn.notify("refresh_worktrees", json!({}));
     }
@@ -520,7 +521,7 @@ impl State {
         let params = json!({
             "worktree_path": p.path,
             "instruction": (!p.instruction.is_empty()).then_some(p.instruction),
-            "skip_permissions": p.skip,
+            "permission_mode": p.mode,
             "env": self.env_json(),
         });
         let path = p.path.clone();
@@ -644,6 +645,10 @@ impl State {
             if self.has("delegate_all") {
                 // What Delegate all sends (I4i).
                 fields.push("delegates");
+            }
+            if self.has("owner_approve") {
+                // Where Approve (⇧A) applies (R3d).
+                fields.push("approvable");
             }
             p["fields"] = json!(fields);
         }
@@ -1190,7 +1195,8 @@ impl State {
     }
 
     pub fn spawn_agent(&mut self, worktree: Option<String>) {
-        let mut params = json!({"skip_permissions": false, "env": self.env_map()});
+        // No mode: the configured one, else the CLI's own default.
+        let mut params = json!({"default_permission_mode": "cli", "env": self.env_map()});
         match &worktree {
             Some(p) => params["worktree_path"] = json!(p),
             None => params["kind"] = json!("orchestrator"),
@@ -1809,7 +1815,7 @@ impl App {
             .store
             .agents(&selected)
             .iter()
-            .map(|a| (a.agent_id.clone(), store::agent_label(a), a.status.clone(), a.session_id.clone()))
+            .map(|a| (a.agent_id.clone(), store::tab_label(a), a.status.clone(), a.session_id.clone()))
             .collect();
         if agents.is_empty() {
             self.state.tabs.remove(&selected);

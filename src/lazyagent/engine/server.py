@@ -186,6 +186,10 @@ FEATURES: tuple[str, ...] = (
     # too with status_list fields delegable / passable; the engine refuses a
     # delegate or a pass where they are false; the turn_question kind.
     "item_capabilities",
+    # The owner's approval of a PR head, outside GitHub (proposal 0014
+    # R3d): owner_approve, owner_approval_revoke, the row field approvable,
+    # rules_explain owner_approval, the owner_approval timeline kind.
+    "owner_approve",
 )
 
 STREAM_RESIZED = "stream.resized"

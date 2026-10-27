@@ -46,6 +46,8 @@ rate varies): never edit the test to pass. Read its recent runs on the base, \
 run it on your head (if your instructions define a slot or lock for running \
 this suite, request it before each run and release it after), then fix a real \
 regression or file ci_attest with the evidence.
+- When the user says they approve your PR (they review outside GitHub), call \
+owner_approve right away; never on a bot's approval.
 """
 
 

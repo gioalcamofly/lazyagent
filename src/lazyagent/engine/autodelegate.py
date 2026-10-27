@@ -80,6 +80,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.agent_providers import resolve_permission_mode
 from lazyagent.engine import actions
 from lazyagent.engine.delegation import CI_KINDS, SUMMARY_WAIT, with_summary
 from lazyagent.engine.orchestrator import _git
@@ -469,7 +470,7 @@ class AutoDelegate:
         caps = engine.spawn_caps
         reserved = caps.reserve(engine)
         try:
-            info = await engine.spawn_agent(path, text, skip_permissions=self.permissions(path))
+            info = await engine.spawn_agent(path, text, permission_mode=self.permissions(path))
         except BaseException:
             caps.release(reserved)
             raise
@@ -515,14 +516,20 @@ class AutoDelegate:
             out += [f"{name}: {b}" for b in bullets]
         return out
 
-    def permissions(self, path: str) -> bool:
+    def permissions(self, path: str) -> str:
         """The permission mode of an agent spawned in ``path``: the mode of
         the worktree's most recent agent on record (running or restorable),
-        else ``[inbox] auto_delegate_skip_permissions``."""
-        recorded = self._engine.recorded_skip_permissions(path)
+        else bypass with ``[inbox] auto_delegate_skip_permissions``, else
+        ``[agents] permission_mode`` (cli when not set, or bypass)."""
+        engine = self._engine
+        recorded = engine.recorded_permission_mode(path)
         if recorded is not None:
             return recorded
-        return self._engine.config.inbox.auto_delegate_skip_permissions
+        return resolve_permission_mode(
+            None,
+            engine.config.inbox.auto_delegate_skip_permissions,
+            engine.config.agent.permission_mode,
+        )
 
     async def _brief(self, slot: tuple[str, str], row: dict[str, Any], item: dict[str, Any],
                      attempt: dict[str, Any], now: float) -> None:

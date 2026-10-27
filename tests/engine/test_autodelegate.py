@@ -169,7 +169,7 @@ async def test_with_no_owner_one_is_spawned_with_the_brief(monkeypatch):
 
     async def spawn(path, instruction=None, **kw):
         spawned.append((path, instruction))
-        modes.append(kw.get("skip_permissions"))
+        modes.append(kw.get("permission_mode"))
         _agent(engine, "a2", "running")
         return engine.get_agent(path, "a2")
 
@@ -182,7 +182,7 @@ async def test_with_no_owner_one_is_spawned_with_the_brief(monkeypatch):
     await _pass(engine)
     [(path, text)] = spawned
     assert path == FEAT and "an agent that exited" in text
-    assert modes == [True], "no agent on record: [inbox] auto_delegate_skip_permissions (bypass)"
+    assert modes == ["bypass"], "no agent on record: [inbox] auto_delegate_skip_permissions (bypass)"
 
 
 async def test_to_the_orchestrator_it_is_a_claim():
@@ -327,21 +327,31 @@ async def test_a_spawned_agent_takes_the_mode_of_the_worktrees_last_agent():
     engine, _ = _engine()
     engine.manifest = _manifest((FEAT, False, 10.0, "agent"), (FEAT, True, 20.0, "agent"),
                                 ("/tmp/other", False, 30.0, "agent"))
-    assert engine.autodelegate.permissions(FEAT) is True, "the newest of this worktree: bypass"
+    assert engine.autodelegate.permissions(FEAT) == "bypass", "the newest of this worktree"
     engine.manifest = _manifest((FEAT, True, 10.0, "agent"), (FEAT, False, 20.0, "agent"))
-    assert engine.autodelegate.permissions(FEAT) is False, "the newest ran in normal mode"
+    assert engine.autodelegate.permissions(FEAT) == "cli", "the newest ran in normal mode"
+    engine.config.agent.permission_mode = "acceptEdits"
+    assert engine.autodelegate.permissions(FEAT) == "acceptEdits", (
+        "an older engine's normal mode: the configured one")
+    engine.manifest.restorable["e0"].permission_mode = "plan"
+    engine.manifest.agents[(FEAT, "a1")].permission_mode = "dontAsk"
+    assert engine.autodelegate.permissions(FEAT) == "dontAsk", "the mode it recorded"
 
 
 async def test_with_no_agent_on_record_the_inbox_key_decides_bypass_by_default(tmp_path):
     engine, _ = _engine()
     engine.manifest = _manifest(("/tmp/other", False, 10.0, "agent"))
     assert InboxConfig().auto_delegate_skip_permissions is True
-    assert engine.autodelegate.permissions(FEAT) is True
+    assert engine.autodelegate.permissions(FEAT) == "bypass"
     engine.manifest = None
-    assert engine.autodelegate.permissions(FEAT) is True
+    assert engine.autodelegate.permissions(FEAT) == "bypass"
     (tmp_path / ".lazyagent.toml").write_text("[inbox]\nauto_delegate_skip_permissions = false\n")
     engine.config.inbox = load_config(tmp_path).inbox
-    assert engine.autodelegate.permissions(FEAT) is False, "normal mode when the user says so"
+    assert engine.autodelegate.permissions(FEAT) == "cli", "normal mode when the user says so"
+    engine.config.agent.permission_mode = "plan"
+    assert engine.autodelegate.permissions(FEAT) == "plan", "normal: the configured mode"
+    engine.config.agent.permission_mode = "bypass"
+    assert engine.autodelegate.permissions(FEAT) == "cli", "never bypass when the user says so"
 
 
 # --- I4i: waiting is not failing; the engine's brief closes itself --------------

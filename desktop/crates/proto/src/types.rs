@@ -67,6 +67,10 @@ pub struct Agent {
     pub size: Option<Size>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached_clients: Option<u32>,
+    /// The mode it was spawned in ("cli", "bypass", Claude's modes); absent
+    /// from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +242,10 @@ pub struct ConfigView {
     pub default_branch: String,
     pub has_custom_create: bool,
     pub has_custom_remove: bool,
+    /// `[agents] permission_mode` ("cli" when not set); absent from older
+    /// engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +297,9 @@ pub struct RestorableAgent {
     pub label: String,
     pub session_name: String,
     pub skip_permissions: bool,
+    /// The mode a restore brings it back in; absent from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     pub conversation_id: Option<String>,
     pub instruction: Option<String>,
     pub started_at: f64,
@@ -314,6 +325,8 @@ pub struct RestoredAgent {
     pub session_name: String,
     pub kind: String,
     pub resumed: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -460,6 +473,8 @@ pub struct AgentSpawned {
     pub label: String,
     pub session_name: String,
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -673,6 +688,10 @@ pub struct StatusRow {
     /// Delegate sends to the branch's agent, in one letter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegates: Option<Vec<String>>,
+    /// `status_list {fields}` only (feature `owner_approve`, R3d): Approve
+    /// (⇧A) applies, at this head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvable: Option<Approvable>,
     /// Stale rows only (I4f): the worktree's uncommitted files, once git
     /// status is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1268,6 +1287,44 @@ pub struct Actionable {
     pub passable: Option<bool>,
 }
 
+/// Where Home offers Approve (feature `owner_approve`, R3d): the user's own
+/// open PR under their review, at the head the line shows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Approvable {
+    pub sha: String,
+    #[serde(default)]
+    pub pr: i64,
+    /// The user's approval is of this head already.
+    #[serde(default)]
+    pub approved: bool,
+}
+
+/// The user's approval of a PR head, kept by lazyagent (never on GitHub;
+/// feature `owner_approve`, R3d).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OwnerApproval {
+    pub key: String,
+    pub sha: String,
+    #[serde(default)]
+    pub at: f64,
+    /// `home` · `agent` · `cli`.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// `head` · `counted` · `lost` · `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// `you approved abc1234 (home): 1 commit since`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The rest as sent (branch, agent_id, after, merges, …).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 /// An agent's (or the orchestrator's) claim that a nondeterministic check's
 /// red is not the branch's, with its evidence (proposal 0014 R5, feature
 /// `ci_attest`).
@@ -1713,6 +1770,10 @@ pub struct RulesExplain {
     /// The item's attestations, newest first (feature `ci_attest`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attestations: Vec<Attestation>,
+    /// The user's standing approval of the PR's head (feature
+    /// `owner_approve`): Why? shows it with Revoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_approval: Option<OwnerApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
