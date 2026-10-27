@@ -32,11 +32,14 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_providers import (
+    PERMISSION_BYPASS,
+    PERMISSION_CLI,
     AgentProvider,
     ResumeMode,
     agent_session_name,
     env_exports,
     get_agent_provider,
+    resolve_permission_mode,
 )
 from lazyagent.config import Config, format_command, load_config
 from lazyagent.engine.events import (
@@ -539,6 +542,7 @@ class Engine:
             default_branch=config.default_branch,
             has_custom_create=config.has_custom_create,
             has_custom_remove=config.has_custom_remove,
+            permission_mode=config.agent.permission_mode or PERMISSION_CLI,
         )
 
     def notice(self, severity: str, message: str) -> None:
@@ -891,8 +895,10 @@ class Engine:
                 "confidence": st.confidence.value,
                 "detail": st.detail,
             }
-            info = self.get_agent(key, aid) if v1 else None
+            info = self.get_agent(key, aid)
             if info is not None:
+                entry["permission_mode"] = info.permission_mode
+            if v1 and info is not None:
                 entry["session_id"] = info.session_id
                 entry["kind"] = info.kind
             result.append(entry)
@@ -909,6 +915,7 @@ class Engine:
                             "detail": "",
                             "session_id": info.session_id,
                             "kind": info.kind,
+                            "permission_mode": info.permission_mode,
                         }
                     )
         return result
@@ -1014,7 +1021,9 @@ class Engine:
         worktree_path: str,
         instruction: str | None = None,
         *,
-        skip_permissions: bool = False,
+        skip_permissions: bool | None = None,
+        permission_mode: str | None = None,
+        default_permission_mode: str = PERMISSION_CLI,
         resume_mode: ResumeMode = ResumeMode.NEW,
         label: str | None = None,
         kind: str = AGENT_KIND,
@@ -1041,9 +1050,19 @@ class Engine:
         agent: the notes of the agents that ended there are deleted.
         ``review_comment_ids``: review comments in ``instruction`` the agent
         may answer with review_reply, registered before it starts.
+
+        The permission mode: ``permission_mode``, else ``skip_permissions``,
+        else ``[agents] permission_mode``, else ``default_permission_mode``
+        (agent_providers.resolve_permission_mode).
         """
         if notes_mode is not None and notes_mode not in NOTES_MODES:
             raise ValueError(f"Unknown notes mode: {notes_mode!r}")
+        mode = resolve_permission_mode(
+            permission_mode,
+            skip_permissions,
+            self.config.agent.permission_mode,
+            default_permission_mode,
+        )
         provider_name = provider_name or self.config.agent.provider
         resume_last = resume_mode == ResumeMode.RESUME_LAST and not resume_conversation
         if kind == ORCHESTRATOR_KIND:
@@ -1054,7 +1073,7 @@ class Engine:
                     notes_id = entry.notes_id
             info = self._spawn_orchestrator(
                 instruction,
-                skip_permissions=skip_permissions,
+                permission_mode=mode,
                 resume_mode=resume_mode,
                 env=env,
                 provider_name=provider_name,
@@ -1065,7 +1084,6 @@ class Engine:
             self._remember(
                 info,
                 provider_name,
-                skip_permissions,
                 instruction,
                 resume_mode=resume_mode,
                 resume_conversation=resume_conversation,
@@ -1103,7 +1121,7 @@ class Engine:
             command, observer = self._agent_command(
                 provider,
                 worktree_path,
-                skip_permissions=skip_permissions,
+                permission_mode=mode,
                 resume_mode=resume_mode,
                 instruction=instruction,
                 system_prompt=worker_system_prompt(self.config, provider, instruction),
@@ -1127,18 +1145,17 @@ class Engine:
         self._tokens[token] = (key, agent_id)
         if review_comment_ids:
             self.review_store().register(key, agent_id, review_comment_ids)
-        info = self._start_agent(session, label, session_name, AGENT_KIND)
+        info = self._start_agent(session, label, session_name, AGENT_KIND, mode)
         self._remember(
             info,
             provider_name,
-            skip_permissions,
             instruction,
             resume_mode=resume_mode,
             resume_conversation=resume_conversation,
         )
         return info
 
-    def recorded_skip_permissions(self, path: str) -> bool | None:
+    def recorded_permission_mode(self, path: str) -> str | None:
         """The permission mode of the worktree's most recent agent the
         manifest records (running or restorable); None with none."""
         if self.manifest is None:
@@ -1149,7 +1166,17 @@ class Engine:
         ]
         if not entries:
             return None
-        return max(entries, key=lambda e: e.started_at).skip_permissions
+        return self.entry_permission_mode(max(entries, key=lambda e: e.started_at))
+
+    def entry_permission_mode(self, entry: Entry) -> str:
+        """The mode a manifest entry's agent comes back in: the one it
+        recorded; an older engine's entry recorded only bypass or not (not
+        bypass: the configured mode, unless that is bypass)."""
+        return resolve_permission_mode(
+            entry.permission_mode,
+            entry.skip_permissions,
+            self.config.agent.permission_mode,
+        )
 
     def _last_orchestrator(self, provider_name: str) -> Entry | None:
         """The restorable orchestrator a "resume last" of the orchestrator
@@ -1206,7 +1233,7 @@ class Engine:
         self,
         instruction: str | None,
         *,
-        skip_permissions: bool,
+        permission_mode: str,
         resume_mode: ResumeMode,
         env: Mapping[str, str] | None,
         provider_name: str,
@@ -1240,7 +1267,7 @@ class Engine:
             command, observer = self._agent_command(
                 provider,
                 repo_root,
-                skip_permissions=skip_permissions,
+                permission_mode=permission_mode,
                 resume_mode=resume_mode,
                 instruction=instruction,
                 system_prompt=compose_orchestrator_prompt(self.config, repo_root),
@@ -1258,14 +1285,16 @@ class Engine:
             command, worktree_path=ORCHESTRATOR_KEY, observer=observer
         )
         self._tokens[token] = (ORCHESTRATOR_KEY, "")
-        return self._start_agent(session, "", session_name, ORCHESTRATOR_KIND)
+        return self._start_agent(
+            session, "", session_name, ORCHESTRATOR_KIND, permission_mode
+        )
 
     def _agent_command(
         self,
         provider: AgentProvider,
         cwd: str,
         *,
-        skip_permissions: bool,
+        permission_mode: str,
         resume_mode: ResumeMode,
         instruction: str | None,
         session_name: str,
@@ -1294,7 +1323,7 @@ class Engine:
             )
         command = provider.build_command(
             cwd,
-            skip_permissions=skip_permissions,
+            permission_mode=permission_mode,
             runtime_context=runtime_context,
             resume_mode=resume_mode,
             instruction=instruction,
@@ -1306,11 +1335,18 @@ class Engine:
         return command, provider.create_observer_from_context(runtime_context)
 
     def _start_agent(
-        self, session: AgentSession, label: str, session_name: str, kind: str
+        self,
+        session: AgentSession,
+        label: str,
+        session_name: str,
+        kind: str,
+        permission_mode: str = PERMISSION_CLI,
     ) -> AgentInfo:
         key, agent_id = session.worktree_path, session.agent_id
         session.session_id = self._new_session_id()
-        info = AgentInfo(key, agent_id, session.session_id, label, session_name, kind)
+        info = AgentInfo(
+            key, agent_id, session.session_id, label, session_name, kind, permission_mode
+        )
         remove_listener = session.add_listener(
             lambda event: self._on_agent_event(info, event)
         )
@@ -1813,7 +1849,6 @@ class Engine:
         self,
         info: AgentInfo,
         provider_name: str,
-        skip_permissions: bool,
         instruction: str | None,
         *,
         resume_mode: ResumeMode = ResumeMode.NEW,
@@ -1834,7 +1869,8 @@ class Engine:
                 provider=provider_name,
                 label=info.label,
                 session_name=info.session_name,
-                skip_permissions=skip_permissions,
+                skip_permissions=info.permission_mode == PERMISSION_BYPASS,
+                permission_mode=info.permission_mode,
                 conversation_id=resume_conversation,
                 instruction=clip_instruction(instruction),
                 notes_id=self._notes_ids.get(slot),
@@ -1988,12 +2024,14 @@ class Engine:
         ids: Iterable[str] | None = None,
         *,
         env: Mapping[str, str] | None = None,
+        permission_mode: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Spawn restorable agents again (every one when ``ids`` is None),
         each resuming its conversation: the one its provider reported, else
         its provider's "last" (``resume_mode=last``). Same worktree, kind,
-        provider, label, permissions and, when free, agent id. Emits
-        ``engine.restored``; a failed entry stays restorable.
+        provider, label, permission mode (``permission_mode`` instead, for
+        every one) and, when free, agent id. Emits ``engine.restored``; a
+        failed entry stays restorable.
 
         An entry whose conversation already runs here is refused, never
         spawned twice: consumed when it surely runs, kept when it may (its
@@ -2001,7 +2039,7 @@ class Engine:
         manifest = self._require_manifest()
         self._restoring = True
         try:
-            result = await self._restore_agents(manifest, ids, env)
+            result = await self._restore_agents(manifest, ids, env, permission_mode)
         finally:
             self._restoring = False
         self._notes_gc()
@@ -2015,6 +2053,7 @@ class Engine:
         manifest: Manifest,
         ids: Iterable[str] | None,
         env: Mapping[str, str] | None,
+        permission_mode: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         manifest.prune(self._restorable_exists)
         self._reconcile_restorable()
@@ -2068,7 +2107,7 @@ class Engine:
             try:
                 info = await self.spawn_agent(
                     entry.worktree_path,
-                    skip_permissions=entry.skip_permissions,
+                    permission_mode=permission_mode or self.entry_permission_mode(entry),
                     resume_mode=ResumeMode.RESUME_LAST,
                     label=entry.label or None,
                     kind=entry.kind,

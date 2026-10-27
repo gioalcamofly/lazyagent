@@ -48,6 +48,23 @@ with the evidence. A check on both lists is skipped: the skip list wins,
 the item stays the user's. To let agents attest a suite, take it off the
 skip list.
 
+**Waiting is not failing.** An attempt whose agent ends its turn waiting
+on the user (an open brief or question of its own, a tool approval, its
+``waiting_for_user``) has not failed: it is not counted, and nothing is
+sent again while the wait lasts.
+
+**Never against the agent.** Nothing is sent, and no attempt counted,
+while an agent on the branch runs or holds the ball by its own
+``status_report`` (``ball: "agent"``, or ``"others"`` with an ``until``
+ahead; ``overlay.holding``): it is at it. The item is folded into the row
+meanwhile (``place.agent_holds``), and its attempts are kept: they start
+again only once the condition stayed cleared for :data:`RESET_AFTER` with
+nobody holding it. At most one engine brief per item is open at a time.
+
+**The engine's brief closes itself** (``resolved``) once its item no longer
+holds with no agent at work, and is ``superseded`` when the branch's agent
+files a brief of its own after it: each with a timeline line.
+
 **A failed attempt says why.** Each attempt's line in the final brief says
 what the agent did: whether it committed (the worktree's head before and
 after), its last ``status_report`` line, and the last bullets of its notes'
@@ -63,6 +80,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.agent_providers import resolve_permission_mode
 from lazyagent.engine import actions
 from lazyagent.engine.delegation import CI_KINDS, SUMMARY_WAIT, with_summary
 from lazyagent.engine.orchestrator import _git
@@ -80,8 +98,15 @@ KINDS: dict[str, tuple[str, ...]] = {
 }
 TARGETS = ("owner", "orchestrator")
 MAX_ATTEMPTS = 2
+# How long an item must stay cleared, with no agent holding it, before its
+# attempts start again: a PR's mergeability reads unknown for a while
+# after a push, and the item coming back then is the same one (I4i).
+RESET_AFTER = 600.0
 PROTECTED = ("main", "master")
 _RUNNING = ("running", "starting")
+# The agent waits on the user: its attempt has not failed.
+_WAITING = ("waiting_for_user", "waiting_for_approval")
+_ASKS = ("approval", "question", "turn_question")
 _WHAT = {
     "conflict": "a merge conflict with its base",
     "exited": "an agent that exited",
@@ -234,6 +259,8 @@ class AutoDelegate:
         for slot, attempt in list(self.attempts.items()):
             if slot in open_items:
                 if attempt["in_flight"] and attempt.get("left") and slot not in self._busy:
+                    if self._waiting(slot[0], attempt, items) or self._at_it(rows.get(slot[0]), now):
+                        continue  # on the user: not a failure, nothing sent again
                     # Back after the agent's go: that attempt failed.
                     attempt["in_flight"] = attempt["left"] = False
                 continue
@@ -241,16 +268,20 @@ class AutoDelegate:
                 # The agent is at it (or the condition cleared).
                 attempt["left"] = True
             row = rows.get(slot[0])
-            running = row is not None and any(a["status"] in _RUNNING for a in row["agents"])
-            if row is None or not running:
-                # The condition cleared (or the item went away): reset.
-                if slot not in self._busy:
-                    del self.attempts[slot]
+            if row is not None and self._at_it(row, now):
+                attempt.pop("gone", None)  # folded while the agent holds it
+                continue
+            # The condition cleared (or the item went away): reset, once it
+            # stayed so for a while.
+            gone = attempt.setdefault("gone", now)
+            if (row is None or now - gone >= RESET_AFTER) and slot not in self._busy:
+                del self.attempts[slot]
         skipped: dict[str, str] = {}
         for slot, item in open_items.items():
             attempt = self.attempts.setdefault(
                 slot, {"count": 0, "in_flight": False, "agent": None, "tries": [], "briefed": False}
             )
+            attempt.pop("gone", None)
             row = rows.get(slot[0])
             if slot[1] in CI_KINDS:
                 checks = failing_checks(self._engine, slot[0])
@@ -267,8 +298,12 @@ class AutoDelegate:
                 continue
             if row is None or row["worktree_path"] is None:
                 continue
+            if self._at_it(row, now):
+                continue  # the agent is on it: never fight it
             if attempt["count"] >= MAX_ATTEMPTS:
                 attempt["briefed"] = True
+                if self._open_brief(slot):
+                    continue  # one already stands (an engine restart forgot it)
                 self._busy.add(slot)
                 self._spawn(self._brief(slot, row, item, attempt, now))
                 continue
@@ -279,6 +314,71 @@ class AutoDelegate:
             self._busy.add(slot)
             self._spawn(self._attempt(slot, row, item, attempt))
         self.skipped = skipped
+        self._close_briefs(rows, open_items)
+
+    def _waiting(self, key: str, attempt: dict[str, Any], items: list[dict[str, Any]]) -> bool:
+        """The attempt's agent waits on the user: an open brief or question
+        of its own, an approval, or its status says so."""
+        engine = self._engine
+        agent_id = attempt.get("agent")
+        path = engine.status.path_of(key)
+        if path is not None and agent_id:
+            state = engine.agent_states(path).get(agent_id)
+            if state is not None and state.status.value in _WAITING:
+                return True
+        if any(i["work_item"] == key and i["kind"] in _ASKS
+               and (not agent_id or i.get("agent_id") in (None, agent_id)) for i in items):
+            return True
+        return any(
+            r["key"] == key and r["state"] == "open" and r.get("source") != "auto_delegate"
+            and (not agent_id or r["agent"] == agent_id)
+            for r in engine.decisions.store.values()
+        )
+
+    def _at_it(self, row: dict[str, Any] | None, now: float) -> bool:
+        """An agent on the row runs, or holds the ball by its own report
+        (``overlay.holding``: ball agent, or others with an until ahead)."""
+        if row is None:
+            return False
+        if any(a["status"] in _RUNNING for a in row["agents"]):
+            return True
+        return self._engine.overlay.holding(row["key"], now) is not None
+
+    def _open_brief(self, slot: tuple[str, str]) -> bool:
+        """An engine brief about ``slot``'s item is open."""
+        return any(
+            r.get("source") == "auto_delegate" and r["state"] == "open" and r["key"] == slot[0]
+            and r.get("item_kind") in (None, slot[1])
+            for r in self._engine.decisions.store.values()
+        )
+
+    def _close_briefs(self, rows: dict[str, dict[str, Any]],
+                      open_items: dict[tuple[str, str], dict[str, Any]]) -> None:
+        """The engine's open briefs that no longer stand: their item cleared
+        (no agent at work), or the agent filed a brief of its own since."""
+        decisions = self._engine.decisions
+        now = self._engine.status.clock()
+        for record in list(decisions.store.values()):
+            if record.get("source") != "auto_delegate" or record["state"] != "open":
+                continue
+            key = record["key"]
+            mine = next(
+                (r for r in decisions.store.values()
+                 if r["key"] == key and r["state"] == "open" and r.get("source") is None
+                 and r.get("created_at", 0) >= record.get("created_at", 0)),
+                None,
+            )
+            if mine is not None:
+                decisions.close(record, "superseded", now, "engine", f"replaced by {mine['id']}")
+                continue
+            kind = record.get("item_kind")
+            holds = any(k == key and (kind is None or i["kind"] == kind)
+                        for (k, _), i in open_items.items())
+            row = rows.get(key)
+            running = row is not None and any(a["status"] in _RUNNING for a in row["agents"])
+            if not holds and not running:
+                decisions.close(record, "resolved", now, "engine",
+                                "resolved: its item no longer holds")
 
     def _protected(self, row: dict[str, Any]) -> bool:
         wt = self._engine.worktree(row["worktree_path"])
@@ -370,7 +470,7 @@ class AutoDelegate:
         caps = engine.spawn_caps
         reserved = caps.reserve(engine)
         try:
-            info = await engine.spawn_agent(path, text, skip_permissions=self.permissions(path))
+            info = await engine.spawn_agent(path, text, permission_mode=self.permissions(path))
         except BaseException:
             caps.release(reserved)
             raise
@@ -416,14 +516,20 @@ class AutoDelegate:
             out += [f"{name}: {b}" for b in bullets]
         return out
 
-    def permissions(self, path: str) -> bool:
+    def permissions(self, path: str) -> str:
         """The permission mode of an agent spawned in ``path``: the mode of
         the worktree's most recent agent on record (running or restorable),
-        else ``[inbox] auto_delegate_skip_permissions``."""
-        recorded = self._engine.recorded_skip_permissions(path)
+        else bypass with ``[inbox] auto_delegate_skip_permissions``, else
+        ``[agents] permission_mode`` (cli when not set, or bypass)."""
+        engine = self._engine
+        recorded = engine.recorded_permission_mode(path)
         if recorded is not None:
             return recorded
-        return self._engine.config.inbox.auto_delegate_skip_permissions
+        return resolve_permission_mode(
+            None,
+            engine.config.inbox.auto_delegate_skip_permissions,
+            engine.config.agent.permission_mode,
+        )
 
     async def _brief(self, slot: tuple[str, str], row: dict[str, Any], item: dict[str, Any],
                      attempt: dict[str, Any], now: float) -> None:
@@ -453,6 +559,7 @@ class AutoDelegate:
             question=f"Auto-delegation failed twice: {item['state']} on {row['branch']}",
             tried=tried,
             now=now,
+            item_kind=item["kind"],
         )
 
 

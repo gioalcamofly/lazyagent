@@ -16,6 +16,7 @@
           "kind": "agent",
           "label": "Reviewer",
           "notes_id": null,
+          "permission_mode": "bypass",
           "provider": "claude",
           "session_name": "repo-feat-a2",
           "skip_permissions": true,

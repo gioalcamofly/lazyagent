@@ -2,18 +2,28 @@
 Delegate; docs/design/inbox-plan.md §8 I4d).
 
 ``status_gesture {key, kind: "delegate", to: "agent", item?, agent_id?,
-text?}`` (the user's) sends one line to the branch's live agent through the
-first responder's mailbox (when its turn is over, never mid-turn) and keeps
-a **delegation** in the overlay: ``{agent, item, occurrence, fact, at, by,
-phase, sent_at?, ran?}``. While it is ``on_it`` the delegated item leaves the
-user's inbox and the row reads ``agent <id> · on it`` in flight.
+text?}`` (the user's) sends the row's delegable items (catalog
+``delegable``), or only ``item``, to the branch's live agent in one letter
+through the first responder's mailbox (when its turn is over, never
+mid-turn): a numbered list when there are several. The overlay keeps one
+**delegation** per work item: ``{agent, items: [{id, occurrence, kind,
+fact, at, letter, sent_at}], item, fact, at, by, phase, sent_at?, ran?}``
+(``item`` and ``fact``: the first item and every fact, for the row). While
+it is ``on_it`` its items leave the user's inbox and the row reads ``agent
+<id> · fixing <fact>`` in flight.
+
+A second delegation on the same row adds its items to the same record: to
+the letter still waiting when there is one, else in a follow-up letter of
+its own. Nothing pending is dropped. A letter waits while the agent is not
+idle: the row says so (``held``: ``waiting for a5 to be free (possibly
+hanged)``), and ``send_now`` (the user's Send anyway) types it at once.
 
 - The agent asks the user something (a question, a brief): those items are
   not the delegated one, so they show on the row instead of the fact.
-- The agent finished its turn (it ran after the line reached it and is idle
-  again): if the item's condition still holds, the delegation is
-  ``returned`` and the item comes back to the user marked ``agent finished;
-  still <fact>``; if it cleared, the delegation is over.
+- The agent finished its turn (it ran after the last letter reached it and
+  is idle again): the items whose condition still holds come back to the
+  user marked ``agent finished; still <fact>`` (the delegation is
+  ``returned``); the others cleared. None holds: the delegation is over.
 - The agent is gone: the same, with ``agent gone; still <fact>``.
 
 A CI item (``ci``, ``ci_failed``) carries the failed-log summary of its red
@@ -70,11 +80,32 @@ def delegate_text(key: str, item: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def letter_text(key: str, items: list[dict[str, Any]]) -> str:
+    """The letter for ``items``: the user's words, or the item; a
+    numbered list when there are several."""
+    if len(items) == 1:
+        i = items[0]
+        return i.get("text") or delegate_text(
+            key, {"title": i["title"], "state": i["fact"], "detail": i["detail"]})
+    lines = [f"The user delegated these {len(items)} items of {key} to you: please handle "
+             "them, and say which you cannot."]
+    for n, i in enumerate(items, 1):
+        line = f"{n}. {i['title']}: {i['fact']}."
+        if i.get("detail") and i["detail"] not in i["fact"]:
+            line += f" {i['detail']}."
+        if i.get("text"):
+            line += f" The user adds: {i['text']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 class Delegations:
     """The engine's delegations; see the module docstring."""
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        # Work item -> the letter whose CI log is being read.
+        self._reading: dict[str, int] = {}
         engine.actionables.on_dismiss.append(self._dismissed)
 
     @property
@@ -82,22 +113,43 @@ class Delegations:
         return self._engine.overlay.delegations
 
     def get(self, key: str) -> dict[str, Any] | None:
+        """``key``'s delegation, with ``held`` (why its letter waits; empty
+        once sent) and ``held_since``."""
         d = self.store.get(key)
-        return dict(d) if d is not None else None
+        if d is None:
+            return None
+        out = dict(d, items=[dict(i) for i in _items(d)], held="", held_since=None)
+        unsent = [i for i in _items(d) if i.get("sent_at") is None]
+        path = self._engine.status.path_of(key)
+        free = key not in self._reading and path is not None \
+            and self._engine.first_responder.mailbox.ready((path, d["agent"]))
+        if d["phase"] == "on_it" and unsent and not free:
+            out["held"] = f"waiting for {d['agent']} to be free ({self._status(key, d)})"
+            out["held_since"] = min(i["at"] for i in unsent)
+        return out
+
+    def _status(self, key: str, d: dict[str, Any]) -> str:
+        if key in self._reading:
+            return "reading the CI log"
+        path = self._engine.status.path_of(key)
+        state = self._engine.agent_states(path).get(d["agent"]) if path is not None else None
+        return (state.status.value if state is not None else "starting").replace("_", " ")
 
     def filter(self, key: str, items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-        """``key``'s items as the user sees them: the delegated one hidden
-        while the agent is on it, marked once it came back."""
+        """``key``'s items as the user sees them: the delegated ones hidden
+        while the agent is on them, marked once they came back."""
         items = list(items)
         d = self.store.get(key)
         if d is None:
             return items
+        mine = {i["id"]: i for i in _items(d)}
         if d["phase"] == "on_it":
-            return [i for i in items if i["id"] != d["item"]]
+            return [i for i in items if i["id"] not in mine]
         out = []
         for i in items:
-            if i["id"] == d["item"]:
-                i = dict(i, state=d["state"])
+            if i["id"] in mine:
+                i = dict(i, state=clip_words(f"{d.get('what') or 'agent finished'}; "
+                                             f"still {mine[i['id']]['fact']}", 8))
             out.append(i)
         return out
 
@@ -115,26 +167,10 @@ class Delegations:
         path = row["worktree_path"]
         if path is None:
             raise ValueError(f"{key} has no worktree: no agent to delegate to")
-        if item_id is None:
-            item_id = (row.get("needs_you") or {}).get("top")
-        if not isinstance(item_id, str) or not item_id:
-            raise ValueError(f"{key} has no inbox item to delegate")
-        found = engine.actionables.found(item_id)
-        if found is None or found.work_item != key:
-            raise ValueError(f"No inbox item {item_id!r} on {key}")
-        if not found.can_delegate:
-            # The catalog's (rules/catalog.py): only what an agent can resolve.
-            from lazyagent.engine.actionables import KINDS
-
-            title = found.title or KINDS[found.kind].title
-            if found.kind in ("approval", "question", "turn_question", "decision", "delegation"):
-                why = "it is answered, not delegated: open the agent's terminal"
-            else:
-                why = "it is yours to do, not an agent's (a rule may say delegable = true)"
-            raise ValueError(f"{title} on {row['branch'] or key} cannot be delegated: {why}")
         live = engine.agent_ids(path)
         if agent_id is None:
             agent_id = live[0] if live else None
+        found = self._found(key, row, item_id, agent_id)
         if agent_id is None:
             raise ValueError(
                 f"No agent runs on {row['branch'] or key}: start one, or pass the item "
@@ -142,78 +178,189 @@ class Delegations:
             )
         if agent_id not in live:
             raise ValueError(f"No agent {agent_id!r} on {key}")
-        item = found.to_dict()
         if text is not None and not isinstance(text, str):
             raise ValueError("text must be a string")
-        text = (text or "").strip()[:TEXT_CHARS] or delegate_text(key, item)
+        text = (text or "").strip()[:TEXT_CHARS] or None
         now = engine.status.clock()
-        record = {
-            "agent": agent_id,
-            "item": item_id,
-            "occurrence": found.occurrence,
-            "kind": found.kind,
-            "fact": item["state"],
-            "at": now,
-            "by": by,
-            "phase": "on_it",
-            "sent_at": None,
-            "ran": False,
-            "state": "",
-        }
-        self.store[key] = record
-        mailbox = engine.first_responder.mailbox
-        tag = f"delegate:{key}"
-        mailbox.drop(tag)
-
-        def sent() -> None:
-            if self.store.get(key) is record:
-                record["sent_at"] = engine.status.clock()
-                engine.overlay.changed()
-
-        runs = actions.red_runs(engine, key)[1] if found.kind in CI_KINDS else []
-        if not runs:
-            mailbox.post((path, agent_id), text, tag=tag, on_sent=sent)
+        record = self.store.get(key)
+        if record is not None and record["phase"] == "on_it":
+            if record["agent"] != agent_id:
+                raise ValueError(
+                    f"{row['branch'] or key} is with agent {record['agent']}: take it back "
+                    "first (u)"
+                )
+            have = {i["id"] for i in _items(record)}
+            found = [f for f in found if f.id not in have]
+            if not found:
+                raise ValueError(f"Agent {agent_id} already has it")
         else:
-            cached = engine.actions.cached_summary(runs)
-            if cached is not None or not self._later(record, key, (path, agent_id), text, runs,
-                                                    tag, sent):
-                mailbox.post((path, agent_id), with_summary(text, cached, runs), tag=tag,
-                             on_sent=sent)
+            # A new delegation ends one that came back.
+            record = {"agent": agent_id, "items": [], "at": now, "by": by, "phase": "on_it",
+                      "sent_at": None, "ran": False, "state": "", "letters": 0}
+            self.store[key] = record
+        n = record.get("letters", 0)
+        if not (self._reading.get(key) == n
+                or engine.first_responder.mailbox.has(_tag(key, n))):
+            n = record["letters"] = n + 1
+        for f in found:
+            item = f.to_dict()
+            record["items"].append({
+                "id": f.id, "occurrence": f.occurrence, "kind": f.kind, "fact": item["state"],
+                "title": item["title"], "detail": item["detail"], "text": text, "at": now,
+                "letter": n, "sent_at": None,
+            })
+        _summarize(record)
+        self._post(key, record, n)
+        facts = "; ".join(one_line(f.to_dict()["state"], 80) for f in found)
         engine.overlay.add(key, "delegate", "user" if by == "user" else by,
-                           f"delegated to agent {agent_id}: {one_line(item['state'], 80)}",
-                           ref=item_id)
+                           f"delegated to agent {agent_id}: {facts}", ref=found[0].id)
         engine.status.by(key, "user" if by == "user" else by)
         engine.overlay.changed()
-        mailbox.flush()
-        return dict(record)
+        engine.first_responder.mailbox.flush()
+        return self.get(key) or {}
 
-    def _later(self, record: dict[str, Any], key: str, slot: tuple[str, str], text: str,
-               runs: list[Any], tag: str, sent: Any) -> bool:
-        """Post the line once the failed log is read; False with no loop."""
+    def delegates(self, key: str, shown: Iterable[str], agent_id: str | None) -> list[str]:
+        """Of the ``shown`` items of ``key``, the ones Delegate sends to
+        ``agent_id``: the delegable ones but those about the agent itself
+        (its own Hanged? is not news to it)."""
+        out = []
+        for item_id in shown:
+            found = self._engine.actionables.found(item_id)
+            if found is not None and found.can_delegate and (
+                    agent_id is None or found.agent_id != agent_id):
+                out.append(found.id)
+        return out
+
+    def _found(self, key: str, row: dict[str, Any], item_id: Any,
+               agent_id: str | None) -> list[Item]:
+        """The items to delegate: ``item_id``, else every one
+        :meth:`delegates` names, top first."""
+        engine = self._engine
+        if item_id is not None:
+            if not isinstance(item_id, str) or not item_id:
+                raise ValueError("item must be an inbox item's id")
+            found = engine.actionables.found(item_id)
+            if found is None or found.work_item != key:
+                raise ValueError(f"No inbox item {item_id!r} on {key}")
+            if not found.can_delegate:
+                raise ValueError(_why_not(found, row, key))
+            return [found]
+        shown = [i["id"] for i in (row.get("needs_you") or {}).get("items") or ()]
+        items = [f for f in map(engine.actionables.found, shown) if f is not None]
+        if not items:
+            raise ValueError(f"{key} has no inbox item to delegate")
+        ids = set(self.delegates(key, shown, agent_id))
+        found = [f for f in items if f.id in ids]
+        if not found:
+            if any(f.can_delegate for f in items):
+                raise ValueError(f"Nothing on {row['branch'] or key} for agent {agent_id} to fix")
+            raise ValueError(_why_not(items[0], row, key))
+        return found
+
+    def _post(self, key: str, record: dict[str, Any], n: int,
+              summary: dict[str, Any] | None = None, read: bool = False) -> None:
+        """Post letter ``n`` (or rewrite it while it waits): the failed CI
+        log first when it has a CI item and the log is not cached."""
+        engine = self._engine
+        if self._reading.get(key) == n:
+            return  # posted once the log is read, with every item by then
+        items = [i for i in _items(record) if i.get("letter") == n and i.get("sent_at") is None]
+        if not items:
+            return
+        text = letter_text(key, items)
+        runs = actions.red_runs(engine, key)[1] \
+            if any(i["kind"] in CI_KINDS for i in items) else []
+        if runs:
+            if summary is None and not read:
+                summary = engine.actions.cached_summary(runs)
+                if summary is None and self._later(record, key, n, runs):
+                    return
+            text = with_summary(text, summary, runs)
+        mailbox = engine.first_responder.mailbox
+        tag = _tag(key, n)
+        if mailbox.amend(tag, text):
+            return
+        path = engine.status.path_of(key)
+        if path is None:
+            return
+
+        def sent() -> None:
+            if self.store.get(key) is not record:
+                return
+            at = engine.status.clock()
+            for i in _items(record):
+                if i.get("letter") == n:
+                    i["sent_at"] = at
+            # The agent must run again after this letter to be done with it.
+            record["sent_at"], record["ran"] = at, False
+            engine.overlay.changed()
+            engine.status.mark_dirty()
+
+        mailbox.post((path, record["agent"]), text, tag=tag, on_sent=sent)
+
+    def _later(self, record: dict[str, Any], key: str, n: int, runs: list[Any]) -> bool:
+        """Post letter ``n`` once the failed log is read; False with no loop."""
         engine = self._engine
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return False
+        self._reading[key] = n
 
         async def post() -> None:
             try:
                 summary = await asyncio.wait_for(engine.actions.summary(runs), SUMMARY_WAIT)
             except (asyncio.TimeoutError, OSError, ValueError):
                 summary = None
+            if self._reading.get(key) == n:
+                del self._reading[key]
             if self.store.get(key) is not record:
                 return  # taken back meanwhile
-            engine.first_responder.mailbox.post(slot, with_summary(text, summary, runs),
-                                                tag=tag, on_sent=sent)
+            self._post(key, record, n, summary=summary, read=True)
+            engine.overlay.changed()
             engine.first_responder.mailbox.flush()
 
         engine._spawn(post())
         return True
 
+    def send_now(self, key: str, by: str = "user") -> dict[str, Any]:
+        """The user's Send anyway: type the waiting letter now, whatever
+        the agent's status."""
+        engine = self._engine
+        d = self.store.get(key)
+        if d is None or d["phase"] != "on_it":
+            raise ValueError(f"{key} has no delegation to its agent")
+        if all(i.get("sent_at") is not None for i in _items(d)):
+            raise ValueError(f"Agent {d['agent']} already has it")
+        if key in self._reading:
+            raise ValueError("Still reading the failed CI log: try again in a moment")
+        path = engine.status.path_of(key)
+        if path is None or d["agent"] not in engine.agent_ids(path):
+            raise ValueError(f"Agent {d['agent']} is gone")
+        mailbox = engine.first_responder.mailbox
+        if not any(mailbox.pending(_tag(key, n)) for n in _letters(d)):
+            self._requeue(key, d)
+        status = self._status(key, d)
+        if not mailbox.send_now((path, d["agent"])):
+            raise ValueError(f"Agent {d['agent']} is being sent it now")
+        engine.overlay.add(key, "delegate", by, f"sent anyway to agent {d['agent']} ({status})")
+        engine.status.by(key, by)
+        return self.get(key) or {}
+
+    def _requeue(self, key: str, d: dict[str, Any]) -> None:
+        """Post again the letters an engine restart lost (the mailbox is in
+        memory; the delegation is not)."""
+        for n in _letters(d):
+            if not self._engine.first_responder.mailbox.pending(_tag(key, n)):
+                self._post(key, d, n)
+
     def clear(self, key: str) -> bool:
-        if self.store.pop(key, None) is None:
+        d = self.store.pop(key, None)
+        if d is None:
             return False
-        self._engine.first_responder.mailbox.drop(f"delegate:{key}")
+        self._reading.pop(key, None)
+        for n in _letters(d):
+            self._engine.first_responder.mailbox.drop(_tag(key, n))
         self._engine.overlay.changed()
         return True
 
@@ -222,25 +369,31 @@ class Delegations:
     def check(self, now: float) -> None:
         engine = self._engine
         for key, d in list(self.store.items()):
+            items = _items(d)
             path = engine.status.path_of(key)
             # The same condition (its id), even as a new occurrence: a CI or
             # conflict item leaves while an agent runs and comes back after.
-            holds = engine.actionables.found(d["item"]) is not None
+            holds = [i for i in items if engine.actionables.found(i["id"]) is not None]
             if d["phase"] == "returned":
                 if not holds:
                     del self.store[key]
                     engine.overlay.changed()
+                elif len(holds) < len(items):
+                    d["items"] = holds
+                    _summarize(d)
+                    engine.overlay.changed()
                 continue
             if path is None:
                 # The work item is gone: nothing to come back to.
-                del self.store[key]
-                engine.overlay.changed()
+                self.clear(key)
                 continue
             agent = d["agent"]
             if agent not in engine.agent_ids(path):
                 self._finish(key, d, holds, f"agent {agent} gone", now)
                 continue
-            if d.get("sent_at") is None:
+            if any(i.get("sent_at") is None for i in items):
+                if key not in self._reading:
+                    self._requeue(key, d)
                 continue
             state = engine.agent_states(path).get(agent)
             status = state.status.value if state is not None else "starting"
@@ -249,47 +402,118 @@ class Delegations:
                     d["ran"] = True
                     engine.overlay.changed()
             elif d["ran"] and status in _IDLE:
+                if engine.overlay.holding(key, now) is not None:
+                    # Its report holds the ball: the items are folded, not
+                    # cleared; it is not done with them yet (I4i).
+                    continue
                 self._finish(key, d, holds, f"agent {agent} finished", now)
 
-    def _finish(self, key: str, d: dict[str, Any], holds: bool, what: str, now: float) -> None:
+    def _finish(self, key: str, d: dict[str, Any], holds: list[dict[str, Any]], what: str,
+                now: float) -> None:
         engine = self._engine
+        self._reading.pop(key, None)
+        for n in _letters(d):
+            engine.first_responder.mailbox.drop(_tag(key, n))
+        kept = {i["id"] for i in holds}
+        cleared = [i for i in _items(d) if i["id"] not in kept]
+        done = "; ".join(self._cleared(key, i) for i in cleared)
         if holds:
-            d["phase"] = "returned"
-            d["state"] = clip_words(f"{what}; still {d['fact']}", 8)
-            text = f"{what}; still {d['fact']}"
+            still = "; ".join(i["fact"] for i in holds)
+            d.update(phase="returned", items=holds, what=what)
+            _summarize(d)
+            d["state"] = clip_words(f"{what}; still {still}", 8)
+            text = f"{what}: {done}; still {still}" if done else f"{what}; still {still}"
         else:
             del self.store[key]
-            text = f"{what}: {d['fact']} cleared"
-            note = self._unrelated(key, d)
-            if note:
-                # The red is the base's, not the branch's (R4): say so,
-                # not "cleared" as if CI had passed.
-                text = f"{what}: CI failures unrelated ({note})"
-        engine.overlay.add(key, "delegate", f"agent:{d['agent']}", text, ref=d["item"], at=now)
+            text = f"{what}: {done}"
+        engine.overlay.add(key, "delegate", f"agent:{d['agent']}", text,
+                           ref=(holds or cleared or [{}])[0].get("id"), at=now)
         engine.overlay.changed()
         engine.status.mark_dirty()
 
-    def _unrelated(self, key: str, d: dict[str, Any]) -> str:
-        """``base also red: 2 tests; eval-suite attested`` when a CI item
-        cleared because every failing check is unrelated to the branch, or
-        waits for the user to confirm an attestation."""
-        if str(d.get("item", "")).split(":", 1)[0].lower() not in CI_KINDS:
-            return ""
-        tests = actions.ci_tests_of(self._engine, key)
-        return tests.settled() if tests is not None else ""
+    def _cleared(self, key: str, item: dict[str, Any]) -> str:
+        """``CI red: tests cleared``, or ``CI failures unrelated (base also
+        red: 2 tests; eval-suite attested)`` when a CI item cleared because
+        every failing check is unrelated to the branch, or waits for the
+        user to confirm an attestation (R4): not "cleared" as if CI had
+        passed."""
+        if item["kind"] in CI_KINDS or str(item["id"]).split(":", 1)[0].lower() in CI_KINDS:
+            tests = actions.ci_tests_of(self._engine, key)
+            note = tests.settled() if tests is not None else ""
+            if note:
+                return f"CI failures unrelated ({note})"
+        return f"{item['fact']} cleared"
 
     def _dismissed(self, item: Item) -> Callable[[], None] | None:
         key = item.work_item
         d = self.store.get(key) if key is not None else None
-        if d is None or d["item"] != item.id:
+        if d is None:
             return None
-        del self.store[key]
+        gone = next((i for i in _items(d) if i["id"] == item.id), None)
+        if gone is None:
+            return None
+        d["items"] = [i for i in d["items"] if i is not gone]
+        if not d["items"]:
+            self.clear(key)
+        else:
+            _summarize(d)
         self._engine.overlay.changed()
 
         def undo() -> None:
             # Not over a delegation made since.
-            if key not in self.store:
-                self.store[key] = d
-                self._engine.overlay.changed()
+            now = self.store.get(key)
+            if now is None:
+                gone_d = dict(d, items=[gone])
+                _summarize(gone_d)
+                self.store[key] = gone_d
+            elif now is d and all(i["id"] != gone["id"] for i in d["items"]):
+                d["items"].append(gone)
+                _summarize(d)
+            else:
+                return
+            self._engine.overlay.changed()
 
         return undo
+
+
+def _tag(key: str, n: int) -> str:
+    """The mailbox tag of letter ``n``; follow-ups are numbered."""
+    return f"delegate:{key}" if n == 1 else f"delegate:{key}:{n}"
+
+
+def _letters(d: dict[str, Any]) -> list[int]:
+    return sorted({i.get("letter", 1) for i in _items(d)})
+
+
+def _items(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """The delegation's items; a record from before I4i (one ``item``)
+    becomes a list of one."""
+    if "items" not in d:
+        d["items"] = [{
+            "id": d.get("item"), "occurrence": d.get("occurrence"), "kind": d.get("kind", ""),
+            "fact": d.get("fact", ""), "title": "", "detail": "", "text": None,
+            "at": d.get("at", 0.0), "letter": 1, "sent_at": d.get("sent_at"),
+        }]
+        d.setdefault("letters", 1)
+    return d["items"]
+
+
+def _summarize(d: dict[str, Any]) -> None:
+    """The row's view of the items: the first one's id, every fact."""
+    items = _items(d)
+    if items:
+        d["item"], d["kind"] = items[0]["id"], items[0]["kind"]
+        d["occurrence"] = items[0]["occurrence"]
+    d["fact"] = " + ".join(i["fact"] for i in items)
+
+
+def _why_not(found: Item, row: dict[str, Any], key: str) -> str:
+    # The catalog's (rules/catalog.py): only what an agent can resolve.
+    from lazyagent.engine.actionables import KINDS
+
+    title = found.title or KINDS[found.kind].title
+    if found.kind in ("approval", "question", "turn_question", "decision", "delegation"):
+        why = "it is answered, not delegated: open the agent's terminal"
+    else:
+        why = "it is yours to do, not an agent's (a rule may say delegable = true)"
+    return f"{title} on {row['branch'] or key} cannot be delegated: {why}"

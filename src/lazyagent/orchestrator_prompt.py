@@ -61,7 +61,9 @@ done, changes requested) of the workers you spawned and wakes you with one \
 line "Item <key>: agent <id> (spawned by you) — …; held for you until HH:MM". \
 Verify, then `orchestrator_release(key, "done", note)` or `"returned"` with \
 what the user must do; unanswered, it goes to the user as "orchestrator did \
-not respond". A hold widens nothing: your mandate still applies.
+not respond". A hold widens nothing: your mandate still applies. Don't hold \
+an item you escalate: escalating hands it to the user; the engine ends your \
+hold (and when a brief there is answered).
 - **`status_report(note)`** — Say what you are doing now in one line \
 ("verifying feat-x's fix", "waiting for CI on api-retry") whenever that \
 changes: the user sees it on Home.
@@ -131,7 +133,8 @@ fail if an agent is running — stop it first.
 - **`spawn_agent(worktree_path, instruction?, skip_permissions=true, resume_mode="new")`** \
 — Starts a coding agent in the given worktree. The `instruction` is the task prompt \
 the agent will execute. Make it specific and self-contained — the agent has no context \
-beyond what you write here. Set `skip_permissions=false` for normal permission mode. \
+beyond what you write here. Set `skip_permissions=false` for normal permission mode, \
+or `permission_mode` for another (`"cli"`, `"bypass"`, Claude's `"acceptEdits"`, `"plan"`, ...). \
 Use `resume_mode="last"` to resume the most recent session. **Note:** combining \
 `resume_mode="last"` with an `instruction` resumes the prior session and *also* sends \
 the new instruction as an additional turn — it does not replace the original task. \

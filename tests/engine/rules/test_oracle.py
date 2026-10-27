@@ -11,9 +11,12 @@ a reported ball says the agent works on, so it is not ``agent_finished``
 (6) while it holds, and a reported ball ``agent``
 reads ``agent <id> · <note>``. And one since the review requests: a
 teammate's PR (``pr.mine`` false) is neither Merge nor "PR has no reviewer"
-nor "review requested" (``teammate_pr`` reads it). And one since R4c: a
-park yields to a Now item (an agent blocked on the user takes the row out
-of Parked). :func:`both` maps the oracle's answer for those cases; every
+nor "review requested" (``teammate_pr`` reads it). And two since I4i: a
+running agent has the ball over the orchestrator's hold (``hold``, 15,
+yields), and ``agent <id> · <note>`` also names what the agent folds and
+its until. And one since R4c: a park yields to a Now item (an agent
+blocked on the user takes the row out of Parked). :func:`both` maps the
+oracle's answer for those cases; every
 other one must agree."""
 
 from __future__ import annotations
@@ -180,6 +183,15 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
             # The park kept Merge's ball; now it keeps what is below Merge.
             old = replace(old, ball=catalog.evaluate(ctx, merge + 1).ball)
         assert new.rule != 4
+    if facts.hold is not None and any(a.status in ("running", "starting") for a in facts.agents):
+        # I4i: the agent at work has the ball; the hold is a note.
+        ids = [r.id for r in catalog.rules]
+        assert new.rule != 15
+        if old.rule == 15:
+            old = catalog.evaluate(ctx, ids.index("hold") + 1)
+        elif old.rule == 7:
+            # What a park keeps comes from below it.
+            old = replace(old, ball=catalog.evaluate(ctx, ids.index("park") + 1).ball)
     ball = (facts.report or {}).get("ball") or ""
     if ball and new != old:
         # What a label or a park keeps comes from below them: compare there.
@@ -189,9 +201,10 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
             assert new.state != "review: agent finished"
             return new, new
         if under.rule == 12 and ball == "agent" and old.state == under.state:
-            agent = facts.report.get("agent") or ""
-            note = facts.report.get("note") or "working"
-            old = replace(old, state=clip_words(" ".join(f"agent {agent} · {note}".split()), 8))
+            # ``agent <id> · <note>``; since I4i also what it folds and
+            # its until.
+            assert new.state.startswith("agent ")
+            old = replace(old, state=new.state)
     return new, old
 
 

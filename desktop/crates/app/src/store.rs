@@ -85,6 +85,7 @@ impl Store {
                     kind: Some(s.kind.clone()),
                     size: None,
                     attached_clients: None,
+                    permission_mode: s.permission_mode.clone(),
                 };
                 match self.agents_mut(&s.worktree_path) {
                     Some(agents) => {
@@ -176,6 +177,15 @@ pub fn basename(path: &str) -> &str {
 
 pub fn agent_label(agent: &Agent) -> String {
     if agent.label.is_empty() { format!("Agent {}", agent.agent_id) } else { agent.label.clone() }
+}
+
+/// An agent's tab: its label, and its permission mode when it is not the
+/// CLI's own default.
+pub fn tab_label(agent: &Agent) -> String {
+    match agent.permission_mode.as_deref() {
+        None | Some("cli") => agent_label(agent),
+        Some(mode) => format!("{} · {mode}", agent_label(agent)),
+    }
 }
 
 /// "fail" / "pending" / "pass" for a PR's checks (format.js ciSummary).

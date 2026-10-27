@@ -93,7 +93,8 @@ state = "orchestrator · looking"
 id = "hold"
 num = 15
 locked = true
-when = 'hold.active'
+# A running agent has the ball: the hold is only a note then.
+when = 'hold.active and not ("running" in agents.statuses or "starting" in agents.statuses)'
 [rule.then]
 ball = "agent"
 state_expr = 'clip("orchestrator · " + (hold.note == "" ? "holding" : hold.note), 8)'
@@ -116,8 +117,9 @@ when = 'delegation.phase == "on_it"'
 [rule.then]
 ball = "agent"
 state_expr = '''
-clip("agent " + delegation.agent + " · fixing "
-     + (delegation.fact == "" ? "it" : delegation.fact), 8)
+delegation.held != "" ? clip(delegation.held, 10)
+  : clip("agent " + delegation.agent + " · fixing "
+         + (delegation.fact == "" ? "it" : delegation.fact), 8)
 '''
 
 # --- Without the inbox queue: the agents' dialogs and reports -------------
@@ -295,7 +297,9 @@ when = 'report.ball != ""'
 ball_expr = 'report.ball'
 state_expr = '''
 report.ball == "agent"
-  ? clip("agent " + report.agent + " · " + (report.note == "" ? "working" : report.note), 8)
+  ? clip("agent " + report.agent + " · " + (held.what == "" ? "" : held.what + " · ")
+         + (report.note == "" ? "working" : report.note)
+         + (report.until == "" ? "" : " · until " + report.until), 16)
   : clip(report.note == "" ? "reported: " + report.ball : report.note, 5)
 '''
 
@@ -457,7 +461,7 @@ level = "round"
 title = "Hanged?"
 rank = 3
 detector = "agents"
-when = 'agent.status == "possibly_hanged"'
+when = 'agent.status == "possibly_hanged" and not agent.reported'
 state = "agent may hang"
 
 [[kind]]
@@ -487,11 +491,11 @@ level = "round"
 title = "CI failing"
 rank = 5
 detector = "pr"
-says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4) and that gate the merge (R4c: not gating = false or policy = true), held back while every one waits for your confirmation of an attestation (R5)."
+says = "An open PR red on its head with no agent holding it (at work, or its status_report holds the ball); only the failures the base does not explain (R4) and that gate the merge (R4c: not gating = false or policy = true), held back while every one waits for your confirmation of an attestation (R5)."
 when = '''
 pr.state == "open" and ci.pr_red and not empty(ci.gating_failures)
 and not (ci.gating_failures subset ci.attestation_pending)
-and agents.running == 0
+and not place.agent_holds
 '''
 state_expr = 'with("CI red", ci.first_related)'
 
@@ -507,7 +511,7 @@ says = "A fresh red Actions run on the head of a branch with no PR (I7); only th
 when = '''
 not pr.exists and ci.head == "red" and not empty(ci.gating_failures)
 and not (ci.gating_failures subset ci.attestation_pending)
-and agents.running == 0
+and not place.agent_holds
 '''
 state_expr = 'with("CI red", ci.first_related)'
 
@@ -533,7 +537,7 @@ level = "round"
 title = "Merge conflict"
 rank = 5
 detector = "pr"
-when = 'pr.state == "open" and pr.mergeable == "conflicting" and agents.running == 0'
+when = 'pr.state == "open" and pr.mergeable == "conflicting" and not place.agent_holds'
 state = "conflict with base"
 
 [[kind]]
@@ -604,7 +608,7 @@ detector = "actions"
 says = "Every failing check also fails on the base at the commit compared, and the base has fixed it since: merge or rebase the base in (R4)."
 when = '''
 ci.head == "red" and empty(ci.related_failures) and not empty(ci.base_fixed)
-and agents.running == 0
+and not place.agent_holds
 '''
 state_expr = 'with("Sync with base", ci.first_base_fixed)'
 

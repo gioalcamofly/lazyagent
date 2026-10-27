@@ -21,8 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `[status] review_requests = false` turns it off. A feeder's work item whose
   URL or ticket matches the PR joins that line
 - Rule facts `pr.mine`, `pr.author` and `pr.review_requested_from_me`
+- `[agents] permission_mode` (in `.lazyagent.toml`, or for every repo in
+  `~/.config/lazyagent/config.toml`): the mode agents are spawned in, "cli"
+  (the CLI's own default), "bypass", or Claude's `--permission-mode` values.
+  `spawn_agent` and `restore_agents` take a `permission_mode`; each agent's
+  mode is recorded, listed and reused by restores. Desktop: a Permissions
+  picker in the spawn dialog, preselected with the configured mode; a tab
+  names a mode other than "cli"
 
 ### Changed
+- The desktop's quick spawn and Delegate → Spawn no longer force "not bypass":
+  the configured `[agents] permission_mode` applies (else the CLI's default,
+  as before)
 - A teammate's PR checked out locally reads as theirs: the built-in Merge and
   "Address review" are for your own PRs, and the README's owner-review recipe
   asks `pr.mine`

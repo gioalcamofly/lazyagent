@@ -130,6 +130,9 @@ def one_line(text: str, limit: int) -> str:
 
 # The engine's own entries a restart would add again: the facts it reads.
 REPEATABLE = ("ci", "review", "ball", "state")
+# Said again by the same actor: one entry with its ``count`` and the time it
+# was ``last`` said (the user pressing Delegate over and over, I4i).
+COUNTED = ("delegate",)
 
 
 def _repeat(ring: list[dict[str, Any]], entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -426,6 +429,15 @@ class Overlay:
             entry["ref"] = ref
         entry.update({k: v for k, v in extra.items() if v is not None})
         ring = self.timeline.setdefault(key, [])
+        if kind in COUNTED:
+            last = next((e for e in reversed(ring) if e["kind"] == kind), None)
+            if last is not None and (last["actor"], last["text"]) == (actor, entry["text"]):
+                last["count"] = last.get("count", 1) + 1
+                last["last"] = entry["at"]
+                if self._engine is not None:
+                    self._engine.events.emit(STATUS_TIMELINE, {"key": key, "entry": last})
+                self.changed()
+                return last
         same = _repeat(ring, entry)
         if same is not None:
             # An engine restart reads the facts again (the timeline is
@@ -442,7 +454,7 @@ class Overlay:
 
     def entries(self, key: str, since: float | None = None) -> list[dict[str, Any]]:
         ring = self.timeline.get(key, [])
-        return [dict(e) for e in ring if since is None or e["at"] > since]
+        return [dict(e) for e in ring if since is None or e.get("last", e["at"]) > since]
 
     def last_event_at(self, key: str) -> float | None:
         ring = self.timeline.get(key)
@@ -680,6 +692,18 @@ class Overlay:
         ball is: working on in the background, waiting on others, stalled)."""
         r = self.reports.get(key)
         return r if r is not None and r.get("ball") else None
+
+    def holding(self, key: str, now: float) -> dict[str, Any] | None:
+        """``key``'s report while its agent holds the ball (I4i): ball
+        ``agent`` (until its ``until``, 2 h by default) or ``others`` with
+        an ``until`` still ahead."""
+        r = self.reports.get(key)
+        if r is None or r.get("ball") not in ("agent", "others"):
+            return None
+        until = r.get("until")
+        if not isinstance(until, (int, float)):
+            until = default_until(r.get("ball"), r["at"])
+        return r if until is not None and now < until else None
 
     def expire_reports(self, now: float) -> None:
         """A report's ``needs_user`` and ball last until its agent has ended

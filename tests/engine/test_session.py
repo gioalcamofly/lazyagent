@@ -646,6 +646,28 @@ class TestCheckHang:
         assert events == []
 
 
+    def test_a_restored_claude_at_its_prompt_is_not_hanged(self, tmp_path):
+        """``claude --resume`` types nothing: its SessionStart hook says it
+        is at its prompt, and hours later it is still idle, not hanged."""
+        import json
+
+        from lazyagent.agent_observers import ClaudeHooksObserver
+
+        log_path = tmp_path / "hooks.jsonl"
+        session = AgentSession(
+            "unused", worktree_path=WT_PATH, agent_id="a1",
+            observer=ClaudeHooksObserver(str(log_path)),
+        )
+        session._on_text("Resuming conversation...")
+        assert session.status == AgentStatus.RUNNING
+        log_path.write_text(
+            json.dumps({"hook_event_name": "SessionStart", "source": "resume"}) + "\n",
+            encoding="utf-8",
+        )
+        session.last_output_time = time.monotonic() - 6 * 3600
+        session.check_hang()
+        assert session.status == AgentStatus.WAITING
+
 class TestListeners:
     def test_a_failing_listener_does_not_stop_the_others(self):
         session, _, events = _agent(running=False)

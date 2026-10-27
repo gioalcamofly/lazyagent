@@ -309,6 +309,26 @@ async def test_a_new_client_learns_an_agent_with_no_status_yet(engine, monkeypat
         await backend.stop()
 
 
+async def test_a_spawn_names_no_mode_unless_asked(engine, backend, monkeypatch):
+    """The TUI's spawns: the configured mode, else the CLI's own default
+    (not the RPC's bypass); an explicit choice wins."""
+    from tests.engine.fakes import no_pty
+
+    no_pty(monkeypatch)
+    feat = _feat(engine)
+    plain = await backend.spawn_agent(feat)
+    assert engine.get_agent(feat, plain.agent_id).permission_mode == "cli"
+    bypass = await backend.spawn_agent(feat, skip_permissions=True)
+    assert engine.get_agent(feat, bypass.agent_id).permission_mode == "bypass"
+    engine.config.agent.permission_mode = "plan"
+    configured = await backend.spawn_agent(feat, skip_permissions=False)
+    assert engine.get_agent(feat, configured.agent_id).permission_mode == "plan"
+    named = await backend.spawn_agent(feat, permission_mode="dontAsk")
+    assert engine.get_agent(feat, named.agent_id).permission_mode == "dontAsk"
+    await backend.sync()
+    assert backend._agents[feat][named.agent_id].permission_mode == "dontAsk"
+
+
 async def test_requests_fail_like_the_engine_does(engine, backend):
     with pytest.raises(ValueError, match="Unknown worktree"):
         await backend.spawn_agent("/nowhere")

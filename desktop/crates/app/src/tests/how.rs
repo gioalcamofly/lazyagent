@@ -239,6 +239,10 @@ fn the_expanded_line_has_a_why_button_and_older_engines_say_why_not() {
     let (mut h, _tx, calls) = merge_home();
     h.state_mut().state.home.expanded = Some("repo:docs".into());
     h.run_steps(3);
+    // Under More… (I4i: the bar keeps the primary verbs).
+    assert!(h.query_by_label("Why?  (w)").is_none());
+    h.get_by_label("More…").click();
+    h.run_steps(2);
     h.get_by_label("Why?  (w)").click();
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "rules_explain").len(), 1);
@@ -576,7 +580,7 @@ fn how_it_works_screenshots_are_current() {
     h.state_mut().state.home.expanded = Some("shop:invoice-pdf".into());
     let img = render(&mut h).unwrap();
     let ask = h.get_by_label("rm -rf build/ && npm run build -- --prod && npm test").rect();
-    let buttons = h.get_by_label("Why?  (w)").rect();
+    let buttons = h.get_by_label("More…").rect();
     let rect = egui::Rect::from_min_max(egui::pos2(LEFT, ask.min.y - 44.0), egui::pos2(W, buttons.max.y + 8.0));
     check("expanded", &crop(&img, rect), &mut stale);
     // The park menu, on the same line.

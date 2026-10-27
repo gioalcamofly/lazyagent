@@ -61,9 +61,9 @@ async def test_a_background_report_suppresses_done_and_the_auto_hold():
     await _pass(engine)
     row = _row(engine)
     assert row["hold"] is None
-    assert (row["ball"], row["zone"], row["state"]) == (
-        "agent", "in_flight", "agent a1 · sampling in background until ~09:40",
-    )
+    assert (row["ball"], row["zone"]) == ("agent", "in_flight")
+    # Its until too, since I4i.
+    assert row["state"].startswith("agent a1 · sampling in background until ~09:40 · until ")
     assert "done" not in _kinds(engine)
     assert _woken(orch) == []
 
@@ -94,7 +94,8 @@ async def test_a_fresh_turn_with_a_new_report_keeps_it_working():
     await _report(engine, note="still sampling")
     _agent(engine, FEAT, "a1", "waiting")
     await _pass(engine)
-    assert (_row(engine)["hold"], _row(engine)["state"]) == (None, "agent a1 · still sampling")
+    assert _row(engine)["hold"] is None
+    assert _row(engine)["state"].startswith("agent a1 · still sampling · until ")
     assert _woken(orch) == []
 
 

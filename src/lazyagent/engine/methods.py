@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 from lazyagent import diagnostics as diag
 from lazyagent.agent_events import STATUS_GROUPS, make_filter, resolve_statuses
-from lazyagent.agent_providers import ResumeMode
+from lazyagent.agent_providers import (
+    PERMISSION_BYPASS,
+    ResumeMode,
+    check_permission_mode,
+)
 from lazyagent.engine import actions, approvals
 from lazyagent.engine import overlay as overlay_mod
 from lazyagent.engine.claims import NOTHING_TO_RELEASE
@@ -164,7 +168,8 @@ class SpawnCaps:
 
 
 # status_list {fields}: the opt-in row fields (proposal 0014, Q-R20).
-ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "passable", "approvable")
+ROW_FIELDS = ("rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable",
+              "approvable")
 
 
 class EngineMethods:
@@ -352,7 +357,11 @@ class EngineMethods:
 
     async def spawn_agent(self, params: dict) -> Any:
         """Spawn a NEW agent in a worktree. Params: worktree_path, instruction
-        (optional), skip_permissions (optional), resume_mode (optional),
+        (optional), permission_mode (optional: agent_providers.
+        PERMISSION_MODES), skip_permissions (optional, under
+        permission_mode), default_permission_mode (optional: the mode when
+        neither is given and ``[agents] permission_mode`` is not set;
+        bypass by default), resume_mode (optional),
         label (optional), env (optional: the environment the agent starts
         from instead of the engine's), kind (optional: ``"orchestrator"``
         starts the repo's orchestrator, ignoring worktree_path and label),
@@ -373,7 +382,15 @@ class EngineMethods:
                 raise ValueError(f"Unknown worktree: {worktree_path}")
 
         instruction = params.get("instruction") or params.get("initial_prompt")
-        skip_permissions = params.get("skip_permissions", True)
+        permission_mode = params.get("permission_mode")
+        if permission_mode is not None:
+            check_permission_mode(permission_mode)
+        skip_permissions = params.get("skip_permissions")
+        if skip_permissions is not None and not isinstance(skip_permissions, bool):
+            raise ValueError("skip_permissions must be a boolean")
+        default_mode = check_permission_mode(
+            params.get("default_permission_mode", PERMISSION_BYPASS)
+        )
         label = params.get("label")
         resume_mode_str = params.get("resume_mode", "new")
         try:
@@ -420,6 +437,8 @@ class EngineMethods:
                     worktree_path,
                     instruction,
                     skip_permissions=skip_permissions,
+                    permission_mode=permission_mode,
+                    default_permission_mode=default_mode,
                     resume_mode=resume_mode,
                     label=label,
                     kind=kind,
@@ -685,13 +704,25 @@ class EngineMethods:
 
     async def list_restorable(self, params: dict) -> Any:
         """Agents earlier engines ran when they ended (restart manifest)."""
-        return {"agents": [e.to_dict() for e in self._engine.list_restorable()]}
+        engine = self._engine
+        return {
+            "agents": [
+                {**e.to_dict(), "permission_mode": engine.entry_permission_mode(e)}
+                for e in engine.list_restorable()
+            ]
+        }
 
     async def restore_agents(self, params: dict) -> Any:
         """Spawn restorable agents again (all of them without ``ids``), each
-        resuming its conversation. Params: ids, env (both optional)."""
+        resuming its conversation. Params: ids, env, permission_mode (all
+        optional; without permission_mode, each in the mode it recorded)."""
         env = check_env(params.get("env"))
-        return await self._engine.restore_agents(self._ids(params), env=env)
+        mode = params.get("permission_mode")
+        if mode is not None:
+            check_permission_mode(mode)
+        return await self._engine.restore_agents(
+            self._ids(params), env=env, permission_mode=mode
+        )
 
     async def dismiss_restorable(self, params: dict) -> Any:
         """Stop offering restorable agents (all of them without ``ids``)."""
@@ -1158,8 +1189,11 @@ class EngineMethods:
           reason (``text``);
         - ``close``: ``how`` (done, dropped), for what the engine cannot see;
         - ``delegate``: pass it to the orchestrator (``to: "orchestrator"``,
-          optional ``ttl_s``), or hand one inbox item to the branch's agent
-          (``to: "agent"``, optional ``item``, ``agent_id``, ``text``);
+          optional ``ttl_s``), or hand the row's delegable items (or only
+          ``item``) to the branch's agent in one letter (``to: "agent"``,
+          optional ``item``, ``agent_id``, ``text``); ``send_now: true``
+          types a letter still waiting for the agent to be free (Send
+          anyway);
         - ``clear``: drop the gesture, take back a pass or a hold, and end a
           delegation;
         - ``undo``: take back one thing only, ``what``: ``park`` (the
@@ -1187,6 +1221,8 @@ class EngineMethods:
         undo: dict[str, Any] | None = None
         if kind == "undo":
             undo = self._undo_gesture(key, params.get("what"))
+        elif kind == "delegate" and params.get("to") == "agent" and params.get("send_now"):
+            delegation = engine.delegations.send_now(key, by=role)
         elif kind == "delegate" and params.get("to") == "agent":
             delegation = engine.delegations.delegate(
                 key, item_id=params.get("item"), agent_id=params.get("agent_id"),

@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from lazyagent.agent_providers import PERMISSION_MODES
 from lazyagent.engine.runtime import repo_digest, state_dir
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,10 @@ class Entry:
     provider: str
     label: str = ""
     session_name: str = ""
+    # Written for older engines (true: bypass); permission_mode wins.
     skip_permissions: bool = False
+    # agent_providers.PERMISSION_MODES; None in entries older engines wrote.
+    permission_mode: str | None = None
     # The provider's own conversation id (Claude's session_id), when its
     # observer reported one: a restore resumes exactly that conversation.
     conversation_id: str | None = None
@@ -92,6 +96,8 @@ class Entry:
             return None
         if not all(isinstance(v, str) for v in (entry.id, entry.worktree_path)):
             return None
+        if entry.permission_mode not in PERMISSION_MODES:
+            entry.permission_mode = None
         return entry
 
 

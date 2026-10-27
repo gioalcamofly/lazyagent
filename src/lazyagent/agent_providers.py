@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -11,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 class ObservationMode(Enum):
@@ -49,6 +52,49 @@ IDENTITY_ENV = frozenset({AGENT_TOKEN_ENV, NOTES_PATH_ENV, SOCKET_ENV})
 
 # Values Claude Code accepts for its crossSessionInbound setting.
 CROSS_SESSION_INBOUND_VALUES = ("accept", "hold", "refuse")
+
+# The permission modes an agent can be spawned in ([agents] permission_mode):
+# "cli" passes nothing (the CLI's own default, e.g. Claude's
+# permissions.defaultMode), "bypass" the provider's dangerous flag, and the
+# rest are Claude's --permission-mode values. An unknown value is refused,
+# never passed through: a typo would otherwise stop Claude from starting.
+PERMISSION_CLI = "cli"
+PERMISSION_BYPASS = "bypass"
+CLAUDE_PERMISSION_MODES = ("acceptEdits", "plan", "dontAsk", "auto", "default")
+PERMISSION_MODES = (PERMISSION_CLI, PERMISSION_BYPASS, *CLAUDE_PERMISSION_MODES)
+
+
+def check_permission_mode(mode: object) -> str:
+    """``mode`` if it is a known permission mode, else ValueError."""
+    if mode not in PERMISSION_MODES:
+        raise ValueError(
+            f"Invalid permission_mode: {mode!r}. "
+            f"Must be one of: {', '.join(PERMISSION_MODES)}"
+        )
+    return mode  # type: ignore[return-value]
+
+
+def resolve_permission_mode(
+    permission_mode: str | None,
+    skip_permissions: bool | None,
+    configured: str | None,
+    default: str = PERMISSION_CLI,
+) -> str:
+    """The mode an agent is spawned in: an explicit ``permission_mode``,
+    else an explicit ``skip_permissions`` (true: bypass; false: the
+    configured mode unless that is bypass, else cli), else the configured
+    mode, else the caller's ``default``."""
+    if permission_mode is not None:
+        return check_permission_mode(permission_mode)
+    if skip_permissions is True:
+        return PERMISSION_BYPASS
+    if skip_permissions is False:
+        if configured is None or configured == PERMISSION_BYPASS:
+            return PERMISSION_CLI
+        return configured
+    if configured is not None:
+        return configured
+    return check_permission_mode(default)
 
 
 def agent_session_name(worktree_path: str, agent_id: str = "") -> str:
@@ -98,6 +144,25 @@ class AgentProvider:
     instruction_flag: str | None = None
     system_prompt_flag: str | None = None
     session_name_flag: str | None = None
+    # Takes one of CLAUDE_PERMISSION_MODES; None: only bypass or not.
+    permission_mode_flag: str | None = None
+
+    def permission_args(self, mode: str) -> list[str]:
+        """The CLI args for a permission mode (see PERMISSION_MODES)."""
+        if mode == PERMISSION_BYPASS:
+            return [self.dangerous_flag]
+        if mode == PERMISSION_CLI:
+            return []
+        if self.permission_mode_flag:
+            return [self.permission_mode_flag, mode]
+        if (self.name, mode) not in _WARNED_MODES:
+            _WARNED_MODES.add((self.name, mode))
+            log.warning(
+                "%s has no permission mode %r; it starts in its own default",
+                self.name,
+                mode,
+            )
+        return []
 
     def build_command(
         self,
@@ -110,13 +175,15 @@ class AgentProvider:
         session_name: str | None = None,
         env: Mapping[str, str] | None = None,
         resume_conversation: str | None = None,
+        permission_mode: str | None = None,
     ) -> str:
         """Build the full shell command used to launch this provider.
 
         ``env`` is the environment the agent starts from (the spawning
         client's); ``None`` means this process's own. ``resume_conversation``
         resumes that conversation id (the pick flag with the id), over
-        ``resume_mode``.
+        ``resume_mode``. ``permission_mode`` (PERMISSION_MODES) wins over
+        ``skip_permissions``.
         """
         context = runtime_context or self.build_runtime_context(worktree_path)
 
@@ -131,8 +198,9 @@ class AgentProvider:
             parts = [self.executable]
             parts.extend(resume_args)
 
-        if skip_permissions:
-            parts.append(self.dangerous_flag)
+        if permission_mode is None:
+            permission_mode = PERMISSION_BYPASS if skip_permissions else PERMISSION_CLI
+        parts.extend(self.permission_args(permission_mode))
 
         if session_name and self.session_name_flag:
             parts.extend([self.session_name_flag, session_name])
@@ -257,6 +325,9 @@ class AgentProvider:
         return CompositeObserver(observers)
 
 
+# (provider, mode) pairs already warned about: one log line each.
+_WARNED_MODES: set[tuple[str, str]] = set()
+
 PROVIDERS = {
     "claude": AgentProvider(
         name="claude",
@@ -269,6 +340,7 @@ PROVIDERS = {
         resume_last_args=("--continue",),
         system_prompt_flag="--append-system-prompt",
         session_name_flag="--name",
+        permission_mode_flag="--permission-mode",
     ),
     "codex": AgentProvider(
         name="codex",

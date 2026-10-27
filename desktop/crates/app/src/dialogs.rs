@@ -39,7 +39,9 @@ pub struct Dialog {
     pub branch: String,
     pub base: String,
     pub extra: String,
-    pub skip: bool,
+    /// The permission mode to spawn in (PERMISSION_MODES); preselected
+    /// from the engine's `[agents] permission_mode`.
+    pub mode: String,
     pub resume: &'static str,
     pub launch: bool,
     pub force: bool,
@@ -62,7 +64,7 @@ impl Dialog {
             branch: String::new(),
             base: String::new(),
             extra: String::new(),
-            skip: false,
+            mode: "cli".into(),
             resume: "new",
             launch: false,
             force: false,
@@ -72,6 +74,50 @@ impl Dialog {
             focused: false,
         }
     }
+}
+
+/// The modes a spawn can name; Claude's own `--permission-mode` values
+/// after cli and bypass.
+pub const PERMISSION_MODES: [&str; 7] = ["cli", "bypass", "acceptEdits", "plan", "dontAsk", "auto", "default"];
+
+/// The configured permission mode, "cli" without one (or from an older
+/// engine).
+pub fn configured_mode(config: Option<&ConfigView>) -> String {
+    config.and_then(|c| c.permission_mode.clone()).unwrap_or_else(|| "cli".into())
+}
+
+/// The modes the picker offers: only cli and bypass for providers other
+/// than Claude (the rest start them in their default anyway), plus the
+/// configured one.
+pub fn mode_choices(config: Option<&ConfigView>) -> Vec<String> {
+    let claude = config.is_none_or(|c| c.agent_provider == "claude");
+    let mut modes: Vec<String> =
+        PERMISSION_MODES.iter().take(if claude { PERMISSION_MODES.len() } else { 2 }).map(|m| m.to_string()).collect();
+    let configured = configured_mode(config);
+    if !modes.contains(&configured) {
+        modes.push(configured);
+    }
+    modes
+}
+
+/// `n` in the spawn dialog: the configured mode, unless that is bypass.
+pub fn normal_mode(config: Option<&ConfigView>) -> String {
+    match configured_mode(config) {
+        m if m == "bypass" => "cli".into(),
+        m => m,
+    }
+}
+
+fn mode_picker(ui: &mut Ui, id: &str, mode: &mut String, config: Option<&ConfigView>) {
+    ui.horizontal(|ui| {
+        ui.label("Permissions");
+        egui::ComboBox::from_id_salt(id).selected_text(mode.as_str()).show_ui(ui, |ui| {
+            for m in mode_choices(config) {
+                let text = if m == "cli" { "cli (the CLI's own default)".to_string() } else { m.clone() };
+                ui.selectable_value(mode, m, text);
+            }
+        });
+    });
 }
 
 /// The base a new worktree starts from: the configured default branch when
@@ -181,7 +227,7 @@ pub const KEYMAP: &[(&str, &str, &str)] = &[
     ("Ctrl+Shift+C  Ctrl+Shift+V", "Copy, paste (also Shift+Insert, middle click)", "In a terminal"),
     ("Shift+Enter", "A newline for the agent (ESC CR)", "In a terminal"),
     ("Shift+drag  Shift+wheel", "Select and scroll even when the program uses the mouse", "In a terminal"),
-    ("N  D  R  L", "Spawn: normal, skip permissions, resume (pick / last)", "In a dialog"),
+    ("N  D  R  L", "Spawn: configured mode (not bypass), bypass, resume (pick / last)", "In a dialog"),
     ("Y  N  F", "Confirm: yes / no; Remove: toggle force", "In a dialog"),
     ("C  K  D", "Stop with notes: copy them / keep them / delete them", "In a dialog"),
     ("Enter  Ctrl+Enter  Esc", "Submit; submit from the instruction; close", "In a dialog"),
@@ -237,7 +283,7 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                         submit = Some(Submit::Spawn);
                     }
                 });
-                ui.checkbox(&mut d.skip, "Skip permissions (d)");
+                mode_picker(ui, "spawn-mode", &mut d.mode, state.store.config.as_ref());
                 ui.horizontal(|ui| {
                     ui.label("Session");
                     ui.radio_value(&mut d.resume, "new", "New");
@@ -273,10 +319,10 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                     if key(ui, Key::Enter) {
                         submit = Some(Submit::Spawn);
                     } else if key(ui, Key::N) {
-                        (d.skip, d.resume) = (false, "new");
+                        (d.mode, d.resume) = (normal_mode(state.store.config.as_ref()), "new");
                         submit = Some(Submit::Spawn);
                     } else if key(ui, Key::D) {
-                        (d.skip, d.resume) = (true, "new");
+                        (d.mode, d.resume) = ("bypass".into(), "new");
                         submit = Some(Submit::Spawn);
                     } else if key(ui, Key::R) {
                         d.resume = "pick";
@@ -320,7 +366,7 @@ pub fn show(ctx: &egui::Context, state: &mut State) {
                     if edit.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Enter)) {
                         submit = Some(Submit::Create);
                     }
-                    ui.checkbox(&mut d.skip, "Skip permissions");
+                    mode_picker(ui, "create-mode", &mut d.mode, state.store.config.as_ref());
                 }
                 if state.store.config.as_ref().is_some_and(|c| c.has_custom_create) {
                     ui.label(
@@ -526,7 +572,7 @@ fn run(state: &mut State, submit: Submit, id: u64) {
             let mut params = json!({
                 "instruction": (!d.instruction.trim().is_empty()).then(|| d.instruction.trim().to_string()),
                 "label": (!d.label.trim().is_empty()).then(|| d.label.trim().to_string()),
-                "skip_permissions": d.skip,
+                "permission_mode": d.mode,
                 "resume_mode": d.resume,
                 "env": env,
             });
@@ -565,7 +611,7 @@ fn run(state: &mut State, submit: Submit, id: u64) {
             if !d.extra.trim().is_empty() {
                 params["extra"] = json!(d.extra.trim());
             }
-            let launch = d.launch.then(|| (d.instruction.trim().to_string(), d.skip));
+            let launch = d.launch.then(|| (d.instruction.trim().to_string(), d.mode.clone()));
             state.conn.clone().request("create_worktree", params, move |s, reply| {
                 match reply.and_then(|v| {
                     serde_json::from_value::<CreateWorktreeResult>(v)
@@ -663,6 +709,7 @@ mod tests {
             default_branch: b.into(),
             has_custom_create: false,
             has_custom_remove: false,
+            permission_mode: None,
         };
         let trees = [wt("/r", "main", true, &[]), wt("/r-dev", "develop", false, &[])];
         assert_eq!(default_base(Some(&cfg("develop")), &trees), "develop");

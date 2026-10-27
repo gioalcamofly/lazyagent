@@ -10,6 +10,7 @@ from pathlib import Path
 from lazyagent.agent_providers import (
     CROSS_SESSION_INBOUND_VALUES,
     DEFAULT_AGENT_PROVIDER,
+    PERMISSION_MODES,
     normalize_provider_name,
 )
 from lazyagent.engine.notes import DEFAULT_SECTIONS as NOTES_SECTIONS
@@ -26,6 +27,9 @@ else:
 log = logging.getLogger(__name__)
 
 CONFIG_FILENAME = ".lazyagent.toml"
+# The user's own, under $XDG_CONFIG_HOME/lazyagent: only the keys that make
+# sense for every repo (today [agents] permission_mode); the repo's wins.
+GLOBAL_CONFIG_FILENAME = "config.toml"
 
 
 DEFAULT_BRANCH = "master"
@@ -50,6 +54,10 @@ class AgentConfig:
     # [agents] worker_preamble: the fixed lines a worker is spawned with
     # (worker_prompt.py). None: the default text; "": none.
     worker_preamble: str | None = None
+    # [agents] permission_mode (agent_providers.PERMISSION_MODES) agents are
+    # spawned in when the spawn names none. None: not configured, the
+    # spawning path's own default (cli; bypass for MCP's spawn_agent).
+    permission_mode: str | None = None
 
 
 @dataclass
@@ -186,17 +194,54 @@ class Config:
         return self.worktree.remove is not None
 
 
+def global_config_path() -> Path:
+    """``$XDG_CONFIG_HOME/lazyagent/config.toml``."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "lazyagent" / GLOBAL_CONFIG_FILENAME
+
+
+def _permission_mode(data: object, where: object) -> str | None:
+    """``[agents] permission_mode`` of a parsed file; a bad value is
+    ignored with a warning (None)."""
+    agents = data.get("agents") if isinstance(data, dict) else None
+    if not isinstance(agents, dict) or "permission_mode" not in agents:
+        return None
+    mode = agents["permission_mode"]
+    if mode in PERMISSION_MODES:
+        return mode
+    log.warning(
+        "%s: ignoring [agents] permission_mode %r (one of: %s)",
+        where,
+        mode,
+        ", ".join(PERMISSION_MODES),
+    )
+    return None
+
+
+def _global_permission_mode() -> str | None:
+    path = global_config_path()
+    if tomllib is None or not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError) as e:
+        log.warning("ignoring %s: %s", path, e)
+        return None
+    return _permission_mode(data, path)
+
+
 def load_config(repo_root: str | Path) -> Config:
-    """Load configuration from .lazyagent.toml in repo root.
+    """Load configuration from .lazyagent.toml in repo root, over the
+    user's global config.toml (its ``[agents] permission_mode``).
 
     Returns default Config if file is missing or tomllib is unavailable.
     """
     config_path = Path(repo_root) / CONFIG_FILENAME
-    if not config_path.exists():
-        return Config()
-
-    if tomllib is None:
-        return Config()
+    if not config_path.exists() or tomllib is None:
+        config = Config()
+        config.agent.permission_mode = _global_permission_mode()
+        return config
 
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
@@ -242,6 +287,9 @@ def load_config(repo_root: str | Path) -> Config:
             provider=provider,
             cross_session_inbound=cross_session_inbound,
             worker_preamble=worker_preamble,
+            permission_mode=(
+                _permission_mode(data, config_path) or _global_permission_mode()
+            ),
         ),
         orchestrator=orchestrator_config,
         engine=engine_config,
