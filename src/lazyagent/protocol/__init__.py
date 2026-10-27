@@ -115,6 +115,9 @@ LEGACY_METHODS: tuple[str, ...] = (
     "prompts_status",
     "prompts_plan",
     "prompts_apply",
+    # The desktop's Settings page.
+    "settings_get",
+    "settings_set",
 )
 
 # The methods protocol v1 adds.

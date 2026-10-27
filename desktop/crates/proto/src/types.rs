@@ -1211,6 +1211,50 @@ pub struct InboxConfig {
     pub auto_delegate_skip_checks: Vec<String>,
 }
 
+/// `settings_get` / `settings_set` (feature `settings`): the Settings
+/// page's settings as each file has them, and the ones in force.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub files: SettingFiles,
+    #[serde(default)]
+    pub settings: Vec<Setting>,
+}
+
+impl Settings {
+    pub fn get(&self, key: &str) -> Option<&Setting> {
+        self.settings.iter().find(|s| s.key == key)
+    }
+}
+
+/// Where each scope's settings live.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettingFiles {
+    #[serde(default)]
+    pub global: String,
+    #[serde(default)]
+    pub repo: String,
+}
+
+/// One setting: `value` is the one in force, from `source` (repo, global
+/// or default); `global` / `repo` are what each file sets (None: nothing).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Setting {
+    pub key: String,
+    pub value: String,
+    pub source: String,
+    #[serde(default)]
+    pub global: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub default: String,
+    #[serde(default)]
+    pub choices: Vec<String>,
+}
+
 /// `status_gesture`: the claim made (none after `clear`) and the row now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusGestureResult {

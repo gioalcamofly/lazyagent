@@ -24,6 +24,7 @@ mod panes;
 mod persist;
 mod prompts_view;
 mod render;
+mod settings_view;
 mod store;
 mod term_view;
 #[cfg(test)]

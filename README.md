@@ -114,7 +114,7 @@ lazyagent desktop --install                        # add it to the application m
 
 Feature parity with the web UI (sidebar, terminals and shell, actions and job drawer, restore, attention queue with replies, PR/CI panel, notifications, diff viewer with review), and it always runs on a detached engine, starting one if none runs, so agents keep running when it closes. Launched from the menu (or outside a repo) it opens a repo picker with your recent repos; agents started from there get your login shell's environment. `?` in the app lists every key; `lazyagent-desktop --help` lists its options.
 
-**Updates and restarts.** The menu bar's *Help → Check for updates…* compares this install with the latest release on PyPI (and runs `uv tool upgrade` / `pipx upgrade` when one of them made it), or, when lazyagent runs from a git checkout (an editable install, or the app built in `desktop/target/`), fetches the checkout's branch and updates it by fast-forward, then runs `uv sync` when the lock changed and rebuilds the app when `desktop/` changed or the app was built from older code (*Rebuild* when the checkout was pulled by hand); the restart is offered only after that build succeeded. Uncommitted changes stay as they are; when git would overwrite some, nothing is updated and the files are listed. It checks on its own 10 s after start and every 6 h (*Help → Check automatically*). *File → Restart…* restarts the app, and optionally the engine too (its running agents are listed first, busy ones flagged), restoring the agents it stopped; the app comes back after the restore. The same from a terminal: `lazyagent update check|apply`, `lazyagent engine restart --restore`.
+**Updates and restarts.** The menu bar's *Help → Check for updates…* compares this install with the latest release on PyPI (and runs `uv tool upgrade` / `pipx upgrade` when one of them made it), or, when lazyagent runs from a git checkout (an editable install, or the app built in `desktop/target/`), fetches the checkout's branch and updates it by fast-forward, then runs `uv sync` when the lock changed and rebuilds the app when `desktop/` changed or the app was built from older code (*Rebuild* when the checkout was pulled by hand); the restart is offered only after that build succeeded. Uncommitted changes stay as they are; when git would overwrite some, nothing is updated and the files are listed. It checks on its own 10 s after start and every 6 h (*Help → Check automatically*). *File → Settings…* edits settings kept in config files (the default permission mode of the agents the engine starts; see [Settings page](#settings-page-desktop)). *File → Restart…* restarts the app, and optionally the engine too (its running agents are listed first, busy ones flagged), restoring the agents it stopped; the app comes back after the restore. The same from a terminal: `lazyagent update check|apply`, `lazyagent engine restart --restore`.
 
 Measured on a laptop, against the web UI: key → frame p50 ~4 ms (web 8.4), 5 MB of output drawn at 57-102 MB/s (web 15-17), idle 0.2% of a core, 35 MB private memory, launch to sidebar 0.12 s with the engine running. Linux only (X11 tested, Wayland built in); building needs no system development packages. Design and measurements: [docs/design/desktop-app.md](docs/design/desktop-app.md).
 
@@ -359,11 +359,12 @@ remove = "git worktree remove ../{name}"
 
 Every spawn resolves one mode, in this order:
 
-1. `permission_mode` given to the spawn (MCP and IPC `spawn_agent`, the
-   desktop's spawn dialog, which preselects the configured mode);
+1. `permission_mode` given to the spawn (MCP and IPC `spawn_agent`);
 2. `skip_permissions` given to the spawn: `true` is `"bypass"`; `false` means
    "not bypass": the configured mode unless that is `"bypass"`, else `"cli"`
-   (the TUI's spawn dialog sends one or the other);
+   (the TUI's and the desktop's spawn and create dialogs send one or the
+   other: their **Skip permissions** box starts checked only when the
+   configured mode is `"bypass"`);
 3. `[agents] permission_mode` (the repo's `.lazyagent.toml`, else the global
    `config.toml`);
 4. the spawning path's own default: `"bypass"` for MCP's `spawn_agent` and a
@@ -377,6 +378,26 @@ it when it is not `"cli"`, and a restore (or an auto-delegation spawn in the
 same worktree) reuses it. `restore_agents` takes a `permission_mode` to bring
 them all back in another one. An agent an older engine recorded has only
 "bypass or not": not bypass resolves as `skip_permissions = false` above.
+
+### Settings page (desktop)
+
+*File → Settings…* in the desktop app edits settings that live in config
+files, by section; each option says what it does, its scope and which file
+holds it. Today it has one: **Default permission mode for agents the engine
+starts**, `[agents] permission_mode` above, the mode used whenever a spawn
+names none (Home's quick spawn, Delegate → Spawn, auto-delegation spawns when
+no agent was recorded in the worktree, restores of agents with no recorded
+mode). `cli` reads as "CLI default (your agent CLI's own setting)".
+
+Pick the scope, **Global** (`$XDG_CONFIG_HOME/lazyagent/config.toml`, created
+when missing) or **This repo** (`.lazyagent.toml`), then the value and
+**Save**; **Remove from this file** drops it there, so the other file's value
+(or the default) applies. The page shows the value in force and where it
+comes from; the repo's wins over the global one. The engine writes the file,
+replacing only that key's line (comments and every other key stay), and
+applies it at once, no restart. The same from any client: the IPC methods
+`settings_get` and `settings_set {key, scope, value}` (feature `settings`).
+Details: [docs/guides/settings.md](docs/guides/settings.md).
 
 ### Issue trackers (optional)
 
