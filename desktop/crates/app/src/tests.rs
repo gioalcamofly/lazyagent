@@ -5619,3 +5619,7 @@ mod r3d;
 
 // Review requests: a teammate's PR that asks for the user's review.
 mod review_requests;
+
+// I4j: opt-in row fields kept across row updates, what to review on "new
+// commits since your approval", Delegate through a restore or a spawn.
+mod i4j;

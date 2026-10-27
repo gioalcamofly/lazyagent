@@ -254,6 +254,43 @@ class BaseMerges:
         merges = sum(clean for clean, _ in verdicts)
         return len(commits) - merges, merges, sum(why == GENERATED for _, why in verdicts)
 
+    def commit_list(self, root: str, since: str | None, head: str,
+                    base: str) -> list[dict[str, str | None]] | None:
+        """The commits on ``head`` after ``since`` (None: the PR's own, all
+        that are not on the base), newest first, at most :data:`MAX_RANGE`:
+        ``{sha, subject, author, date, base_merge}``, ``base_merge`` the
+        verdict (:data:`CLEAN` or :data:`GENERATED`) of a merge of the base
+        that is not counted, else None. The base's own commits a merge
+        brings are left out. None when ``since`` is not in ``head``'s
+        history (a force push dropped it) or it cannot tell."""
+        if not root or not _is_sha(head) or not base or base.startswith("-") \
+                or (since is not None and not _is_sha(since)):
+            return None
+        if since == head:
+            return []
+        wanted = (head,) if since is None else (since, head)
+        if not all(self._have(root, s) for s in wanted):
+            self._fetch_once(root, wanted, base)
+        if since is not None and \
+                self._git(root, ["merge-base", "--is-ancestor", since, head])[0] != 0:
+            return None
+        refs = self._base_refs(root, base)
+        if since is None and not refs:
+            return None
+        code, out = self._git(root, ["log", "--no-show-signature", f"--max-count={MAX_RANGE}",
+                                     "--format=%H%x1f%P%x1f%an%x1f%cI%x1f%s%x1e", head,
+                                     "--not", *([since] if since else []), *refs])
+        if code != 0:
+            return None
+        commits: list[dict[str, str | None]] = []
+        for entry in filter(None, (e.strip("\n") for e in out.split("\x1e"))):
+            sha, parents, author, date, subject = (entry.split("\x1f") + [""] * 5)[:5]
+            clean, why = (self.verdict(root, sha, base) if len(parents.split()) == 2
+                          else (False, ""))
+            commits.append({"sha": sha, "subject": subject, "author": author, "date": date,
+                            "base_merge": why if clean else None})
+        return commits
+
     def adjust(self, root: str, info: PrInfo | None) -> PrInfo | None:
         """``info`` without the clean base merges (and the force pushes that
         moved the head only by them) in ``commits_after_ready``, and with

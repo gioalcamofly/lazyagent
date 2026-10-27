@@ -432,6 +432,69 @@ async def test_delegation_needs_a_live_agent_and_a_fact():
                                       "item": "Ci:/elsewhere:1"})
 
 
+async def _start_and_delegate(engine, how: str, monkeypatch):
+    """I4j: Delegate on a row with no live agent (restore it, or spawn
+    one): the row's items are read before the agent runs and takes the row
+    out of the inbox; the letter waits until the agent is at its prompt."""
+    engine.worktree_service._pr_infos[FEAT] = _pr(RED)
+    started = {}
+
+    async def start(*_args, **_kw):
+        started["session"] = _agent(engine, FEAT, "a1", "running")
+        return SimpleNamespace(worktree_path=FEAT, agent_id="a1",
+                               to_dict=lambda: {"worktree_path": FEAT, "agent_id": "a1"})
+
+    async def restore(ids, env=None, permission_mode=None):
+        assert ids == ["r1"]
+        await start()
+        return {"restored": [{"id": "r1", "worktree_path": FEAT, "agent_id": "a1"}],
+                "failed": []}
+
+    monkeypatch.setattr(engine, "spawn_agent", start)
+    monkeypatch.setattr(engine, "restore_agents", restore)
+    extra = {"restore": "r1"} if how == "restore" else {"spawn": {"default_permission_mode": "cli"}}
+    result = await EngineMethods(engine).status_gesture(
+        {"key": KEY, "kind": "delegate", "to": "agent", **extra})
+    await _pass(engine)
+    return started["session"], result
+
+
+@pytest.mark.parametrize("how", ["restore", "spawn"])
+async def test_delegate_through_a_restore_or_a_spawn_sends_the_letter_at_the_prompt(
+        how, monkeypatch):
+    engine, _ = _engine()
+    session, result = await _start_and_delegate(engine, how, monkeypatch)
+    d = result["delegation"]
+    assert (d["agent"], d["item"], d["phase"]) == ("a1", "Ci:/tmp/repo-feat:7", "on_it")
+    # The row reads the delegation from the start, not a bare running agent.
+    row = _row(engine)
+    assert (row["delegation"]["phase"], row["state"]) == \
+        ("on_it", "waiting for a1 to be free (running)")
+    session.send_input.assert_not_awaited()
+    # Its first turn ends (resumed, or at its first prompt): the letter goes.
+    _agent(engine, FEAT, "a1", "waiting")
+    await _pass(engine)
+    assert session.send_input.await_args.args[0].startswith(f"Item {KEY}: CI failing")
+    assert _row(engine)["state"] == "agent a1 · fixing CI red: tests"
+
+
+async def test_a_failed_restore_delegates_nothing(monkeypatch):
+    engine, _ = _engine()
+    engine.worktree_service._pr_infos[FEAT] = _pr(RED)
+
+    async def restore(ids, env=None, permission_mode=None):
+        return {"restored": [], "failed": [{"id": "r1", "reason": "its worktree is gone"}]}
+
+    monkeypatch.setattr(engine, "restore_agents", restore)
+    with pytest.raises(ValueError, match="Could not restore the agent: its worktree is gone"):
+        await EngineMethods(engine).status_gesture(
+            {"key": KEY, "kind": "delegate", "to": "agent", "restore": "r1"})
+    assert engine.delegations.get(KEY) is None
+    with pytest.raises(ValueError, match="restore or spawn"):
+        await EngineMethods(engine).status_gesture(
+            {"key": KEY, "kind": "delegate", "to": "agent", "restore": "r1", "spawn": {}})
+
+
 async def test_the_agent_gone_returns_the_item_and_clear_takes_it_back():
     engine, _ = _engine()
     await _delegated(engine)

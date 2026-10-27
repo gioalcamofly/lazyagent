@@ -47,3 +47,45 @@ async def test_a_row_change_is_pushed_as_status_updated(client, harness):
     )
     [row] = (await checked(client, "status_list"))["rows"]
     assert row["agents"][0]["id"] == agent["agent_id"]
+
+
+FIELDS = ["rule_id", "verb", "action", "delegable", "delegates", "passable", "approvable",
+          "review_commits"]
+
+
+async def test_row_updates_carry_the_fields_status_list_asked_for(client, harness):
+    """I4j: the opt-in fields of this connection's last status_list ride on
+    its status.updated rows (they were dropped, and Home lost Approve and
+    Delegate all after any change); a status_list without them stops it."""
+    assert "row_fields_events" in client.hello.capabilities
+    await checked(client, "subscribe", events=["status.updated"])
+    await checked(client, "status_list", fields=FIELDS)
+    agent = await spawn(client, harness.feat)
+    event = await client.next_event(
+        lambda e: e.event == "status.updated"
+        and [a["id"] for a in e.data["row"]["agents"]] == [agent["agent_id"]],
+        timeout=10.0,
+    )
+    validation.validate_event("status.updated", event.data, strict=True)
+    row = event.data["row"]
+    assert set(FIELDS) <= set(row)
+    assert row["approvable"] is None and row["review_commits"] is None
+
+    await checked(client, "status_list")
+    await checked(client, "status_gesture", key=row["key"], kind="label", ball="others",
+                  text="QA")
+    event = await client.next_event(
+        lambda e: e.event == "status.updated" and e.data["row"]["gesture"] is not None,
+        timeout=10.0,
+    )
+    assert "rule_id" not in event.data["row"]
+
+
+async def test_a_gesture_reply_carries_the_fields_asked_for(client, harness):
+    await spawn(client, harness.feat)
+    [row] = (await checked(client, "status_list"))["rows"]
+    reply = await checked(client, "status_gesture", key=row["key"], kind="label",
+                          ball="others", text="QA", fields=FIELDS)
+    assert set(FIELDS) <= set(reply["row"])
+    reply = await checked(client, "status_gesture", key=row["key"], kind="clear")
+    assert "rule_id" not in reply["row"]

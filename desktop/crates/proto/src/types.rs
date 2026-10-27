@@ -692,6 +692,10 @@ pub struct StatusRow {
     /// (⇧A) applies, at this head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvable: Option<Approvable>,
+    /// `status_list {fields}` only (feature `row_fields_events`, I4j): what
+    /// to review on an approvable line that counts commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_commits: Option<ReviewCommits>,
     /// Stale rows only (I4f): the worktree's uncommitted files, once git
     /// status is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1297,6 +1301,42 @@ pub struct Approvable {
     /// The user's approval is of this head already.
     #[serde(default)]
     pub approved: bool,
+}
+
+/// What the owner must review (`status_row.review_commits`, I4j): the
+/// commits after the approval, the last ready event, or the PR's own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewCommits {
+    /// `approval` · `ready` · `opened`.
+    pub since: String,
+    /// The approved or ready commit; the base branch for `opened`.
+    pub from: String,
+    pub head: String,
+    /// The commits counted (base merges left out).
+    pub count: u32,
+    #[serde(default)]
+    pub base_merges: u32,
+    /// Newest first, capped (`more` were cut).
+    #[serde(default)]
+    pub commits: Vec<ReviewCommit>,
+    #[serde(default)]
+    pub more: u32,
+    #[serde(default)]
+    pub compare_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewCommit {
+    pub sha: String,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub date: String,
+    /// A merge of the base that is not counted: why (`clean base merge`).
+    #[serde(default)]
+    pub base_merge: Option<String>,
 }
 
 /// The user's approval of a PR head, kept by lazyagent (never on GitHub;

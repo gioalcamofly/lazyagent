@@ -21,6 +21,7 @@ use serde_json::json;
 
 use crate::conn::{Conn, Link, Msg};
 use crate::fonts::{self, FontSet};
+use crate::home_view::F_ROW_FIELDS;
 use crate::panes::{Pane, PaneKind};
 use crate::render::Atlas;
 use crate::store::{self, ORCHESTRATOR_KEY, Store};
@@ -650,9 +651,34 @@ impl State {
                 // Where Approve (⇧A) applies (R3d).
                 fields.push("approvable");
             }
+            if self.has(F_ROW_FIELDS) {
+                // What to review on that line (I4j).
+                fields.push("review_commits");
+            }
             p["fields"] = json!(fields);
         }
         p
+    }
+
+    /// The opt-in fields `status_list` asks for, for a `status_gesture`
+    /// reply to carry too (feature `row_fields_events`).
+    pub(crate) fn gesture_fields(&self) -> Option<serde_json::Value> {
+        self.has(F_ROW_FIELDS).then(|| self.status_params()["fields"].clone()).filter(|f| !f.is_null())
+    }
+
+    /// A row from an event or a gesture's reply. Engines with
+    /// `row_fields_events` send the opt-in fields with it; older ones do
+    /// not, so the last ones stay while the rule and the state are the same.
+    pub(crate) fn put_row(&mut self, mut row: StatusRow) {
+        if !self.has(F_ROW_FIELDS)
+            && row.verb.is_none()
+            && row.rule_id.is_none()
+            && let Some(old) = self.status_rows.get(&row.key).filter(|o| o.rule == row.rule && o.state == row.state)
+        {
+            carry_opt_in(&mut row, old);
+        }
+        self.status_rows.insert(row.key.clone(), row);
+        self.inbox_gen += 1;
     }
 
     pub(crate) fn fetch_inbox(&mut self) {
@@ -1119,21 +1145,7 @@ impl State {
             EngineEvent::NotesUpdated(u) => self.on_notes_updated(&u),
             EngineEvent::NotesRemoved(r) => self.on_notes_removed(&r),
             EngineEvent::ReviewReplied(r) => self.on_review_replied(&r, true),
-            EngineEvent::StatusUpdated(u) => {
-                let mut row = u.row;
-                // The event has no opt-in fields: keep the last ones while
-                // the rule and the state are the same.
-                if row.verb.is_none()
-                    && row.rule_id.is_none()
-                    && let Some(old) =
-                        self.status_rows.get(&row.key).filter(|o| o.rule == row.rule && o.state == row.state)
-                {
-                    (row.rule_id, row.verb, row.action) = (old.rule_id.clone(), old.verb.clone(), old.action.clone());
-                    row.ci_note = old.ci_note.clone();
-                }
-                self.status_rows.insert(row.key.clone(), row);
-                self.inbox_gen += 1;
-            }
+            EngineEvent::StatusUpdated(u) => self.put_row(u.row),
             EngineEvent::StatusRemoved(r) => {
                 self.status_rows.remove(&r.key);
                 self.inbox_gen += 1;
@@ -2318,4 +2330,15 @@ impl App {
             self.hook = Some(hook);
         }
     }
+}
+
+/// Every opt-in row field (`status_list {fields}`), from the last row:
+/// for engines whose row updates do not carry them.
+pub(crate) fn carry_opt_in(row: &mut StatusRow, old: &StatusRow) {
+    (row.rule_id, row.verb, row.action) = (old.rule_id.clone(), old.verb.clone(), old.action.clone());
+    row.ci_note = old.ci_note.clone();
+    (row.delegable, row.passable) = (old.delegable, old.passable);
+    row.delegates = old.delegates.clone();
+    row.approvable = old.approvable.clone();
+    row.review_commits = old.review_commits.clone();
 }

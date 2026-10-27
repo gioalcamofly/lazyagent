@@ -155,10 +155,25 @@ class Delegations:
 
     # --- The user's gesture ---
 
+    def pick(self, key: str, item_id: Any = None) -> list[Item]:
+        """What a delegation to an agent not started yet will send (a
+        restore or a spawn first, ``status_gesture {restore | spawn}``):
+        read before it starts, since a running agent takes the row out of
+        the inbox."""
+        engine = self._engine
+        engine.status.flush()
+        row = engine.status.row(key)
+        if row is None:
+            raise ValueError(f"No work item {key!r}")
+        if row["worktree_path"] is None:
+            raise ValueError(f"{key} has no worktree: no agent to delegate to")
+        return self._found(key, row, item_id, None)
+
     def delegate(
         self, key: str, *, item_id: Any = None, agent_id: Any = None, text: Any = None,
-        by: str = "user",
+        by: str = "user", found: list[Item] | None = None,
     ) -> dict[str, Any]:
+        """``found``: the items :meth:`pick` read before ``agent_id`` started."""
         engine = self._engine
         engine.status.flush()
         row = engine.status.row(key)
@@ -170,7 +185,8 @@ class Delegations:
         live = engine.agent_ids(path)
         if agent_id is None:
             agent_id = live[0] if live else None
-        found = self._found(key, row, item_id, agent_id)
+        if found is None:
+            found = self._found(key, row, item_id, agent_id)
         if agent_id is None:
             raise ValueError(
                 f"No agent runs on {row['branch'] or key}: start one, or pass the item "

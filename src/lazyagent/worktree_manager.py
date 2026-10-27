@@ -259,6 +259,9 @@ class _AfterReady(NamedTuple):
     ready_at: str = ""
     merges: tuple[str, ...] = ()                   # merge commits counted
     pushes: tuple[tuple[str, str], ...] = ()       # force pushes counted: (before, after)
+    # The head when the PR was marked ready: the last commit (or force
+    # push) before the event; "" with no event, or none before it.
+    ready_sha: str = ""
 
 
 def _commits_after_ready(node: dict) -> _AfterReady:
@@ -283,9 +286,11 @@ def _commits_after_ready(node: dict) -> _AfterReady:
         return _AfterReady(None)
     items = [i for i in conn["nodes"] if isinstance(i, dict)]
     ready = [n for n, i in enumerate(items) if i.get("__typename") == "ReadyForReviewEvent"]
+    ready_sha = ""
     if ready:
         since = items[ready[-1]].get("createdAt") or ""
         after = items[ready[-1] + 1:]
+        ready_sha = next((sha for sha in map(_head_of, reversed(items[:ready[-1]])) if sha), "")
     elif (conn.get("pageInfo") or {}).get("hasPreviousPage"):
         return _AfterReady(None)
     else:
@@ -306,7 +311,16 @@ def _commits_after_ready(node: dict) -> _AfterReady:
             now = (i.get("afterCommit") or {}).get("oid")
             if before and now:
                 pushes.append((before, now))
-    return _AfterReady(len(counted), since, tuple(merges), tuple(pushes))
+    return _AfterReady(len(counted), since, tuple(merges), tuple(pushes), ready_sha)
+
+
+def _head_of(item: dict) -> str:
+    """The head a timeline commit or force push left; "" for the others."""
+    if item.get("__typename") == "PullRequestCommit":
+        return (item.get("commit") or {}).get("oid") or ""
+    if item.get("__typename") == "HeadRefForcePushedEvent":
+        return (item.get("afterCommit") or {}).get("oid") or ""
+    return ""
 
 
 def _when(item: dict) -> str:
@@ -811,6 +825,7 @@ class WorktreeManager:
             ready_at=data.get("readyAt") or "",
             after_ready_merges=tuple(data.get("afterReadyMerges") or ()),
             after_ready_pushes=tuple(data.get("afterReadyPushes") or ()),
+            ready_sha=data.get("readySha") or "",
             base_merges_after_ready=0 if data.get("commitsAfterReady") is not None else None,
         )
 
@@ -862,6 +877,7 @@ class WorktreeManager:
             "readyAt": after.ready_at,
             "afterReadyMerges": after.merges,
             "afterReadyPushes": after.pushes,
+            "readySha": after.ready_sha,
         }
 
     @staticmethod
