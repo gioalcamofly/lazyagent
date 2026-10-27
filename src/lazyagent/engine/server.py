@@ -129,6 +129,11 @@ FEATURES: tuple[str, ...] = (
     "holds",
     # status_gesture delegate to: "agent", row delegation (I4d).
     "delegation",
+    # Delegate all (I4i): status_gesture delegate to: "agent" with no item
+    # sends every delegable item of the row in one letter, a second one is
+    # merged (never dropped), send_now (Send anyway); row delegation items,
+    # held and held_since; a repeated timeline entry's count.
+    "delegate_all",
     # The park gesture parks the whole work item (zone parked, counts
     # parked / parked_needs_you); until tomorrow, change, indefinite (I4d).
     "parked",

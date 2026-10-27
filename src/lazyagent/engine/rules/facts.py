@@ -345,6 +345,34 @@ def _delegation(key: str) -> Getter:
     return get
 
 
+def _report_until(c: RowContext) -> str:
+    """``14:05``: when the report's ball lapses (empty: none, or it never
+    does)."""
+    import time
+
+    from lazyagent.engine.overlay import default_until
+
+    r = c.facts.report
+    if r is None or not r.get("ball"):
+        return ""
+    until = r.get("until")
+    if not isinstance(until, (int, float)):
+        until = default_until(r.get("ball"), r["at"])
+    return time.strftime("%H:%M", time.localtime(until)) if until is not None else ""
+
+
+def _held_what(c: RowContext) -> str:
+    """What an agent that holds the ball folds (I4i): ``conflict``, ``CI
+    red``, both joined with " + "; empty: nothing."""
+    pr = c.facts.pr
+    out = []
+    if pr is not None and pr.state.upper() == "OPEN" and pr.mergeable.upper() == "CONFLICTING":
+        out.append("conflict")
+    if _row_ci_state(c) == "red":
+        out.append("CI red")
+    return " + ".join(out)
+
+
 def _report(key: str) -> Getter:
     def get(c: RowContext) -> Any:
         r = c.facts.report
@@ -594,6 +622,9 @@ _fact("agent.question", TEXT, "the question the agent's finished turn ends with"
       "on agent.* events", "free", item=_agent("question"))
 _fact("place.is_orchestrator", BOOL, "the orchestrator's own place", _REG, "static",
       "free", item=_is_orchestrator)
+_fact("place.agent_holds", BOOL,
+      "an agent there has the ball (at work, or its report holds it)", _OV, "per pass", "free",
+      item=lambda c: c.place.agent_holds)
 _fact("agent.reported", BOOL, "the agent's report says where the ball is (it works on)",
       _OV, "per pass", "free",
       item=lambda c: c.agent is not None and c.place.reported == c.agent.agent_id)
@@ -753,6 +784,8 @@ _fact("delegation.agent", TEXT, "the agent it was delegated to", "delegation",
       "per pass", "free", row=_delegation("agent"))
 _fact("delegation.fact", TEXT, "what the agent is fixing (empty: unsaid)", "delegation",
       "per pass", "free", row=_delegation("fact"))
+_fact("delegation.held", TEXT, "why its letter waits (empty: sent)", "delegation",
+      "per pass", "free", row=_delegation("held"))
 
 _fact("report.needs_user", BOOL, "the agent reported it needs you", _OV, "per pass",
       "free", row=lambda c: bool(c.facts.report and c.facts.report.get("needs_user")))
@@ -762,6 +795,11 @@ _fact("report.note", TEXT, "the agent's report note (empty: none)", _OV, "per pa
       "free", row=_report("note"))
 _fact("report.agent", TEXT, "the agent that reported (empty: none)", _OV, "per pass",
       "free", row=_report("agent"))
+_fact("report.until", TEXT, "when the reported ball lapses, HH:MM (empty: none)", _OV,
+      "per pass", "free", row=_report_until)
+_fact("held.what", TEXT,
+      "what an agent holding the ball folds: conflict, CI red (empty: nothing)", _PRP,
+      "≤ 60 s", "free", row=_held_what)
 
 
 # ----------------------------------------------------------------------

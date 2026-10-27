@@ -240,7 +240,24 @@ impl Line {
     /// resolve (CI red, a conflict, changes requested, a dead agent), not
     /// the user's own review, merge, answer or approval (I4h).
     pub fn delegable(&self) -> bool {
-        self.top.as_ref().is_some_and(Top::delegable)
+        match self.delegates() {
+            Some(d) => !d.is_empty(),
+            None => self.top.as_ref().is_some_and(Top::delegable),
+        }
+    }
+
+    /// The items Delegate sends, in one letter (feature `delegate_all`);
+    /// None from older engines (the top item alone).
+    pub fn delegates(&self) -> Option<&[String]> {
+        self.row.as_ref().and_then(|r| r.delegates.as_deref())
+    }
+
+    /// The Delegate button: "Delegate all (2)" when it sends several.
+    pub fn delegate_label(&self) -> String {
+        match self.delegates().map(<[String]>::len) {
+            Some(n) if n > 1 => format!("Delegate all ({n})"),
+            _ => "Delegate to its agent".into(),
+        }
     }
 
     /// Pass (⇧O) applies: the orchestrator can act on something on the

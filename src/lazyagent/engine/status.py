@@ -760,12 +760,20 @@ class StatusProjection:
             out["answer"] = f"{out['answer']} {skipped[0].upper()}{skipped[1:]}."
         return out
 
+    def _delegates(self, key: str, facts: Any, items: Any) -> list[str]:
+        """The items Delegate (d) sends to the branch's first live agent."""
+        if not items or facts is None:
+            return []
+        live = self._engine.agent_ids(facts.worktree_path) if facts.worktree_path else []
+        return self._engine.delegations.delegates(
+            key, [i["id"] for i in items], live[0] if live else None)
+
     def fields_of(self, key: str, catalog: Any = None) -> dict[str, Any]:
         """The opt-in row fields (Q-R20): rule_id, verb, action (a row the
         queue decides takes its top item's), and ci_note: ``CI red ·
         unrelated (base also red: 2 tests)`` while every failing check is
         explained (R4, Q-R23); delegable (its top item can go to the branch's
-        agent) and passable (the orchestrator can act on something there:
+        agent), delegates (the items Delegate sends, I4i) and passable (the orchestrator can act on something there:
         one of its items, else its rule), the catalog's (I4h)."""
         catalog = catalog or self.catalog
         derived = self._derived.get(key)
@@ -777,6 +785,7 @@ class StatusProjection:
                                "verb": None, "action": None,
                                "ci_note": tests.note if tests is not None else None,
                                "delegable": bool(items) and items[0].get("delegable", False),
+                               "delegates": self._delegates(key, facts, items),
                                "passable": any(i.get("passable", True) for i in items)
                                if items else rule is None or rule.can_pass}
         if rule is None:

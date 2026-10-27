@@ -5597,6 +5597,9 @@ mod i4g;
 // and Pass only where an agent or the orchestrator can act.
 mod i4h;
 
+// I4i: Delegate all, a held letter and Send anyway, Why? and Notes under More….
+mod i4i;
+
 // "Prompts…": the agent prompts page and its screenshots.
 mod prompts;
 

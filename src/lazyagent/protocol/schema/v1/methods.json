@@ -1048,7 +1048,7 @@
       "properties": {
         "repo": {"type": ["string", "null"], "description": "Only this repo's rows (the repo root's directory name)."},
         "include_done": {"type": "boolean", "default": false, "description": "Also the done (merged, closed) and stale rows."},
-        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note", "delegable", "passable"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note; delegable and passable (feature item_capabilities): Delegate and Pass apply."},
+        "fields": {"type": "array", "items": {"enum": ["rule_id", "verb", "action", "ci_note", "delegable", "delegates", "passable"]}, "description": "Feature rules, opt-in (Q-R20): add these to every row. rule_id: the catalog rule that matched (queue: the row's top inbox item decides); verb and action: that rule's, or the top item's; ci_note (feature ci_tests): the unrelated-CI note; delegable and passable (feature item_capabilities): Delegate and Pass apply; delegates (feature delegate_all): the ids of the items Delegate sends to the branch's first live agent (the delegable ones but those about that agent)."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "The asking agent's token, if any: counted, nothing else."}
       }
     },
@@ -1266,20 +1266,23 @@
     },
     "delegation": {
       "type": "object",
-      "description": "An inbox item handed to the branch's agent (status_gesture delegate to: agent).",
+      "description": "Inbox items handed to the branch's agent (status_gesture delegate to: agent).",
       "required": ["agent", "item", "occurrence", "fact", "at", "by", "phase"],
       "properties": {
         "agent": {"type": "string"},
-        "item": {"type": "string", "description": "The item's id."},
+        "items": {"type": "array", "description": "Feature delegate_all: every item delegated, in the order the agent got them.", "items": {"type": "object", "required": ["id", "kind", "fact", "at", "letter", "sent_at"], "properties": {"id": {"type": "string"}, "occurrence": {"type": ["string", "null"]}, "kind": {"type": "string"}, "fact": {"type": "string"}, "title": {"type": "string"}, "detail": {"type": "string"}, "text": {"type": ["string", "null"]}, "at": {"type": "number"}, "letter": {"type": "integer", "description": "Which letter carries it: a delegation while the first one still waits joins it; after, a follow-up."}, "sent_at": {"type": ["number", "null"]}}}},
+        "item": {"type": "string", "description": "The first item's id."},
         "occurrence": {"type": "string"},
         "kind": {"type": "string"},
-        "fact": {"type": "string", "description": "The item's state when delegated."},
+        "fact": {"type": "string", "description": "The items' states when delegated, joined with ' + '."},
         "at": {"type": "number"},
         "by": {"type": "string"},
         "phase": {"enum": ["on_it", "returned"], "description": "on_it: the agent has it (the item is out of the inbox); returned: the agent finished and the fact still holds."},
         "sent_at": {"type": ["number", "null"], "description": "When the line reached the agent."},
         "ran": {"type": "boolean"},
-        "state": {"type": "string", "description": "returned: 'agent a1 finished; still CI red …'."}
+        "state": {"type": "string", "description": "returned: 'agent a1 finished; still CI red …'."},
+        "held": {"type": "string", "description": "Feature delegate_all: why a letter waits ('waiting for a1 to be free (possibly hanged)'); empty once every letter reached the agent."},
+        "held_since": {"type": ["number", "null"], "description": "Since when the oldest unsent item waits."}
       }
     },
     "orchestrator_hold.params": {
@@ -1307,10 +1310,11 @@
         "stop_agents": {"type": "boolean", "default": false, "description": "close only (feature close_stop): also stop every agent of the item's worktree, their notes kept; the worktree, branch and PR are left alone."},
         "ball": {"enum": ["agent", "others", "stalled"], "description": "label only (required)."},
         "text": {"type": "string", "description": "label: at most 40 characters; park: the reason (optional); delegate to agent: the line the agent gets (default: the item's fact)."},
+        "send_now": {"type": "boolean", "description": "delegate to agent (feature delegate_all): Send anyway: type the letter still waiting for the agent to be free now, whatever its status."},
         "until": {"$ref": "#/$defs/actionable_until", "description": "park only (required)."},
         "how": {"enum": ["done", "dropped"], "default": "done", "description": "close only."},
         "to": {"enum": ["orchestrator", "agent"], "description": "delegate only: the orchestrator (a claim), or the branch's agent (one inbox item, feature delegation)."},
-        "item": {"type": "string", "description": "delegate to agent: the inbox item's id (default: the row's top item)."},
+        "item": {"type": "string", "description": "delegate to agent: the inbox item's id (default: the row's top item; feature delegate_all: every item the row's delegates names, in one letter)."},
         "agent_id": {"type": "string", "description": "delegate to agent: a live agent on the branch (default: the first)."},
         "ttl_s": {"type": "number", "minimum": 60, "description": "delegate only: how long the claim lasts, at most 86400; default [orchestrator] claim_ttl_s (7200)."},
         "caller": {"$ref": "#/$defs/notes_caller", "description": "None: gestures are the user's."}
@@ -1365,7 +1369,9 @@
         "mandate": {"type": "string", "description": "The orchestrator's: present, away or claim."},
         "action": {"type": "string", "description": "The orchestrator's (or a revert's): answer_quick, answer_reversible, answer_partly, spawn_worker, escalate, revert, ..."},
         "reason": {"type": "string"},
-        "inverse": {"description": "What Revert runs: a list of, or one, {kind: git_reset | stop_agent, ...}."}
+        "inverse": {"description": "What Revert runs: a list of, or one, {kind: git_reset | stop_agent, ...}."},
+        "count": {"type": "integer", "minimum": 2, "description": "A delegate entry said again by the same actor: how many times (feature delegate_all)."},
+        "last": {"type": "number", "description": "With count: when it was last said."}
       }
     },
     "status_report.params": {

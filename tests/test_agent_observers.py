@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from lazyagent.agent_observers import (
     AgentLifecycleEvent,
     AgentObserver,
@@ -276,6 +278,47 @@ class TestClaudeSubagentAfterStop:
             {"hook_event_name": "PreToolUse", "tool_name": "Bash"},
         )
         assert statuses == [AgentStatus.WAITING, AgentStatus.RUNNING]
+
+
+class TestClaudeSessionStart:
+    """At its prompt before any turn: a restored agent is idle, not running."""
+
+    @staticmethod
+    def _poll(tmp_path, *hooks: dict):
+        log_path = tmp_path / "hooks.jsonl"
+        log_path.write_text(
+            "".join(json.dumps(h) + "\n" for h in hooks), encoding="utf-8"
+        )
+        return ClaudeHooksObserver(str(log_path)).poll()
+
+    @pytest.mark.parametrize("source", ["resume", "startup", "clear"])
+    def test_waiting(self, tmp_path, source):
+        events = self._poll(tmp_path, {"hook_event_name": "SessionStart", "source": source})
+        assert [(e.status, e.detail) for e in events] == [(AgentStatus.WAITING, "at its prompt")]
+        assert events[0].confidence == LifecycleConfidence.HIGH
+
+    def test_a_compaction_is_mid_turn(self, tmp_path):
+        assert self._poll(
+            tmp_path,
+            {"hook_event_name": "UserPromptSubmit"},
+            {"hook_event_name": "SessionStart", "source": "compact"},
+        )[-1].status == AgentStatus.RUNNING
+
+    def test_a_first_prompt_runs_after_it(self, tmp_path):
+        events = self._poll(
+            tmp_path,
+            {"hook_event_name": "SessionStart", "source": "startup"},
+            {"hook_event_name": "UserPromptSubmit", "prompt": "Build it"},
+        )
+        assert [e.status for e in events] == [AgentStatus.WAITING, AgentStatus.RUNNING]
+
+    def test_a_subagent_lone_tool_after_it_is_ignored(self, tmp_path):
+        events = self._poll(
+            tmp_path,
+            {"hook_event_name": "SessionStart", "source": "resume"},
+            {"hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "sub1"},
+        )
+        assert [e.status for e in events] == [AgentStatus.WAITING]
 
 
 class TestClaudeFirstPrompt:

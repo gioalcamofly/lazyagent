@@ -549,10 +549,11 @@ class Decisions:
 
     def engine_brief(
         self, *, key: str, worktree_path: str, agent_id: str, question: str, tried: str,
-        now: float,
+        now: float, item_kind: str | None = None,
     ) -> dict[str, Any]:
         """A brief the engine writes (auto-delegation failed twice): To sit
-        down with, the user's."""
+        down with, the user's. ``item_kind``: the kind of the item it is
+        about (it closes once that clears, autodelegate.py)."""
         record = self._new(
             key=key,
             worktree_path=worktree_path,
@@ -571,6 +572,8 @@ class Decisions:
             invalid=["written by the engine"],
             created_at=now,
         )
+        if item_kind is not None:
+            record["item_kind"] = item_kind
         self._engine.overlay.add(key, "decision", "engine",
                                  f"asked: {record['brief']['question']}", ref=record["id"])
         self._engine.events.emit(DECISION_CREATED, {"decision": dict(record)})
