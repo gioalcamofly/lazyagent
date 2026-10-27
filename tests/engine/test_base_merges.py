@@ -461,3 +461,120 @@ def test_the_cost_is_local_git_only_and_cached(repo):
     for _ in range(5):
         merges.adjust(root, pr)
     assert merges.git_calls == first
+
+
+# --- [review] generated_paths (R4c) -------------------------------------------
+
+GENERATED = ("**/generated-map.json",)
+
+
+def _generated_conflict(repo: Repo, *, extra: bool = False) -> str:
+    """``feat`` and ``main`` both change ``data/generated-map.json``; the
+    merge resolves it by hand (and with ``extra``, also edits other.txt)."""
+    (repo.root / "data").mkdir()
+    repo.write("data/generated-map.json", '{\n  "a": 1\n}\n')
+    repo.commit("map")
+    repo.git("push", "-q", "origin", "main")
+    repo.feature()
+    repo.write("data/generated-map.json", '{\n  "a": 1,\n  "feat": 2\n}\n')
+    repo.commit("feat regenerates the map")
+    repo.git("checkout", "-q", "main")
+    repo.write("data/generated-map.json", '{\n  "a": 1,\n  "main": 3\n}\n')
+    repo.commit("main regenerates the map")
+    repo.git("push", "-q", "origin", "main")
+    repo.git("checkout", "-q", "feat")
+    repo.git("fetch", "-q", "origin")
+    assert subprocess.run(["git", "merge", "-q", "--no-edit", "origin/main"], cwd=repo.root,
+                          env=repo.env, capture_output=True).returncode != 0
+    repo.write("data/generated-map.json", '{\n  "a": 1,\n  "feat": 2,\n  "main": 3\n}\n')
+    if extra:
+        repo.edit("other.txt", "other\n", "other, edited in the merge\n")
+    return repo.commit("merged, the map regenerated")
+
+
+@_both
+def test_a_merge_whose_conflicts_are_only_in_generated_files_is_clean(repo, version):
+    merge = _generated_conflict(repo)
+    assert _classify(repo, merge, version)[0] is False
+    merges = BaseMerges(version=version, fetch=False)
+    merges.generated_paths = GENERATED
+    assert merges.verdict(str(repo.root), merge, "main") == (
+        True, "base merge, only generated files differ")
+    assert merges.commits_since(str(repo.root), repo.git("rev-parse", "HEAD~1"), merge,
+                                "main") == (0, 1, 1)
+    # The rules files' paths, read each time (a change re-classifies).
+    merges.paths_of = lambda: ("other/*.json",)
+    assert merges.verdict(str(repo.root), merge, "main")[0] is False
+
+
+@_both
+def test_a_generated_conflict_with_another_edit_still_counts(repo, version):
+    merge = _generated_conflict(repo, extra=True)
+    merges = BaseMerges(version=version, fetch=False)
+    merges.generated_paths = GENERATED
+    assert merges.verdict(str(repo.root), merge, "main") == (
+        False, "the tree differs from the automatic merge")
+
+
+@_both
+def test_a_conflict_outside_the_generated_paths_ends_it_early(repo, version):
+    repo.feature()
+    repo.git("checkout", "-q", "main")
+    repo.edit("f.txt", "line 1\n", "line 1 main\n")
+    repo.commit("main edits line 1")
+    repo.git("push", "-q", "origin", "main")
+    repo.git("checkout", "-q", "feat")
+    repo.git("fetch", "-q", "origin")
+    subprocess.run(["git", "merge", "-q", "--no-edit", "origin/main"], cwd=repo.root,
+                   env=repo.env, capture_output=True)
+    repo.write("f.txt", "resolved\n")
+    merge = repo.commit("resolved")
+    merges = BaseMerges(version=version, fetch=False)
+    merges.generated_paths = GENERATED
+    clean, why = merges.verdict(str(repo.root), merge, "main")
+    assert not clean and why in ("conflicts", "f.txt: conflicts")
+
+
+def test_a_clean_merge_that_edits_only_a_generated_file_is_clean_too(repo):
+    repo.feature()
+    repo.git("fetch", "-q", "origin")
+    repo.git("merge", "-q", "--no-commit", "--no-ff", "origin/main")
+    (repo.root / "out").mkdir()
+    repo.write("out/generated-map.json", "{}\n")
+    merge = repo.commit("merge, the map regenerated")
+    merges = BaseMerges(version=OLD, fetch=False)
+    merges.generated_paths = GENERATED
+    assert merges.verdict(str(repo.root), merge, "main")[1] == \
+        "base merge, only generated files differ"
+
+
+def test_generated_path_globs():
+    from lazyagent.engine.base_merges import generated
+
+    assert generated("generated-map.json", GENERATED)
+    assert generated("a/b/generated-map.json", GENERATED)
+    assert not generated("a/generated-map.json.bak", GENERATED)
+    assert generated("docs/api/x.lock", ("docs/api/*.lock",))
+    assert not generated("docs/api/v1/x.lock", ("docs/api/*.lock",))
+    assert generated("gen/a/b.txt", ("gen/**",))
+    assert generated("x1.json", ("x[0-9].json",))
+
+
+@pytest.mark.parametrize("out", ["t" * 40 + "\0data/generated-map.json\0",
+                                 "t" * 40 + "\ndata/generated-map.json\0"])
+def test_merge_tree_conflicts_are_parsed_either_way(out, tmp_path):
+    merges = BaseMerges(version=NEW, fetch=False)
+    seen = []
+
+    def git(root, args, env=None, **kw):
+        seen.append(args)
+        return 1, out
+
+    merges._git = git  # type: ignore[method-assign]
+    assert merges._auto_merge("/r", "p1", "p2", {}, str(tmp_path), GENERATED) == (
+        "t" * 40, {"data/generated-map.json"}, "")
+    assert seen[0][:5] == ["merge-tree", "--write-tree", "--no-messages", "-z", "--name-only"]
+    assert merges._auto_merge("/r", "p1", "p2", {}, str(tmp_path), ("x/*",))[0] is None
+    assert merges._auto_merge("/r", "p1", "p2", {}, str(tmp_path))[2] == "conflicts"
+    merges._git = lambda root, args, env=None, **kw: (0, "t" * 40 + "\0")  # type: ignore
+    assert merges._auto_merge("/r", "p1", "p2", {}, str(tmp_path)) == ("t" * 40, set(), "")

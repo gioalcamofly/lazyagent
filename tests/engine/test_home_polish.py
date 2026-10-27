@@ -316,14 +316,16 @@ async def test_the_whole_work_item_parks_with_its_inbox_items():
     await EngineMethods(engine).status_gesture({"key": KEY, "kind": "park", "until": "indefinite"})
     result = engine.status.list()
     [row] = [r for r in result["rows"] if r["key"] == KEY]
-    assert (row["zone"], row["level"], row["needs_you"]["count"], row["holder"]) == (
-        "parked", None, 1, "user",
+    # R4c: its items are parked with it.
+    assert (row["zone"], row["level"], row["needs_you"], row["holder"]) == (
+        "parked", None, None, None,
     )
     counts = result["counts"]
     assert (counts["round"], counts["in_flight"], counts["parked"], counts["parked_needs_you"]) == (
-        0, 0, 1, 1,
+        0, 0, 1, 0,
     )
-    assert "PARKED 1 (1 need you)" in status_table(result)
+    assert "PARKED 1\n" in status_table(result) + "\n"
+    assert [i["kind"] for i in engine.actionables.list(include_hidden=True)["items"]] == ["ci"]
 
 
 def status_table(result):
@@ -336,9 +338,10 @@ async def test_a_parked_items_question_goes_to_the_orchestrator_if_it_may():
     engine, _ = _engine()
     await EngineMethods(engine).status_gesture({"key": KEY, "kind": "park", "until": "indefinite"})
     _agent(engine, FEAT, "a1", "waiting_for_user", "Which db?")
-    # No orchestrator: the question stays in Parked, marked as needing you.
+    # No orchestrator: the question (a Now item) takes the row out of Parked.
     result = engine.status.list()
-    assert result["counts"]["parked_needs_you"] == 1
+    [row] = [r for r in result["rows"] if r["key"] == KEY]
+    assert (row["zone"], row["level"], result["counts"]["parked_needs_you"]) == ("inbox", "now", 0)
     # With one, it is routed (the mandate allows a quick reversible question).
     _drop(engine, FEAT, "a1")
     _orchestrator(engine)
@@ -348,10 +351,11 @@ async def test_a_parked_items_question_goes_to_the_orchestrator_if_it_may():
     [row] = [r for r in result["rows"] if r["key"] == KEY]
     assert (row["zone"], row["needs_you"], row["holder"]) == ("parked", None, "orchestrator")
     assert result["counts"]["parked_needs_you"] == 0
-    # Kept for the user: no routing; it waits in Parked.
+    # Kept for the user: no routing; it is the user's, in Now.
     await EngineMethods(engine).status_gesture({"key": KEY, "kind": "keep_for_me"})
     engine.status.flush()
-    assert engine.status.list()["counts"]["parked_needs_you"] == 1
+    [row] = [r for r in engine.status.list()["rows"] if r["key"] == KEY]
+    assert (row["zone"], row["level"]) == ("inbox", "now")
 
 
 # --- 7. Delegation to the branch's agent -------------------------------------

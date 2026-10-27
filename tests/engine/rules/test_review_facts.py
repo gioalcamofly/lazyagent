@@ -446,7 +446,7 @@ def test_the_recipe_end_to_end_with_why():
         facts = {f["name"]: f["value"] for f in why["item_rule"]["facts"]}
         assert facts["pr.draft"] is True and why["item_rule"]["id"] == "owner_review"
         catalog = asyncio.run(EngineMethods(engine).rules_catalog({}))
-        assert catalog["review"] == {"not_human": ["my-review-app"]}
+        assert catalog["review"] == {"not_human": ["my-review-app"], "generated_paths": []}
         assert {"pr.draft", *REVIEW_FACTS} <= {f["name"] for f in catalog["facts"]}
 
         # You approve: the agent marks it ready. Nobody has reviewed yet.

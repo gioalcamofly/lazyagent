@@ -1196,7 +1196,8 @@ async def _():
     return await _call(
         _status_engine(),
         "status_gesture",
-        {"key": "repo:login-ttl", "kind": "park", "until": "indefinite", "text": "after the release"},
+        # Its Round item is parked with it (R4c); a Now one would break through.
+        {"key": "repo:docs-index", "kind": "park", "until": "indefinite", "text": "after the release"},
     )
 
 

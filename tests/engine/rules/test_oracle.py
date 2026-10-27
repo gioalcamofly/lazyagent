@@ -11,8 +11,10 @@ a reported ball says the agent works on, so it is not ``agent_finished``
 (6) while it holds, and a reported ball ``agent``
 reads ``agent <id> · <note>``. And one since the review requests: a
 teammate's PR (``pr.mine`` false) is neither Merge nor "PR has no reviewer"
-nor "review requested" (``teammate_pr`` reads it). :func:`both` maps the
-oracle's answer for those cases; every other one must agree."""
+nor "review requested" (``teammate_pr`` reads it). And one since R4c: a
+park yields to a Now item (an agent blocked on the user takes the row out
+of Parked). :func:`both` maps the oracle's answer for those cases; every
+other one must agree."""
 
 from __future__ import annotations
 
@@ -153,6 +155,12 @@ def both(facts: Facts, last_change: float, stalled_hours: float = 24):
     old = oracle.derive(facts, NOW, last_change, stalled_hours=stalled_hours)
     catalog = builtin()
     ctx = RowContext(facts, NOW, last_change, stalled_hours)
+    if (facts.gesture or {}).get("kind") == "park" and facts.actionables \
+            and facts.actionables[0]["level"] == "now":
+        # R4c: the Now item, as with no park.
+        under = oracle.derive(replace(facts, gesture=None), NOW, last_change,
+                              stalled_hours=stalled_hours)
+        return new, under
     if ctx.fact("pr.mine") is False:
         # A teammate's PR: not Merge, nor theirs to wait on as yours; the
         # oracle knows no author.

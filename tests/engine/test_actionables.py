@@ -196,6 +196,7 @@ def test_every_kind_has_its_fixed_level():
         "conflict": "round", "sync_base": "round", "attestation_confirm": "round",
         "done": "deep", "job": "round", "delegation": "round", "report": "round",
         "decision": "deep", "review_request": "round", "turn_question": "round",
+        "ci_policy": "round",
         # Its default: an item carries the tracker mapping's level.
         "tracker_status": "round",
         # An item rule's (the built-in Merge): the rule gives its level.

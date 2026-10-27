@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import Callable, Collection, Coroutine, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
@@ -54,6 +55,11 @@ PR_INFO_UPDATED = "pr_info.updated"
 # for one on demand (Alt+G in the TUI).
 GIT_STATUS_INTERVAL = 60.0
 PR_INFO_INTERVAL = 60.0
+
+# GitHub answers mergeable UNKNOWN for a while after a push (it computes
+# the merge in the background): the last known value stands for this long,
+# so a row does not flip between "not mergeable" and "CI green".
+MERGEABLE_KEEP = 600.0
 
 # How long a diff waits for a PR lookup already running before it falls
 # back to the default base.
@@ -98,6 +104,9 @@ class WorktreeService:
         self.worktrees: list[WorktreeInfo] = []
         self.git_statuses: dict[str, GitStatus] = {}
         self._pr_infos: dict[str, PrInfo | None] = {}
+        # path → (PR number, last known mergeable, when it was read).
+        self._mergeable: dict[str, tuple[int, str, float]] = {}
+        self.clock: Callable[[], float] = time.time
         # path → (PR number, ready_at, the head first seen after it): see
         # _ready_head.
         self._ready_heads: dict[str, tuple[int, str, str]] = {}
@@ -453,10 +462,27 @@ class WorktreeService:
         for path, info in infos.items():
             if path not in live:
                 continue
+            info = self._keep_mergeable(path, info)
             if path in self._pr_infos and self._pr_infos[path] == info:
                 continue
             self._pr_infos[path] = info
             self._emit(PR_INFO_UPDATED, {"path": path, "pr_info": info})
+
+    def _keep_mergeable(self, path: str, info: PrInfo | None) -> PrInfo | None:
+        """``info`` with its last known mergeable while GitHub says UNKNOWN,
+        for :data:`MERGEABLE_KEEP` seconds after it was last known (same
+        PR); then UNKNOWN shows."""
+        if info is None:
+            self._mergeable.pop(path, None)
+            return info
+        now = self.clock()
+        if info.mergeable.upper() not in ("", "UNKNOWN"):
+            self._mergeable[path] = (info.number, info.mergeable, now)
+            return info
+        known = self._mergeable.get(path)
+        if known is None or known[0] != info.number or now - known[2] > MERGEABLE_KEEP:
+            return info
+        return replace(info, mergeable=known[1])
 
     def _after_ready(self, repo_root: str, infos: dict[str, PrInfo | None]
                      ) -> dict[str, PrInfo | None]:

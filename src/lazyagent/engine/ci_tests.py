@@ -167,6 +167,16 @@ class CheckConfig:
     # An aggregate job (it waits on the run's other jobs and has no tests
     # of its own): True, False, or None to detect it.
     aggregate: bool | None = None
+    # R4c: not a merge gate (its red alone raises no Fix CI, unless its
+    # failing tests are the branch's), or a process check (a label policy:
+    # an item only once the merge is next).
+    gating: bool = True
+    policy: bool = False
+
+    @property
+    def gate(self) -> str:
+        """``policy``, ``nongating`` or ``gating``."""
+        return "policy" if self.policy else ("gating" if self.gating else "nongating")
 
     def matches(self, check: str, job: str) -> bool:
         return any(fnmatch.fnmatchcase(x, self.name) for x in (check, job, bare_job(job)))
@@ -224,10 +234,16 @@ class CiConfig:
 
     @property
     def configured(self) -> bool:
-        return any(c.tests_from for c in self.checks) or bool(self.nondeterministic)
+        return any(c.tests_from or c.gate != "gating" for c in self.checks) \
+            or bool(self.nondeterministic)
 
     def check(self, check: str, job: str) -> CheckConfig | None:
         return next((c for c in self.checks if c.matches(check, job)), None)
+
+    def gate_of(self, check: str, job: str = "") -> str:
+        """The check's gate (R4c): ``gating`` unless its table says."""
+        c = self.check(check, job or check)
+        return c.gate if c is not None else "gating"
 
     def tests_for(self, check: str, job: str) -> CheckConfig | None:
         """The check's config when it has ``tests_from``."""
@@ -257,6 +273,8 @@ class CiConfig:
                 | ({"aggregate": c.aggregate} if c.aggregate is not None else {})
                 | ({"test_regex": c.test_regex} if c.test_regex else {})
                 | ({"total_regex": c.total_regex} if c.total_regex else {})
+                | ({"gating": False} if not c.gating else {})
+                | ({"policy": True} if c.policy else {})
                 for c in self.checks
             ],
             "compare_to": self.compare_to,
@@ -277,7 +295,8 @@ CI_KEYS = frozenset({
     "min_base_runs", "min_repetitions", "max_drop",
 })
 ATTEST_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
-CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex", "aggregate"}) | ATTEST_KEYS
+CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex", "aggregate", "gating",
+                        "policy"}) | ATTEST_KEYS
 UNRELATED_KEYS = frozenset({"compare_to", "base_fetches_per_poll", "project",
                             "detect_aggregates"})
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
@@ -426,15 +445,22 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
     aggregate = table.get("aggregate")
     if aggregate is not None and not isinstance(aggregate, bool):
         raise ValueError("aggregate must be true or false")
+    for key in ("gating", "policy"):
+        if key in table and not isinstance(table[key], bool):
+            raise ValueError(f"{key} must be true or false")
+    gating, policy = table.get("gating", True), table.get("policy", False)
+    if policy and table.get("gating") is True:
+        raise ValueError("a policy check is not a merge gate: drop gating = true")
+    gates = dict(gating=gating, policy=policy)
     sources = table.get("tests_from")
     if aggregate and sources is not None:
         raise ValueError("an aggregate job has no tests of its own: drop tests_from")
     if sources is None:
-        if aggregate is None:
+        if aggregate is None and gating and not policy:
             return None
         if "test_regex" in table or "total_regex" in table:
             raise ValueError("test_regex and total_regex are for log:regex")
-        return CheckConfig(name, (), aggregate=aggregate)
+        return CheckConfig(name, (), aggregate=aggregate, **gates)
     if not isinstance(sources, list) or not sources or not all(isinstance(s, str) for s in sources):
         raise ValueError('tests_from must be a list such as ["junit:junit-*", "log:pytest"]')
     for s in sources:
@@ -454,7 +480,7 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
             compile_re2(value, group)
     elif test_regex is not None or total_regex is not None:
         raise ValueError("test_regex and total_regex are for log:regex")
-    return CheckConfig(name, tuple(sources), test_regex, total_regex, aggregate)
+    return CheckConfig(name, tuple(sources), test_regex, total_regex, aggregate, **gates)
 
 
 def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
@@ -1075,10 +1101,55 @@ class CiTests:
     # Failing checks with no test data at all: not Actions runs (a commit
     # status, another provider) or red runs whose jobs are not read yet.
     others: tuple[tuple[str, str], ...] = ()
+    # R4c: the failing checks whose table makes them ``nongating`` or
+    # ``policy`` (a check id, or an other's lower-case name); the rest gate.
+    gates: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def red(self) -> bool:
         return bool(self.checks or self.others)
+
+    def gate(self, c: CheckResult | str) -> str:
+        """A related check's effective gate: a non-gating check whose
+        failing tests are known to be the branch's (they pass at the base
+        point) gates again; with unknown test data it stays non-gating."""
+        if isinstance(c, str):
+            return self.gates.get(c, "gating")
+        gate = self.gates.get(c.check, "gating")
+        return "gating" if gate == "nongating" and c.known_related else gate
+
+    def _related_of(self, gate: str) -> list[str]:
+        return [c.check for c in self.checks if not c.unrelated and self.gate(c) == gate] \
+            + [o for o, _ in self.others if self.gate(o) == gate]
+
+    @property
+    def gating_failures(self) -> list[str]:
+        """The related checks that gate the merge (R4c)."""
+        return self._related_of("gating")
+
+    @property
+    def policy_failures(self) -> list[str]:
+        return self._related_of("policy")
+
+    @property
+    def nongating_failures(self) -> list[str]:
+        return self._related_of("nongating")
+
+    @property
+    def only_nongating(self) -> bool:
+        """Red, and every failing check is non-gating, a policy check or
+        explained by the base: nothing the branch must fix before merging."""
+        return self.red and not self.gating_failures \
+            and bool(self.policy_failures or self.nongating_failures)
+
+    def _names(self, checks: list[str]) -> str:
+        names = {c.check: c.name for c in self.checks} | dict(self.others)
+        shown = [names.get(c, c) for c in checks]
+        return ", ".join(shown[:2]) + (f" +{len(shown) - 2}" if len(shown) > 2 else "")
+
+    def first_policy(self) -> str | None:
+        policy = self.policy_failures
+        return self._names(policy[:1]) if policy else None
 
     @property
     def unrelated_checks(self) -> frozenset[str]:
@@ -1139,8 +1210,17 @@ class CiTests:
     @property
     def note(self) -> str | None:
         """The row's ``ci_note`` chip: only when every failing check is
-        explained."""
-        return f"CI red · unrelated ({self.summary})" if self.unrelated is True else None
+        explained, or none gates the merge (``eval-suite red · not
+        gating``)."""
+        if self.unrelated is True:
+            return f"CI red · unrelated ({self.summary})"
+        if not self.only_nongating:
+            return None
+        parts = [f"{self._names(self.nongating_failures)} red · not gating"] \
+            if self.nongating_failures else []
+        if self.policy_failures:
+            parts.append(f"{self._names(self.policy_failures)} red · policy")
+        return "; ".join(parts)
 
     @property
     def base_fixed(self) -> frozenset[str] | None:
@@ -1152,9 +1232,12 @@ class CiTests:
 
     def first_related(self) -> str | None:
         """The first related check's name, with its new tests' count when
-        known: ``unit-tests (2 new)``."""
+        known: ``unit-tests (2 new)``; a gating one first."""
+        gating = set(self.gating_failures)
+        if gating and not any(c.check in gating for c in self.checks):
+            return next(n for o, n in self.others if o in gating)
         for c in self.checks:
-            if not c.unrelated:
+            if not c.unrelated and (not gating or c.check in gating):
                 # Short: the row's state has five words.
                 if c.attest_note:
                     return f"{c.name} ({c.attest_note})"
@@ -1190,11 +1273,13 @@ class CiTests:
         return {
             "unrelated": self.unrelated,
             "summary": self.summary,
-            "checks": [c.to_dict() for c in self.checks],
+            "checks": [c.to_dict() | ({"gate": self.gate(c)} if self.gates else {})
+                       for c in self.checks],
             "others": [{"check": o, "name": n, "unrelated": False,
                         "detail": "no test data: not an Actions job, or its jobs are not read yet"}
+                       | ({"gate": self.gate(o)} if self.gates else {})
                        for o, n in self.others],
-        }
+        } | ({"only_nongating": self.only_nongating} if self.gates else {})
 
 
 # ----------------------------------------------------------------------
@@ -1764,9 +1849,9 @@ class CiTestsHub:
                     others += [(c.name.lower(), c.name) for c in pr.checks
                                if c.conclusion.upper() in ("FAILURE", "ERROR", "TIMED_OUT")
                                and "/actions/runs/" in c.details_url]
-                return CiTests((), tuple(others))
+                return self._gated((), others)
         if v is None or v.state != "red":
-            return CiTests((), tuple(others))
+            return self._gated((), others)
         checks: list[CheckResult] = []
         for run in v.red:
             if not run.failed_jobs:
@@ -1779,7 +1864,14 @@ class CiTestsHub:
             for job in run.failed_jobs:
                 checks.append(own[job.name] if job.name in own
                               else _aggregate_result(run, job.name, list(own.values())))
-        return CiTests(tuple(checks), tuple(others))
+        return self._gated(checks, others)
+
+    def _gated(self, checks: Iterable[CheckResult], others: Iterable[tuple[str, str]]) -> CiTests:
+        """The verdict with each failing check's gate (R4c)."""
+        checks, others = tuple(checks), tuple(others)
+        gates = {c.check: g for c in checks if (g := self.config.gate_of(c.check, c.job)) != "gating"}
+        gates |= {o: g for o, n in others if (g := self.config.gate_of(n)) != "gating"}
+        return CiTests(checks, others, gates)
 
     def _is_aggregate(self, run: WorkflowRun, job: WorkflowJob) -> bool:
         """``aggregate`` when the check sets it; else, only with ``[ci_unrelated]
@@ -1801,7 +1893,7 @@ class CiTestsHub:
         cid = check_id(run, job)
         base = dict(check=cid, job=job, workflow=run.workflow, run_id=run.id)
         cfg = self.config.check(cid, job)
-        if cfg is None:
+        if cfg is None or not cfg.tests_from:
             return CheckResult(**base, unrelated=False,
                                detail="no tests_from for this check (no test data)")
         found = self._found.get((run.id, run.attempt, job))

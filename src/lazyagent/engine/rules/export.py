@@ -70,7 +70,8 @@ def catalog_payload(catalog: Catalog, check: dict[str, Any]) -> dict[str, Any]:
         # ball, the colours, the keys.
         "concepts": concepts(),
         # The rule files' [review] tables, merged.
-        "review": {"not_human": sorted(catalog.not_human)},
+        "review": {"not_human": sorted(catalog.not_human),
+                   "generated_paths": list(catalog.generated_paths)},
         # [ci.check] and [ci_unrelated], merged (R4).
         "ci": catalog.ci.to_dict(),
         "files": check["files"],

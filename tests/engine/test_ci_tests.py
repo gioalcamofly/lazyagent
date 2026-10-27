@@ -732,7 +732,7 @@ async def test_the_readme_owner_gate_merges_on_an_unrelated_red():
     engine.review_requests.viewer = "me"  # the recipe asks pr.mine
     await _upsert(engine)
     recipe = readme_recipe()
-    assert '(ci.state in ["green", "none"] or ci.unrelated)' in recipe
+    assert '(ci.state in ["green", "none"] or ci.unrelated or ci.only_nongating)' in recipe
     with _rules_files({GLOBAL_RULES: recipe + "\n" + CONFIG.replace("version = 1\n", "")}):
         engine.rules.reload()
         assert not engine.rules.errors

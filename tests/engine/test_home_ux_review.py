@@ -144,8 +144,10 @@ async def test_a_parked_row_is_aged_from_its_park_and_says_until_when():
     assert (row["zone"], row["state"], row["changed_at"]) == (
         "parked", "parked indefinitely", NOW + 5 * HOUR,
     )
-    # What still needs the user: the parked row's own item.
-    assert [i["state"] for i in row["needs_you"]["items"]] == ["conflict with base"]
+    # Its item is parked with it (R4c).
+    assert row["needs_you"] is None
+    assert [i["state"] for i in engine.actionables.list(include_hidden=True)["items"]] == [
+        "conflict with base"]
 
 
 # --- Stale rows and detached heads ------------------------------------------------

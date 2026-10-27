@@ -56,8 +56,8 @@ state_expr = 'gesture.how == "dropped" ? "dropped by you" : "closed by you"'
 id = "park"
 num = 7
 locked = true
-says = "The whole work item waits in Parked, with the ball it would have."
-when = 'gesture.kind == "park"'
+says = "The whole work item waits in Parked, with the ball it would have; its open items wait with it (R4c), but a Now one (an agent blocked on you) takes it out until answered."
+when = 'gesture.kind == "park" and not (known(items.top.level) and items.top.level == "now")'
 [rule.then]
 inherit = ["ball"]
 state_expr = '''
@@ -226,8 +226,8 @@ id = "ci_red_no_agent"
 num = 5
 when = '''
 pr.state == "open" and not queue.enabled and agents.running == 0
-and ci.state == "red" and not empty(ci.related_failures)
-and not (ci.related_failures subset ci.attestation_pending)
+and ci.state == "red" and not empty(ci.gating_failures)
+and not (ci.gating_failures subset ci.attestation_pending)
 '''
 [rule.then]
 ball = "you"
@@ -487,10 +487,10 @@ level = "round"
 title = "CI failing"
 rank = 5
 detector = "pr"
-says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5)."
+says = "An open PR red on its head with no agent at work on it; only the failures the base does not explain (R4) and that gate the merge (R4c: not gating = false or policy = true), held back while every one waits for your confirmation of an attestation (R5)."
 when = '''
-pr.state == "open" and ci.pr_red and not empty(ci.related_failures)
-and not (ci.related_failures subset ci.attestation_pending)
+pr.state == "open" and ci.pr_red and not empty(ci.gating_failures)
+and not (ci.gating_failures subset ci.attestation_pending)
 and agents.running == 0
 '''
 state_expr = 'with("CI red", ci.first_related)'
@@ -503,10 +503,10 @@ level = "round"
 title = "CI failed"
 rank = 5
 detector = "actions"
-says = "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5)."
+says = "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4) and that gate the merge (R4c), held back while every one waits for your confirmation of an attestation (R5)."
 when = '''
-not pr.exists and ci.head == "red" and not empty(ci.related_failures)
-and not (ci.related_failures subset ci.attestation_pending)
+not pr.exists and ci.head == "red" and not empty(ci.gating_failures)
+and not (ci.gating_failures subset ci.attestation_pending)
 and agents.running == 0
 '''
 state_expr = 'with("CI red", ci.first_related)'
@@ -650,3 +650,20 @@ agent.status in ["completed", "waiting", "interrupted"] and agent.question != ""
 and not place.is_orchestrator
 '''
 state_expr = 'with("answer", agent.question)'
+
+# --- R4c: a red policy check once the merge is next ---
+
+[[kind]]
+id = "ci_policy"
+verb = "Fix"
+action = "open_pr"
+level = "round"
+title = "Policy check failing"
+rank = 5
+detector = "pr"
+says = "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: the PR is approved and mergeable, and no check that gates the merge is red (R4c)."
+when = '''
+pr.state == "open" and not empty(ci.policy_failures) and empty(ci.gating_failures)
+and pr.review == "approved" and pr.mergeable == "mergeable"
+'''
+state_expr = '"Fix " + ci.first_policy'

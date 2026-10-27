@@ -369,8 +369,8 @@ async def test_a_waiting_items_question_follows_parked_routing():
     engine, _ = _shop_engine()
     await _upsert(engine, T + "SHOP-12", "Checkout", source="board", waiting={})
     _agent(engine, SHOP, "a1", "waiting_for_user", "Which db?")
-    result = engine.status.list()
-    assert result["counts"]["parked_needs_you"] == 1
+    # A Now item takes the row out of Parked (R4c).
+    assert (_row(engine, SHOP_KEY)["zone"], _row(engine, SHOP_KEY)["level"]) == ("inbox", "now")
     engine.registry.states[SHOP].pop("a1")
     engine._agents[SHOP].pop("a1")
     _orchestrator(engine)

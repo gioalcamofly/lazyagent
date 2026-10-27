@@ -470,6 +470,7 @@ pub fn kind_verb(kind: &str) -> &'static str {
         "question" | "turn_question" => "Answer",
         "done" => "Review",
         "ci" | "ci_failed" => "Fix CI",
+        "ci_policy" => "Fix",
         "review" => "Address review",
         "conflict" => "Resolve conflict",
         "hanged" => "Check agent",
