@@ -167,6 +167,7 @@ Statuses are normalized into a clear lifecycle:
 - Create, remove, and navigate git worktrees without leaving lazyagent. Each worktree gets its agents, a shell, and a diff view. Custom create/remove commands are supported (see [Configuration](#configuration)).
 - The diff covers tracked and untracked files. In the web and desktop apps you can also diff against a base branch and switch between unified and split layouts.
 - When `gh` is available, each worktree shows its PR state, review decision, and CI checks (linked, in the apps).
+  When a workflow ran more than once on the same head (a label workflow per label event, a re-run), the run created last decides its checks, not the one that finished last: re-running an old run replays its old event (its old labels) and must not hide a newer green run. GitHub answers "mergeable: unknown" for a while after a push; the last known value stands for 10 minutes, so a row does not flip between "not mergeable" and "CI green".
 
 ### The orchestrator and messaging between Claude agents
 
@@ -289,6 +290,11 @@ provider = "claude"
 # on the branch): the worktree's last recorded agent's mode when there is one,
 # else this (true: permission prompts bypassed, as spawn_agent's default).
 # auto_delegate_skip_permissions = true
+# An agent at work with no output for this long reads "agent may hang" (at
+# least 60 s). On Linux it is not while its process tree used CPU since the
+# last check, a minute ago (a long build or eval suite in the foreground).
+# Unset: $LAZYAGENT_HANG_SECONDS (every repo), else 600.
+# hang_seconds = 600
 
 [orchestrator]
 # Caps on spawns made with an agent token (0 turns one off).
@@ -473,7 +479,12 @@ built-ins. A rule with a built-in's `id` replaces it in place; `and_when`
 adds a condition to the rule it replaces; `before` / `after` move a rule;
 `disabled = true` turns a non-locked one off. A rule that puts the ball with
 you (`ball = "you"`) is an inbox item you can dismiss or park; so is the
-built-in Merge.
+built-in Merge. Parking a whole work item (`z` then `w`) parks every open
+item on it and the ones that come later (CI, conflicts, briefs the engine
+writes), so none of them reaches Round or To sit down with; only a Now item
+(an agent blocked on an approval or a question) takes the row out of Parked
+until you answer it. `actionables_list {include_hidden: true}` lists the
+hidden ones with the work item's park.
 
 Who else can act on an item: `delegable` (Delegate, `d`, hands it to the
 branch's agent) and `passable` (Pass, `Shift+O`, to the orchestrator). They
@@ -507,7 +518,7 @@ id = "merge"                     # replaces the built-in "merge"
 says = "Merge when approved, CI is fine and QA is done."
 when = '''
 pr.state == "open" and pr.review == "approved" and pr.mergeable == "mergeable"
-and (ci.state in ["green", "none"] or ci.unrelated)   # red only for reasons not the branch's
+and (ci.state in ["green", "none"] or ci.unrelated or ci.only_nongating)   # red only for reasons not the branch's, or checks that do not gate
 and tracker.qa in ["tested", "not_required"]
 '''
 [rule.then]
@@ -574,7 +585,7 @@ for the peer step, since an app can approve; the recipe reads these facts:
 | `pr.commits_after_ready` | commits and force pushes since the PR was last marked ready for review; 0 for a draft; a PR opened ready counts from its opening. Clean merges of the base branch are left out (see below) |
 | `pr.commits_after_owner_approval` | the same count from the newer of the ready event and your approval of a head: approving a PR that is already ready (after a CI fix, say) brings it to 0 without a round trip through draft, and a PR opened ready stops counting from its opening. If the commit you approved is gone (a force push), it counts from the ready event again; while the engine has not counted yet, unknown |
 | `pr.owner_approved`, `pr.owner_approved_sha` | you approved a commit still in the PR's history; the commit you approved (empty: none) |
-| `pr.base_merges_after_ready` | the clean merges of the base branch since then, which `pr.commits_after_ready` left out: for a state text such as `state_expr = 'pr.base_merges_after_ready > 0 ? "base merged since, not counted" : "waiting for peer review"'` |
+| `pr.base_merges_after_ready` | the clean merges of the base branch since then (those that differ only in `[review] generated_paths` included), which `pr.commits_after_ready` left out: for a state text such as `state_expr = 'pr.base_merges_after_ready > 0 ? "base merged since, not counted" : "waiting for peer review"'` |
 | `pr.labels` | the label names, lower case: `"qa:skip" in pr.labels` |
 
 ```toml
@@ -589,7 +600,8 @@ id = "merge"
 says = "Merge when a person approved what you approved, CI is fine and QA is done."
 when = '''
 pr.state == "open" and pr.mine and not pr.draft and pr.commits_after_owner_approval == 0
-and pr.human_approvals >= 1 and (ci.state in ["green", "none"] or ci.unrelated)
+and pr.human_approvals >= 1
+and (ci.state in ["green", "none"] or ci.unrelated or ci.only_nongating)
 and pr.mergeable == "mergeable" and tracker.qa in ["tested", "not_required"]
 '''
 [rule.then]
@@ -661,7 +673,20 @@ merge GitHub made is fetched once (`git fetch origin <sha> <base>`, which
 also moves `origin/<base>`); when it cannot be checked, it counts. The timeline
 orders commits by their date, so a commit made before the PR was marked
 ready and pushed after it is caught only while the engine is running (it
-notices the head move). These facts are unknown when the PR could not be
+notices the head move). With `[review] generated_paths` (path globs, `**`
+across directories, matched from the repo root), a merge of the base whose
+tree differs from the automatic merge only in those paths counts as clean
+too: its conflicts were confined to generated files, resolved by merging
+them per key or regenerating them, with no other edit. Both git paths find
+them (a path the automatic merge left conflicted counts as differing), and
+Why? says `base merge, only generated files differ`:
+
+```toml
+[review]
+generated_paths = ["**/generated-map.json", "docs/api/*.lock"]
+```
+
+These facts are unknown when the PR could not be
 read: none of these rules matches then, and the built-ins below decide.
 `pr.labels`, `pr.human_approvals`, `pr.commits_after_ready` and
 `pr.commits_after_owner_approval` cost one more GitHub query per PR poll (1 point of the rate limit for up to 25
@@ -737,6 +762,30 @@ compare_to = "origin/main"                 # main's run at the newest main commi
 | `[ci_unrelated] compare_to` | `build_base` (default): a `pull_request` run's merge-ref base parent, a `push` run's single merge-base with `origin/<base>`; else a ref, compared at its newest commit that is an ancestor of the build base. A project's `compare_to` wins over the repo file's, which wins over the global one |
 | `[ci_unrelated] base_fetches_per_poll` | 3 |
 | `[ci_unrelated] detect_aggregates` | `false` (default). `true`: a job with no `aggregate` key may be taken for one from the run's jobs (see below). The repo file's wins over the global one |
+| `[ci.check."<name>"] gating` | `true` (default). `false`: not a merge gate (an eval suite that fails on the base too and your repo's own fan-in job does not require, a "branch sync" check a fast base never lets pass): its red alone raises no Fix CI; the row in flight says `eval-suite red · not gating`. With `tests_from`, a failing test that passes at the base point makes it gate again (the PR's own failure still reaches you); with test data unknown it stays non-gating, which is the trade-off of setting it |
+| `[ci.check."<name>"] policy` | `true`: a process check (a label policy). Not in Round until the merge is next: the PR is approved (`pr.review`), mergeable, and no gating check is red; then **Fix** `Fix label-check`. `gating = true` beside it is an error |
+
+```toml
+# rules.toml (global or repo): checks that are not merge gates
+[ci.check."eval-suite"]
+tests_from = ["junit:eval-results-*"]      # optional: a failing test of the branch's own makes it gate again
+gating = false
+
+[ci.check."label-check"]
+policy = true
+```
+
+The facts: `ci.gating_failures` (the related failing checks that gate the
+merge: Fix CI reads it), `ci.policy_failures`, `ci.first_policy` and
+`ci.only_nongating` (red, and no failing check gates: each is non-gating,
+policy or unrelated). A merge rule then reads `(ci.state in ["green",
+"none"] or ci.unrelated or ci.only_nongating)`. Three lists, three jobs:
+
+| List | The red check's item | Auto-delegated |
+|---|---|---|
+| `[ci.check] gating = false` / `policy = true` | none (policy: Fix once the merge is next) | never: no item |
+| `[ci] nondeterministic` | Fix CI, until an attestation explains it | yes, to investigate and attest |
+| `[inbox] auto_delegate_skip_checks` | Fix CI | no: it stays yours |
 
 When every failing check is unrelated, Fix CI clears and the row carries
 `CI red · unrelated (base also red: 2 tests)` (`status_list {fields:
