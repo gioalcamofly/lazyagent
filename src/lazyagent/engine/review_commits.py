@@ -22,13 +22,17 @@ base branch for **opened**).
 
 The list is local git (:meth:`BaseMerges.commit_list`), off the loop, once
 per (from, head, base): the field is None until it is there, and the pass
-that follows carries it (a ``status.updated``).
+that follows carries it (a ``status.updated``). A list that could not be
+read (a commit not fetched yet, a start no longer in the head's history) is
+read again after :data:`RETRY_AFTER`, the old answer kept meanwhile.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from lazyagent.engine.owner_approvals import ready_time
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 CAP = 15
+RETRY_AFTER = 600.0          # seconds before a failed list is read again
 _CACHE_MAX = 512
 
 
@@ -79,26 +84,38 @@ class ReviewCommits:
         # (since, from, head, base) → the commits, or None (from lost).
         self._lists: dict[tuple[str, str | None, str, str], list[dict[str, Any]] | None] = {}
         self._running: set[tuple[str, str | None, str, str]] = set()
+        # slot → when its list failed (None), to read it again later.
+        self._failed: dict[tuple[str, str | None, str, str], float] = {}
+        self.clock: Callable[[], float] = time.monotonic
 
     def of(self, pr: Any, approval: Any) -> dict[str, Any] | None:
         """The field for an open PR; None until its list is read."""
         since, start = start_of(pr, approval)
         slot = (since, start, pr.head_sha, pr.base_ref)
-        if slot not in self._lists:
+        if self._stale(slot):
             self._schedule(slot)
-            return None
+            if slot not in self._lists:
+                return None
         commits = self._lists[slot]
         if commits is None and since != "opened":
             # The point is no longer in the head's history (a force push):
             # the PR's own commits.
             fallback = ("opened", None, pr.head_sha, pr.base_ref)
-            if fallback not in self._lists:
+            if self._stale(fallback):
                 self._schedule(fallback)
-                return None
+                if fallback not in self._lists:
+                    return None
             since, start, commits = "opened", None, self._lists[fallback]
         if commits is None:
             return None
         return payload(pr, since, start, commits)
+
+    def _stale(self, slot: tuple[str, str | None, str, str]) -> bool:
+        """Not read yet, or failed :data:`RETRY_AFTER` ago."""
+        if slot not in self._lists:
+            return True
+        failed = self._failed.get(slot)
+        return failed is not None and self.clock() - failed >= RETRY_AFTER
 
     def _schedule(self, slot: tuple[str, str | None, str, str]) -> None:
         if slot in self._running:
@@ -119,7 +136,12 @@ class ReviewCommits:
                 merges.commit_list, engine.repo_root, start, head, base)
             if len(self._lists) >= _CACHE_MAX:
                 self._lists.clear()
+                self._failed.clear()
             self._lists[slot] = found
+            if found is None:
+                self._failed[slot] = self.clock()
+            else:
+                self._failed.pop(slot, None)
         finally:
             self._running.discard(slot)
         engine.status.mark_dirty()

@@ -16,7 +16,7 @@ import pytest
 from lazyagent.engine.base_merges import CLEAN, BaseMerges
 from lazyagent.engine.methods import EngineMethods
 from lazyagent.engine.owner_approvals import ApprovalFact
-from lazyagent.engine.review_commits import compare_url, payload, start_of
+from lazyagent.engine.review_commits import RETRY_AFTER, compare_url, payload, start_of
 from lazyagent.worktree_manager import _commits_after_ready
 
 from tests.engine.rules.test_review_facts import readme_recipe, ready_at, timeline
@@ -230,6 +230,32 @@ async def test_not_on_a_draft_nor_a_teammates_pr():
         _set_pr(engine, _pr(head=NEXT, after=1, ready_sha=HEAD, url=URL))
         await _rule_row(engine, me="someone-else")
         assert (await _settled(engine))["review_commits"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_list_that_failed_is_read_again_after_a_while():
+    with _rules_files({GLOBAL_RULES: readme_recipe()}):
+        engine = _engine(_pr(head=NEXT, after=1, ready_sha=HEAD, url=URL))
+        engine.rules.reload()
+        lists = _Lists({})                   # not fetched yet: None
+        engine.worktree_service.base_merges = lists
+        now = [1000.0]
+        engine.review_commits.clock = lambda: now[0]
+        await _rule_row(engine)
+        await _settled(engine)
+        # The fallback (the PR's own commits) failed too: nothing shown.
+        assert (await _settled(engine))["review_commits"] is None
+        assert lists.calls == [(HEAD, NEXT), (None, NEXT)]
+        # Within RETRY_AFTER: not read again.
+        now[0] += RETRY_AFTER - 1
+        await _settled(engine)
+        assert len(lists.calls) == 2
+        # Past it, with the commit fetched since: read again, shown.
+        lists.lists[(HEAD, NEXT)] = _commits(1)
+        now[0] += 2
+        rc = (await _settled(engine))["review_commits"]
+        assert (rc["since"], rc["count"]) == ("ready", 1)
+        assert lists.calls[2] == (HEAD, NEXT)
 
 
 # --- a pass announces a change of the fields alone -----------------------------------
