@@ -198,6 +198,9 @@ FEATURES: tuple[str, ...] = (
     # I4j: status_gesture delegate to: agent with restore / spawn: the items
     # read first, the agent started, the letter sent once it is at its prompt.
     "delegate_start",
+    # settings_get / settings_set: the desktop's Settings page ([agents]
+    # permission_mode in the global config.toml or the repo's file).
+    "settings",
 )
 
 STREAM_RESIZED = "stream.resized"

@@ -1,10 +1,11 @@
 //! The permission mode agents are spawned in (`[agents] permission_mode`):
-//! the spawn dialog preselects the configured mode and sends what it shows,
-//! quick spawns send no mode (the engine's config applies), and a tab names
-//! a mode other than the CLI's own default.
+//! the spawn and create dialogs' Skip permissions starts checked when the
+//! configured mode is bypass and is sent as skip_permissions, quick spawns
+//! send no mode (the engine's config applies), and a tab names a mode other
+//! than the CLI's own default.
 
 use super::*;
-use crate::dialogs::{Kind, configured_mode, mode_choices, normal_mode};
+use crate::dialogs::{Kind, configured_mode, skip_by_default};
 use lazyagent_proto::types::ConfigView;
 
 const FEAT: &str = "/r/repo-f";
@@ -30,47 +31,48 @@ fn with_config(mode: Option<&str>) -> Harness<'static, App> {
 }
 
 #[test]
-fn the_dialogs_default_and_choices() {
+fn skip_permissions_starts_checked_only_when_bypass_is_configured() {
     assert_eq!(configured_mode(None), "cli");
     assert_eq!(configured_mode(Some(&config("claude", None))), "cli", "an older engine, or none set");
     assert_eq!(configured_mode(Some(&config("claude", Some("plan")))), "plan");
-    let claude = mode_choices(Some(&config("claude", None)));
-    assert_eq!(claude, ["cli", "bypass", "acceptEdits", "plan", "dontAsk", "auto", "default"]);
-    assert_eq!(mode_choices(Some(&config("codex", None))), ["cli", "bypass"], "only bypass or not");
-    assert_eq!(
-        mode_choices(Some(&config("gemini", Some("plan")))),
-        ["cli", "bypass", "plan"],
-        "the configured one too"
-    );
-    assert_eq!(normal_mode(Some(&config("claude", Some("acceptEdits")))), "acceptEdits");
-    assert_eq!(normal_mode(Some(&config("claude", Some("bypass")))), "cli", "n is never bypass");
+    assert!(!skip_by_default(None));
+    assert!(!skip_by_default(Some(&config("claude", Some("plan")))));
+    assert!(skip_by_default(Some(&config("codex", Some("bypass")))));
 }
 
 #[test]
-fn the_spawn_dialog_preselects_the_configured_mode_and_sends_it() {
-    let mut h = with_config(Some("acceptEdits"));
-    let calls = fake_engine(&h, |m, _| (m == "spawn_agent").then(|| json!({"agent_id": "a1", "worktree_path": FEAT})));
-    h.state_mut().state.open_dialog(Kind::Spawn);
-    h.run_steps(3);
-    assert_eq!(h.state().state.dialog.as_ref().unwrap().mode, "acceptEdits");
-    h.get_by_label("Permissions");
-    h.get_by_label("Spawn").click();
-    h.run_steps(3);
-    let spawn = calls_of(&calls, "spawn_agent");
-    assert_eq!(spawn.len(), 1);
-    assert_eq!(spawn[0]["worktree_path"], FEAT);
-    assert_eq!(spawn[0]["permission_mode"], "acceptEdits");
-    assert!(spawn[0].get("skip_permissions").is_none(), "{}", spawn[0]);
-}
-
-#[test]
-fn the_spawn_dialogs_keys_pick_bypass_or_the_configured_mode() {
-    for (key, configured, sent) in [
-        (egui::Key::D, Some("plan"), "bypass"),
-        (egui::Key::N, Some("plan"), "plan"),
-        (egui::Key::N, Some("bypass"), "cli"),
-        (egui::Key::N, None, "cli"),
+fn the_spawn_dialog_sends_its_checkbox() {
+    for (configured, click, sent) in [
+        (Some("bypass"), false, true),
+        (Some("bypass"), true, false),
+        (Some("acceptEdits"), false, false),
+        (None, true, true),
     ] {
+        let mut h = with_config(configured);
+        let calls =
+            fake_engine(&h, |m, _| (m == "spawn_agent").then(|| json!({"agent_id": "a1", "worktree_path": FEAT})));
+        h.state_mut().state.open_dialog(Kind::Spawn);
+        h.run_steps(3);
+        assert_eq!(h.state().state.dialog.as_ref().unwrap().skip, configured == Some("bypass"), "{configured:?}");
+        if click {
+            h.get_by_label("Skip permissions (d)").click();
+            h.run_steps(2);
+        }
+        h.get_by_label("Spawn").click();
+        h.run_steps(3);
+        let spawn = calls_of(&calls, "spawn_agent");
+        assert_eq!(spawn.len(), 1);
+        assert_eq!(spawn[0]["worktree_path"], FEAT);
+        assert_eq!(spawn[0]["skip_permissions"], sent, "{configured:?} click {click}");
+        assert!(spawn[0].get("permission_mode").is_none(), "{}", spawn[0]);
+    }
+}
+
+#[test]
+fn the_spawn_dialogs_keys_pick_skip_or_not() {
+    for (key, configured, sent) in
+        [(egui::Key::D, Some("plan"), true), (egui::Key::N, Some("bypass"), false), (egui::Key::N, None, false)]
+    {
         let mut h = with_config(configured);
         let calls = fake_engine(&h, |_, _| None);
         h.state_mut().state.open_dialog(Kind::Spawn);
@@ -82,8 +84,32 @@ fn the_spawn_dialogs_keys_pick_bypass_or_the_configured_mode() {
         h.run_steps(3);
         let spawn = calls_of(&calls, "spawn_agent");
         assert_eq!(spawn.len(), 1, "{key:?} with {configured:?}");
-        assert_eq!(spawn[0]["permission_mode"], sent, "{key:?} with {configured:?}");
+        assert_eq!(spawn[0]["skip_permissions"], sent, "{key:?} with {configured:?}");
     }
+}
+
+#[test]
+fn the_create_dialogs_launch_sends_its_checkbox() {
+    let mut h = with_config(Some("bypass"));
+    h.state_mut().state.open_dialog(Kind::Create);
+    h.run_steps(3);
+    assert!(h.state().state.dialog.as_ref().unwrap().skip, "checked: bypass is configured");
+    h.state_mut().state.after_create(
+        lazyagent_proto::types::CreateWorktreeResult {
+            path: FEAT.into(),
+            branch: "f".into(),
+            custom_command: None,
+            warning: None,
+            job_id: None,
+        },
+        Some(("go".into(), false)),
+    );
+    let calls = fake_engine(&h, |_, _| None);
+    h.run_steps(4);
+    let spawn = calls_of(&calls, "spawn_agent");
+    assert_eq!(spawn.len(), 1);
+    assert_eq!(spawn[0]["skip_permissions"], false);
+    assert!(spawn[0].get("permission_mode").is_none(), "{}", spawn[0]);
 }
 
 #[test]

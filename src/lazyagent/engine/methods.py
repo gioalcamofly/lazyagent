@@ -243,6 +243,8 @@ class EngineMethods:
             "presence_set": self.presence_set,
             "inbox_config_get": self.inbox_config_get,
             "inbox_config_set": self.inbox_config_set,
+            "settings_get": self.settings_get,
+            "settings_set": self.settings_set,
             "work_items_upsert": self.work_items_upsert,
             "work_items_close": self.work_items_close,
             "ci_log_summary": self.ci_log_summary,
@@ -2039,6 +2041,43 @@ class EngineMethods:
         self._engine.load_config()
         self._engine.status.mark_dirty()
         return await self.inbox_config_get({"repo": root})
+
+    async def settings_get(self, params: dict) -> Any:
+        """The Settings page's settings (config.SETTINGS): each one as the
+        global config.toml and the repo's .lazyagent.toml have it, and the
+        one in force with its source. Params: repo? (its name or root)."""
+        from lazyagent.config import SETTING_SCOPES, SETTINGS, read_setting, setting_path
+        from lazyagent.engine.status import repo_name
+
+        root = self._repo(params)
+
+        def read() -> list[dict]:
+            return [read_setting(root, key) for key in SETTINGS]
+
+        return {
+            "repo": repo_name(self._engine),
+            "files": {scope: str(setting_path(root, scope)) for scope in SETTING_SCOPES},
+            "settings": await asyncio.to_thread(read),
+        }
+
+    async def settings_set(self, params: dict) -> Any:
+        """Write one setting in the global config.toml or the repo's
+        .lazyagent.toml (comments and other keys kept; the global file is
+        created when missing), and apply it now. Params: repo?, key, scope
+        (global, repo), value (null: remove it from that file). The
+        user's only."""
+        from lazyagent.config import write_setting
+
+        self._user_only(params, "settings_set")
+        root = self._repo(params)
+        if "value" not in params:
+            raise ValueError("value is required (null removes the setting)")
+        await asyncio.to_thread(
+            write_setting, root, params.get("key"), params["value"], params.get("scope")
+        )
+        self._engine.load_config()
+        self._engine.status.mark_dirty()
+        return await self.settings_get({"repo": root})
 
     async def work_items_upsert(self, params: dict) -> Any:
         """A feeder (a planner, a script) creates or replaces a work item,

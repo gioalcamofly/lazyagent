@@ -1477,6 +1477,55 @@ async def _():
         shutil.rmtree(root, ignore_errors=True)
 
 
+# --- The Settings page ---------------------------------------------------
+
+
+def _settings_engine():
+    """The inbox engine with $XDG_CONFIG_HOME in the same fresh directory,
+    holding a commented global config.toml."""
+    engine, base = _inbox_engine()
+    (base / "config" / "lazyagent").mkdir(parents=True)
+    (base / "config" / "lazyagent" / "config.toml").write_text(
+        "# mine\n[agents]\npermission_mode = \"acceptEdits\"\n"
+    )
+    return engine, base
+
+
+async def _settings_call(method: str, params: dict[str, Any]):
+    import shutil
+
+    engine, base = _settings_engine()
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    os.environ["XDG_CONFIG_HOME"] = str(base / "config")
+    try:
+        return await _call(engine, method, params)
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@case("settings_get/global_in_force")
+async def _():
+    return await _settings_call("settings_get", {})
+
+
+@case("settings_set/repo_wins")
+async def _():
+    return await _settings_call(
+        "settings_set", {"key": "agents.permission_mode", "scope": "repo", "value": "plan"}
+    )
+
+
+@case("settings_set/error_invalid_value")
+async def _():
+    return await _settings_call(
+        "settings_set", {"key": "agents.permission_mode", "scope": "repo", "value": "yolo"}
+    )
+
+
 # --- The decision view: Explain this, a new brief, evidence (I5) ------------
 
 

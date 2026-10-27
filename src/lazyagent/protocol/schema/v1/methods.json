@@ -2397,6 +2397,56 @@
       }
     },
     "prompts_apply.result": {"$ref": "#/$defs/prompts_change"},
+    "settings_get.params": {
+      "type": "object",
+      "description": "Feature settings.",
+      "properties": {
+        "repo": {"type": "string", "description": "The repo's name or root (the engine's own)."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "settings_get.result": {
+      "type": "object",
+      "required": ["repo", "files", "settings"],
+      "properties": {
+        "repo": {"type": "string"},
+        "files": {
+          "type": "object",
+          "required": ["global", "repo"],
+          "description": "Where each scope's settings live: the user's config.toml, the repo's .lazyagent.toml.",
+          "properties": {"global": {"type": "string"}, "repo": {"type": "string"}}
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "value", "source", "global", "repo", "default", "choices"],
+            "properties": {
+              "key": {"type": "string", "description": "<table>.<name>, e.g. agents.permission_mode."},
+              "value": {"type": "string", "description": "The value in force."},
+              "source": {"enum": ["repo", "global", "default"], "description": "Where value comes from: the repo's wins over the global one."},
+              "global": {"type": ["string", "null"], "description": "The global file's (null: not set, or invalid)."},
+              "repo": {"type": ["string", "null"], "description": "The repo file's (null: not set, or invalid)."},
+              "default": {"type": "string"},
+              "choices": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "settings_set.params": {
+      "type": "object",
+      "required": ["key", "scope", "value"],
+      "description": "Feature settings. The user's only (no caller token). Writes the scope's file keeping comments and other keys, then applies it.",
+      "properties": {
+        "repo": {"type": "string"},
+        "key": {"type": "string"},
+        "scope": {"enum": ["global", "repo"]},
+        "value": {"type": ["string", "null"], "description": "null removes the key from that file."},
+        "caller": {"$ref": "#/$defs/notes_caller"}
+      }
+    },
+    "settings_set.result": {"$ref": "#/$defs/settings_get.result"},
     "list_events.result": {
       "type": "object",
       "required": ["events", "cursor", "truncated"],

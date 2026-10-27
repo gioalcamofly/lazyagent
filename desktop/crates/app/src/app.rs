@@ -92,7 +92,7 @@ struct NowNote {
 struct PendingLaunch {
     path: String,
     instruction: String,
-    mode: String,
+    skip: bool,
     job: Option<String>,
 }
 
@@ -255,6 +255,8 @@ pub struct State {
     pub life: crate::lifecycle::Lifecycle,
     /// "Prompts…": lazyagent's guidance in the user's agent prompts.
     pub prompts: crate::prompts_view::Prompts,
+    /// "Settings…": the settings kept in config files.
+    pub settings: crate::settings_view::SettingsPage,
     /// `hello.detached`: whether the engine can be stopped from here.
     pub engine_detached: Option<bool>,
     /// `hello.source_commit`: the code the engine runs.
@@ -368,6 +370,7 @@ impl State {
             last_copied: None,
             life: Default::default(),
             prompts: Default::default(),
+            settings: Default::default(),
             engine_detached: None,
             engine_commit: None,
             restart_result: None,
@@ -419,7 +422,7 @@ impl State {
         }
         self.dialog_seq += 1;
         let mut d = Dialog::new(kind, self.dialog_seq, target.clone());
-        d.mode = crate::dialogs::configured_mode(self.store.config.as_ref());
+        d.skip = crate::dialogs::skip_by_default(self.store.config.as_ref());
         match kind {
             Kind::Create => {
                 d.target = String::new();
@@ -470,7 +473,7 @@ impl State {
         }
     }
 
-    pub fn after_create(&mut self, r: CreateWorktreeResult, launch: Option<(String, String)>) {
+    pub fn after_create(&mut self, r: CreateWorktreeResult, launch: Option<(String, bool)>) {
         if let Some(w) = &r.warning
             && r.job_id.is_none()
         {
@@ -481,8 +484,8 @@ impl State {
             self.jobs_open = true;
         }
         self.pending_select = Some(r.path.clone());
-        if let Some((instruction, mode)) = launch {
-            self.pending_launch = Some(PendingLaunch { path: r.path, instruction, mode, job: r.job_id });
+        if let Some((instruction, skip)) = launch {
+            self.pending_launch = Some(PendingLaunch { path: r.path, instruction, skip, job: r.job_id });
         }
         self.conn.notify("refresh_worktrees", json!({}));
     }
@@ -522,7 +525,7 @@ impl State {
         let params = json!({
             "worktree_path": p.path,
             "instruction": (!p.instruction.is_empty()).then_some(p.instruction),
-            "permission_mode": p.mode,
+            "skip_permissions": p.skip,
             "env": self.env_json(),
         });
         let path = p.path.clone();
@@ -1344,8 +1347,12 @@ impl App {
         }
         // Single letters belong to a terminal that has the keyboard, and to
         // text fields; otherwise they are the TUI's action keys.
-        let outside =
-            s.dialog.is_none() && s.ask.is_none() && !s.prompts.open && !s.terminal_focused && !ctx.text_edit_focused();
+        let outside = s.dialog.is_none()
+            && s.ask.is_none()
+            && !s.prompts.open
+            && !s.settings.open
+            && !s.terminal_focused
+            && !ctx.text_edit_focused();
         let g_recent = s.pending_g.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         // The page, from anywhere (a terminal does not need F1).
         if s.dialog.is_none() && take(Modifiers::NONE, Key::F1) {
@@ -1416,6 +1423,14 @@ impl App {
                 }
                 if ui.button("New worktree…  (c)").clicked() {
                     s.open_dialog(Kind::Create);
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(s.has(crate::settings_view::FEATURE), egui::Button::new("Settings…"))
+                    .on_disabled_hover_text("This engine is too old: restart it (File → Restart…)")
+                    .clicked()
+                {
+                    s.open_settings();
                 }
                 ui.separator();
                 if ui.button("Restart…").clicked() {
@@ -2319,6 +2334,7 @@ impl App {
         crate::dialogs::show(&ctx, &mut self.state);
         crate::lifecycle::show(&ctx, &mut self.state);
         crate::prompts_view::show(&ctx, &mut self.state);
+        crate::settings_view::show(&ctx, &mut self.state);
         self.diff_dialogs(&ctx);
         self.state.pending_reviews();
         self.state.pending_asks();
