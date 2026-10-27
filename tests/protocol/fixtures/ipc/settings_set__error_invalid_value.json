@@ -1,0 +1,16 @@
+{
+  "case": "settings_set/error_invalid_value",
+  "method": "settings_set",
+  "params": {
+    "key": "agents.permission_mode",
+    "scope": "repo",
+    "value": "yolo"
+  },
+  "response": {
+    "error": {
+      "code": "VALIDATION_ERROR",
+      "message": "Invalid agents.permission_mode: 'yolo'. Must be one of: cli, bypass, acceptEdits, plan, dontAsk, auto, default"
+    },
+    "id": "req-1"
+  }
+}

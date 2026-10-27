@@ -190,6 +190,9 @@ FEATURES: tuple[str, ...] = (
     # R3d): owner_approve, owner_approval_revoke, the row field approvable,
     # rules_explain owner_approval, the owner_approval timeline kind.
     "owner_approve",
+    # settings_get / settings_set: the desktop's Settings page ([agents]
+    # permission_mode in the global config.toml or the repo's file).
+    "settings",
 )
 
 STREAM_RESIZED = "stream.resized"

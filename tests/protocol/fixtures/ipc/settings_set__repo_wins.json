@@ -1,0 +1,38 @@
+{
+  "case": "settings_set/repo_wins",
+  "method": "settings_set",
+  "params": {
+    "key": "agents.permission_mode",
+    "scope": "repo",
+    "value": "plan"
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "files": {
+        "global": "/tmp/golden-inbox/config/lazyagent/config.toml",
+        "repo": "/tmp/golden-inbox/repo/.lazyagent.toml"
+      },
+      "repo": "repo",
+      "settings": [
+        {
+          "choices": [
+            "cli",
+            "bypass",
+            "acceptEdits",
+            "plan",
+            "dontAsk",
+            "auto",
+            "default"
+          ],
+          "default": "cli",
+          "global": "acceptEdits",
+          "key": "agents.permission_mode",
+          "repo": "plan",
+          "source": "repo",
+          "value": "plan"
+        }
+      ]
+    }
+  }
+}

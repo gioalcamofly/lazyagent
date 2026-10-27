@@ -1,0 +1,34 @@
+{
+  "case": "settings_get/global_in_force",
+  "method": "settings_get",
+  "params": {},
+  "response": {
+    "id": "req-1",
+    "result": {
+      "files": {
+        "global": "/tmp/golden-inbox/config/lazyagent/config.toml",
+        "repo": "/tmp/golden-inbox/repo/.lazyagent.toml"
+      },
+      "repo": "repo",
+      "settings": [
+        {
+          "choices": [
+            "cli",
+            "bypass",
+            "acceptEdits",
+            "plan",
+            "dontAsk",
+            "auto",
+            "default"
+          ],
+          "default": "cli",
+          "global": "acceptEdits",
+          "key": "agents.permission_mode",
+          "repo": null,
+          "source": "global",
+          "value": "acceptEdits"
+        }
+      ]
+    }
+  }
+}

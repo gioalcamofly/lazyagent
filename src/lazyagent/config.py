@@ -469,6 +469,25 @@ def _toml_value(value: object) -> str:
     return json.dumps(value)
 
 
+def _trailing_comment(rest: str) -> str:
+    """The comment after a one-line value (``rest``: what follows ``=``),
+    as ``"  # ..."``; "" when there is none. A ``#`` inside a string is
+    not one: the value before a comment must parse on its own."""
+    for i, ch in enumerate(rest):
+        if ch != "#":
+            continue
+        if tomllib is None:
+            if not rest[:i].strip().startswith(("\"", "'", "[")):
+                return "  #" + rest[i + 1 :]
+            return ""
+        try:
+            tomllib.loads("x =" + rest[:i])
+        except ValueError:
+            continue
+        return "  #" + rest[i + 1 :]
+    return ""
+
+
 def set_table_keys(text: str, table: str, values: dict[str, object]) -> str:
     """``text`` (a TOML file) with ``values`` set in ``[table]``: each key's
     line is replaced in place (a multi-line array too), a missing key goes
@@ -505,9 +524,7 @@ def set_table_keys(text: str, table: str, values: dict[str, object]) -> str:
                     depth += lines[i + span].count("[") - lines[i + span].count("]")
                     span += 1
             if name in pending:
-                comment = ""
-                if span == 1 and "#" in rest and not rest.strip().startswith(("\"", "'", "[")):
-                    comment = "  #" + rest.split("#", 1)[1]
+                comment = _trailing_comment(rest) if span == 1 else ""
                 lines[i : i + span] = [f"{name} = {_toml_value(pending.pop(name))}{comment}"]
                 end -= span - 1
                 span = 1
@@ -543,4 +560,109 @@ def write_inbox_config(
         inbox = data.get("inbox", {})
         if any(inbox.get(k) != v for k, v in keys.items()):
             raise ValueError(f"could not write [inbox] in {CONFIG_FILENAME} safely")
+    _atomic_write(path, new.encode())
+
+
+def unset_table_key(text: str, table: str, key: str) -> str:
+    """``text`` without ``key`` in ``[table]`` (its lines, a multi-line array
+    too); every other line stays. Unchanged when either is missing."""
+    lines = text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines)
+         if (m := _TABLE.match(line)) and m.group(1) == table and not line.lstrip().startswith("[[")),
+        None,
+    )
+    if start is None:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if _TABLE.match(lines[i])), len(lines))
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if stripped.startswith("#") or "=" not in stripped or stripped.split("=", 1)[0].strip() != key:
+            continue
+        rest = stripped.split("=", 1)[1]
+        span = 1
+        depth = rest.count("[") - rest.count("]") if rest.strip().startswith("[") else 0
+        while depth > 0 and i + span < end:
+            depth += lines[i + span].count("[") - lines[i + span].count("]")
+            span += 1
+        del lines[i : i + span]
+        return "\n".join(lines) + "\n"
+    return text
+
+
+# The settings the desktop's Settings page edits (settings_get /
+# settings_set): key -> (table, name, the values it takes, its value when
+# no file sets it). The repo's .lazyagent.toml wins over the global
+# config.toml.
+SETTINGS: dict[str, tuple[str, str, tuple[str, ...], str]] = {
+    "agents.permission_mode": ("agents", "permission_mode", PERMISSION_MODES, PERMISSION_MODES[0]),
+}
+SETTING_SCOPES = ("global", "repo")
+
+
+def setting_path(repo_root: str | Path, scope: str) -> Path:
+    """The file a scope's settings live in."""
+    return global_config_path() if scope == "global" else Path(repo_root) / CONFIG_FILENAME
+
+
+def _read_toml(path: Path) -> dict:
+    if tomllib is None or not path.is_file():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, ValueError) as e:
+        log.warning("ignoring %s: %s", path, e)
+        return {}
+
+
+def read_setting(repo_root: str | Path, key: str) -> dict[str, object]:
+    """A setting as each scope has it (None: not set there, or an invalid
+    value), and the one in force with its source (repo, global or
+    default)."""
+    table, name, values, default = SETTINGS[key]
+    found: dict[str, object] = {}
+    for scope in SETTING_SCOPES:
+        data = _read_toml(setting_path(repo_root, scope)).get(table)
+        value = data.get(name) if isinstance(data, dict) else None
+        found[scope] = value if value in values else None
+    source = next((s for s in ("repo", "global") if found[s] is not None), "default")
+    return {
+        "key": key,
+        "value": found[source] if source != "default" else default,
+        "source": source,
+        "global": found["global"],
+        "repo": found["repo"],
+        "default": default,
+        "choices": list(values),
+    }
+
+
+def write_setting(repo_root: str | Path, key: str, value: str | None, scope: str) -> None:
+    """Set ``key`` in the scope's file (created, with its folder, when
+    missing), or remove it there when ``value`` is None, keeping every
+    other line, comments included. The result is parsed back before it
+    replaces the file."""
+    from lazyagent.engine.notes import _atomic_write
+
+    if not isinstance(key, str) or key not in SETTINGS:
+        raise ValueError(f"Unknown setting {key!r}. One of: {', '.join(SETTINGS)}")
+    if scope not in SETTING_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(SETTING_SCOPES)}")
+    table, name, values, _ = SETTINGS[key]
+    if value is not None and value not in values:
+        raise ValueError(f"Invalid {key}: {value!r}. Must be one of: {', '.join(values)}")
+    path = setting_path(repo_root, scope)
+    text = path.read_text() if path.exists() else ""
+    if value is None:
+        new = unset_table_key(text, table, name)
+        if new == text:
+            return
+    else:
+        new = set_table_keys(text, table, {name: value})
+    if tomllib is not None:
+        data = tomllib.loads(new).get(table, {})
+        if (data.get(name) if isinstance(data, dict) else None) != value:
+            raise ValueError(f"could not write [{table}] {name} in {path} safely")
+    path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, new.encode())

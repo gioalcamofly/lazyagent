@@ -161,6 +161,8 @@ fn every_success_fixture_of_a_method_we_use_decodes_losslessly() {
                 let c: PromptsChange = serde_json::from_value(result.clone()).unwrap();
                 assert_eq!(c.action, "create", "{case}");
             }
+            // The Settings page.
+            "settings_get" | "settings_set" => round_trip::<Settings>(case, result),
             other => panic!("{case}: a fixture for {other}, which this test does not know: decide"),
         }
         checked += 1;
@@ -233,6 +235,8 @@ const METHODS_USED: &[&str] = &[
     "prompts_status",
     "prompts_plan",
     "prompts_apply",
+    "settings_get",
+    "settings_set",
 ];
 
 /// Events in events.json that the desktop app deliberately ignores.
