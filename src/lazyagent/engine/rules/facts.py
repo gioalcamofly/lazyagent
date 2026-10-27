@@ -259,6 +259,13 @@ def _human_approvals(c: RowContext) -> Any:
     return sum(1 for login in pr.approved_by if login.lower() not in c.not_human)
 
 
+def _item_human_approvals(c: ItemContext) -> Any:
+    pr = c.place.pr
+    if pr is None or pr.approved_by is None:
+        return UNKNOWN
+    return sum(1 for login in pr.approved_by if login.lower() not in c.place.not_human)
+
+
 def _row_ci_state(c: RowContext) -> str:
     from lazyagent.engine.status import ci_state
 
@@ -503,6 +510,31 @@ def _related(c: Any) -> Any:
     return frozenset(names or {"ci"})
 
 
+def _gating(c: Any) -> Any:
+    """R4c: the related checks that gate the merge; without a [ci.check]
+    table every related check does."""
+    t = _tests_of(c)
+    if t is None:
+        return _related(c)
+    return frozenset(x.lower() for x in t.gating_failures)
+
+
+def _policy(c: Any) -> Any:
+    t = _tests_of(c)
+    return frozenset() if t is None else frozenset(x.lower() for x in t.policy_failures)
+
+
+def _only_nongating(c: Any) -> Any:
+    t = _tests_of(c)
+    return False if t is None else t.only_nongating
+
+
+def _first_policy(c: Any) -> Any:
+    t = _tests_of(c)
+    first = t.first_policy() if t is not None else None
+    return UNKNOWN if first is None else first
+
+
 def _unrelated(c: Any) -> Any:
     t = _tests_of(c)
     if t is None:
@@ -571,7 +603,8 @@ def _first_attestation_pending(c: Any) -> Any:
 
 def _first_related(c: Any) -> Any:
     t = _tests_of(c)
-    if t is not None and (t.unrelated_checks or any(r.new or r.attest_note for r in t.checks)):
+    if t is not None and (t.unrelated_checks or t.gates
+                          or any(r.new or r.attest_note for r in t.checks)):
         first = t.first_related()
         if first is not None:
             return first
@@ -685,7 +718,7 @@ _fact("pr.labels", LABELS, "the PR's labels (lower case)", _PRR, "≤ 60 s", "ex
       row=_labels)
 _fact("pr.human_approvals", NUM,
       "the PR's approvals by people (latest review each; no apps)", _PRR, "≤ 60 s", "extra",
-      row=_human_approvals)
+      row=_human_approvals, item=_item_human_approvals)
 _fact("pr.commits_after_ready", NUM,
       "the pushes since the PR was marked ready (0: a draft; clean merges of the base left out)",
       _PRR, "≤ 60 s", "extra",
@@ -737,6 +770,17 @@ _fact("ci.unrelated_checks", CHECKS, "the failing checks whose tests all fail on
 _fact("ci.related_failures", CHECKS, "the failing checks not explained by the base",
       "failing checks minus ci.unrelated_checks", "per pass", "poll",
       row=_related, item=_related)
+_GT = "[ci.check] gating and policy (R4c)"
+_fact("ci.gating_failures", CHECKS, "the failing checks that gate the merge",
+      "ci.related_failures minus non-gating and policy checks", "per pass", "poll",
+      row=_gating, item=_gating)
+_fact("ci.policy_failures", CHECKS, "the failing policy checks (a label or process check)",
+      _GT, "per pass", "free", row=_policy, item=_policy)
+_fact("ci.only_nongating", BOOL,
+      "CI is red, but no failing check gates the merge (each is non-gating, policy or unrelated)",
+      _GT, "per pass", "free", row=_only_nongating, item=_only_nongating)
+_fact("ci.first_policy", TEXT, "the first failing policy check", _GT, "per pass", "free",
+      row=_first_policy, item=_first_policy)
 _fact("ci.unrelated", BOOL, "CI is red only for reasons unrelated to the branch",
       "mechanism A", "per pass", "extra", row=_unrelated, item=_unrelated)
 _fact("ci.unrelated_summary", TEXT, "what explains the red (empty: nothing)", "mechanism A",

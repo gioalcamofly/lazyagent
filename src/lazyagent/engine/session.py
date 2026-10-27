@@ -88,7 +88,11 @@ PENDING_FEED_KEEP = 256 * 1024
 # PTY reports EOF, before it falls back to killing it.
 _EXIT_REAP_TIMEOUT = 1.0
 
-HANG_SECONDS = 600  # 10 minutes
+HANG_SECONDS = 600  # 10 minutes; [inbox] hang_seconds per repo
+# A quiet agent whose process tree used CPU since the last hang check, at
+# most this long ago, is busy (a long build or eval in the foreground), not
+# hanged. Linux only (/proc); elsewhere quiet is enough.
+CPU_WINDOW = 90.0
 _SCAN_DEBOUNCE_SECONDS = 0.15
 # Lower bound between two consecutive screen scans. The debounce alone lets
 # scans fire every ~150 ms when output is bursty; this caps the dispatch rate
@@ -809,6 +813,49 @@ class TerminalSession:
         """The PTY is being torn down, for whatever reason."""
 
 
+def tree_cpu_ticks(pid: int | None, proc: str = "/proc") -> int | None:
+    """The CPU clock ticks (user + system, its waited-for children's too)
+    used so far by ``pid`` and every process under it; None without /proc
+    or when ``pid`` is gone."""
+    if pid is None:
+        return None
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        return None
+    parent: dict[int, int] = {}
+    ticks: dict[int, int] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{proc}/{name}/stat", "rb") as f:
+                stat = f.read().decode("ascii", "replace")
+        except OSError:
+            continue
+        # The command name is in parentheses and may hold spaces.
+        fields = stat[stat.rfind(")") + 2:].split()
+        try:
+            parent[int(name)] = int(fields[1])
+            ticks[int(name)] = sum(int(x) for x in fields[11:15])
+        except (IndexError, ValueError):
+            continue
+    if pid not in ticks:
+        return None
+    children: dict[int, list[int]] = {}
+    for child, ppid in parent.items():
+        children.setdefault(ppid, []).append(child)
+    total, todo, seen = 0, [pid], set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        total += ticks.get(p, 0)
+        todo += children.get(p, [])
+    return total
+
+
 class AgentSession(TerminalSession):
     """A coding agent's session: a terminal session plus status detection."""
 
@@ -831,6 +878,8 @@ class AgentSession(TerminalSession):
         self.detail = ""
         self.question = ""
         self.last_output_time: float | None = None  # time.monotonic()
+        # The last CPU sample of the process tree: (time.monotonic(), ticks).
+        self._cpu: tuple[float, int] | None = None
         self._observer = observer or AgentObserver()
         self._scan_timer: asyncio.TimerHandle | None = None
         # Predicted dispatch time of the latest scheduled scan; used in
@@ -921,15 +970,28 @@ class AgentSession(TerminalSession):
         """Apply whatever the agent's hooks/telemetry reported since last time."""
         self._apply_events(self._observer.poll())
 
-    def check_hang(self) -> None:
-        """Report POSSIBLY_HANGED when RUNNING with no output for too long."""
+    def check_hang(self, seconds: float = HANG_SECONDS) -> None:
+        """Report POSSIBLY_HANGED when RUNNING with no output for ``seconds``
+        and its process tree used no CPU since the last check (when /proc
+        tells)."""
         self.poll()
+        if self.status != AgentStatus.RUNNING:
+            self._cpu = None
+            return
+        now = time.monotonic()
+        busy = self._cpu_busy(now)
         if (
-            self.status == AgentStatus.RUNNING
-            and self.last_output_time is not None
-            and time.monotonic() - self.last_output_time >= HANG_SECONDS
+            self.last_output_time is not None
+            and now - self.last_output_time >= seconds
+            and not busy
         ):
             self._set_status(AgentStatus.POSSIBLY_HANGED)
+
+    def _cpu_busy(self, now: float) -> bool:
+        ticks = tree_cpu_ticks(self.pid)
+        before, self._cpu = self._cpu, (None if ticks is None else (now, ticks))
+        return (ticks is not None and before is not None
+                and now - before[0] <= CPU_WINDOW and ticks > before[1])
 
     # ------------------------------------------------------------------
     # Screen scan

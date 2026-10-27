@@ -147,8 +147,8 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Check agent** | agent may hang | The agent's status is possibly hanged and the agent's report does not say where the ball is |  |
 | **Relaunch** | agent failed | The agent's status is failed |  |
 | **Relaunch** | agent exited | (exits) |  |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
-| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | The PR's state is open and the PR's checks are red on its head and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
+| **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Fix job** | job failed | (jobs) |  |
 | **Update task** | Tracker | (tracker) | `p` The tracker task |
@@ -157,6 +157,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
 | **Confirm** | Confirm unrelated: ‹the first check whose attestation waits for your confirmation› | The failing checks whose attestation waits for your confirmation is not empty | `Enter` Expands the line |
 | **Answer** | answer: ‹the question the agent's finished turn ends with› | The agent's status is completed, waiting or interrupted and the question the agent's finished turn ends with is not empty and not the orchestrator's own place | `o` The agent's terminal |
+| **Fix** | Fix ‹the first failing policy check› | The PR's state is open and the failing policy checks is not empty and the failing checks that gate the merge is empty and the PR's approvals by people is at least 1 and the PR's mergeability is mergeable | `p` The PR (you merge it, or review it, there) |
 | **Merge** | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) | `p` The PR (you merge it, or review it, there) |
 | **Request reviewer** | PR has no reviewer | The PR's state is open and the PR's review decision is review required or none and there are no PR's requested reviewers and there are no PR's reviews |  |
 
@@ -202,7 +203,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 
 | verb | state | when | key |
 |---|---|---|---|
-| (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park |  |
+| (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park and not (the top inbox item's level is known and the top inbox item's level is now) |  |
 
 ### Done
 
@@ -223,7 +224,7 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 2 | `closed.pr_closed` (locked) | done | PR closed | The PR's state is closed |
 | 3 | `closed.already_merged` (locked) | done | already merged into ‹the branch that already holds the head› | The PR's state is open and there is a branch that already holds the head |
 | 4 | `closed.by_you` (locked) | done | dropped by you / closed by you | Your gesture is close |
-| 5 | `park` (locked) | (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park |
+| 5 | `park` (locked) | (the ball below) | waiting: ‹reason› / waiting (‹board›) / parked until ‹when› / parked: ‹reason› | Your gesture is park and not (the top inbox item's level is known and the top inbox item's level is now) |
 | 6 | `queue` (locked) | you | ‹the top inbox item's state› | There are open inbox items on the work item |
 | 7 | `claim` (locked) | orchestrator | orchestrator · looking | You passed it to the orchestrator |
 | 8 | `hold` (locked) | orchestrator | orchestrator · (holding / ‹the orchestrator's hold note›) | The orchestrator holds it and not ((the agents' statuses include running or the agents' statuses include starting)) |
@@ -238,7 +239,7 @@ First match wins. *queue off*: rules for an engine without the inbox queue.
 | 17 | `merge` | you | merge: approved, CI green | The PR's state is open and the PR's review decision is approved and CI on the PR is green or none and the PR's mergeability is mergeable and (the PR is yours or it is not known whether the PR is yours) |
 | 18 | `changes_requested` *queue off* | you | changes requested | The PR's state is open and the inbox queue is off and the PR's review decision is changes requested |
 | 19 | `conflict_no_agent` *queue off* | you | conflict with base | The PR's state is open and the inbox queue is off and there are no agents at work and the PR's mergeability is conflicting |
-| 20 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) |
+| 20 | `ci_red_no_agent` *queue off* | you | CI red: ‹the first failing check› | The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) |
 | 21 | `agent_finished` *queue off* | you | review: agent finished | The inbox queue is off and there are agents whose turn is over and there are no agents at work and there is no PR and the agent's reported ball is empty |
 | 22 | `label` | ‹your label's ball› | (the state below) | Your gesture is label |
 | 23 | `agent_running` | agent | fixing CI / starting / working | There are agents at work |
@@ -284,6 +285,7 @@ What can land in your inbox, at which level, and the verb it shows.
 | **Review** | Review requested | round | quick |  |  | `p` The PR (you merge it, or review it, there) |
 | **Confirm** | Confirm attestation | round | quick |  |  | `Enter` Expands the line |
 | **Answer** | Asks you | round | quick |  |  | `o` The agent's terminal |
+| **Fix** | Policy check failing | round | quick |  | ⇧O | `p` The PR (you merge it, or review it, there) |
 
 ## Keys and actions
 
@@ -453,6 +455,10 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `ci.base_failing_tests` | the tests failing on the base at that commit | set test | JUnit artifacts or log parsers ([ci.check] tests_from) | once per base sha | extra |
 | `ci.unrelated_checks` | the failing checks whose tests all fail on the base too | set check | mechanism A | per pass | extra |
 | `ci.related_failures` | the failing checks not explained by the base | set check | failing checks minus ci.unrelated_checks | per pass | poll |
+| `ci.gating_failures` | the failing checks that gate the merge | set check | ci.related_failures minus non-gating and policy checks | per pass | poll |
+| `ci.policy_failures` | the failing policy checks (a label or process check) | set check | [ci.check] gating and policy (R4c) | per pass | free |
+| `ci.only_nongating` | CI is red, but no failing check gates the merge (each is non-gating, policy or unrelated) | bool | [ci.check] gating and policy (R4c) | per pass | free |
+| `ci.first_policy` | the first failing policy check | text | [ci.check] gating and policy (R4c) | per pass | free |
 | `ci.unrelated` | CI is red only for reasons unrelated to the branch | bool | mechanism A | per pass | extra |
 | `ci.unrelated_summary` | what explains the red (empty: nothing) | text | mechanism A | per pass | free |
 | `ci.base_fixed` | the unrelated checks the base has fixed since | set check | the base's newest run in the Actions runs | ≤ actions_poll_s | extra |

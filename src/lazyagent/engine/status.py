@@ -623,7 +623,9 @@ def summarize(
         "done": sum(r["ball"] == "done" for r in rows),
         "stale": sum(r["stale"] and r["ball"] != "done" for r in rows),
         "parked": sum(r["zone"] == "parked" for r in rows),
-        # Parked rows whose items still wait on the user (not routed).
+        # Parked rows with open items: since R4c a park hides every item but
+        # a Now one, which takes the row out of Parked, so this stays 0 (kept
+        # for older clients).
         "parked_needs_you": sum(r["zone"] == "parked" and bool(r["needs_you"]) for r in rows),
         "not_started": not_started,
         "deep_max": deep_max,

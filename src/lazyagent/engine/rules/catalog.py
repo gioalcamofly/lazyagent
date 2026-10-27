@@ -476,17 +476,25 @@ class Catalog:
     """The ordered row rules and the kinds."""
 
     def __init__(self, rules: list[Rule], kinds: list[KindRule],
-                 not_human: frozenset[str] = frozenset(), ci: Any = None) -> None:
+                 not_human: frozenset[str] = frozenset(), ci: Any = None,
+                 generated_paths: tuple[str, ...] = ()) -> None:
         from lazyagent.engine.ci_tests import NO_CONFIG
 
         self.rules = rules
         self.kinds = kinds
         # [review] not_human: logins pr.human_approvals leaves out (lower case).
         self.not_human = not_human
+        # [review] generated_paths: base merges that differ only there are
+        # clean (engine/base_merges.py, R4c).
+        self.generated_paths = generated_paths
         # [ci.check] and [ci_unrelated] (engine/ci_tests.CiConfig).
         self.ci = NO_CONFIG if ci is None else ci
         # A rule reads a fact the PR poll fetches only on demand.
-        self.reads_review = any(r.facts & REVIEW_FACTS for r in rules)
+        # A kind reads them only while a [ci.check] makes it reachable: a
+        # policy check (ci_policy, R4c).
+        self.reads_review = any(r.facts & REVIEW_FACTS for r in rules) or (
+            any(c.policy for c in self.ci.checks)
+            and any(k.when is not None and k.when.facts & REVIEW_FACTS for k in kinds))
         self.kind = {k.id: k for k in kinds}
         self.by_id = {r.id: r for r in rules}
         self._tests = [r.test for r in rules]

@@ -2,7 +2,7 @@
   "case": "status_gesture/park_the_work_item_indefinitely",
   "method": "status_gesture",
   "params": {
-    "key": "repo:login-ttl",
+    "key": "repo:docs-index",
     "kind": "park",
     "text": "after the release",
     "until": "indefinite"
@@ -19,24 +19,18 @@
         "until": "indefinite"
       },
       "kept": false,
-      "key": "repo:login-ttl",
+      "key": "repo:docs-index",
       "row": {
         "activity_at": null,
-        "agents": [
-          {
-            "id": "a1",
-            "since": 1700000000.0,
-            "status": "waiting_for_approval"
-          }
-        ],
-        "ball": "you",
+        "agents": [],
+        "ball": "stalled",
         "blocks_agent": false,
-        "branch": "login-ttl",
+        "branch": "docs-index",
         "changed_at": 1700000000.0,
         "claim": null,
         "class": null,
         "delegation": null,
-        "fingerprint": "672e278363f2",
+        "fingerprint": "85cc905a378e",
         "gesture": {
           "at": 1700000000.0,
           "by": "user",
@@ -45,26 +39,20 @@
           "until": "indefinite"
         },
         "hold": null,
-        "holder": "user",
-        "key": "repo:login-ttl",
+        "holder": null,
+        "key": "repo:docs-index",
         "last_event_at": 1700000000.0,
         "last_step": null,
         "level": null,
-        "needs_you": {
-          "count": 1,
-          "items": [
-            {
-              "id": "Approval:/tmp/repo-login/a1",
-              "kind": "approval",
-              "level": "now",
-              "since": 1700000000.0,
-              "state": "approve: Bash"
-            }
-          ],
-          "top": "Approval:/tmp/repo-login/a1"
-        },
+        "needs_you": null,
         "note": null,
-        "pr": null,
+        "pr": {
+          "ci": "green",
+          "mergeable": "MERGEABLE",
+          "number": 14,
+          "review": "APPROVED",
+          "state": "OPEN"
+        },
         "priority": "medium",
         "repo": "repo",
         "rule": 7,
@@ -72,9 +60,11 @@
         "stale": false,
         "state": "parked: after the release",
         "suggestion": null,
-        "title": "login-ttl",
-        "urls": [],
-        "worktree_path": "/tmp/repo-login",
+        "title": "Index the docs",
+        "urls": [
+          "https://example.com/pull/14"
+        ],
+        "worktree_path": "/tmp/repo-docs",
         "zone": "parked"
       }
     }

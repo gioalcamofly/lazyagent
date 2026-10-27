@@ -1096,7 +1096,8 @@
           "name": "pr.human_approvals",
           "phrase": "the PR's approvals by people (latest review each; no apps)",
           "scopes": [
-            "row"
+            "row",
+            "item"
           ],
           "source": "PR poller (review query)",
           "type": "num",
@@ -1334,6 +1335,58 @@
           ],
           "source": "failing checks minus ci.unrelated_checks",
           "type": "set check",
+          "values": []
+        },
+        {
+          "cost": "poll",
+          "freshness": "per pass",
+          "name": "ci.gating_failures",
+          "phrase": "the failing checks that gate the merge",
+          "scopes": [
+            "row",
+            "item"
+          ],
+          "source": "ci.related_failures minus non-gating and policy checks",
+          "type": "set check",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "per pass",
+          "name": "ci.policy_failures",
+          "phrase": "the failing policy checks (a label or process check)",
+          "scopes": [
+            "row",
+            "item"
+          ],
+          "source": "[ci.check] gating and policy (R4c)",
+          "type": "set check",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "per pass",
+          "name": "ci.only_nongating",
+          "phrase": "CI is red, but no failing check gates the merge (each is non-gating, policy or unrelated)",
+          "scopes": [
+            "row",
+            "item"
+          ],
+          "source": "[ci.check] gating and policy (R4c)",
+          "type": "bool",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "per pass",
+          "name": "ci.first_policy",
+          "phrase": "the first failing policy check",
+          "scopes": [
+            "row",
+            "item"
+          ],
+          "source": "[ci.check] gating and policy (R4c)",
+          "type": "text",
           "values": []
         },
         {
@@ -2025,12 +2078,12 @@
           "level": "round",
           "passable": true,
           "rank": 5,
-          "says": "An open PR red on its head with no agent holding it (at work, or its status_report holds the ball); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
-          "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
+          "says": "An open PR red on its head with no agent holding it (at work, or its status_report holds the ball); only the failures the base does not explain (R4) and that gate the merge (R4c: not gating = false or policy = true), held back while every one waits for your confirmation of an attestation (R5).",
+          "sentence": "The PR's state is open and the PR's checks are red on its head and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
           "state_text": "CI red: \u2039the first failing check not explained by the base\u203a",
           "title": "CI failing",
           "verb": "Fix CI",
-          "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and not place.agent_holds",
+          "when": "pr.state == \"open\" and ci.pr_red and not empty(ci.gating_failures) and not (ci.gating_failures subset ci.attestation_pending) and not place.agent_holds",
           "zone": "round"
         },
         {
@@ -2043,12 +2096,12 @@
           "level": "round",
           "passable": true,
           "rank": 5,
-          "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4), held back while every one waits for your confirmation of an attestation (R5).",
-          "sentence": "There is no PR and Actions on the head is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
+          "says": "A fresh red Actions run on the head of a branch with no PR (I7); only the failures the base does not explain (R4) and that gate the merge (R4c), held back while every one waits for your confirmation of an attestation (R5).",
+          "sentence": "There is no PR and Actions on the head is red and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball",
           "state_text": "CI red: \u2039the first failing check not explained by the base\u203a",
           "title": "CI failed",
           "verb": "Fix CI",
-          "when": "not pr.exists and ci.head == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending) and not place.agent_holds",
+          "when": "not pr.exists and ci.head == \"red\" and not empty(ci.gating_failures) and not (ci.gating_failures subset ci.attestation_pending) and not place.agent_holds",
           "zone": "round"
         },
         {
@@ -2248,9 +2301,28 @@
           "verb": "Answer",
           "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agent.question != \"\" and not place.is_orchestrator",
           "zone": "round"
+        },
+        {
+          "action": "open_pr",
+          "blocks_agent": false,
+          "class": "quick",
+          "delegable": false,
+          "detector": "pr",
+          "id": "ci_policy",
+          "level": "round",
+          "passable": true,
+          "rank": 5,
+          "says": "A policy check ([ci.check] policy = true: a label or process check) is red and the merge is next: a person approved the PR (an app's approval does not count), it is mergeable, and no check that gates the merge is red (R4c).",
+          "sentence": "The PR's state is open and the failing policy checks is not empty and the failing checks that gate the merge is empty and the PR's approvals by people is at least 1 and the PR's mergeability is mergeable",
+          "state_text": "Fix \u2039the first failing policy check\u203a",
+          "title": "Policy check failing",
+          "verb": "Fix",
+          "when": "pr.state == \"open\" and not empty(ci.policy_failures) and empty(ci.gating_failures) and pr.human_approvals >= 1 and pr.mergeable == \"mergeable\"",
+          "zone": "round"
         }
       ],
       "review": {
+        "generated_paths": [],
         "not_human": []
       },
       "rules": [
@@ -2379,8 +2451,8 @@
           "position": 4,
           "queue_off": false,
           "replaces": null,
-          "says": "The whole work item waits in Parked, with the ball it would have.",
-          "sentence": "Your gesture is park",
+          "says": "The whole work item waits in Parked, with the ball it would have; its open items wait with it (R4c), but a Now one (an agent blocked on you) takes it out until answered.",
+          "sentence": "Your gesture is park and not (the top inbox item's level is known and the top inbox item's level is now)",
           "state_text": "waiting: \u2039reason\u203a / waiting (\u2039board\u203a) / parked until \u2039when\u203a / parked: \u2039reason\u203a",
           "then": {
             "inherit": [
@@ -2389,7 +2461,7 @@
             "state_expr": "gesture.waiting ? waiting_text(gesture.source, gesture.text) : park_text(gesture.until, gesture.text)"
           },
           "verb": null,
-          "when": "gesture.kind == \"park\"",
+          "when": "gesture.kind == \"park\" and not (known(items.top.level) and items.top.level == \"now\")",
           "zone": "parked"
         },
         {
@@ -2800,7 +2872,7 @@
           "queue_off": true,
           "replaces": null,
           "says": "",
-          "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks not explained by the base is not empty and not (the failing checks not explained by the base are all in the failing checks whose attestation waits for your confirmation)",
+          "sentence": "The PR's state is open and the inbox queue is off and there are no agents at work and CI on the PR is red and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation)",
           "state_text": "CI red: \u2039the first failing check\u203a",
           "then": {
             "ball": "you",
@@ -2808,7 +2880,7 @@
             "state_expr": "with(\"CI red\", ci.first_failing)"
           },
           "verb": null,
-          "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.related_failures) and not (ci.related_failures subset ci.attestation_pending)",
+          "when": "pr.state == \"open\" and not queue.enabled and agents.running == 0 and ci.state == \"red\" and not empty(ci.gating_failures) and not (ci.gating_failures subset ci.attestation_pending)",
           "zone": "round"
         },
         {

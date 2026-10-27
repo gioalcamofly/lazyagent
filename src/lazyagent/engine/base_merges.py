@@ -25,6 +25,18 @@ octopus merge and every normal commit.
   counted (never the other way round, since the result must equal the
   commit's tree).
 
+**Generated files** (R4c): with ``[review] generated_paths`` (globs, ``**``
+across directories, matched against the whole path), a merge of the base
+whose tree differs from the automatic merge only in paths that match counts
+as clean too (``base merge, only generated files differ``): the conflicts
+were confined to generated files, resolved by merging them or regenerating,
+with no other edit. Both ways find the paths: merge-tree lists the conflicted
+ones (``--name-only``; its tree holds them with markers); the old way merges
+every path it can, drops the ones it cannot from the index and counts them
+as differing. The commit's tree is compared with that tree path by path
+(``git diff-tree -r --no-renames``). Without the key a conflict still ends
+the check early, as before.
+
 Both write their objects into a temporary object directory (the repo's own
 as an alternate), so the repository is never written to.
 
@@ -44,6 +56,7 @@ Results are cached per commit (and base); nothing here calls GitHub's API.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import re
@@ -70,6 +83,8 @@ _FETCH_TIMEOUT = 30
 _CACHE_MAX = 4096
 _SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 _VERSION_RE = re.compile(r"git version (\d+)\.(\d+)")
+CLEAN = "clean base merge"
+GENERATED = "base merge, only generated files differ"
 
 # A verdict: True, a clean base merge (not counted); False, it counts.
 # ``final`` verdicts are kept for good; the others (a commit or the base not
@@ -92,6 +107,40 @@ def _is_sha(value: str) -> bool:
     return bool(_SHA_RE.match(value or ""))
 
 
+def _glob(pattern: str) -> re.Pattern[str]:
+    """A path glob: ``**`` any directories, ``*`` and ``?`` within one."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        elif pattern[i] == "[":
+            j = pattern.find("]", i + 1)
+            if j < 0:
+                out.append(re.escape("["))
+                i += 1
+            else:
+                out.append(fnmatch.translate(pattern[i:j + 1])[4:-3])
+                i = j + 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def generated(path: str, patterns: tuple[str, ...]) -> bool:
+    return any(_glob(p).match(path) for p in patterns)
+
+
 class BaseMerges:
     """Classifies merge commits for ``pr.commits_after_ready``; thread-safe.
 
@@ -105,13 +154,25 @@ class BaseMerges:
         self._fetch = fetch
         self._clock = clock
         self._lock = threading.Lock()
-        self._verdicts: dict[tuple[str, str, str], _Verdict] = {}
-        self._moves: dict[tuple[str, str, str, str], int] = {}
+        self._verdicts: dict[tuple[str, str, str, tuple[str, ...]], _Verdict] = {}
+        # [review] generated_paths: the rules files' (the engine sets
+        # paths_of to read them), else what was set.
+        self.paths_of: Callable[[], tuple[str, ...]] | None = None
+        self._paths: tuple[str, ...] = ()
+        self._moves: dict[tuple[str, str, str, str, tuple[str, ...]], int] = {}
         self._fetched: dict[tuple[str, str], float] = {}
         self._objects: dict[str, str] = {}
         self.git_calls = 0        # for the cost measurement and the tests
 
     # --- the public part ------------------------------------------------
+
+    @property
+    def generated_paths(self) -> tuple[str, ...]:
+        return tuple(self.paths_of()) if self.paths_of is not None else self._paths
+
+    @generated_paths.setter
+    def generated_paths(self, paths: tuple[str, ...]) -> None:
+        self._paths = tuple(paths)
 
     @property
     def version(self) -> tuple[int, int] | None:
@@ -124,10 +185,11 @@ class BaseMerges:
         return self.verdict(root, sha, base)[0]
 
     def verdict(self, root: str, sha: str, base: str) -> tuple[bool, str]:
-        """``(clean, why)``: why it counts, or ``clean base merge``."""
+        """``(clean, why)``: why it counts, or :data:`CLEAN` /
+        :data:`GENERATED`."""
         if not root or not _is_sha(sha) or not base or base.startswith("-"):
             return False, "not a commit or no base"
-        key = (root, sha, base)
+        key = (root, sha, base, self.generated_paths)
         with self._lock:
             got = self._verdicts.get(key)
         if got is None or not got[2]:
@@ -148,7 +210,7 @@ class BaseMerges:
             return None
         if before == after:
             return 0
-        key = (root, before, after, base)
+        key = (root, before, after, base, self.generated_paths)
         with self._lock:
             if key in self._moves:
                 return self._moves[key]
@@ -170,16 +232,17 @@ class BaseMerges:
         return len(gained)
 
     def commits_since(self, root: str, since: str, head: str,
-                      base: str) -> tuple[int, int] | None:
-        """``(commits, clean base merges)`` on ``head`` after ``since``, the
-        clean merges not counted in the first (the base's own commits they
-        bring are not counted either); None when ``since`` is not in
-        ``head``'s history (a force push dropped it) or it cannot tell."""
+                      base: str) -> tuple[int, int, int] | None:
+        """``(commits, clean base merges, those of them where only generated
+        files differ)`` on ``head`` after ``since``, the clean merges not
+        counted in the first (the base's own commits they bring are not
+        counted either); None when ``since`` is not in ``head``'s history (a
+        force push dropped it) or it cannot tell."""
         if not root or not _is_sha(since) or not _is_sha(head) or not base \
                 or base.startswith("-"):
             return None
         if since == head:
-            return 0, 0
+            return 0, 0, 0
         if not (self._have(root, since) and self._have(root, head)):
             self._fetch_once(root, (since, head), base)
         if self._git(root, ["merge-base", "--is-ancestor", since, head])[0] != 0:
@@ -187,8 +250,9 @@ class BaseMerges:
         commits = self._rev_list(root, head, since, *self._base_refs(root, base))
         if commits is None or len(commits) > MAX_RANGE:
             return None
-        merges = sum(self.is_clean_base_merge(root, c, base) for c in commits)
-        return len(commits) - merges, merges
+        verdicts = [self.verdict(root, c, base) for c in commits]
+        merges = sum(clean for clean, _ in verdicts)
+        return len(commits) - merges, merges, sum(why == GENERATED for _, why in verdicts)
 
     def adjust(self, root: str, info: PrInfo | None) -> PrInfo | None:
         """``info`` without the clean base merges (and the force pushes that
@@ -197,14 +261,17 @@ class BaseMerges:
         if info is None or info.commits_after_ready is None:
             return info
         base = info.base_ref
-        merges = sum(self.is_clean_base_merge(root, sha, base)
-                     for sha in info.after_ready_merges)
+        verdicts = [self.verdict(root, sha, base) for sha in info.after_ready_merges]
+        merges = sum(clean for clean, _ in verdicts)
+        gen = sum(why == GENERATED for _, why in verdicts)
         pushes = sum(self.moved_only_by_base_merges(root, b, a, base) is not None
                      for b, a in info.after_ready_pushes)
         after = max(0, info.commits_after_ready - merges - pushes)
-        if after == info.commits_after_ready and info.base_merges_after_ready == merges:
+        if after == info.commits_after_ready and info.base_merges_after_ready == merges \
+                and info.generated_merges_after_ready == gen:
             return info
-        return replace(info, commits_after_ready=after, base_merges_after_ready=merges)
+        return replace(info, commits_after_ready=after, base_merges_after_ready=merges,
+                       generated_merges_after_ready=gen)
 
     # --- classification -------------------------------------------------
 
@@ -231,85 +298,124 @@ class BaseMerges:
         code, tree = self._git(root, ["rev-parse", "--verify", "--quiet", f"{sha}^{{tree}}"])
         if code != 0:
             return False, "no tree", False
-        merged, why = self._auto_merge(root, parents[0], parents[1])
-        if merged is None:
-            return False, why, True
-        if merged != tree.strip():
-            return False, "the tree differs from the automatic merge", True
-        return True, "clean base merge", True
-
-    def _auto_merge(self, root: str, p1: str, p2: str) -> tuple[str | None, str]:
-        """The tree of the automatic merge of ``p1`` and ``p2``; None, why."""
+        patterns = self.generated_paths
         objects = self._objects_dir(root)
         if objects is None:
-            return None, "no object directory"
+            return False, "no object directory", True
         tmp = tempfile.mkdtemp(prefix="lazyagent-merge-")
         try:
             env = {"GIT_OBJECT_DIRECTORY": os.path.join(tmp, "objects"),
                    "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects,
                    "GIT_INDEX_FILE": os.path.join(tmp, "index")}
             os.mkdir(env["GIT_OBJECT_DIRECTORY"])
-            if self.version >= (2, 38):
-                code, out = self._git(root, ["merge-tree", "--write-tree", "--no-messages",
-                                             p1, p2], env)
-                if code == 1:
-                    return None, "conflicts"
-                if code != 0 or not out.split():
-                    return None, "git merge-tree failed"
-                return out.split()[0], ""
-            return self._index_merge(root, p1, p2, env, tmp)
+            merged, conflicted, why = self._auto_merge(root, parents[0], parents[1], env, tmp,
+                                                       patterns)
+            if merged is None:
+                return False, why, True
+            if merged == tree.strip() and not conflicted:
+                return True, CLEAN, True
+            if not patterns:
+                return False, "the tree differs from the automatic merge", True
+            code, out = self._git(root, ["diff-tree", "-r", "--no-renames", "--name-only", "-z",
+                                         merged, tree.strip()], env)
+            if code != 0:
+                return False, "git diff-tree failed", True
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+        differ = set(filter(None, out.split("\0"))) | conflicted
+        if differ and all(generated(p, patterns) for p in differ):
+            return True, GENERATED, True
+        return False, "the tree differs from the automatic merge", True
+
+    def _auto_merge(self, root: str, p1: str, p2: str, env: dict[str, str], tmp: str,
+                    patterns: tuple[str, ...] = ()) -> tuple[str | None, set[str], str]:
+        """The tree of the automatic merge of ``p1`` and ``p2`` and its
+        conflicted paths (only those ``patterns`` match: any other ends it);
+        None, why."""
+        if self.version >= (2, 38):
+            args = ["merge-tree", "--write-tree", "--no-messages", "-z"]
+            if patterns:
+                args.append("--name-only")
+            code, out = self._git(root, [*args, p1, p2], env)
+            # The tree, then (on conflicts) each conflicted path, NUL-ended;
+            # the tree's own end is a NUL or a newline by git version.
+            cut = min((i for i in (out.find("\0"), out.find("\n")) if i >= 0), default=len(out))
+            tree, rest = out[:cut].strip(), out[cut + 1:]
+            if code == 1:
+                conflicted = {p for p in rest.split("\0") if p.strip()}
+                if not patterns or not tree or not conflicted \
+                        or not all(generated(p, patterns) for p in conflicted):
+                    return None, set(), "conflicts"
+                return tree, conflicted, ""
+            if code != 0 or not tree:
+                return None, set(), "git merge-tree failed"
+            return tree, set(), ""
+        return self._index_merge(root, p1, p2, env, tmp, patterns)
 
     def _index_merge(self, root: str, p1: str, p2: str, env: dict[str, str],
-                     tmp: str) -> tuple[str | None, str]:
+                     tmp: str, patterns: tuple[str, ...] = ()
+                     ) -> tuple[str | None, set[str], str]:
         code, out = self._git(root, ["merge-base", "--all", p1, p2])
         bases = out.split()
         if code != 0 or len(bases) != 1:
-            return None, f"{len(bases)} merge bases"
+            return None, set(), f"{len(bases)} merge bases"
         if self._git(root, ["read-tree", "-i", "-m", "--aggressive", bases[0], p1, p2],
                      env)[0] != 0:
-            return None, "git read-tree failed"
+            return None, set(), "git read-tree failed"
         code, out = self._git(root, ["ls-files", "-u", "-z"], env)
         if code != 0:
-            return None, "git ls-files failed"
+            return None, set(), "git ls-files failed"
         stages: dict[str, dict[int, tuple[str, str]]] = {}
         for entry in filter(None, out.split("\0")):
             meta, _, path = entry.partition("\t")
             mode, blob, stage = meta.split()
             stages.setdefault(path, {})[int(stage)] = (mode, blob)
-        resolved = []
+        resolved, conflicted = [], set()
         for path, entry in stages.items():
-            if set(entry) != {1, 2, 3}:
-                return None, f"{path}: deleted or added on both sides"
-            (m1, b1), (m2, b2), (m3, b3) = entry[1], entry[2], entry[3]
-            mode = m2 if m2 == m3 else m3 if m1 == m2 else m2 if m1 == m3 else None
-            if mode is None:
-                return None, f"{path}: mode changed on both sides"
-            if not {m1, m2, m3} <= {"100644", "100755"}:
-                return None, f"{path}: a symlink or submodule changed on both sides"
-            files = []
-            for n, blob in enumerate((b2, b1, b3)):
-                dest = os.path.join(tmp, f"blob{n}")
-                code, _ = self._git(root, ["cat-file", "blob", blob], env, out_path=dest)
-                if code != 0:
-                    return None, f"{path}: blob missing"
-                files.append(dest)
-            dest = os.path.join(tmp, "merged")
-            code, _ = self._git(root, ["merge-file", "-p", *files], env, out_path=dest)
-            if code != 0:
-                return None, f"{path}: " + ("conflicts" if 0 < code < 128 else "cannot merge")
-            code, blob = self._git(root, ["hash-object", "-w", "--no-filters", dest], env)
-            if code != 0:
-                return None, "git hash-object failed"
-            resolved.append(f"{mode} {blob.strip()}\t{path}")
+            why = self._merge_path(root, path, entry, env, tmp, resolved)
+            if why is None:
+                continue
+            if not generated(path, patterns):
+                return None, set(), why
+            # A generated file the merge cannot make: out of the index,
+            # compared as differing.
+            conflicted.add(path)
+            resolved.append(f"0 {'0' * 40}\t{path}")
         if resolved and self._git(root, ["update-index", "--index-info"], env,
                                   stdin="\n".join(resolved) + "\n")[0] != 0:
-            return None, "git update-index failed"
+            return None, set(), "git update-index failed"
         code, out = self._git(root, ["write-tree"], env)
         if code != 0 or not out.strip():
-            return None, "git write-tree failed"
-        return out.strip(), ""
+            return None, set(), "git write-tree failed"
+        return out.strip(), conflicted, ""
+
+    def _merge_path(self, root: str, path: str, entry: dict[int, tuple[str, str]],
+                    env: dict[str, str], tmp: str, resolved: list[str]) -> str | None:
+        """Merge one unmerged path into ``resolved``; why not, else None."""
+        if set(entry) != {1, 2, 3}:
+            return f"{path}: deleted or added on both sides"
+        (m1, b1), (m2, b2), (m3, b3) = entry[1], entry[2], entry[3]
+        mode = m2 if m2 == m3 else m3 if m1 == m2 else m2 if m1 == m3 else None
+        if mode is None:
+            return f"{path}: mode changed on both sides"
+        if not {m1, m2, m3} <= {"100644", "100755"}:
+            return f"{path}: a symlink or submodule changed on both sides"
+        files = []
+        for n, blob in enumerate((b2, b1, b3)):
+            dest = os.path.join(tmp, f"blob{n}")
+            code, _ = self._git(root, ["cat-file", "blob", blob], env, out_path=dest)
+            if code != 0:
+                return f"{path}: blob missing"
+            files.append(dest)
+        dest = os.path.join(tmp, "merged")
+        code, _ = self._git(root, ["merge-file", "-p", *files], env, out_path=dest)
+        if code != 0:
+            return f"{path}: " + ("conflicts" if 0 < code < 128 else "cannot merge")
+        code, blob = self._git(root, ["hash-object", "-w", "--no-filters", dest], env)
+        if code != 0:
+            return "git hash-object failed"
+        resolved.append(f"{mode} {blob.strip()}\t{path}")
+        return None
 
     # --- git ------------------------------------------------------------
 

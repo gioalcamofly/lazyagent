@@ -105,11 +105,13 @@ from lazyagent.engine.review_requests import ReviewRequestHub
 from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
 from lazyagent.engine.work_items import WorkItems, work_items_path
 from lazyagent.engine.session import (
+    HANG_SECONDS,
     AgentSession,
     SessionEvent,
     SessionExited,
     StatusChanged,
     TerminalSession,
+    _env_seconds,
 )
 from lazyagent.engine.types import (
     AGENT_KIND,
@@ -302,6 +304,7 @@ class Engine:
         # The rule files (proposal 0014 R2): the catalog the rows use.
         self.rules = RulesHub(lambda: self.repo_root, self.events.emit)
         self.worktree_service.wants_review = lambda: self.rules.catalog.reads_review
+        self.worktree_service.base_merges.paths_of = lambda: self.rules.catalog.generated_paths
         # Inbox items take their work item's priority.
         self.actionables.filters.append(self.status.prioritize)
         # Pass to orchestrator (claims on work items): rows and queue read it.
@@ -1576,9 +1579,19 @@ class Engine:
 
     def check_hangs(self) -> None:
         """Flag the working agents that have gone quiet for too long."""
+        seconds = self.hang_seconds
         for session in self._agent_sessions():
             if session.status == AgentStatus.RUNNING:
-                session.check_hang()
+                session.check_hang(seconds)
+
+    @property
+    def hang_seconds(self) -> float:
+        """The repo's ``[inbox] hang_seconds``, else the environment's
+        ``LAZYAGENT_HANG_SECONDS`` (every repo), else 600."""
+        own = self.config.inbox.hang_seconds
+        if own is not None:
+            return float(own)
+        return _env_seconds("LAZYAGENT_HANG_SECONDS", HANG_SECONDS) or HANG_SECONDS
 
     # ------------------------------------------------------------------
     # Shells

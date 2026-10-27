@@ -131,7 +131,10 @@ fragment pr on PullRequest {
           contexts(first: 100) {
             nodes {
               __typename
-              ... on CheckRun { name status conclusion detailsUrl }
+              ... on CheckRun {
+                name status conclusion detailsUrl
+                checkSuite { workflowRun { workflow { name } } }
+              }
               ... on StatusContext { context state targetUrl }
             }
           }
@@ -176,6 +179,31 @@ def _count(value: object) -> int | None:
     if isinstance(value, list):
         return len(value)
     return None
+
+
+_RUN_ID = re.compile(r"/actions/runs/(\d+)")
+
+
+def _latest_runs(items: list[dict]) -> list[dict]:
+    """A head's checks with one run per workflow and job: the run created
+    last (the highest run id). The rollup lists every run's check runs, so
+    a re-run of an old run (which replays its old event, its old labels)
+    would otherwise keep a red beside a newer green run. A check with no
+    workflow name or run id (a commit status, another app) is kept."""
+    best: dict[tuple[str, str], int] = {}
+    for item in items:
+        m = _RUN_ID.search(item.get("detailsUrl") or "")
+        if m and item.get("workflowName") and item.get("name"):
+            key = (item["workflowName"], item["name"])
+            best[key] = max(best.get(key, 0), int(m[1]))
+    out = []
+    for item in items:
+        m = _RUN_ID.search(item.get("detailsUrl") or "")
+        key = (item.get("workflowName") or "", item.get("name") or "")
+        if m and key in best and int(m[1]) != best[key]:
+            continue
+        out.append(item)
+    return out
 
 
 def _labels(conn: object) -> list[str] | None:
@@ -752,7 +780,7 @@ class WorktreeManager:
     def _pr_info_from_view(data: dict) -> PrInfo:
         """Build a :class:`PrInfo` from ``gh pr view --json`` shaped data."""
         checks: list[CiCheck] = []
-        for item in data.get("statusCheckRollup", []) or []:
+        for item in _latest_runs(data.get("statusCheckRollup", []) or []):
             name = item.get("name") or item.get("context", "")
             status = item.get("status", "")
             conclusion = item.get("conclusion") or item.get("state", "") or ""
@@ -803,6 +831,8 @@ class WorktreeManager:
                     "status": ctx.get("status") or "",
                     "conclusion": ctx.get("conclusion") or "",
                     "detailsUrl": ctx.get("detailsUrl") or "",
+                    "workflowName": (((ctx.get("checkSuite") or {}).get("workflowRun") or {})
+                                     .get("workflow") or {}).get("name") or "",
                 })
             else:
                 checks.append({

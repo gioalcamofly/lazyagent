@@ -200,6 +200,9 @@ class PrInfo:
     after_ready_merges: tuple[str, ...] = ()
     after_ready_pushes: tuple[tuple[str, str], ...] = ()
     base_merges_after_ready: int | None = None
+    # Of those, the ones whose tree differs from the automatic merge only in
+    # [review] generated_paths.
+    generated_merges_after_ready: int = 0
 
     @property
     def checks_summary(self) -> str:

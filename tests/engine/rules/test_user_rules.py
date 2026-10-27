@@ -551,9 +551,11 @@ def test_the_readme_examples_do_what_the_readme_says():
     section = readme.split("### Your rules (rules.toml)")[1].split("\n### ")[0]
     blocks = re.findall(r"```toml\n(.*?)```", section, re.S)
     # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py;
-    # the fourth, [ci.check] and [ci_unrelated]: tests/engine/test_ci_tests.py;
-    # the fifth, [ci] nondeterministic and attestations: tests/engine/test_attest.py.
-    assert len(blocks) == 5
+    # the fourth, [review] generated_paths, the sixth, gating and policy:
+    # tests/engine/test_r4c.py; the fifth, [ci.check] and [ci_unrelated]:
+    # tests/engine/test_ci_tests.py; the seventh, [ci] nondeterministic and
+    # attestations: tests/engine/test_attest.py.
+    assert len(blocks) == 7
     cat, errors, warnings = catalog_of(("global", blocks[0]))
     assert errors == [] and warnings == []
     assert cat.by_id["merge"].origin == "global"

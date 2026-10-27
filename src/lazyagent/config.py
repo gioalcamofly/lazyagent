@@ -141,6 +141,9 @@ class InboxConfig:
     # The permission mode of an agent auto-delegation spawns when the
     # worktree has none on record (else that agent's mode): bypass.
     auto_delegate_skip_permissions: bool = True
+    # An agent working with no output this long (and no CPU used, where
+    # /proc tells) "may hang"; None: $LAZYAGENT_HANG_SECONDS, else 600.
+    hang_seconds: int | None = None
 
 
 @dataclass
@@ -347,6 +350,9 @@ def _inbox_config(data: object) -> InboxConfig:
     bypass = data.get("auto_delegate_skip_permissions")
     if isinstance(bypass, bool):
         config.auto_delegate_skip_permissions = bypass
+    hang = data.get("hang_seconds")
+    if type(hang) is int and hang >= 60:
+        config.hang_seconds = hang
     skip = data.get("auto_delegate_skip_checks")
     if isinstance(skip, list):
         config.auto_delegate_skip_checks = [

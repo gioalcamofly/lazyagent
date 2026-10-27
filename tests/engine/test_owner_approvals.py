@@ -101,14 +101,14 @@ def test_commits_since_the_approved_commit(repo):
     merges = BaseMerges(version=OLD, fetch=False)
     root = str(repo.root)
     approved = repo.feature()
-    assert merges.commits_since(root, approved, approved, "main") == (0, 0)
+    assert merges.commits_since(root, approved, approved, "main") == (0, 0, 0)
     # A clean merge of the base after the approval: not counted.
     merged = repo.merge()
-    assert merges.commits_since(root, approved, merged, "main") == (0, 1)
+    assert merges.commits_since(root, approved, merged, "main") == (0, 1, 0)
     # A real commit after it: counted (the base's own commits never are).
     repo.edit("other.txt", "other\n", "a fix\n")
     fixed = repo.commit("fix")
-    assert merges.commits_since(root, approved, fixed, "main") == (1, 1)
+    assert merges.commits_since(root, approved, fixed, "main") == (1, 1, 0)
 
 
 def test_a_force_push_that_drops_the_approved_commit_is_lost(repo):

@@ -64,6 +64,8 @@ class ApprovalFact:
     state: str
     after: int | None = None
     merges: int | None = None
+    # Of ``merges``, those where only generated files differ (R4c).
+    generated: int = 0
 
 
 def ready_time(pr: PrInfo) -> float | None:
@@ -113,8 +115,10 @@ def why_text(pr: PrInfo | None, approval: ApprovalFact | None) -> str:
     if approval.state == "head":
         return f"{head}: the PR's head, no commits since"
     if approval.state == "counted":
+        gen = (f"; {approval.generated} of them: base merge, only generated files differ"
+               if approval.generated else "")
         merges = (f" ({approval.merges} clean merge{'s' if approval.merges != 1 else ''} "
-                  "of the base not counted)" if approval.merges else "")
+                  f"of the base not counted{gen})" if approval.merges else "")
         n = approval.after
         return f"{head}: {n} commit{'s' if n != 1 else ''} since{merges}"
     if approval.state == "pending":
@@ -148,9 +152,10 @@ class OwnerApprovals:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
-        # (key, approved sha, head, base) → (commits, clean merges), or None
-        # when the approved commit is not in the head's history.
-        self._counts: dict[tuple[str, str, str, str], tuple[int, int] | None] = {}
+        # (key, approved sha, head, base) → (commits, clean merges, those
+        # where only generated files differ), or None when the approved
+        # commit is not in the head's history.
+        self._counts: dict[tuple[str, str, str, str], tuple[int, int, int] | None] = {}
 
     @property
     def store(self) -> dict[str, dict[str, Any]]:
@@ -177,7 +182,8 @@ class OwnerApprovals:
         counted = self._counts[slot]
         if counted is None:
             return ApprovalFact(sha, at, source, "lost")
-        return ApprovalFact(sha, at, source, "counted", counted[0], counted[1])
+        return ApprovalFact(sha, at, source, "counted", counted[0], counted[1],
+                            counted[2] if len(counted) > 2 else 0)
 
     def of_key(self, key: str, pr: PrInfo | None = None) -> dict[str, Any] | None:
         r = self.store.get(key)

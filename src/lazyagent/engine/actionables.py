@@ -152,6 +152,8 @@ CI = KINDS["ci"]
 CI_FAILED = KINDS["ci_failed"]
 # Every failing check is unrelated, and the base has fixed it since (R4).
 SYNC_BASE = KINDS["sync_base"]
+# R4c: a red policy check (a label check) once the merge is next.
+CI_POLICY = KINDS["ci_policy"]
 # R5: confirm an agent's attestation (engine/attest.py).
 ATTESTATION_CONFIRM = KINDS["attestation_confirm"]
 REVIEW = KINDS["review"]
@@ -310,6 +312,8 @@ class Place:
     # Mechanism A on the head (engine/ci_tests.py): None while no check has
     # tests_from.
     tests: Any = None
+    # [review] not_human of the rule files (pr.human_approvals).
+    not_human: frozenset[str] = frozenset()
 
     @property
     def running(self) -> bool:
@@ -422,6 +426,12 @@ def _pr_detail(kind: Kind, place: Place, pr: PrInfo) -> tuple[str, Any]:
             return run_detail(red[0]), red[0]
         failed = [c.name for c in pr.checks if c.conclusion.upper() == "FAILURE"]
         return ", ".join(failed), None
+    if kind is CI_POLICY:
+        t = place.tests
+        names = [n for o, n in t.others if o in t.policy_failures] if t is not None else []
+        names += [c.job for c in (t.checks if t is not None else ())
+                  if c.check in t.policy_failures]
+        return f"policy check red: {', '.join(names)}; the rest is ready to merge", None
     if kind is REVIEW:
         return "a reviewer asked for changes", None
     return "conflicts with the base branch", None
@@ -768,6 +778,9 @@ class ActionableQueue:
         self._carry_until = 0.0
         self._dismissed: dict[str, float] = {}
         self._parked: dict[str, dict[str, Any]] = {}
+        # Items hidden because their work item is parked (R4c), with that
+        # park; flush keeps it.
+        self._row_parked: dict[str, dict[str, Any]] = {}
         self._exits: list[Exit] = []
         self._jobs: list[JobEnd] = []
         self._job_titles: dict[str, str] = {}
@@ -905,6 +918,8 @@ class ActionableQueue:
             tests = None
         if tests is not None:
             tests.attestations = getattr(engine, "attestations", None)
+        catalog = getattr(getattr(engine, "status", None), "catalog", None)
+        not_human = getattr(catalog, "not_human", frozenset())
         for wt in engine.worktrees:
             if wt.is_bare:
                 continue
@@ -928,6 +943,7 @@ class ActionableQueue:
                     me=me,
                     review_request=request.to_dict() if request is not None else None,
                     requests_known=known,
+                    not_human=not_human,
                     report_holds=overlay is not None and overlay.holding(key, now) is not None,
                 )
             )
@@ -990,9 +1006,15 @@ class ActionableQueue:
 
         visible: dict[str, dict[str, Any]] = {}
         reasons: dict[str, str] = {}
+        self._row_parked = {}
         for item_id, item in found.items():
             if item.occurrence in self._dismissed:
                 reasons[item_id] = "dismissed"
+                continue
+            row_park = self._work_item_park(item, now)
+            if row_park is not None:
+                reasons[item_id] = "parked"
+                self._row_parked[item_id] = row_park
                 continue
             park = self._parked.get(item_id)
             if park is not None:
@@ -1041,6 +1063,24 @@ class ActionableQueue:
         self._save()
         return sorted(visible.values(), key=sort_key)
 
+    def _work_item_park(self, item: Item, now: float) -> dict[str, Any] | None:
+        """The park on the item's work item when it hides the item: every
+        item but a ``now`` one (an agent blocked on an approval or an
+        answer). The status projection drops a park that no longer holds
+        (an event's) on its pass; one until a past time hides nothing."""
+        overlay = getattr(self._engine, "overlay", None)
+        gestures = getattr(overlay, "gestures", None)
+        if (item.level or KINDS[item.kind].level) == "now" or not item.work_item \
+                or not isinstance(gestures, dict):
+            return None
+        g = gestures.get(item.work_item)
+        if not isinstance(g, dict) or g.get("kind") != "park" or not isinstance(g.get("park"), dict):
+            return None
+        until = g["park"].get("until")
+        if isinstance(until, (int, float)) and until <= now:
+            return None
+        return g["park"]
+
     # --- Reads and marks ---
 
     def list(
@@ -1057,6 +1097,10 @@ class ActionableQueue:
             for i in self._parked
             if i in self._items and i not in self._visible
             and self._items[i].occurrence not in self._dismissed
+        ] + [
+            self._items[i].to_dict(_public_park(park))
+            for i, park in self._row_parked.items()
+            if i in self._items and i not in self._visible and i not in self._parked
         ]
         if include_hidden:
             items = sorted(items + parked, key=sort_key)

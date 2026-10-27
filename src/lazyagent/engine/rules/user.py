@@ -58,7 +58,7 @@ MAX_FILE_BYTES = 256 * 1024
 MAX_RULES = 200
 RULE_KEYS = frozenset({"id", "says", "when", "and_when", "then", "before", "after", "disabled"})
 TOP_KEYS = frozenset({"version", "rule", "review", "ci", "ci_unrelated"})
-REVIEW_KEYS = frozenset({"not_human"})
+REVIEW_KEYS = frozenset({"not_human", "generated_paths"})
 # Tables later phases read: accepted, not read yet.
 LATER_KEYS: frozenset[str] = frozenset()
 SCOPES = ("global", "repo")
@@ -99,6 +99,8 @@ class FileRules:
     ok: bool = True
     # [review] not_human: logins that are not people (lower case).
     not_human: list[str] = field(default_factory=list)
+    # [review] generated_paths: globs of generated files (R4c).
+    generated_paths: list[str] = field(default_factory=list)
     # [ci.check."<name>"] and [ci_unrelated] (R4, engine/ci_tests.py).
     ci: CiPart = field(default_factory=CiPart)
 
@@ -202,13 +204,21 @@ _REVIEW_HEADER = re.compile(r"^\s*\[\s*review\s*\]")
 
 def _review(f: FileRules, table: Any, text: str) -> None:
     """``[review]``: ``not_human``, the accounts pr.human_approvals leaves
-    out (a review app that signs in as a user, a CI account)."""
+    out (a review app that signs in as a user, a CI account), and
+    ``generated_paths``, globs of generated files (a merge of the base that
+    differs from the automatic one only there is clean)."""
     line = next((n for n, s in enumerate(text.splitlines(), 1) if _REVIEW_HEADER.match(s)), None)
     if not isinstance(table, dict):
         f.errors.append(problem(f, line, None, "[review] must be a table", "ignored"))
         return
     for key in sorted(set(table) - REVIEW_KEYS):
         f.errors.append(problem(f, line, None, f"unknown key {key!r} in [review]", "ignored"))
+    paths = table.get("generated_paths", [])
+    if not isinstance(paths, list) or not all(isinstance(x, str) and x.strip() for x in paths):
+        f.errors.append(problem(f, line, None, "[review] generated_paths must be a list of path "
+                                'globs, such as ["**/generated-map.json"]', "ignored"))
+    else:
+        f.generated_paths = [x.strip().lstrip("/") for x in paths]
     logins = table.get("not_human", [])
     if not isinstance(logins, list) or not all(isinstance(x, str) and x.strip() for x in logins):
         f.errors.append(problem(f, line, None, "[review] not_human must be a list of logins",
@@ -463,7 +473,8 @@ def compose(builtin: Catalog, files: list[FileRules]) -> Composed:
     rules = locked + seq
     not_human = frozenset(login for f in files for login in f.not_human)
     ci = merge_parts((f.scope, f.ci) for f in reversed(files))
-    return Composed(Catalog(rules, list(builtin.kinds), not_human, ci), errors, warnings)
+    paths = tuple(dict.fromkeys(p for f in files for p in f.generated_paths))
+    return Composed(Catalog(rules, list(builtin.kinds), not_human, ci, paths), errors, warnings)
 
 
 _AT = re.compile(r" \(at (\d+)\)$")
