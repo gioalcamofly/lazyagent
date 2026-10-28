@@ -310,7 +310,10 @@ provider = "claude"
 # An agent at work with no output for this long reads "agent may hang" (at
 # least 60 s). On Linux it is not while its process tree used CPU since the
 # last check, a minute ago (a long build or eval suite in the foreground).
-# Unset: $LAZYAGENT_HANG_SECONDS (every repo), else 600.
+# Also read from the global $XDG_CONFIG_HOME/lazyagent/config.toml's [inbox]
+# (every repo; this file wins; an invalid value there is ignored with a
+# warning). Unset in both: $LAZYAGENT_HANG_SECONDS (the engine's environment),
+# else 600. The desktop's Settings page writes it in either file.
 # hang_seconds = 600
 
 [orchestrator]
@@ -383,11 +386,13 @@ them all back in another one. An agent an older engine recorded has only
 
 *File → Settings…* in the desktop app edits settings that live in config
 files, by section; each option says what it does, its scope and which file
-holds it. Today it has one: **Default permission mode for agents the engine
+holds it. Today it has two: **Default permission mode for agents the engine
 starts**, `[agents] permission_mode` above, the mode used whenever a spawn
 names none (Home's quick spawn, Delegate → Spawn, auto-delegation spawns when
 no agent was recorded in the worktree, restores of agents with no recorded
-mode). `cli` reads as "CLI default (your agent CLI's own setting)".
+mode; `cli` reads as "CLI default (your agent CLI's own setting)"), and
+**Seconds without output before an agent counts as hung**, `[inbox]
+hang_seconds` above (a whole number, at least 60).
 
 Pick the scope, **Global** (`$XDG_CONFIG_HOME/lazyagent/config.toml`, created
 when missing) or **This repo** (`.lazyagent.toml`), then the value and
