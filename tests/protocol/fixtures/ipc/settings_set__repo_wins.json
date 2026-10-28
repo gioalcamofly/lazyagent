@@ -30,7 +30,19 @@
           "key": "agents.permission_mode",
           "repo": "plan",
           "source": "repo",
+          "type": "choice",
           "value": "plan"
+        },
+        {
+          "choices": [],
+          "default": 600,
+          "global": null,
+          "key": "inbox.hang_seconds",
+          "min": 60,
+          "repo": null,
+          "source": "default",
+          "type": "int",
+          "value": 600
         }
       ]
     }

@@ -1,6 +1,7 @@
 """The desktop's Settings page: settings_get / settings_set write [agents]
-permission_mode in the global config.toml or the repo's .lazyagent.toml,
-keep the rest of the file, and apply it without a restart."""
+permission_mode and [inbox] hang_seconds in the global config.toml or the
+repo's .lazyagent.toml, keep the rest of the file, and apply it without a
+restart."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from tests.engine.fakes import add_session, make_engine, worktree
 pytestmark = pytest.mark.asyncio
 
 KEY = "agents.permission_mode"
+HANG = "inbox.hang_seconds"
 
 REPO_TOML = """\
 # Team settings
@@ -39,10 +41,9 @@ def _methods(root):
     return engine, EngineMethods(engine)
 
 
-def _setting(result):
-    (setting,) = result["settings"]
-    assert setting["key"] == KEY
-    return setting
+def _setting(result, key=KEY):
+    assert [s["key"] for s in result["settings"]] == [KEY, HANG]
+    return next(s for s in result["settings"] if s["key"] == key)
 
 
 async def test_nothing_set_is_the_default(tmp_path):
@@ -53,8 +54,8 @@ async def test_nothing_set_is_the_default(tmp_path):
         "global": str(global_config_path()), "repo": str(tmp_path / ".lazyagent.toml"),
     }
     assert _setting(result) == {
-        "key": KEY, "value": "cli", "source": "default", "global": None, "repo": None,
-        "default": "cli",
+        "key": KEY, "type": "choice", "value": "cli", "source": "default", "global": None,
+        "repo": None, "default": "cli",
         "choices": ["cli", "bypass", "acceptEdits", "plan", "dontAsk", "auto", "default"],
     }
 
@@ -65,8 +66,8 @@ async def test_the_global_file_is_created_and_applied_at_once(tmp_path):
     result = await methods.settings_set({"key": KEY, "scope": "global", "value": "bypass"})
     assert global_config_path().read_text() == '[agents]\npermission_mode = "bypass"\n'
     assert _setting(result) | {"choices": []} == {
-        "key": KEY, "value": "bypass", "source": "global", "global": "bypass", "repo": None,
-        "default": "cli", "choices": [],
+        "key": KEY, "type": "choice", "value": "bypass", "source": "global", "global": "bypass",
+        "repo": None, "default": "cli", "choices": [],
     }
     assert engine.config.agent.permission_mode == "bypass", "no restart"
     assert engine.get_config().permission_mode == "bypass"
@@ -168,3 +169,55 @@ async def test_an_inline_comment_survives_a_replaced_string():
     assert set_table_keys(text, "agents", {"permission_mode": "plan", "x": "y"}) == (
         '[agents]\npermission_mode = "plan"  # mine\nx = "y"\n'
     )
+
+
+# --- [inbox] hang_seconds -------------------------------------------------
+
+
+async def test_hang_seconds_is_a_whole_number_with_the_environment_as_default(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("LAZYAGENT_HANG_SECONDS", raising=False)
+    _, methods = _methods(tmp_path)
+    assert _setting(await methods.settings_get({}), HANG) == {
+        "key": HANG, "type": "int", "value": 600, "source": "default", "global": None,
+        "repo": None, "default": 600, "choices": [], "min": 60,
+    }
+    monkeypatch.setenv("LAZYAGENT_HANG_SECONDS", "1200")
+    setting = _setting(await methods.settings_get({}), HANG)
+    assert (setting["value"], setting["default"]) == (1200, 1200)
+
+
+async def test_hang_seconds_round_trip_in_both_scopes(tmp_path, monkeypatch):
+    monkeypatch.delenv("LAZYAGENT_HANG_SECONDS", raising=False)
+    (tmp_path / ".lazyagent.toml").write_text(
+        REPO_TOML.replace("deep_max = 7", "deep_max = 7\nhang_seconds = 900  # slow builds")
+    )
+    engine, methods = _methods(tmp_path)
+    assert engine.hang_seconds == 900
+
+    result = await methods.settings_set({"key": HANG, "scope": "global", "value": 1800})
+    assert global_config_path().read_text() == "[inbox]\nhang_seconds = 1800\n"
+    setting = _setting(result, HANG)
+    assert (setting["value"], setting["source"], setting["global"], setting["repo"]) == (
+        900, "repo", 1800, 900
+    )
+    assert engine.hang_seconds == 900, "the repo's wins"
+
+    result = await methods.settings_set({"key": HANG, "scope": "repo", "value": 1200})
+    assert "hang_seconds = 1200  # slow builds" in (tmp_path / ".lazyagent.toml").read_text()
+    assert engine.hang_seconds == 1200
+
+    result = await methods.settings_set({"key": HANG, "scope": "repo", "value": None})
+    setting = _setting(result, HANG)
+    assert (setting["value"], setting["source"]) == (1800, "global")
+    assert engine.hang_seconds == 1800, "applied at once"
+    assert "deep_max = 7" in (tmp_path / ".lazyagent.toml").read_text()
+
+
+@pytest.mark.parametrize("value", [59, "900", 900.5, True, [900]])
+async def test_an_invalid_hang_seconds_is_refused(tmp_path, value):
+    _, methods = _methods(tmp_path)
+    with pytest.raises(ValueError, match="a whole number, at least 60"):
+        await methods.settings_set({"key": HANG, "scope": "global", "value": value})
+    assert not global_config_path().exists()

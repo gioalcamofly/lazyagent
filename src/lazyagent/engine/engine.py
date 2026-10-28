@@ -106,13 +106,12 @@ from lazyagent.engine.review_requests import ReviewRequestHub
 from lazyagent.engine.trackers import TrackerConfig, TrackerHub, load_trackers
 from lazyagent.engine.work_items import WorkItems, work_items_path
 from lazyagent.engine.session import (
-    HANG_SECONDS,
     AgentSession,
     SessionEvent,
     SessionExited,
     StatusChanged,
     TerminalSession,
-    _env_seconds,
+    env_hang_seconds,
 )
 from lazyagent.engine.types import (
     AGENT_KIND,
@@ -1588,12 +1587,13 @@ class Engine:
 
     @property
     def hang_seconds(self) -> float:
-        """The repo's ``[inbox] hang_seconds``, else the environment's
+        """``[inbox] hang_seconds`` of the repo's .lazyagent.toml, else of
+        the global config.toml, else the environment's
         ``LAZYAGENT_HANG_SECONDS`` (every repo), else 600."""
         own = self.config.inbox.hang_seconds
         if own is not None:
             return float(own)
-        return _env_seconds("LAZYAGENT_HANG_SECONDS", HANG_SECONDS) or HANG_SECONDS
+        return env_hang_seconds()
 
     # ------------------------------------------------------------------
     # Shells

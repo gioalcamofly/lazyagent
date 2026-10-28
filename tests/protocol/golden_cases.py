@@ -1495,15 +1495,18 @@ async def _settings_call(method: str, params: dict[str, Any]):
     import shutil
 
     engine, base = _settings_engine()
-    saved = os.environ.get("XDG_CONFIG_HOME")
+    # inbox.hang_seconds's default reads $LAZYAGENT_HANG_SECONDS: unset here.
+    saved = {k: os.environ.get(k) for k in ("XDG_CONFIG_HOME", "LAZYAGENT_HANG_SECONDS")}
     os.environ["XDG_CONFIG_HOME"] = str(base / "config")
+    os.environ.pop("LAZYAGENT_HANG_SECONDS", None)
     try:
         return await _call(engine, method, params)
     finally:
-        if saved is None:
-            os.environ.pop("XDG_CONFIG_HOME", None)
-        else:
-            os.environ["XDG_CONFIG_HOME"] = saved
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -1516,6 +1519,13 @@ async def _():
 async def _():
     return await _settings_call(
         "settings_set", {"key": "agents.permission_mode", "scope": "repo", "value": "plan"}
+    )
+
+
+@case("settings_set/hang_seconds_global")
+async def _():
+    return await _settings_call(
+        "settings_set", {"key": "inbox.hang_seconds", "scope": "global", "value": 1200}
     )
 
 

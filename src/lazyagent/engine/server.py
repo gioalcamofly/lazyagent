@@ -199,7 +199,8 @@ FEATURES: tuple[str, ...] = (
     # read first, the agent started, the letter sent once it is at its prompt.
     "delegate_start",
     # settings_get / settings_set: the desktop's Settings page ([agents]
-    # permission_mode in the global config.toml or the repo's file).
+    # permission_mode, [inbox] hang_seconds in the global config.toml or the
+    # repo's file).
     "settings",
 )
 
