@@ -1244,19 +1244,52 @@ pub struct SettingFiles {
 
 /// One setting: `value` is the one in force, from `source` (repo, global
 /// or default); `global` / `repo` are what each file sets (None: nothing).
+/// `kind` "choice" takes one of `choices`; "int" a whole number of at
+/// least `min`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Setting {
     pub key: String,
-    pub value: String,
+    #[serde(rename = "type", default = "choice_kind")]
+    pub kind: String,
+    pub value: SettingValue,
     pub source: String,
     #[serde(default)]
-    pub global: Option<String>,
+    pub global: Option<SettingValue>,
     #[serde(default)]
-    pub repo: Option<String>,
+    pub repo: Option<SettingValue>,
     #[serde(default)]
-    pub default: String,
+    pub default: SettingValue,
     #[serde(default)]
     pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<i64>,
+}
+
+fn choice_kind() -> String {
+    "choice".into()
+}
+
+/// A setting's value: a choice's string or an int setting's number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SettingValue {
+    Int(i64),
+    Text(String),
+}
+
+impl Default for SettingValue {
+    fn default() -> Self {
+        SettingValue::Text(String::new())
+    }
+}
+
+impl std::fmt::Display for SettingValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SettingValue::Int(n) => write!(f, "{n}"),
+            SettingValue::Text(s) => f.write_str(s),
+        }
+    }
 }
 
 /// `status_gesture`: the claim made (none after `clear`) and the row now.

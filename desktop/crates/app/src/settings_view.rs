@@ -6,8 +6,8 @@
 //! at once; this page never touches a file itself.
 
 use eframe::egui::{self, RichText, Ui};
-use lazyagent_proto::types::{Setting, Settings};
-use serde_json::json;
+use lazyagent_proto::types::{Setting, SettingValue, Settings};
+use serde_json::{Value, json};
 
 use crate::app::State;
 use crate::theme::Theme;
@@ -28,15 +28,26 @@ pub struct Section {
     pub options: &'static [Opt],
 }
 
-pub const SECTIONS: &[Section] = &[Section {
-    title: "Agents",
-    options: &[Opt {
-        key: "agents.permission_mode",
-        label: "Default permission mode for agents the engine starts",
-        help: "Used whenever a spawn names none: Home's quick spawn, Delegate → Spawn, auto-delegation \
-               (with no agent recorded in the worktree) and restores of agents with no recorded mode.",
-    }],
-}];
+pub const SECTIONS: &[Section] = &[
+    Section {
+        title: "Agents",
+        options: &[Opt {
+            key: "agents.permission_mode",
+            label: "Default permission mode for agents the engine starts",
+            help: "Used whenever a spawn names none: Home's quick spawn, Delegate → Spawn, auto-delegation \
+                   (with no agent recorded in the worktree) and restores of agents with no recorded mode.",
+        }],
+    },
+    Section {
+        title: "Inbox",
+        options: &[Opt {
+            key: "inbox.hang_seconds",
+            label: "Seconds without output before an agent counts as hung",
+            help: "A working agent quiet this long (and, on Linux, using no CPU) shows as \"may hang\" in Home. \
+                   With no file setting it: the engine's LAZYAGENT_HANG_SECONDS, else 600.",
+        }],
+    },
+];
 
 /// How a value reads in the page.
 pub fn choice_text(value: &str) -> String {
@@ -47,7 +58,24 @@ pub fn choice_text(value: &str) -> String {
     }
 }
 
-/// What an option will be saved as: in which file, and the value.
+/// How a setting's value reads: a choice by `choice_text`, a number with
+/// its unit.
+pub fn value_text(s: &Setting, value: &SettingValue) -> String {
+    match value {
+        SettingValue::Int(n) if s.kind == "int" => format!("{n} seconds"),
+        other => choice_text(&other.to_string()),
+    }
+}
+
+/// An int setting's draft as the number it saves (None: not a whole
+/// number, or below its minimum).
+pub fn parse_int(s: &Setting, text: &str) -> Option<i64> {
+    let n = text.trim().parse::<i64>().ok()?;
+    (n >= s.min.unwrap_or(i64::MIN)).then_some(n)
+}
+
+/// What an option will be saved as: in which file, and the value (an int
+/// setting's as typed).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
     pub repo: bool,
@@ -64,7 +92,7 @@ impl Draft {
 
     fn value_at(s: &Setting, repo: bool) -> String {
         let file = if repo { &s.repo } else { &s.global };
-        file.clone().unwrap_or_else(|| s.value.clone())
+        file.as_ref().unwrap_or(&s.value).to_string()
     }
 
     pub fn scope(&self) -> &'static str {
@@ -131,7 +159,7 @@ impl State {
     /// Writes `key` in the draft's file (`value` None: removes it there),
     /// then reads back the settings and the engine's config (the spawn
     /// dialogs' defaults).
-    pub fn save_setting(&mut self, key: &str, value: Option<String>) {
+    pub fn save_setting(&mut self, key: &str, value: Option<Value>) {
         let Some(draft) = self.settings.drafts.get(key).cloned() else { return };
         let file = self
             .settings
@@ -232,7 +260,7 @@ fn option(ui: &mut Ui, state: &mut State, t: &Theme, st: &Settings, opt: &Opt, s
         "global" => format!("your global {}", tilde(&st.files.global)),
         _ => "the default (no file sets it)".into(),
     };
-    ui.label(format!("In force: {}, from {from}", choice_text(&s.value)));
+    ui.label(format!("In force: {}, from {from}", value_text(s, &s.value)));
     let Some(mut draft) = state.settings.drafts.get(opt.key).cloned() else { return };
     let repo_name = if st.repo.is_empty() { "this repo".to_string() } else { st.repo.clone() };
     ui.horizontal(|ui| {
@@ -247,7 +275,7 @@ fn option(ui: &mut Ui, state: &mut State, t: &Theme, st: &Settings, opt: &Opt, s
     let file = if draft.repo { &st.files.repo } else { &st.files.global };
     let here = if draft.repo { &s.repo } else { &s.global };
     let note = match here {
-        Some(v) => format!("Stored in {}: {}", tilde(file), choice_text(v)),
+        Some(v) => format!("Stored in {}: {}", tilde(file), value_text(s, v)),
         None => format!("Stored in {}: not set there", tilde(file)),
     };
     ui.label(RichText::new(note).small().monospace().color(t.muted));
@@ -260,14 +288,29 @@ fn option(ui: &mut Ui, state: &mut State, t: &Theme, st: &Settings, opt: &Opt, s
     let mut save = None;
     ui.horizontal(|ui| {
         ui.label("Value:");
-        egui::ComboBox::from_id_salt(("setting", opt.key)).selected_text(choice_text(&draft.value)).show_ui(ui, |ui| {
-            for c in &s.choices {
-                ui.selectable_value(&mut draft.value, c.clone(), choice_text(c));
+        let new = if s.kind == "int" {
+            ui.add(egui::TextEdit::singleline(&mut draft.value).desired_width(80.0).id_salt(("setting", opt.key)));
+            ui.label("seconds");
+            let n = parse_int(s, &draft.value);
+            if n.is_none() {
+                let min = s.min.map(|m| format!(", at least {m}")).unwrap_or_default();
+                ui.label(RichText::new(format!("a whole number{min}")).small().color(t.yellow));
             }
-        });
-        let changed = here.as_deref() != Some(draft.value.as_str());
+            n.map(|n| (SettingValue::Int(n), json!(n)))
+        } else {
+            egui::ComboBox::from_id_salt(("setting", opt.key)).selected_text(choice_text(&draft.value)).show_ui(
+                ui,
+                |ui| {
+                    for c in &s.choices {
+                        ui.selectable_value(&mut draft.value, c.clone(), choice_text(c));
+                    }
+                },
+            );
+            Some((SettingValue::Text(draft.value.clone()), json!(draft.value)))
+        };
+        let changed = new.as_ref().is_some_and(|(v, _)| here.as_ref() != Some(v));
         if ui.add_enabled(idle && changed, egui::Button::new(RichText::new("Save").strong())).clicked() {
-            save = Some(Some(draft.value.clone()));
+            save = new.map(|(_, json)| Some(json));
         }
         if here.is_some()
             && ui

@@ -2420,15 +2420,17 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["key", "value", "source", "global", "repo", "default", "choices"],
+            "required": ["key", "type", "value", "source", "global", "repo", "default", "choices"],
             "properties": {
               "key": {"type": "string", "description": "<table>.<name>, e.g. agents.permission_mode."},
-              "value": {"type": "string", "description": "The value in force."},
+              "type": {"enum": ["choice", "int"], "description": "choice: one of choices (strings); int: a whole number of at least min."},
+              "value": {"type": ["string", "integer"], "description": "The value in force."},
               "source": {"enum": ["repo", "global", "default"], "description": "Where value comes from: the repo's wins over the global one."},
-              "global": {"type": ["string", "null"], "description": "The global file's (null: not set, or invalid)."},
-              "repo": {"type": ["string", "null"], "description": "The repo file's (null: not set, or invalid)."},
-              "default": {"type": "string"},
-              "choices": {"type": "array", "items": {"type": "string"}}
+              "global": {"type": ["string", "integer", "null"], "description": "The global file's (null: not set, or invalid)."},
+              "repo": {"type": ["string", "integer", "null"], "description": "The repo file's (null: not set, or invalid)."},
+              "default": {"type": ["string", "integer"], "description": "What applies when no file sets it (an int setting's may come from the engine's environment)."},
+              "choices": {"type": "array", "items": {"type": "string"}, "description": "Empty for an int setting."},
+              "min": {"type": "integer", "description": "An int setting's smallest value."}
             }
           }
         }
@@ -2442,7 +2444,7 @@
         "repo": {"type": "string"},
         "key": {"type": "string"},
         "scope": {"enum": ["global", "repo"]},
-        "value": {"type": ["string", "null"], "description": "null removes the key from that file."},
+        "value": {"type": ["string", "integer", "null"], "description": "A choice setting's string, an int setting's whole number; null removes the key from that file."},
         "caller": {"$ref": "#/$defs/notes_caller"}
       }
     },

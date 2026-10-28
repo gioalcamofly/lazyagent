@@ -5,6 +5,7 @@ value, and base merges that differ only in generated files."""
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -288,6 +289,48 @@ def test_hang_seconds_is_read_from_inbox(tmp_path):
     assert load_config(tmp_path).inbox.hang_seconds == 1800
     (tmp_path / ".lazyagent.toml").write_text("[inbox]\nhang_seconds = 5\n")
     assert load_config(tmp_path).inbox.hang_seconds is None
+
+
+def _global_toml(text):
+    from lazyagent.config import global_config_path
+
+    path = global_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def test_the_repos_hang_seconds_wins_over_the_global_one(tmp_path):
+    from lazyagent.config import load_config
+
+    _global_toml("[inbox]\nhang_seconds = 1200\n")
+    (tmp_path / ".lazyagent.toml").write_text("[inbox]\nhang_seconds = 1800\n")
+    assert load_config(tmp_path).inbox.hang_seconds == 1800
+
+
+def test_the_global_hang_seconds_applies_when_the_repo_sets_none(tmp_path):
+    from lazyagent.config import load_config
+
+    _global_toml("[inbox]\nhang_seconds = 1200\n")
+    assert load_config(tmp_path).inbox.hang_seconds == 1200, "no repo file"
+    (tmp_path / ".lazyagent.toml").write_text("[inbox]\ndeep_max = 3\n")
+    assert load_config(tmp_path).inbox.hang_seconds == 1200
+    (tmp_path / ".lazyagent.toml").write_text("[inbox]\nhang_seconds = 5\n")
+    assert load_config(tmp_path).inbox.hang_seconds == 1200, "an invalid repo value"
+
+
+@pytest.mark.parametrize("bad", ["30", '"900"', "900.0", "true"])
+def test_an_invalid_global_hang_seconds_warns_and_is_ignored(tmp_path, bad, caplog, monkeypatch):
+    from lazyagent.config import Config, load_config
+    from tests.engine.fakes import make_engine, worktree
+
+    _global_toml(f"[inbox]\nhang_seconds = {bad}\n")
+    with caplog.at_level(logging.WARNING, logger="lazyagent.config"):
+        config = load_config(tmp_path)
+    assert config.inbox.hang_seconds is None
+    assert "ignoring [inbox] hang_seconds" in caplog.text
+    monkeypatch.setenv("LAZYAGENT_HANG_SECONDS", "1500")
+    assert make_engine([worktree("/tmp/repo")], config=config).hang_seconds == 1500
+    assert Config().inbox.hang_seconds is None
 
 
 def test_the_engine_takes_the_repos_then_the_environments_hang_seconds(monkeypatch):

@@ -7,6 +7,7 @@ on what it does, its scope and the file that holds it.
 | Section | Option | Key | Scopes |
 |---|---|---|---|
 | Agents | Default permission mode for agents the engine starts | `[agents] permission_mode` | global, this repo |
+| Inbox | Seconds without output before an agent counts as hung | `[inbox] hang_seconds` | global, this repo |
 
 ## Scopes and files
 
@@ -46,10 +47,28 @@ checked only when this mode is `bypass`. Unchecked, the agent starts in this
 mode, unless it is `bypass`, then in `cli`. See "Permission modes" in the
 README for the full order.
 
+## Seconds without output before an agent counts as hung
+
+How long a working agent may go with no output before Home shows it as
+"agent may hang". On Linux an agent whose process tree used CPU since the
+last check (a long build or eval suite in the foreground) does not count.
+A whole number of seconds, at least 60, typed in a box; a value below that
+or not a whole number shows a hint and cannot be saved, and the engine
+refuses one too.
+
+Order: the repo's `.lazyagent.toml` `[inbox] hang_seconds`, else the global
+`config.toml`'s `[inbox] hang_seconds`, else the engine's
+`LAZYAGENT_HANG_SECONDS` environment variable, else 600. The page's "the
+default" is the last two: what applies when neither file sets it. An invalid
+value in the global file is ignored with a warning in the engine's log (in
+the repo's file it is ignored too); the page shows it as not set there.
+
 ## For other clients
 
 `settings_get {repo?}` returns `{repo, files: {global, repo}, settings: [{key,
-value, source, global, repo, default, choices}]}`; `settings_set {key, scope,
-value}` (value `null` removes it from that file) writes and returns the same.
+type, value, source, global, repo, default, choices, min?}]}`. `type` is
+`choice` (a string, one of `choices`) or `int` (a JSON number, at least `min`;
+`choices` empty). `settings_set {key, scope, value}` (value `null` removes it
+from that file) writes and returns the same.
 `settings_set` is the user's (a call with an agent's token is refused); the
 engine announces both with the feature `settings`.
