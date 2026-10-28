@@ -1053,6 +1053,8 @@ fn the_diff_view_keeps_long_names_and_lines_in_their_columns() {
         s.diff = Some(crate::diff_view::DiffState::loaded("/r/repo-f", "main", crate::diff::parse(&text)));
         s.diff_open = true;
         s.saved.diff_split = true;
+        // Unwrapped: the lines scroll sideways.
+        s.saved.diff_nowrap = true;
     }
     h.run_steps(3);
     // The header's names end before its buttons start.
@@ -5638,3 +5640,7 @@ mod review_requests;
 // I4j: opt-in row fields kept across row updates, what to review on "new
 // commits since your approval", Delegate through a restore or a spawn.
 mod i4j;
+
+// The Diff view wraps long lines and hides its file list; the sidebar
+// collapses on every screen.
+mod d2;

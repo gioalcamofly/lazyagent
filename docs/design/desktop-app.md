@@ -614,6 +614,25 @@ Done rows (merged, closed, worktree removed; kept 24 h since I4a) filled most of
 - The folded state is per repo, in the app's state file (`home_done_open`, folded when missing).
 - Screenshots: [home-done-fold-dark.png](desktop-screenshots/home-done-fold-dark.png), [home-done-fold-light.png](desktop-screenshots/home-done-fold-light.png), [home-done-fold-open-light.png](desktop-screenshots/home-done-fold-open-light.png).
 
+### Diff: soft wrap, a collapsible file list, a collapsible sidebar (2026-10-28)
+
+A long line was cut at the pane's edge (the rest only behind one sideways scrollbar under the whole view), and the file list and the Worktrees sidebar took width the diff needed.
+
+- **Wrap, on by default, like GitHub.** A line longer than its pane takes a row per piece, broken after the last space in the piece's second half, else at the column. Continuation rows have no line number and no +/−, and keep the line's add/remove colour. In Split a row is as tall as its taller side: the shorter side shows only its colour on the extra rows. Wrap (toolbar, next to Unified / Split; Alt+Z; View → Wrap diff lines) is kept in the app's state file (`diff_nowrap`, wrapped when missing). Off, each line is one row and the sideways scrollbar is back.
+- **Still one virtualised list of fixed-height rows.** A piece is its own row (`DRow::More`, `DRow::PairMore` in Split), so `show_rows`, the file list's jumps (row `j` at `j × 18 px`) and the comment threads (under a line's last piece) work as before. A click or a drag on a piece selects its whole line, and a comment anchors to that line. The rows are built again when the pane's width in columns changes; the line on top stays on top.
+- **File list.** ◂ at its top, `f`, or View → Diff file list hides it; a rail stays with ▸ (show it), ▲ / ▼ (previous / next file). `]` / `[` jump to the next / previous file's header from the row on top, list shown or not. Kept as `diff_files_hidden`.
+- **Worktrees sidebar, on every screen.** « in its header, View → Worktrees sidebar, or **Ctrl+B** outside a terminal (**Ctrl+Shift+B** anywhere: in a shell Ctrl+B moves back a character, as Ctrl+D is EOF) collapse it to a rail; » (or a click anywhere on the rail, or Ctrl+K) expands it. Kept as `sidebar_hidden`.
+
+| Key | Action | Where |
+|---|---|---|
+| `Ctrl+Shift+B` (`Ctrl+B` outside a terminal) | Collapse / expand the Worktrees sidebar | Anywhere |
+| `f` | Hide / show the file list | Diff |
+| `]` `[` | Next / previous file | Diff |
+| `Alt+Z` | Wrap long lines, or keep each on one row | Diff |
+
+- Tests: the wrap points; rows per piece and the thread after the last; Split as tall as the taller side; continuation rows painted without number or sign but with the line's colour; a click on a continuation row (unified and split) and a drag into one anchor to the whole line; file jumps and `]` / `[` with wrapped rows; a narrower or wider pane keeps the line on top; the toggles from the toolbar, the rails, the View menu and the keys, on Home, the guide and the worktrees; the three choices across a restart, and an older state file read as wrapped and shown.
+- Screenshots: [d2-wrap-split-dark.png](desktop-screenshots/d2-wrap-split-dark.png), [d2-collapsed-dark.png](desktop-screenshots/d2-collapsed-dark.png), [d2-wrap-unified-light.png](desktop-screenshots/d2-wrap-unified-light.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

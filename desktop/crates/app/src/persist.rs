@@ -33,6 +33,15 @@ pub struct Saved {
     /// The diff viewer leaves out the uncommitted changes.
     #[serde(default)]
     pub diff_hide_uncommitted: bool,
+    /// The diff viewer keeps each line on one row (wrapped when missing).
+    #[serde(default)]
+    pub diff_nowrap: bool,
+    /// The diff viewer's file list is hidden (a rail).
+    #[serde(default)]
+    pub diff_files_hidden: bool,
+    /// The Worktrees sidebar is collapsed to a rail, on every screen.
+    #[serde(default)]
+    pub sidebar_hidden: bool,
     /// Help → Check automatically, turned off.
     #[serde(default)]
     pub update_check_off: bool,
