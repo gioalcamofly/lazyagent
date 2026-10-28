@@ -88,7 +88,7 @@ PENDING_FEED_KEEP = 256 * 1024
 # PTY reports EOF, before it falls back to killing it.
 _EXIT_REAP_TIMEOUT = 1.0
 
-HANG_SECONDS = 600  # 10 minutes; [inbox] hang_seconds per repo
+HANG_SECONDS = 600  # 10 minutes; [inbox] hang_seconds (repo, else global)
 # A quiet agent whose process tree used CPU since the last hang check, at
 # most this long ago, is busy (a long build or eval in the foreground), not
 # hanged. Linux only (/proc); elsewhere quiet is enough.
@@ -132,6 +132,13 @@ def _env_seconds(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value >= 0 else default
+
+
+def env_hang_seconds() -> float:
+    """``LAZYAGENT_HANG_SECONDS`` (the engine's environment: every repo),
+    else ``HANG_SECONDS``; what applies when no config file sets
+    ``[inbox] hang_seconds``."""
+    return _env_seconds("LAZYAGENT_HANG_SECONDS", HANG_SECONDS) or HANG_SECONDS
 
 
 # How long ``send_input`` waits for the child to show any sign of having read

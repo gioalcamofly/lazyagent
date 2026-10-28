@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,7 +29,8 @@ log = logging.getLogger(__name__)
 
 CONFIG_FILENAME = ".lazyagent.toml"
 # The user's own, under $XDG_CONFIG_HOME/lazyagent: only the keys that make
-# sense for every repo (today [agents] permission_mode); the repo's wins.
+# sense for every repo ([agents] permission_mode, [inbox] hang_seconds);
+# the repo's wins.
 GLOBAL_CONFIG_FILENAME = "config.toml"
 
 
@@ -142,8 +144,12 @@ class InboxConfig:
     # worktree has none on record (else that agent's mode): bypass.
     auto_delegate_skip_permissions: bool = True
     # An agent working with no output this long (and no CPU used, where
-    # /proc tells) "may hang"; None: $LAZYAGENT_HANG_SECONDS, else 600.
+    # /proc tells) "may hang" (at least HANG_SECONDS_MIN); the repo's, else
+    # the global config.toml's. None: $LAZYAGENT_HANG_SECONDS, else 600.
     hang_seconds: int | None = None
+
+
+HANG_SECONDS_MIN = 60
 
 
 @dataclass
@@ -218,30 +224,49 @@ def _permission_mode(data: object, where: object) -> str | None:
     return None
 
 
-def _global_permission_mode() -> str | None:
+def _valid_hang_seconds(value: object) -> bool:
+    return type(value) is int and value >= HANG_SECONDS_MIN
+
+
+def _global_hang_seconds(data: object, where: object) -> int | None:
+    """The global file's ``[inbox] hang_seconds``; a bad value is ignored
+    with a warning (None)."""
+    inbox = data.get("inbox") if isinstance(data, dict) else None
+    if not isinstance(inbox, dict) or "hang_seconds" not in inbox:
+        return None
+    value = inbox["hang_seconds"]
+    if _valid_hang_seconds(value):
+        return value
+    log.warning(
+        "%s: ignoring [inbox] hang_seconds %r (a whole number of seconds, at least %d)",
+        where,
+        value,
+        HANG_SECONDS_MIN,
+    )
+    return None
+
+
+def _apply_global(config: Config) -> Config:
+    """The global config.toml's keys where the repo's file sets none."""
     path = global_config_path()
-    if tomllib is None or not path.is_file():
-        return None
-    try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, ValueError) as e:
-        log.warning("ignoring %s: %s", path, e)
-        return None
-    return _permission_mode(data, path)
+    data = _read_toml(path)
+    if config.agent.permission_mode is None:
+        config.agent.permission_mode = _permission_mode(data, path)
+    if config.inbox.hang_seconds is None:
+        config.inbox.hang_seconds = _global_hang_seconds(data, path)
+    return config
 
 
 def load_config(repo_root: str | Path) -> Config:
     """Load configuration from .lazyagent.toml in repo root, over the
-    user's global config.toml (its ``[agents] permission_mode``).
+    user's global config.toml (its ``[agents] permission_mode`` and
+    ``[inbox] hang_seconds``).
 
     Returns default Config if file is missing or tomllib is unavailable.
     """
     config_path = Path(repo_root) / CONFIG_FILENAME
     if not config_path.exists() or tomllib is None:
-        config = Config()
-        config.agent.permission_mode = _global_permission_mode()
-        return config
+        return _apply_global(Config())
 
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
@@ -281,15 +306,13 @@ def load_config(repo_root: str | Path) -> Config:
         restore_on_start=engine_data.get("restore_on_start") is True
     )
     default_branch = data.get("default_branch", DEFAULT_BRANCH)
-    return Config(
+    return _apply_global(Config(
         worktree=worktree_config,
         agent=AgentConfig(
             provider=provider,
             cross_session_inbound=cross_session_inbound,
             worker_preamble=worker_preamble,
-            permission_mode=(
-                _permission_mode(data, config_path) or _global_permission_mode()
-            ),
+            permission_mode=_permission_mode(data, config_path),
         ),
         orchestrator=orchestrator_config,
         engine=engine_config,
@@ -297,7 +320,7 @@ def load_config(repo_root: str | Path) -> Config:
         status=_status_config(data.get("status", {})),
         inbox=_inbox_config(data.get("inbox", {})),
         default_branch=default_branch,
-    )
+    ))
 
 
 def _first_responder_config(config: OrchestratorConfig, data: object) -> None:
@@ -351,7 +374,7 @@ def _inbox_config(data: object) -> InboxConfig:
     if isinstance(bypass, bool):
         config.auto_delegate_skip_permissions = bypass
     hang = data.get("hang_seconds")
-    if type(hang) is int and hang >= 60:
+    if _valid_hang_seconds(hang):
         config.hang_seconds = hang
     skip = data.get("auto_delegate_skip_checks")
     if isinstance(skip, list):
@@ -590,12 +613,49 @@ def unset_table_key(text: str, table: str, key: str) -> str:
     return text
 
 
+@dataclass(frozen=True)
+class SettingSpec:
+    """A setting of the Settings page: ``[table] name``, either one of
+    ``choices`` or (no choices) a whole number of at least ``minimum``;
+    ``default`` gives its value when no file sets it."""
+
+    table: str
+    name: str
+    default: Callable[[], object]
+    choices: tuple[str, ...] = ()
+    minimum: int | None = None
+
+    @property
+    def type(self) -> str:
+        return "choice" if self.choices else "int"
+
+    def valid(self, value: object) -> bool:
+        if self.choices:
+            return value in self.choices
+        return type(value) is int and (self.minimum is None or value >= self.minimum)
+
+    def expected(self) -> str:
+        if self.choices:
+            return f"one of: {', '.join(self.choices)}"
+        return f"a whole number, at least {self.minimum}"
+
+
+def _hang_seconds_default() -> int:
+    from lazyagent.engine.session import env_hang_seconds
+
+    return int(env_hang_seconds())
+
+
 # The settings the desktop's Settings page edits (settings_get /
-# settings_set): key -> (table, name, the values it takes, its value when
-# no file sets it). The repo's .lazyagent.toml wins over the global
+# settings_set), by key. The repo's .lazyagent.toml wins over the global
 # config.toml.
-SETTINGS: dict[str, tuple[str, str, tuple[str, ...], str]] = {
-    "agents.permission_mode": ("agents", "permission_mode", PERMISSION_MODES, PERMISSION_MODES[0]),
+SETTINGS: dict[str, SettingSpec] = {
+    "agents.permission_mode": SettingSpec(
+        "agents", "permission_mode", lambda: PERMISSION_MODES[0], choices=PERMISSION_MODES
+    ),
+    "inbox.hang_seconds": SettingSpec(
+        "inbox", "hang_seconds", _hang_seconds_default, minimum=HANG_SECONDS_MIN
+    ),
 }
 SETTING_SCOPES = ("global", "repo")
 
@@ -620,25 +680,30 @@ def read_setting(repo_root: str | Path, key: str) -> dict[str, object]:
     """A setting as each scope has it (None: not set there, or an invalid
     value), and the one in force with its source (repo, global or
     default)."""
-    table, name, values, default = SETTINGS[key]
+    spec = SETTINGS[key]
     found: dict[str, object] = {}
     for scope in SETTING_SCOPES:
-        data = _read_toml(setting_path(repo_root, scope)).get(table)
-        value = data.get(name) if isinstance(data, dict) else None
-        found[scope] = value if value in values else None
+        data = _read_toml(setting_path(repo_root, scope)).get(spec.table)
+        value = data.get(spec.name) if isinstance(data, dict) else None
+        found[scope] = value if spec.valid(value) else None
     source = next((s for s in ("repo", "global") if found[s] is not None), "default")
-    return {
+    default = spec.default()
+    setting: dict[str, object] = {
         "key": key,
+        "type": spec.type,
         "value": found[source] if source != "default" else default,
         "source": source,
         "global": found["global"],
         "repo": found["repo"],
         "default": default,
-        "choices": list(values),
+        "choices": list(spec.choices),
     }
+    if spec.minimum is not None:
+        setting["min"] = spec.minimum
+    return setting
 
 
-def write_setting(repo_root: str | Path, key: str, value: str | None, scope: str) -> None:
+def write_setting(repo_root: str | Path, key: str, value: object, scope: str) -> None:
     """Set ``key`` in the scope's file (created, with its folder, when
     missing), or remove it there when ``value`` is None, keeping every
     other line, comments included. The result is parsed back before it
@@ -649,9 +714,10 @@ def write_setting(repo_root: str | Path, key: str, value: str | None, scope: str
         raise ValueError(f"Unknown setting {key!r}. One of: {', '.join(SETTINGS)}")
     if scope not in SETTING_SCOPES:
         raise ValueError(f"scope must be one of {', '.join(SETTING_SCOPES)}")
-    table, name, values, _ = SETTINGS[key]
-    if value is not None and value not in values:
-        raise ValueError(f"Invalid {key}: {value!r}. Must be one of: {', '.join(values)}")
+    spec = SETTINGS[key]
+    table, name = spec.table, spec.name
+    if value is not None and not spec.valid(value):
+        raise ValueError(f"Invalid {key}: {value!r}. Must be {spec.expected()}")
     path = setting_path(repo_root, scope)
     text = path.read_text() if path.exists() else ""
     if value is None:

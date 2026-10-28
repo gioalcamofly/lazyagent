@@ -1,7 +1,8 @@
 //! "Settings…" (File menu): the page shows each option with the value in
 //! force and where it comes from, saves to the scope picked (the engine's
 //! settings_set), reads the result back, and refreshes the config the spawn
-//! dialogs start from.
+//! dialogs start from. An int setting (inbox.hang_seconds) is typed and
+//! saved as a number.
 
 use super::*;
 
@@ -165,4 +166,69 @@ fn a_refusal_shows_on_the_page() {
 fn the_cli_choice_reads_as_the_clis_own_setting() {
     assert_eq!(crate::settings_view::choice_text("cli"), "CLI default (your agent CLI's own setting)");
     assert_eq!(crate::settings_view::choice_text("plan"), "plan");
+}
+
+const HANG: &str = "inbox.hang_seconds";
+
+fn hang_settings(global: Option<i64>) -> serde_json::Value {
+    let (value, source) = match global {
+        Some(g) => (g, "global"),
+        None => (600, "default"),
+    };
+    json!({"repo": "repo", "files": {"global": "/home/dev/.config/lazyagent/config.toml", "repo": "/r/repo/.lazyagent.toml"},
+           "settings": [{"key": HANG, "type": "int", "value": value, "source": source, "global": global, "repo": null,
+                         "default": 600, "choices": [], "min": 60}]})
+}
+
+#[test]
+fn hang_seconds_is_typed_as_a_number_and_saved_as_one() {
+    let mut h = opened(&[crate::settings_view::FEATURE]);
+    let current = std::sync::Arc::new(std::sync::Mutex::new(hang_settings(Some(1200))));
+    let calls = fake_engine(&h, move |m, p| match m {
+        "settings_get" => Some(current.lock().unwrap().clone()),
+        "settings_set" => {
+            let mut now = current.lock().unwrap();
+            *now = hang_settings(p["value"].as_i64());
+            Some(now.clone())
+        }
+        "get_config" => Some(json!({"agent_provider": "claude", "default_branch": "main", "has_custom_create": false,
+                                    "has_custom_remove": false})),
+        _ => None,
+    });
+    open_from_the_menu(&mut h);
+    h.get_by_label("Inbox");
+    h.get_by_label("Seconds without output before an agent counts as hung");
+    h.get_by_label("In force: 1200 seconds, from your global /home/dev/.config/lazyagent/config.toml");
+    h.get_by_label("Stored in /home/dev/.config/lazyagent/config.toml: 1200 seconds");
+
+    // Below the minimum: a hint, and Save does nothing.
+    h.state_mut().state.settings.drafts.get_mut(HANG).unwrap().value = "30".into();
+    h.run_steps(2);
+    h.get_by_label("a whole number, at least 60");
+    h.get_by_label("Save").click();
+    h.run_steps(2);
+    assert!(calls_of(&calls, "settings_set").is_empty());
+
+    h.state_mut().state.settings.drafts.get_mut(HANG).unwrap().value = "900".into();
+    h.run_steps(2);
+    h.get_by_label("Save").click();
+    h.run_steps(SETTLE);
+    assert_eq!(calls_of(&calls, "settings_set"), [json!({"key": HANG, "scope": "global", "value": 900})]);
+    h.get_by_label("In force: 900 seconds, from your global /home/dev/.config/lazyagent/config.toml");
+
+    // Removed from the global file: the default applies.
+    h.get_by_label("Remove from this file").click();
+    h.run_steps(SETTLE);
+    assert_eq!(calls_of(&calls, "settings_set")[1], json!({"key": HANG, "scope": "global", "value": null}));
+    h.get_by_label("In force: 600 seconds, from the default (no file sets it)");
+}
+
+#[test]
+fn int_values_parse_against_the_minimum() {
+    let s: lazyagent_proto::types::Setting =
+        serde_json::from_value(hang_settings(None)["settings"][0].clone()).unwrap();
+    assert_eq!(crate::settings_view::parse_int(&s, " 900 "), Some(900));
+    assert_eq!(crate::settings_view::parse_int(&s, "59"), None);
+    assert_eq!(crate::settings_view::parse_int(&s, "9.5"), None);
+    assert_eq!(crate::settings_view::value_text(&s, &s.value), "600 seconds");
 }

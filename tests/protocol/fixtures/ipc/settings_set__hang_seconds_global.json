@@ -1,0 +1,50 @@
+{
+  "case": "settings_set/hang_seconds_global",
+  "method": "settings_set",
+  "params": {
+    "key": "inbox.hang_seconds",
+    "scope": "global",
+    "value": 1200
+  },
+  "response": {
+    "id": "req-1",
+    "result": {
+      "files": {
+        "global": "/tmp/golden-inbox/config/lazyagent/config.toml",
+        "repo": "/tmp/golden-inbox/repo/.lazyagent.toml"
+      },
+      "repo": "repo",
+      "settings": [
+        {
+          "choices": [
+            "cli",
+            "bypass",
+            "acceptEdits",
+            "plan",
+            "dontAsk",
+            "auto",
+            "default"
+          ],
+          "default": "cli",
+          "global": "acceptEdits",
+          "key": "agents.permission_mode",
+          "repo": null,
+          "source": "global",
+          "type": "choice",
+          "value": "acceptEdits"
+        },
+        {
+          "choices": [],
+          "default": 600,
+          "global": 1200,
+          "key": "inbox.hang_seconds",
+          "min": 60,
+          "repo": null,
+          "source": "global",
+          "type": "int",
+          "value": 1200
+        }
+      ]
+    }
+  }
+}
