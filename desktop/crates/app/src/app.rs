@@ -32,6 +32,8 @@ use crate::theme::{Theme, ThemeKind};
 const KEEP_HIDDEN: usize = 3;
 const HIDDEN_DETACH_AFTER: Duration = Duration::from_secs(30);
 const TOAST_FOR: Duration = Duration::from_secs(6);
+/// The collapsed sidebar's width.
+const SIDEBAR_RAIL_W: f32 = 26.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -851,6 +853,12 @@ impl State {
         self.saver.touch();
     }
 
+    /// Collapses the Worktrees sidebar to a rail, or expands it (Ctrl+B).
+    pub fn toggle_sidebar(&mut self) {
+        self.saved.sidebar_hidden = !self.saved.sidebar_hidden;
+        self.touch_saved();
+    }
+
     pub fn dismiss(&mut self, item: &crate::attention::Item) {
         self.saved.marks.dismissed.insert(item.occurrence.clone(), unix_now());
         if item.kind == crate::attention::Kind::Exited {
@@ -1301,7 +1309,16 @@ impl App {
         if take(Modifiers::CTRL, Key::Period) {
             s.pr_panel = !s.pr_panel;
         }
+        // Ctrl+B moves back a character in a shell: there, Ctrl+Shift+B.
+        if take(Modifiers::CTRL | Modifiers::SHIFT, Key::B)
+            || (!s.terminal_focused && !ctx.text_edit_focused() && take(Modifiers::CTRL, Key::B))
+        {
+            s.toggle_sidebar();
+        }
         if take(Modifiers::CTRL, Key::K) {
+            if s.saved.sidebar_hidden {
+                s.toggle_sidebar();
+            }
             s.leave_home();
             s.focus_request = Some(Focus::Sidebar);
         }
@@ -1361,6 +1378,7 @@ impl App {
         if outside {
             use crate::dialogs::Kind;
             let home = s.view == View::Home;
+            let in_diff = s.view == View::Worktrees && s.diff_open && s.diff.is_some();
             if s.view == View::Guide && s.guide_key(&take) {
                 // The page's own keys (how_it_works.rs).
             } else if home && s.home_key(&take) {
@@ -1394,6 +1412,14 @@ impl App {
                 s.conn.notify("refresh_worktrees", json!({}));
             } else if s.view == View::Worktrees && take(Modifiers::NONE, Key::N) {
                 s.toggle_notes();
+            } else if in_diff && take(Modifiers::NONE, Key::F) {
+                s.toggle_diff_files();
+            } else if in_diff && take(Modifiers::NONE, Key::CloseBracket) {
+                s.step_file(1);
+            } else if in_diff && take(Modifiers::NONE, Key::OpenBracket) {
+                s.step_file(-1);
+            } else if in_diff && take(Modifiers::ALT, Key::Z) {
+                s.toggle_wrap();
             } else if take(Modifiers::SHIFT, Key::Questionmark) || take(Modifiers::NONE, Key::Questionmark) {
                 s.open_dialog(Kind::Help);
             }
@@ -1458,6 +1484,23 @@ impl App {
                 if ui.add_enabled(worktree, egui::Button::selectable(s.diff_open, "Diff  (Ctrl+D)")).clicked() {
                     s.leave_home();
                     s.toggle_diff();
+                }
+                ui.separator();
+                if ui.selectable_label(!s.saved.sidebar_hidden, "Worktrees sidebar  (Ctrl+B)").clicked() {
+                    s.toggle_sidebar();
+                }
+                let in_diff = s.view == View::Worktrees && s.diff_open;
+                if ui
+                    .add_enabled(in_diff, egui::Button::selectable(!s.saved.diff_files_hidden, "Diff file list  (f)"))
+                    .clicked()
+                {
+                    s.toggle_diff_files();
+                }
+                if ui
+                    .add_enabled(in_diff, egui::Button::selectable(!s.saved.diff_nowrap, "Wrap diff lines  (Alt+Z)"))
+                    .clicked()
+                {
+                    s.toggle_wrap();
                 }
                 ui.separator();
                 if ui.button("Light / dark theme").clicked() {
@@ -1624,6 +1667,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Worktrees").strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("«").on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+                    s.toggle_sidebar();
+                }
                 if ui.button("↻").on_hover_text("Refresh the worktree list (r)").clicked() {
                     s.conn.notify("refresh_worktrees", json!({}));
                 }
@@ -1719,6 +1765,18 @@ impl App {
                     s.focus_request = Some(Focus::Sidebar);
                 }
             }
+        }
+    }
+
+    /// The collapsed sidebar: a button that expands it, and the whole rail
+    /// does too.
+    fn sidebar_rail(&mut self, ui: &mut Ui) {
+        let s = &mut self.state;
+        let rail = ui.interact(ui.max_rect(), Id::unique("sidebar-rail"), Sense::click());
+        ui.add_space(6.0);
+        let expand = ui.vertical_centered(|ui| ui.button("»").on_hover_text("Expand the Worktrees sidebar (Ctrl+B)"));
+        if expand.inner.clicked() || rail.clicked() {
+            s.toggle_sidebar();
         }
     }
 
@@ -2282,17 +2340,25 @@ impl App {
             .exact_size(34.0)
             .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::symmetric(10, 0)))
             .show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("sidebar")
-            .resizable(true)
-            .default_size(290.0)
-            .size_range(200.0..=520.0)
-            .frame(egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)))
-            .show(ui, |ui| {
-                egui::Panel::bottom("sidebar-footer")
-                    .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
-                    .show(ui, |ui| self.footer(ui));
-                self.sidebar(ui);
-            });
+        if self.state.saved.sidebar_hidden {
+            egui::Panel::left("sidebar-rail")
+                .resizable(false)
+                .exact_size(SIDEBAR_RAIL_W)
+                .frame(egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)).inner_margin(2))
+                .show(ui, |ui| self.sidebar_rail(ui));
+        } else {
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(290.0)
+                .size_range(200.0..=520.0)
+                .frame(egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)))
+                .show(ui, |ui| {
+                    egui::Panel::bottom("sidebar-footer")
+                        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+                        .show(ui, |ui| self.footer(ui));
+                    self.sidebar(ui);
+                });
+        }
         if self.state.jobs_open && !self.state.jobs.is_empty() {
             egui::Panel::bottom("jobs")
                 .resizable(true)

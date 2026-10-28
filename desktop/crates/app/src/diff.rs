@@ -206,6 +206,35 @@ pub fn split_rows(rows: &[Row]) -> Vec<Pair> {
     out
 }
 
+/// A line's code as it is drawn: tabs as four spaces.
+pub fn expand_tabs(text: &str) -> String {
+    text.replace('\t', "    ")
+}
+
+/// Where a line soft-wraps to fit `cols` columns, like GitHub: the char
+/// ranges of its pieces (at least one), each broken after its last space
+/// when that space is in the piece's second half, else at the column.
+pub fn wrap_line(text: &str, cols: usize) -> Vec<std::ops::Range<usize>> {
+    let cols = cols.max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = vec![];
+    let mut start = 0;
+    while chars.len() - start > cols {
+        let hard = start + cols;
+        let end = (start + cols / 2..hard).rev().find(|&i| chars[i] == ' ').map_or(hard, |i| i + 1);
+        out.push(start..end);
+        start = end;
+    }
+    out.push(start..chars.len());
+    out
+}
+
+/// How many screen rows a line takes at `cols` columns.
+pub fn wrap_count(text: &str, cols: usize) -> usize {
+    let n = text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
+    if n <= cols.max(1) { 1 } else { wrap_line(&expand_tabs(text), cols).len() }
+}
+
 /// A review comment, anchored to a file, a side and a line (its last
 /// line, for a range), with the thread that follows when it was asked.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -459,6 +488,29 @@ mod tests {
     use super::*;
 
     const MODIFIED: &str = "diff --git a/src/app.py b/src/app.py\nindex 1..2 100644\n--- a/src/app.py\n+++ b/src/app.py\n@@ -1,3 +1,4 @@\n import os\n-x = 1\n+x = 2\n+y = 3\n print(x)\n\\ No newline at end of file\n";
+
+    #[test]
+    fn long_lines_wrap_after_a_space_or_at_the_column() {
+        let pieces = |text: &str, cols| -> Vec<String> {
+            let chars: Vec<char> = text.chars().collect();
+            wrap_line(text, cols).into_iter().map(|r| chars[r].iter().collect()).collect()
+        };
+        assert_eq!(pieces("short", 10), ["short"]);
+        assert_eq!(pieces("", 10), [""]);
+        // After the last space in the piece's second half, like GitHub.
+        assert_eq!(pieces("all the criteria were met", 10), ["all the ", "criteria ", "were met"]);
+        // No space late enough: at the column.
+        assert_eq!(pieces("abcdefghijklmnopqrstuvwxyz", 10), ["abcdefghij", "klmnopqrst", "uvwxyz"]);
+        // Every char once, in order, never a piece over the width.
+        let text = "    \"\"\"Returns the rows that match all criteria within one pass of the list.\"\"\"";
+        let got = pieces(text, 17);
+        assert_eq!(got.concat(), text);
+        assert!(got.iter().all(|p| p.chars().count() <= 17), "{got:?}");
+        // Tabs count as four columns.
+        assert_eq!(wrap_count("\tabcd", 8), 1);
+        assert_eq!(wrap_count("\tabcde", 8), 2);
+        assert_eq!(wrap_count("x", 0), 1);
+    }
 
     #[test]
     fn a_modified_file() {

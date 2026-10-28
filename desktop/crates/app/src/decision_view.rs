@@ -1070,7 +1070,15 @@ fn hunk_ui(ui: &mut Ui, t: &Theme, rows: &[diff::Row]) {
                     Vec2::new(ui.available_width().max(600.0), crate::diff_view::ROW_H),
                     Sense::hover(),
                 );
-                crate::diff_view::draw_cell(ui.painter(), t, &font, rect, row, true, 0.0);
+                crate::diff_view::draw_cell(
+                    ui.painter(),
+                    t,
+                    &font,
+                    rect,
+                    row,
+                    true,
+                    &crate::diff_view::Code::whole(row, 0.0),
+                );
             }
         },
     );

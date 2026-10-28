@@ -32,6 +32,12 @@ pub enum DRow {
     File(usize),
     Row(usize, usize),
     Pair(usize, Pair),
+    /// A wrapped line's `k`-th piece after its first (`Row` draws the
+    /// first): no number, the line's colour.
+    More(usize, usize, usize),
+    /// A split pair's `k`-th piece row: each side its piece, or only its
+    /// colour once its line has ended (the row is as tall as its taller side).
+    PairMore(usize, Pair, usize),
     /// A thread's first line; `Reply` its next ones (fixed-height rows).
     Comment(usize, String),
     Reply(usize, String, usize),
@@ -89,8 +95,12 @@ pub struct DiffState {
     pub error: Option<String>,
     pub diff: Arc<Diff>,
     pub rows: Vec<DRow>,
-    /// Rebuild `rows` when the layout, the comments or what is shown change.
-    built_for: Option<(bool, u64, bool)>,
+    /// Rebuild `rows` when the layout, the comments, what is shown or the
+    /// wrap columns change.
+    built_for: Option<(bool, u64, bool, Option<usize>)>,
+    /// The first row on screen last frame (next / previous file, and the
+    /// line kept on top when the rows wrap again).
+    pub top: usize,
     /// Which load a reply belongs to.
     seq: u64,
     pub scroll_to: Option<usize>,
@@ -143,6 +153,7 @@ impl DiffState {
             diff: Arc::new(diff),
             rows: vec![],
             built_for: None,
+            top: 0,
             seq: 1,
             scroll_to: None,
             hoff: 0.0,
@@ -249,6 +260,27 @@ impl State {
         }
     }
 
+    /// Wraps the diff's long lines, or keeps each on one row (Alt+Z).
+    pub fn toggle_wrap(&mut self) {
+        self.saved.diff_nowrap = !self.saved.diff_nowrap;
+        self.touch_saved();
+    }
+
+    /// Hides the diff's file list (a rail stays), or shows it again (f).
+    pub fn toggle_diff_files(&mut self) {
+        self.saved.diff_files_hidden = !self.saved.diff_files_hidden;
+        self.touch_saved();
+    }
+
+    /// Scrolls the diff to the next (`delta` > 0) or previous file (] / [).
+    pub fn step_file(&mut self, delta: i32) {
+        if let Some(d) = self.diff.as_mut()
+            && let Some(j) = file_step(&d.rows, d.top, delta)
+        {
+            d.scroll_to = Some(j);
+        }
+    }
+
     pub fn load_diff(&mut self, path: &str, base: String) {
         self.load_diff_with(path, base, false);
     }
@@ -274,6 +306,7 @@ impl State {
             diff: Arc::new(Diff::default()),
             rows: vec![],
             built_for: None,
+            top: 0,
             seq,
             scroll_to: None,
             hoff: 0.0,
@@ -825,6 +858,13 @@ impl App {
                 self.state.saved.diff_split = s;
                 self.state.touch_saved();
             }
+            if ui
+                .selectable_label(!self.state.saved.diff_nowrap, "Wrap")
+                .on_hover_text("Wrap long lines at the pane's width (Alt+Z)")
+                .clicked()
+            {
+                self.state.toggle_wrap();
+            }
             let d = self.state.diff.as_ref().unwrap();
             let shown: Vec<&diff::File> = d.diff.files.iter().filter(|f| show || !f.uncommitted).collect();
             let (files, add, del) =
@@ -887,48 +927,83 @@ impl App {
             ui.label(RichText::new("No changes").color(t.muted));
             return;
         }
-        // Rows for this layout, these comments and what is shown.
-        let key = (split, self.state.comments_gen, show);
-        if self.state.diff.as_ref().unwrap().built_for != Some(key) {
-            let d = self.state.diff.as_mut().unwrap();
-            d.rows = build_rows(&d.diff, split, &comments, &asking, show);
-            d.cols = max_cols(&d.diff);
-            d.built_for = Some(key);
-        }
         let mut jump = None;
-        egui::Panel::left("diff-files")
-            .resizable(true)
-            .default_size(260.0)
-            .size_range(120.0..=640.0)
-            .frame(egui::Frame::new().inner_margin(egui::Margin { right: 6, ..Default::default() }))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("diff-file-list").auto_shrink([false, false]).show(ui, |ui| {
-                    let d = self.state.diff.as_ref().unwrap();
-                    for (fi, f) in d.diff.files.iter().enumerate() {
-                        if f.uncommitted && !show {
-                            break;
+        if self.state.saved.diff_files_hidden {
+            // A rail: the list back, and the previous / next file.
+            egui::Panel::left("diff-files-rail")
+                .resizable(false)
+                .exact_size(RAIL_W)
+                .frame(egui::Frame::new().inner_margin(egui::Margin { right: 4, ..Default::default() }))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        if ui.small_button("▸").on_hover_text("Show the file list (f)").clicked() {
+                            self.state.toggle_diff_files();
                         }
-                        if f.uncommitted && d.diff.files.get(fi.wrapping_sub(1)).is_none_or(|p| !p.uncommitted) {
-                            ui.label(RichText::new("Uncommitted").color(t.yellow).small());
+                        if ui.small_button("▲").on_hover_text("Previous file ([)").clicked() {
+                            self.state.step_file(-1);
                         }
-                        if file_entry(ui, &t, f).clicked() {
-                            jump = d.rows.iter().position(|r| *r == DRow::File(fi));
+                        if ui.small_button("▼").on_hover_text("Next file (])").clicked() {
+                            self.state.step_file(1);
                         }
-                    }
+                    });
                 });
-            });
-        if let Some(j) = jump {
-            self.state.diff.as_mut().unwrap().scroll_to = Some(j);
+        } else {
+            egui::Panel::left("diff-files")
+                .resizable(true)
+                .default_size(260.0)
+                .size_range(120.0..=640.0)
+                .frame(egui::Frame::new().inner_margin(egui::Margin { right: 6, ..Default::default() }))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Files").color(t.muted).small());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("◂").on_hover_text("Hide the file list (f)").clicked() {
+                                self.state.toggle_diff_files();
+                            }
+                        });
+                    });
+                    egui::ScrollArea::vertical().id_salt("diff-file-list").auto_shrink([false, false]).show(ui, |ui| {
+                        let d = self.state.diff.as_ref().unwrap();
+                        for (fi, f) in d.diff.files.iter().enumerate() {
+                            if f.uncommitted && !show {
+                                break;
+                            }
+                            if f.uncommitted && d.diff.files.get(fi.wrapping_sub(1)).is_none_or(|p| !p.uncommitted) {
+                                ui.label(RichText::new("Uncommitted").color(t.yellow).small());
+                            }
+                            if file_entry(ui, &t, f).clicked() {
+                                jump = Some(fi);
+                            }
+                        }
+                    });
+                });
         }
         let font = FontId::monospace(12.0);
         let char_w = ui.painter().layout_no_wrap("x".into(), font.clone(), t.text).size().x;
         let mut rows_rect = ui.available_rect_before_wrap();
-        let d = self.state.diff.as_mut().unwrap();
         // The code's own width, against the narrowest place it is shown in
         // (a split pane, or the unified column), minus the vertical bar.
         let gutter = if split { NUM_W } else { 2.0 * NUM_W + 12.0 };
         let view_w = if split { rows_rect.width() / 2.0 - 1.0 } else { rows_rect.width() } - gutter - 12.0;
-        let max_hoff = (d.cols as f32 * char_w + 8.0 - view_w).max(0.0);
+        let wrap = (!self.state.saved.diff_nowrap).then(|| wrap_cols(view_w, char_w));
+        // Rows for this layout, these comments, what is shown and the wrap.
+        let key = (split, self.state.comments_gen, show, wrap);
+        let d = self.state.diff.as_mut().unwrap();
+        if d.built_for != Some(key) {
+            // Wrapped again (a resize): the line on top stays on top.
+            let rewrap = d.built_for.is_some_and(|b| (b.0, b.1, b.2) == (key.0, key.1, key.2));
+            let top = d.rows.get(d.top).map(line_of);
+            d.rows = build_rows(&d.diff, split, &comments, &asking, show, wrap);
+            d.cols = max_cols(&d.diff);
+            d.built_for = Some(key);
+            if rewrap && d.scroll_to.is_none() {
+                d.scroll_to = top.and_then(|top| d.rows.iter().position(|r| *r == top));
+            }
+        }
+        if let Some(fi) = jump {
+            d.scroll_to = d.rows.iter().position(|r| *r == DRow::File(fi));
+        }
+        let max_hoff = if wrap.is_some() { 0.0 } else { (d.cols as f32 * char_w + 8.0 - view_w).max(0.0) };
         if max_hoff > 0.0 {
             // Shift+wheel, or a sideways trackpad swipe, over the code.
             if ui.rect_contains_pointer(rows_rect) {
@@ -964,7 +1039,9 @@ impl App {
         let press = ui.input(|i| i.pointer.press_origin());
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let n = d.rows.len();
+        let mut top = 0;
         area.show_rows(&mut rows_ui, ROW_H, n, |ui, range| {
+            top = range.start;
             let d = self.state.diff.as_ref().unwrap();
             let width = ui.available_width();
             // The selected side's first and last rows on screen, to extend a
@@ -978,8 +1055,10 @@ impl App {
                 // What a pointer at `x` on this row selects: (file, row, side).
                 let hit = |x: f32| -> Option<(usize, usize, Option<bool>)> {
                     match &d.rows[idx] {
-                        DRow::Row(fi, ri) => code_row(&d.diff.files[*fi].rows[*ri]).then_some((*fi, *ri, None)),
-                        DRow::Pair(fi, Pair::Sides(l, r)) => {
+                        DRow::Row(fi, ri) | DRow::More(fi, ri, _) => {
+                            code_row(&d.diff.files[*fi].rows[*ri]).then_some((*fi, *ri, None))
+                        }
+                        DRow::Pair(fi, Pair::Sides(l, r)) | DRow::PairMore(fi, Pair::Sides(l, r), _) => {
                             let left = x < rect.center().x;
                             (if left { *l } else { *r }).map(|ri| (*fi, ri, Some(left)))
                         }
@@ -1028,21 +1107,27 @@ impl App {
                             t.yellow,
                         );
                     }
-                    DRow::Row(fi, ri) => {
-                        draw_cell(p, &t, &font, rect, &d.diff.files[*fi].rows[*ri], true, hoff);
+                    DRow::Row(fi, ri) | DRow::More(fi, ri, _) => {
+                        let k = if let DRow::More(.., k) = &d.rows[idx] { *k } else { 0 };
+                        let row = &d.diff.files[*fi].rows[*ri];
+                        draw_cell(p, &t, &font, rect, row, true, &Code::of(row, wrap, k, hoff));
                         if sel.is_some_and(|s| s.has(*fi, *ri, None)) {
                             p.rect_filled(rect, 0.0, t.accent.gamma_multiply(0.18));
                         }
                     }
-                    DRow::Pair(fi, pair) => {
+                    DRow::Pair(fi, pair) | DRow::PairMore(fi, pair, _) => {
+                        let k = if let DRow::PairMore(.., k) = &d.rows[idx] { *k } else { 0 };
                         let f = &d.diff.files[*fi];
                         let (left, right) = halves(rect);
                         match pair {
-                            Pair::Wide(ri) => draw_cell(p, &t, &font, rect, &f.rows[*ri], false, 0.0),
+                            Pair::Wide(ri) => {
+                                draw_cell(p, &t, &font, rect, &f.rows[*ri], false, &Code::whole(&f.rows[*ri], 0.0))
+                            }
                             Pair::Sides(l, r) => {
                                 for (ri, half, old) in [(l, left, true), (r, right, false)] {
                                     let Some(ri) = ri else { continue };
-                                    draw_side(p, &t, &font, half, &f.rows[*ri], old, hoff);
+                                    let row = &f.rows[*ri];
+                                    draw_side(p, &t, &font, half, row, old, &Code::of(row, wrap, k, hoff));
                                     if sel.is_some_and(|s| s.has(*fi, *ri, Some(old))) {
                                         p.rect_filled(half, 0.0, t.accent.gamma_multiply(0.18));
                                     }
@@ -1126,6 +1211,7 @@ impl App {
             }
         });
         let d = self.state.diff.as_mut().unwrap();
+        d.top = top;
         if let Some(s) = new_sel {
             d.sel = Some(s);
         }
@@ -1552,6 +1638,34 @@ fn halves(rect: Rect) -> (Rect, Rect) {
     (left, right)
 }
 
+/// The file list's width when it is hidden: a rail with its buttons.
+const RAIL_W: f32 = 26.0;
+
+/// How many columns of code fit in `view_w` (never fewer than 8).
+pub fn wrap_cols(view_w: f32, char_w: f32) -> usize {
+    ((view_w - 8.0) / char_w.max(1.0)).floor().max(8.0) as usize
+}
+
+/// The row that starts `row`'s line (itself for any other row).
+fn line_of(row: &DRow) -> DRow {
+    match row {
+        DRow::More(fi, ri, _) => DRow::Row(*fi, *ri),
+        DRow::PairMore(fi, pair, _) => DRow::Pair(*fi, pair.clone()),
+        other => other.clone(),
+    }
+}
+
+/// The header row of the file after (`delta` > 0) or before the row on
+/// top; before it means the top file's own header when it is scrolled into.
+pub fn file_step(rows: &[DRow], top: usize, delta: i32) -> Option<usize> {
+    let header = |r: &DRow| matches!(r, DRow::File(_));
+    if delta > 0 {
+        rows.iter().skip(top + 1).position(header).map(|i| top + 1 + i)
+    } else {
+        rows.get(..top.min(rows.len()))?.iter().rposition(header)
+    }
+}
+
 /// The longest code line, in columns.
 fn max_cols(d: &Diff) -> usize {
     d.files
@@ -1629,6 +1743,40 @@ fn draw_number(p: &egui::Painter, t: &crate::theme::Theme, rect: Rect, x: f32, n
     }
 }
 
+/// What a row draws of its line: the piece of code, whether it is the
+/// line's first row (its numbers and +/−), and the sideways scroll.
+pub(crate) struct Code {
+    pub text: String,
+    pub first: bool,
+    pub hoff: f32,
+}
+
+impl Code {
+    /// The whole line, on one row.
+    pub(crate) fn whole(row: &diff::Row, hoff: f32) -> Code {
+        Code { text: diff::expand_tabs(&row.text), first: true, hoff }
+    }
+
+    /// Piece `k` of the line wrapped at `cols` (empty past its end).
+    pub(crate) fn piece(row: &diff::Row, cols: usize, k: usize) -> Code {
+        let text = diff::expand_tabs(&row.text);
+        let text = match diff::wrap_line(&text, cols).get(k) {
+            Some(r) => text.chars().skip(r.start).take(r.len()).collect(),
+            None => String::new(),
+        };
+        Code { text, first: k == 0, hoff: 0.0 }
+    }
+
+    /// What `row` draws on screen row `k` of it: wrapped at `wrap`, else whole.
+    fn of(row: &diff::Row, wrap: Option<usize>, k: usize, hoff: f32) -> Code {
+        match wrap {
+            Some(cols) if code_row(row) => Code::piece(row, cols, k),
+            _ if k == 0 => Code::whole(row, hoff),
+            _ => Code { text: String::new(), first: false, hoff },
+        }
+    }
+}
+
 pub(crate) fn draw_cell(
     p: &egui::Painter,
     t: &crate::theme::Theme,
@@ -1636,7 +1784,7 @@ pub(crate) fn draw_cell(
     rect: Rect,
     row: &diff::Row,
     numbers: bool,
-    hoff: f32,
+    code: &Code,
 ) {
     let (bg, sign) = row_colors(row.kind);
     if bg != Color32::TRANSPARENT {
@@ -1648,14 +1796,14 @@ pub(crate) fn draw_cell(
             p.text(Pos2::new(rect.left() + 6.0, y), Align2::LEFT_CENTER, &row.text, font.clone(), t.cyan);
         }
         _ => {
-            if numbers {
+            if numbers && code.first {
                 draw_number(p, t, rect, rect.left() + NUM_W - 6.0, row.old);
                 draw_number(p, t, rect, rect.left() + 2.0 * NUM_W - 6.0, row.new);
             }
             let x = rect.left() + if numbers { 2.0 * NUM_W } else { NUM_W };
             let mark = match row.kind {
-                RowKind::Add => "+",
-                RowKind::Del => "-",
+                RowKind::Add if code.first => "+",
+                RowKind::Del if code.first => "-",
                 _ => " ",
             };
             p.text(
@@ -1665,8 +1813,8 @@ pub(crate) fn draw_cell(
                 font.clone(),
                 if sign == Color32::TRANSPARENT { t.muted } else { sign },
             );
-            let code = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), rect.max);
-            draw_code(p, t, font, code, row, hoff);
+            let rect = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), rect.max);
+            draw_code(p, t, font, rect, code);
         }
     }
 }
@@ -1678,25 +1826,30 @@ fn draw_side(
     rect: Rect,
     row: &diff::Row,
     old: bool,
-    hoff: f32,
+    code: &Code,
 ) {
     let painter = p.with_clip_rect(rect.intersect(p.clip_rect()));
     let (bg, _) = row_colors(row.kind);
     if bg != Color32::TRANSPARENT {
         painter.rect_filled(rect, 0.0, bg);
     }
-    draw_number(&painter, t, rect, rect.left() + NUM_W - 6.0, if old { row.old } else { row.new });
-    let code = Rect::from_min_max(Pos2::new(rect.left() + NUM_W, rect.top()), rect.max);
-    draw_code(&painter, t, font, code, row, hoff);
+    if code.first {
+        draw_number(&painter, t, rect, rect.left() + NUM_W - 6.0, if old { row.old } else { row.new });
+    }
+    let rect = Rect::from_min_max(Pos2::new(rect.left() + NUM_W, rect.top()), rect.max);
+    draw_code(&painter, t, font, rect, code);
 }
 
-/// A line's code, scrolled `hoff` to the left and clipped to `code`, so
+/// A piece of code, scrolled `hoff` to the left and clipped to `rect`, so
 /// it never runs over the line numbers or the other pane.
-fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, code: Rect, row: &diff::Row, hoff: f32) {
-    p.with_clip_rect(code.intersect(p.clip_rect())).text(
-        Pos2::new(code.left() - hoff, code.center().y),
+fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, rect: Rect, code: &Code) {
+    if code.text.is_empty() {
+        return;
+    }
+    p.with_clip_rect(rect.intersect(p.clip_rect())).text(
+        Pos2::new(rect.left() - code.hoff, rect.center().y),
         Align2::LEFT_CENTER,
-        row.text.replace('\t', "    "),
+        &code.text,
         font.clone(),
         t.text,
     );
@@ -1706,7 +1859,16 @@ fn draw_code(p: &egui::Painter, t: &crate::theme::Theme, font: &FontId, code: Re
 /// thread under its (last) line, a row per line of it (in split, under the
 /// pair holding it). `asking`: the threads waiting for an answer.
 /// The rows, with the uncommitted files (under their heading) when `uncommitted`.
-pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String], uncommitted: bool) -> Vec<DRow> {
+/// `wrap`: the code's columns, a line longer than that takes a row per
+/// piece (its thread under the last one); `None` keeps each line on one row.
+pub fn build_rows(
+    d: &Diff,
+    split: bool,
+    comments: &[Comment],
+    asking: &[String],
+    uncommitted: bool,
+    wrap: Option<usize>,
+) -> Vec<DRow> {
     let mut out = Vec::with_capacity(d.files.iter().map(|f| f.rows.len() + 1).sum::<usize>() + 1);
     for (fi, f) in d.files.iter().enumerate() {
         if f.uncommitted {
@@ -1718,6 +1880,10 @@ pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String]
             }
         }
         out.push(DRow::File(fi));
+        let pieces = |ri: usize| match wrap {
+            Some(cols) if code_row(&f.rows[ri]) => diff::wrap_count(&f.rows[ri].text, cols),
+            _ => 1,
+        };
         let on = |ri: usize| -> Vec<DRow> {
             let Some(a) = diff::anchor_in(f, &f.rows[ri]) else { return vec![] };
             let at = a.id();
@@ -1743,12 +1909,18 @@ pub fn build_rows(d: &Diff, split: bool, comments: &[Comment], asking: &[String]
                     }
                     Pair::Wide(_) => vec![],
                 };
-                out.push(DRow::Pair(fi, pair));
+                let n = match &pair {
+                    Pair::Sides(l, r) => l.map_or(1, pieces).max(r.map_or(1, pieces)),
+                    Pair::Wide(_) => 1,
+                };
+                out.push(DRow::Pair(fi, pair.clone()));
+                out.extend((1..n).map(|k| DRow::PairMore(fi, pair.clone(), k)));
                 out.extend(threads);
             }
         } else {
             for ri in 0..f.rows.len() {
                 out.push(DRow::Row(fi, ri));
+                out.extend((1..pieces(ri)).map(|k| DRow::More(fi, ri, k)));
                 out.extend(on(ri));
             }
         }
@@ -1768,7 +1940,7 @@ mod tests {
         c1.text = "on ctx".into();
         let mut c2 = diff::anchor("a.py", &rows[2]).unwrap();
         c2.text = "on old".into();
-        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()], &[], true);
+        let unified = build_rows(&d, false, &[c1.clone(), c2.clone()], &[], true, None);
         assert_eq!(
             unified,
             [
@@ -1781,9 +1953,121 @@ mod tests {
                 DRow::Row(0, 3)
             ]
         );
-        let split = build_rows(&d, true, &[c1.clone(), c2.clone()], &[], true);
+        let split = build_rows(&d, true, &[c1.clone(), c2.clone()], &[], true, None);
         assert_eq!(split.iter().filter(|r| matches!(r, DRow::Comment(..))).count(), 2, "the context comment once");
         assert_eq!(split.len(), 1 + 3 + 2);
+    }
+
+    /// A file whose line 2 is removed and replaced by a long one.
+    const LONG: &str = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n ctx\n-short\n+aaaa bbbb cccc dddd eeee ffff gggg\n end\n";
+
+    #[test]
+    fn a_wrapped_line_takes_a_row_per_piece_and_its_thread_follows_the_last() {
+        let d = diff::parse(LONG);
+        let rows = &d.files[0].rows;
+        let mut c = diff::anchor("a.py", &rows[3]).unwrap();
+        c.text = "on the long line".into();
+        // 34 columns at 10: three pieces.
+        let unified = build_rows(&d, false, std::slice::from_ref(&c), &[], true, Some(10));
+        assert_eq!(
+            unified,
+            [
+                DRow::File(0),
+                DRow::Row(0, 0),
+                DRow::Row(0, 1),
+                DRow::Row(0, 2),
+                DRow::Row(0, 3),
+                DRow::More(0, 3, 1),
+                DRow::More(0, 3, 2),
+                DRow::More(0, 3, 3),
+                DRow::Comment(0, c.id()),
+                DRow::Row(0, 4),
+            ]
+        );
+        // Unwrapped (or wide enough): one row per line, as before.
+        assert_eq!(build_rows(&d, false, &[], &[], true, None).len(), 6);
+        assert_eq!(build_rows(&d, false, &[], &[], true, Some(80)).len(), 6);
+    }
+
+    #[test]
+    fn split_rows_are_as_tall_as_their_taller_side() {
+        let d = diff::parse(LONG);
+        let mut c = diff::anchor("a.py", &d.files[0].rows[2]).unwrap();
+        c.text = "on the short old line".into();
+        let rows = build_rows(&d, true, std::slice::from_ref(&c), &[], true, Some(10));
+        let pair = Pair::Sides(Some(2), Some(3));
+        assert_eq!(
+            rows[3..8],
+            [
+                DRow::Pair(0, pair.clone()),
+                DRow::PairMore(0, pair.clone(), 1),
+                DRow::PairMore(0, pair.clone(), 2),
+                DRow::PairMore(0, pair, 3),
+                // The short side's thread waits for the long side's end.
+                DRow::Comment(0, c.id()),
+            ]
+        );
+        // The short side has nothing past its first row; the long one has
+        // each piece, and together they are the line.
+        let (old, new) = (&d.files[0].rows[2], &d.files[0].rows[3]);
+        assert_eq!(Code::of(old, Some(10), 1, 0.0).text, "");
+        let joined: String = (0..4).map(|k| Code::of(new, Some(10), k, 0.0).text).collect();
+        assert_eq!(joined, new.text);
+    }
+
+    /// The shapes `draw` paints.
+    fn shapes(draw: impl Fn(&egui::Painter)) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui.painter()));
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    /// The texts `draw` paints.
+    fn painted(draw: impl Fn(&egui::Painter)) -> Vec<String> {
+        shapes(draw)
+            .into_iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn continuation_rows_have_no_number_or_sign_but_keep_the_colour() {
+        let d = diff::parse(LONG);
+        let row = &d.files[0].rows[3];
+        let t = crate::theme::Theme::DARK;
+        let font = FontId::monospace(12.0);
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, ROW_H));
+        let first = painted(|p| draw_cell(p, &t, &font, rect, row, true, &Code::of(row, Some(10), 0, 0.0)));
+        assert_eq!(first, ["2", "+", "aaaa bbbb "], "the number, the sign, the first piece");
+        let more = painted(|p| draw_cell(p, &t, &font, rect, row, true, &Code::of(row, Some(10), 1, 0.0)));
+        assert_eq!(more, [" ", "cccc dddd "], "no number, no sign");
+        let side = painted(|p| draw_side(p, &t, &font, rect, row, false, &Code::of(row, Some(10), 2, 0.0)));
+        assert_eq!(side, ["eeee ffff "]);
+        // The added line's green runs under its continuation rows too.
+        let green = row_colors(RowKind::Add).0;
+        let more = shapes(|p| draw_cell(p, &t, &font, rect, row, true, &Code::of(row, Some(10), 1, 0.0)));
+        assert!(more.iter().any(|s| matches!(s, egui::Shape::Rect(r) if r.fill == green)));
+    }
+
+    #[test]
+    fn next_and_previous_file_from_the_row_on_top() {
+        let rows = [DRow::File(0), DRow::Row(0, 0), DRow::Row(0, 1), DRow::Uncommitted, DRow::File(1), DRow::Row(1, 0)];
+        assert_eq!(file_step(&rows, 0, 1), Some(4));
+        assert_eq!(file_step(&rows, 2, 1), Some(4));
+        assert_eq!(file_step(&rows, 4, 1), None, "the last file");
+        assert_eq!(file_step(&rows, 5, -1), Some(4), "into a file: its own header");
+        assert_eq!(file_step(&rows, 4, -1), Some(0), "on a header: the file before");
+        assert_eq!(file_step(&rows, 0, -1), None);
+    }
+
+    #[test]
+    fn the_wrap_columns_follow_the_pane() {
+        assert_eq!(wrap_cols(708.0, 7.0), 100);
+        assert_eq!(wrap_cols(20.0, 7.0), 8, "never fewer than 8");
     }
 
     fn pr_base() -> DiffBase {
@@ -1837,14 +2121,14 @@ mod tests {
         let d = diff::parse_pr(&file("a.py"), &format!("{}\n{}", file("a.py"), file("b.py")));
         let mut c = diff::anchor_in(&d.files[1], &d.files[1].rows[2]).unwrap();
         c.text = "here".into();
-        let rows = build_rows(&d, false, std::slice::from_ref(&c), &[], true);
+        let rows = build_rows(&d, false, std::slice::from_ref(&c), &[], true, None);
         let at = rows.iter().position(|r| *r == DRow::Uncommitted).unwrap();
         assert_eq!(rows[at - 1], DRow::Row(0, 2));
         assert_eq!(rows[at + 1], DRow::File(1));
         // The comment sits under the uncommitted copy of the line only.
         let under = rows.iter().position(|r| matches!(r, DRow::Comment(..))).unwrap();
         assert_eq!(rows[under - 1], DRow::Row(1, 2));
-        let hidden = build_rows(&d, false, std::slice::from_ref(&c), &[], false);
+        let hidden = build_rows(&d, false, std::slice::from_ref(&c), &[], false, None);
         assert_eq!(hidden, rows[..at].to_vec());
     }
 }
