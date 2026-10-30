@@ -633,6 +633,15 @@ A long line was cut at the pane's edge (the rest only behind one sideways scroll
 - Tests: the wrap points; rows per piece and the thread after the last; Split as tall as the taller side; continuation rows painted without number or sign but with the line's colour; a click on a continuation row (unified and split) and a drag into one anchor to the whole line; file jumps and `]` / `[` with wrapped rows; a narrower or wider pane keeps the line on top; the toggles from the toolbar, the rails, the View menu and the keys, on Home, the guide and the worktrees; the three choices across a restart, and an older state file read as wrapped and shown.
 - Screenshots: [d2-wrap-split-dark.png](desktop-screenshots/d2-wrap-split-dark.png), [d2-collapsed-dark.png](desktop-screenshots/d2-collapsed-dark.png), [d2-wrap-unified-light.png](desktop-screenshots/d2-wrap-unified-light.png).
 
+### Home: a line opens on a click anywhere on it (2026-10-30)
+
+Only a Home line's head row took a click, and its labels caught clicks of their own: a click on the padding, a second line (a brief's summary, a suggestion, the last step) or the gap between lines did nothing.
+
+- **The whole line is one click target:** every line it spans, its padding and the gaps between them. A click selects it and expands or folds it, as the head's click did; ghost lines in To sit down with the same. Hovering it tints it and shows a pointer.
+- **The target sits under the line's widgets** (`UiBuilder::sense`, `home_view::item_surface`): a button, a link or a menu inside the line takes its own click and nothing else. An expanded line's details keep their clicks: a click on their empty space does not fold the line. The line's labels are not selectable text (they only show; a tooltip still shows on hover).
+- Keys unchanged.
+- Tests (`tests/h1.rs`): a click on the left padding, the right edge, the state column, a second line, the gap between the lines and the bottom padding opens the line, a second click folds it; the pointer on hover; in an expanded line Delegate sends its gesture, More… opens its menu and a click on the details' empty space leaves the line expanded.
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |
