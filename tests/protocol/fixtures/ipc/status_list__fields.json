@@ -26,6 +26,9 @@
         "stale": 0
       },
       "generated_at": 1700000000.0,
+      "github": {
+        "available": true
+      },
       "orchestrator": {
         "alive": false,
         "queue": [],

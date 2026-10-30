@@ -16,7 +16,7 @@ from lazyagent.engine.worktrees import (
     WorktreeService,
 )
 from lazyagent.models import GitStatus, PrInfo, WorktreeInfo
-from lazyagent.worktree_manager import GithubRepo, WorktreeManagerError
+from lazyagent.worktree_manager import GhCallError, GithubRepo, WorktreeManagerError
 
 pytestmark = pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
 
@@ -42,6 +42,8 @@ class World:
         self.unbatchable: set[str] = set()
         self.github_repo: GithubRepo | None = GithubRepo("acme", "repo")
         self.gh_available = True
+        # Set: every gh call fails with this (offline, logged out).
+        self.gh_down: str | None = None
         self.pr_delay = 0.0
 
 
@@ -72,27 +74,35 @@ class FakeManager:
         self.world.calls.append(("diff", path))
         return self.world.diffs.get(path, "")
 
-    def is_gh_available(self) -> bool:
+    def is_gh_installed(self) -> bool:
         self.world.calls.append(("gh_auth",))
         return self.world.gh_available
 
-    def get_github_repo(self):
+    def get_github_repo(self, strict=False):
         self.world.calls.append(("repo_view",))
+        if self.world.gh_down:
+            if strict:
+                raise GhCallError(self.world.gh_down)
+            return None
         return self.world.github_repo
 
     def get_pr_infos(self, worktrees, repo, review=False):
         if self.world.pr_delay:
             time.sleep(self.world.pr_delay)
         self.world.calls.append(("pr_batch", tuple(wt.path for wt in worktrees)))
-        if self.world.batch_fails:
+        if self.world.batch_fails or self.world.gh_down:
             raise WorktreeManagerError("HTTP 502")
         return {
             wt.path: self.world.prs.get(wt.path)
             for wt in worktrees if wt.path not in self.world.unbatchable
         }
 
-    def get_pr_info(self, path):
+    def get_pr_info(self, path, strict=False):
         self.world.calls.append(("pr_view", path))
+        if self.world.gh_down:
+            if strict:
+                raise GhCallError(self.world.gh_down)
+            return None
         return self.world.prs.get(path)
 
 
@@ -328,7 +338,7 @@ async def test_github_repo_is_looked_up_once_per_scan(service, world):
 
 
 @pytest.mark.asyncio
-async def test_gh_auth_is_checked_once(service, world):
+async def test_gh_install_is_checked_once(service, world):
     service.set_interest([FEAT.path])
     await service.poll_pr_info()
     await service.poll_pr_info()
@@ -471,3 +481,150 @@ async def test_stop_cancels_the_pollers(world):
     world.calls.clear()
     await asyncio.sleep(0.05)
     assert world.calls == []
+
+
+# --- GitHub failing: keep the last data, retry with backoff ---
+
+OFFLINE = "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host"
+
+
+class _Clock:
+    def __init__(self, now: float = 1_800_000_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(service) -> _Clock:
+    c = _Clock()
+    service.clock = c
+    return c
+
+
+@pytest.mark.asyncio
+async def test_a_failure_at_start_then_recovery_fills_pr_data_without_a_restart(
+        service, world, events, clock):
+    world.gh_down = OFFLINE
+    world.prs = {FEAT.path: _pr(1)}
+    service.set_interest([FEAT.path])
+
+    await service.poll_pr_info()
+    health = service.github
+    assert not health.available and health.since == clock.now
+    assert not service.has_pr_info(FEAT.path) and not service.pr_known(FEAT.path)
+    assert events == []
+
+    world.gh_down = None
+    clock.now += 60
+    await service.poll_pr_info()
+    assert health.available and health.since is None
+    assert service.pr_info(FEAT.path) == _pr(1) and service.pr_known(FEAT.path)
+    assert health.to_dict() == {"available": True, "pr_data_at": clock.now}
+
+
+@pytest.mark.asyncio
+async def test_failed_rounds_back_off_1_2_4_8_then_10_minutes_and_recover_at_once(
+        service, world, clock):
+    world.gh_down = OFFLINE
+    service.set_interest([FEAT.path])
+    start = clock.now
+    tried = []
+    for _ in range(40):  # the 60 s timer, 40 minutes
+        before = len(_calls(world, "repo_view"))
+        await service.poll_pr_info()
+        if len(_calls(world, "repo_view")) > before:
+            tried.append(int(clock.now - start) // 60)
+        clock.now += 60
+    assert tried == [0, 1, 3, 7, 15, 25, 35]
+
+    world.gh_down = None
+    while not service.github.due():
+        clock.now += 60
+    await service.poll_pr_info()
+    assert service.github.available
+    calls = len(world.calls)
+    clock.now += 60
+    await service.poll_pr_info()
+    assert len(world.calls) > calls, "back to every round"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_round_keeps_the_last_good_pr_data(service, world, events, clock):
+    world.prs = {FEAT.path: _pr(1), FIX.path: None}
+    service.set_interest([FEAT.path, FIX.path])
+    await service.poll_pr_info()
+    fetched = clock.now
+    events.clear()
+
+    world.gh_down = OFFLINE
+    clock.now += 60
+    await service.poll_pr_info()
+
+    assert service.pr_info(FEAT.path) == _pr(1)
+    assert service.has_pr_info(FIX.path) and service.pr_known(FIX.path)
+    assert events == []
+    assert service.github.to_dict() == {
+        "available": False, "since": clock.now, "error": OFFLINE,
+        "retry_at": clock.now + 60, "pr_data_at": fetched,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_round_cut_short_keeps_what_it_answered_and_the_rest(service, world, clock):
+    world.prs = {FEAT.path: _pr(1), FIX.path: _pr(2)}
+    service.set_interest([FEAT.path, FIX.path])
+    await service.poll_pr_info()
+
+    class Flaky(FakeManager):
+        def get_pr_infos(self, worktrees, repo, review=False):
+            raise WorktreeManagerError("HTTP 502")
+
+        def get_pr_info(self, path, strict=False):
+            if path == FIX.path:
+                raise GhCallError("HTTP 502")
+            return _pr(1, "MERGED")
+
+    service._manager = lambda root: Flaky(world, root)
+    clock.now += 60
+    await service.poll_pr_info()
+    assert service.pr_info(FEAT.path) == _pr(1, "MERGED")
+    assert service.pr_info(FIX.path) == _pr(2)
+    assert not service.github.available
+
+
+@pytest.mark.asyncio
+async def test_an_outage_is_logged_once_and_its_end_once(service, world, clock, caplog):
+    world.gh_down = OFFLINE
+    service.set_interest([FEAT.path])
+    caplog.set_level("INFO", logger="lazyagent.engine.github_health")
+    for _ in range(12):
+        await service.poll_pr_info()
+        clock.now += 60
+    world.gh_down = None
+    while not service.github.due():
+        clock.now += 60
+    await service.poll_pr_info()
+    records = [(r.levelname, r.getMessage()) for r in caplog.records
+               if r.name == "lazyagent.engine.github_health"]
+    assert [level for level, _ in records] == ["WARNING", "INFO"]
+    assert OFFLINE in records[0][1]
+    assert "available again" in records[1][1]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_gh_is_found_once_and_logged(service, world, caplog):
+    world.gh_available = False
+    service.set_interest([FEAT.path])
+    caplog.set_level("WARNING", logger="lazyagent.engine.github_health")
+    await service.poll_pr_info()
+    await service.poll_pr_info()
+    assert len(_calls(world, "gh_auth")) == 1
+    assert _calls(world, "repo_view") == [] and _calls(world, "pr_view") == []
+    assert [r.getMessage() for r in caplog.records] == [
+        "gh is not installed: no PR, CI or review data from GitHub"]
+    assert service.github.to_dict() == {
+        "available": False, "installed": False, "error": "gh is not installed"}
+    # Not an outage: absent info reads as no PR, as before.
+    assert service.pr_known(FEAT.path)

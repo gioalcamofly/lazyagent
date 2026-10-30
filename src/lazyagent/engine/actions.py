@@ -679,6 +679,9 @@ class ActionsHub:
         self.backoff = 0.0
         self.backoff_until = 0.0
         self.calls: deque[float] = deque()
+        # The shared GitHub state (github_health.py) each call reports to;
+        # the status projection sets it.
+        self.health: Any = None
         self._polling = False
         # (run id, attempt) → failed jobs / the parsed failed log
         self._jobs: OrderedDict[tuple[int, int], tuple[WorkflowJob, ...]] = OrderedDict()
@@ -714,6 +717,8 @@ class ActionsHub:
         try:
             return await asyncio.wait_for(self.run(args), timeout)
         except asyncio.TimeoutError as e:
+            if self.health is not None:
+                self.health.failed(f"gh {args[0]} timed out", now)
             raise TrackerError(f"gh {args[0]} timed out") from e
 
     async def _stream(self, args: list[str], sink: Callable[[bytes], bool],
@@ -736,6 +741,7 @@ class ActionsHub:
         args = ["api", "-i", path]
         if etag:
             args[1:1] = ["-H", f"If-None-Match: {etag}"]
+        started = self.clock()
         code, out, err = await self._call(args)
         # A 304 exits 1 ("gh: HTTP 304") with the status line on stdout.
         status, headers, body = split_response(out)
@@ -744,7 +750,12 @@ class ActionsHub:
         if status == 0:
             if _rate_limited(err):
                 raise RateLimited(err.strip())
+            # No HTTP answer at all: gh could not reach GitHub (or log in).
+            if self.health is not None:
+                self.health.failed(err.strip() or f"gh api: {code}", started)
             raise TrackerError(f"gh api {path} failed: {err.strip() or code}")
+        if self.health is not None:
+            self.health.succeeded()
         if status >= 400:
             raise TrackerError(f"gh api {path}: HTTP {status}")
         return status, headers, body
@@ -758,7 +769,9 @@ class ActionsHub:
             )
             self.backoff_until = now + self.backoff
         if message != self.error:
-            log.warning("actions: %s", message)
+            # An outage is logged once, by the shared state.
+            outage = self.health is not None and not self.health.available
+            log.log(logging.DEBUG if outage else logging.WARNING, "actions: %s", message)
         self.error, self.error_at = message, now
 
     # --- The poll ---

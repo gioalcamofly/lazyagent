@@ -392,7 +392,7 @@ def _engine(gh: FakeGh, pr: PrInfo | None = None, git: dict | None = None,
     git = git or {}
     hub.tests.git = lambda args: (0, git[tuple(args)]) if tuple(args) in git else (128, "")
     engine.actions = hub
-    engine.worktree_service._gh_available = True
+    engine.worktree_service.github.set_installed(True)
     engine.worktree_service._pr_infos[FEAT] = pr if pr is not None else _pr()
     if feeder_project is not None:
         from dataclasses import replace
