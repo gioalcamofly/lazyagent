@@ -912,10 +912,15 @@ nothing about the branch. The engine re-runs it itself, `gh run rerun
 (3; a re-run gets a new attempt and new job ids, so the cap holds across
 polls, and each attempt is tried once). This is the one CI write the engine
 makes on its own, a deliberate exception: everything else on GitHub is
-yours or an agent's. A job counts when it concluded `failure` or
-`cancelled` with no failing step, and its annotations say "The runner has
-received a shutdown signal", "lost communication with the server" or "The
-operation was canceled", or no step concluded at all. Never re-run: a job
+yours or an agent's. A job counts when its run concluded `failure` (a
+lost runner leaves it so), the job concluded `failure` or `cancelled` with
+no failing step, and its annotations say "The runner has received a
+shutdown signal" or "lost communication with the server", or no step
+concluded at all. A run cancelled on purpose (the Cancel button, `gh run
+cancel`, `concurrency: cancel-in-progress`) concludes `cancelled` and is
+never re-run; "The operation was canceled" alone is not a runner loss. Only
+the runs on the head (the PR's head, else the branch's) count: a run on an
+older head is ignored. Never re-run: a job
 with a failing step, a timed-out job, a run with any other real failure
 (a matrix's `fail-fast` cancels the siblings of a failing job), an eval
 (a check in `[ci] nondeterministic`, or one whose name says `eval`), a
