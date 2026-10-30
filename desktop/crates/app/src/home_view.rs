@@ -2311,19 +2311,17 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
     let sel = l.sel();
     let selected = c.selected == Some(sel.as_str());
     let expanded = forms.expanded.as_deref() == Some(sel.as_str());
-    let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
     let mut cut = false;
-    let resp = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
+    let resp = item_surface(ui, t, ("home-line", &sel), selected, |ui| {
+        ui.scope(|ui| {
+            ui.style_mut().interaction.selectable_labels = false;
             if l.done() {
                 ui.multiply_opacity(0.45);
             } else if next {
                 // The next round, not this one yet.
                 ui.multiply_opacity(0.55);
             }
-            let head = ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
                 if matches!(shown, Zone::Flight | Zone::Parked) {
@@ -2443,20 +2441,60 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     );
                 });
             }
-            if expanded {
-                details(ui, c, l, cut, forms, acts);
-            }
-            head.response
-        },
-    );
-    if selected {
-        let r = resp.response.rect;
-        ui.painter().rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, t.primary);
-    }
-    if resp.inner.interact(Sense::click()).clicked() {
+        });
+        if expanded {
+            item_details(ui, |ui| details(ui, c, l, cut, forms, acts));
+        }
+    });
+    if resp.response.clicked() {
         acts.push(Act::Select(sel.clone()));
         acts.push(Act::Toggle(sel));
     }
+}
+
+/// A Home item's whole surface (every line, padding and gaps) as one
+/// click target, under the widgets it holds: a button or a link inside
+/// takes its own click. Hover highlights the surface; selected, a bar on
+/// the left. The caller reads `clicked()` on the response.
+fn item_surface<R>(
+    ui: &mut Ui,
+    t: &Theme,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    selected: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let r = ui.scope_builder(egui::UiBuilder::new().id_salt(id).sense(Sense::click()), |ui| {
+        let fill = if selected {
+            t.select_bg
+        } else if ui.response().hovered() {
+            t.hover
+        } else {
+            Color32::TRANSPARENT
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                add(ui)
+            })
+            .inner
+    });
+    if selected {
+        let rect = r.response.rect;
+        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, t.primary);
+    }
+    let response = r.response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    egui::InnerResponse::new(r.inner, response)
+}
+
+/// An expanded item's details: a click on their empty space stays there
+/// (it does not fold the item), their widgets work as usual.
+fn item_details(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
+        ui.set_min_width(ui.available_width());
+        add(ui)
+    });
 }
 
 /// The user's gesture, as words: "label QA (others), by you 5m ago".
@@ -2541,55 +2579,41 @@ fn ghost_ui(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Ve
     let sel = l.sel();
     let selected = c.selected == Some(sel.as_str());
     let expanded = forms.expanded.as_deref() == Some(sel.as_str());
-    let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
     let mut cut = false;
-    let r = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
-            let head = ui.scope(|ui| {
-                if !selected && !expanded {
-                    ui.multiply_opacity(0.7);
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
-                    let mark = if selected {
-                        RichText::new("▸").color(t.primary)
-                    } else {
-                        RichText::new("↳").color(t.muted)
-                    };
-                    cell(ui, 10.0, mark);
-                    cell(ui, 112.0, RichText::new(l.verb()).strong().color(t.purple));
-                    priority_cell(ui, t, &l.priority);
-                    cut = name_cell(ui, name_w, &l.name);
-                    let where_ = if ghost.zone == Zone::Now { "Now" } else { "the Round" };
-                    let text = match l.top.as_ref().filter(|t| t.kind == "decision") {
-                        Some(top) => top.label.clone(),
-                        None => l.state.clone(),
-                    };
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
-                        ui.label(RichText::new(format!("under its {} in {where_}", ghost.verb)).small().color(t.muted));
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(format!("· {text}"))).truncate());
-                        });
-                    });
-                })
-            });
-            if expanded {
-                details(ui, c, l, cut, forms, acts);
+    let r = item_surface(ui, t, ("home-ghost", &sel), selected, |ui| {
+        ui.scope(|ui| {
+            ui.style_mut().interaction.selectable_labels = false;
+            if !selected && !expanded {
+                ui.multiply_opacity(0.7);
             }
-            head.response
-        },
-    );
-    if selected {
-        let rect = r.response.rect;
-        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, t.primary);
-    }
-    // The head row as a whole takes the click (its labels only show).
-    let click = ui.interact(r.inner.rect, ui.scope_id().with(("home-ghost", &sel)), Sense::click());
-    if click.on_hover_text("Its item, on its own line: Enter or a click expands it").clicked() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
+                let mark =
+                    if selected { RichText::new("▸").color(t.primary) } else { RichText::new("↳").color(t.muted) };
+                cell(ui, 10.0, mark);
+                cell(ui, 112.0, RichText::new(l.verb()).strong().color(t.purple));
+                priority_cell(ui, t, &l.priority);
+                cut = name_cell(ui, name_w, &l.name);
+                let where_ = if ghost.zone == Zone::Now { "Now" } else { "the Round" };
+                let text = match l.top.as_ref().filter(|t| t.kind == "decision") {
+                    Some(top) => top.label.clone(),
+                    None => l.state.clone(),
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
+                    ui.label(RichText::new(format!("under its {} in {where_}", ghost.verb)).small().color(t.muted));
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(format!("· {text}"))).truncate());
+                    });
+                });
+            })
+        });
+        if expanded {
+            item_details(ui, |ui| details(ui, c, l, cut, forms, acts));
+        }
+    });
+    if r.response.on_hover_text("Its item, on its own line: Enter or a click expands it").clicked() {
         acts.push(Act::Select(sel.clone()));
         acts.push(Act::Toggle(sel));
     }
