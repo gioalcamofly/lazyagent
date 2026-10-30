@@ -64,7 +64,8 @@ def test_the_gate_keys_are_read_and_checked():
                    "both": {"policy": True, "gating": True}, "bad": {"gating": "no"},
                    "plain": {"gating": True}}}, None)
     gates = {c.name: c.gate for c in part.checks}
-    assert gates == {"evals": "nongating", "labels": "policy"}
+    # R5a: an explicit gating = true is kept (it wins over branch protection).
+    assert gates == {"evals": "nongating", "labels": "policy", "plain": "gating"}
     assert any("policy check is not a merge gate" in e for e in errors)
     assert any("gating must be true or false" in e for e in errors)
 

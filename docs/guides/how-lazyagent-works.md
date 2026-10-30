@@ -459,6 +459,8 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `ci.policy_failures` | the failing policy checks (a label or process check) | set check | [ci.check] gating and policy (R4c) | per pass | free |
 | `ci.only_nongating` | CI is red, but no failing check gates the merge (each is non-gating, policy or unrelated) | bool | [ci.check] gating and policy (R4c) | per pass | free |
 | `ci.first_policy` | the first failing policy check | text | [ci.check] gating and policy (R4c) | per pass | free |
+| `ci.required_source` | where the checks that gate the merge come from: the base's protection, the default branch's (the base requires none), [ci.check] alone, or none | enum required_source (protection, default_branch, config, none) | branch protection and rulesets of the PR's base (R5a) | ≤ 6 h | extra |
+| `ci.required_checks` | the checks the PR's base requires (as the PR names them) | set check | branch protection and rulesets of the PR's base (R5a) | ≤ 6 h | extra |
 | `ci.unrelated` | CI is red only for reasons unrelated to the branch | bool | mechanism A | per pass | extra |
 | `ci.unrelated_summary` | what explains the red (empty: nothing) | text | mechanism A | per pass | free |
 | `ci.base_fixed` | the unrelated checks the base has fixed since | set check | the base's newest run in the Actions runs | ≤ actions_poll_s | extra |

@@ -51,6 +51,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from lazyagent.engine.infra_rerun import parse_infra
 from lazyagent.engine.trackers import (
     BACKOFF_MAX,
     BACKOFF_MIN,
@@ -116,6 +117,14 @@ _ANSI = re.compile(
     r"|[()][0-9A-Za-z])"
 )
 _STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
+
+
+class HttpError(TrackerError):
+    """GitHub answered with an error status (4xx, 5xx): it is up."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _gh_runner(cwd: str) -> Run:
@@ -593,7 +602,7 @@ def ci_tests_of(engine: Any, key: str) -> Any:
     hub = getattr(engine, "actions", None)
     path = engine.status.path_of(key)
     wt = engine.worktree(path) if path is not None else None
-    if hub is None or wt is None or not hub.tests.config.configured:
+    if hub is None or wt is None or not hub.tests.active:
         return None
     pr = engine.get_pr_info(path)
     hub.tests.attestations = getattr(engine, "attestations", None)
@@ -691,6 +700,16 @@ class ActionsHub:
         from lazyagent.engine.ci_tests import CiTestsHub, state_file
 
         self.tests = CiTestsHub(self, state_path=state_file(repo_root) if repo_root else None)
+        # R5a: the bases' required checks (engine/required_checks.py) and
+        # the re-runs of infrastructure failures (engine/infra_rerun.py).
+        from lazyagent.engine.infra_rerun import InfraReruns
+        from lazyagent.engine.required_checks import RequiredChecks
+
+        self.required = RequiredChecks(self)
+        self.reruns = InfraReruns(self)
+        # (run id, attempt) → the jobs that did not pass, as the infra
+        # check reads them (from the same jobs read).
+        self._infra: OrderedDict[tuple[int, int], tuple[Any, ...]] = OrderedDict()
 
     @property
     def enabled(self) -> bool:
@@ -757,7 +776,7 @@ class ActionsHub:
         if self.health is not None:
             self.health.succeeded()
         if status >= 400:
-            raise TrackerError(f"gh api {path}: HTTP {status}")
+            raise HttpError(f"gh api {path}: HTTP {status}", status)
         return status, headers, body
 
     def _failed(self, now: float, e: Exception) -> None:
@@ -780,10 +799,13 @@ class ActionsHub:
         return now - self.last_poll >= self.poll_s
 
     async def poll(self, branches: Iterable[str], *, force: bool = False,
-                   red_heads: dict[str, str] | None = None) -> bool:
+                   red_heads: dict[str, str] | None = None,
+                   bases: Iterable[str] = ()) -> bool:
         """One poll when due (``force``: now); True when what the rows read
         changed. Never two at once. ``red_heads``: branch → the head of its
-        open PR whose checks are red, read on its own (module docstring)."""
+        open PR whose checks are red, read on its own (module docstring).
+        ``bases``: the red PRs' bases, whose required checks are read
+        (engine/required_checks.py)."""
         now = self.clock()
         if red_heads is not None:
             self.red_heads = {b: s for b, s in red_heads.items() if b and s}
@@ -797,6 +819,9 @@ class ActionsHub:
         if not force and not self.due(now):
             return False
         if not self.may_call(now):
+            return False
+        if self.health is not None and not self.health.due(now):
+            # A GitHub outage: no call until the next retry.
             return False
         self._polling = True
         self.last_poll = now
@@ -823,6 +848,16 @@ class ActionsHub:
                 self._failed(self.clock(), e)
             changed |= await self._fetch_heads()
             changed |= await self._fetch_jobs()
+            config = self.tests.config
+            if config.gating_from_protection:
+                required = await self.required.fetch(bases)
+            else:
+                required = self.required.clear()
+            if required:
+                self.tests._changed()
+                changed = True
+            self.reruns.expire(self.all_runs(raw=True))
+            changed |= await self.reruns.run(self._red_runs(), config)
             if self.tests.config.configured:
                 verdicts = {}
                 for branch in sorted(self.tracked):
@@ -868,15 +903,31 @@ class ActionsHub:
                 changed = True
         return changed
 
-    def all_runs(self) -> list[WorkflowRun]:
+    def all_runs(self, raw: bool = False) -> list[WorkflowRun]:
         """The window's runs and the red heads' own, one per run id (a
-        head's read is the newer)."""
-        if not self.head_runs:
-            return self.runs
-        by_id = {r.id: r for r in self.runs}
-        for runs in self.head_runs.values():
-            by_id.update((r.id, r) for r in runs)
-        return list(by_id.values())
+        head's read is the newer). A run whose infrastructure failure the
+        engine re-ran reads as queued until its new attempt shows (not
+        ``raw``)."""
+        runs = self.runs
+        if self.head_runs:
+            by_id = {r.id: r for r in self.runs}
+            for more in self.head_runs.values():
+                by_id.update((r.id, r) for r in more)
+            runs = list(by_id.values())
+        if raw or not self.reruns.pending:
+            return runs
+        return [replace(r, status="queued", conclusion="") if self.reruns.queued(r) else r
+                for r in runs]
+
+    def _red_runs(self) -> list[tuple[str, WorkflowRun]]:
+        """(branch, run) for each fresh red run on a tracked head."""
+        out = []
+        runs = self.all_runs()
+        for branch in sorted(self.tracked):
+            v = verdict(runs, branch, self.red_heads.get(branch) or self.heads.get(branch))
+            if v is not None:
+                out += [(branch, r) for r in v.red]
+        return out
 
     async def _fetch_jobs(self) -> bool:
         """The failed jobs of each fresh red run that has none yet."""
@@ -904,10 +955,12 @@ class ActionsHub:
                 "?per_page=100"
             )
             jobs = parse_jobs(body)
+            infra = parse_infra(body)
         except (TrackerError, ValueError, OSError) as e:
             self._failed(self.clock(), e)
             return None
         _put(self._jobs, slot, jobs)
+        _put(self._infra, slot, infra)
         return jobs
 
     # --- What the rows read ---

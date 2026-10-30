@@ -240,6 +240,21 @@ def _failing_check(pr: PrInfo) -> str:
     return ""
 
 
+def required_sentence(tests: Any) -> str:
+    """Why?'s line on the gating (R5a): "Required checks (branch protection
+    of main): unit, lint; e2e red · not gating." """
+    r = tests.required
+    if r is None:
+        return "Gating from [ci.check] in the rule files."
+    where = (f"branch protection of {r.base}" if r.source == "protection"
+             else f"{r.read_from}'s branch protection; {r.base} requires none")
+    text = f"Required checks ({where}): {', '.join(r.names)}."
+    nongating = tests.nongating_failures
+    if nongating:
+        text = f"{text[:-1]}; red but not gating: {tests._names(nongating)}."
+    return text
+
+
 def repo_name(engine: Engine) -> str:
     """A work item key's repo part: the repo root's directory name."""
     return os.path.basename(engine.repo_root.rstrip("/")) if engine.repo_root else ""
@@ -776,6 +791,12 @@ class StatusProjection:
 
         # One sentence for people, above the rules' detail (the Why? view).
         out["answer"] = answer(out)
+        tests = facts.ci_tests
+        if tests is not None and tests.required_source != "none":
+            # R5a: which checks gate the merge, and where that came from.
+            out["ci_required"] = tests.required_dict()
+            if tests.red:
+                out["answer"] = f"{out['answer']} {required_sentence(tests)}"
         skipped = self._engine.autodelegate.skipped.get(key)
         if skipped:
             # The skip list (engine/autodelegate.py): why no agent got it.
@@ -1032,16 +1053,31 @@ class StatusProjection:
             pr = self._engine.get_pr_info(wt.path)
             if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
                 red_heads[wt.branch] = pr.head_sha
-        hub.tests.config = self.catalog.ci
+        hub.tests.config = config = self.catalog.ci
         hub.tests.attestations = self._engine.attestations
-        if hub.tests.config.configured:
+        bases: set[str] = set()
+        if config.configured or config.gating_from_protection:
             hub.tests.targets = {wt.branch: self._target(wt) for wt in members}
+            # The red PRs' bases: their required checks (R5a).
+            bases = {t.base for b, t in hub.tests.targets.items() if b in red_heads}
+        hub.reruns.on_rerun = self._infra_rerun
 
         async def poll() -> None:
-            if await hub.poll(branches, red_heads=red_heads):
+            if await hub.poll(branches, red_heads=red_heads, bases=bases):
                 self.mark_dirty()
 
         self._spawn(poll())
+
+    def _infra_rerun(self, branch: str, run: Any, job: Any, reason: str, attempt: int) -> None:
+        """The engine re-ran a job its runner lost (engine/infra_rerun.py):
+        on the row's timeline."""
+        wt = next((w for w in self._members() if w.branch == branch), None)
+        if wt is None:
+            return
+        self._engine.overlay.add(work_item_key(repo_name(self._engine), wt), "ci", "engine",
+                                 f"re-ran {job.name} ({reason}), attempt {attempt}",
+                                 ref=job.url or run.html_url)
+        self.mark_dirty()
 
     def _target(self, wt: Any) -> Any:
         """What mechanism A compares a branch with: its open PR's base
@@ -1681,7 +1717,7 @@ class StatusProjection:
         requests = list(hub.requests) if known else []
         out = []
         hub = getattr(engine, "actions", None)
-        tests = hub.tests if hub is not None and hub.tests.config.configured else None
+        tests = hub.tests if hub is not None and hub.tests.active else None
         if tests is not None:
             tests.attestations = engine.attestations
         for wt in self._members():
