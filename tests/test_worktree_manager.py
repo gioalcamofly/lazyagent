@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 
 from lazyagent.models import GitStatus, WorktreeInfo
-from lazyagent.worktree_manager import GithubRepo, WorktreeManager, WorktreeManagerError
+from lazyagent.worktree_manager import (
+    GhCallError,
+    GithubRepo,
+    WorktreeManager,
+    WorktreeManagerError,
+)
 
 
 SAMPLE_PORCELAIN = """\
@@ -603,23 +608,51 @@ class TestGetPrInfo:
         assert result is None
 
 
-class TestIsGhAvailable:
-    def test_true_when_authenticated(self):
-        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
-            assert WorktreeManager.is_gh_available() is True
+class TestStrictGhCalls:
+    """``strict``: gh failing is not "no PR" nor "not on GitHub"."""
 
-    def test_false_on_os_error(self):
-        with patch(
-            "lazyagent.worktree_manager.subprocess.run",
-            side_effect=OSError("not found"),
-        ):
-            assert WorktreeManager.is_gh_available() is False
+    @staticmethod
+    def _gh(code: int, stderr: str):
+        return patch("lazyagent.worktree_manager.subprocess.run",
+                     return_value=subprocess.CompletedProcess([], code, "", stderr))
 
-    def test_false_on_auth_failure(self):
-        with patch("lazyagent.worktree_manager.subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 1
-            assert WorktreeManager.is_gh_available() is False
+    def test_no_pr_is_none(self):
+        with self._gh(1, 'no pull requests found for branch "feat"'):
+            assert WorktreeManager.get_pr_info("/p", strict=True) is None
+
+    def test_a_network_error_raises(self):
+        with self._gh(1, "error connecting to api.github.com"), \
+                pytest.raises(GhCallError, match="error connecting"):
+            WorktreeManager.get_pr_info("/p", strict=True)
+        with self._gh(1, "error connecting to api.github.com"):
+            assert WorktreeManager.get_pr_info("/p") is None
+
+    def test_a_timeout_raises_and_a_missing_gh_says_so(self):
+        with patch("lazyagent.worktree_manager.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("gh", 10)), pytest.raises(GhCallError):
+            WorktreeManager.get_pr_info("/p", strict=True)
+        with patch("lazyagent.worktree_manager.subprocess.run",
+                   side_effect=FileNotFoundError("gh")), pytest.raises(GhCallError) as e:
+            WorktreeManager.get_pr_info("/p", strict=True)
+        assert e.value.missing
+
+    def test_repo_view(self, tmp_path):
+        manager = WorktreeManager.__new__(WorktreeManager)
+        manager.repo_path = tmp_path
+        with self._gh(1, "none of the git remotes configured for this repository point to a known GitHub host"):
+            assert manager.get_github_repo(strict=True) is None
+        with self._gh(1, "HTTP 401: Bad credentials"), pytest.raises(GhCallError):
+            manager.get_github_repo(strict=True)
+
+
+class TestIsGhInstalled:
+    def test_true_when_on_path(self):
+        with patch("lazyagent.worktree_manager.shutil.which", return_value="/bin/gh"):
+            assert WorktreeManager.is_gh_installed() is True
+
+    def test_false_when_missing(self):
+        with patch("lazyagent.worktree_manager.shutil.which", return_value=None):
+            assert WorktreeManager.is_gh_installed() is False
 
 
 class TestGetDiffCaps:

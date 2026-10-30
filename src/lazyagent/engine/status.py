@@ -134,6 +134,9 @@ class Facts:
     worktree_path: str | None
     agents: tuple[AgentFact, ...] = ()
     pr: PrInfo | None = None
+    # False while GitHub fails and the PR poller never answered for this
+    # worktree: a None pr is then unknown, not "no PR".
+    pr_known: bool = True
     commit_time: float | None = None
     restorable: int = 0
     note: dict[str, Any] | None = None
@@ -990,14 +993,16 @@ class StatusProjection:
 
     def _poll_review_requests(self) -> None:
         """Search the review requests when due, at the PR poller's cadence,
-        once it has found ``gh`` working and the repo it resolves against."""
+        once it has resolved the repo; while GitHub fails, at its backoff
+        (github_health.py)."""
         hub = getattr(self._engine, "review_requests", None)
         service = self._engine.worktree_service
-        if hub is None or service._gh_available is not True:
+        if hub is None or not service.github.due():
             return
         repo = service.github_repo
         if repo is None:
             return
+        hub.health = service.github
 
         async def poll() -> None:
             if await hub.poll(repo.owner, repo.name):
@@ -1008,13 +1013,15 @@ class StatusProjection:
     def _poll_actions(self) -> None:
         """Poll GitHub Actions when due (a new branch at once): the
         members' branches but the merge targets, one poll at a time, once
-        the PR poller has found ``gh`` working."""
+        GitHub answers (while it fails, at its backoff: github_health.py)."""
         hub = getattr(self._engine, "actions", None)
         if hub is None or not hub.enabled:
             return
-        if self._engine.worktree_service._gh_available is not True:
-            # The PR poller finds out whether gh works (its first tick).
+        health = self._engine.worktree_service.github
+        if health.installed_flag is None or not health.due():
+            # The PR poller finds out whether gh is installed (its first tick).
             return
+        hub.health = health
         targets = set(self.merge_targets()) | {"main", "master"}
         members = [wt for wt in self._members() if wt.branch and wt.branch not in targets]
         branches = [wt.branch for wt in members]
@@ -1201,6 +1208,7 @@ class StatusProjection:
         result["counts"].update(responder.counts(now))
         result["presence"] = responder.presence.to_dict(now)
         result["orchestrator"] = responder.report()
+        result["github"] = self._engine.worktree_service.github.to_dict()
         result["generated_at"] = now
         return result
 
@@ -1326,6 +1334,7 @@ class StatusProjection:
             stale = (
                 not facts.agents
                 and facts.pr is None
+                and facts.pr_known
                 and not facts.restorable
                 and now - changed_at > config.stale_days * 86400
             )
@@ -1463,7 +1472,7 @@ class StatusProjection:
         hub = getattr(self._engine, "review_requests", None)
         if hub is None or not hub.enabled or hub.known or hub.error is not None:
             return False
-        return self._engine.worktree_service._gh_available is not False
+        return self._engine.worktree_service.github.available
 
     def _branches(self) -> set[str]:
         """Every local branch: the worktrees' and every for-each-ref one."""
@@ -1699,6 +1708,7 @@ class StatusProjection:
                     worktree_path=wt.path,
                     agents=agents,
                     pr=pr,
+                    pr_known=pr is not None or engine.pr_known(wt.path),
                     commit_time=self._commit_times.get(branch) if branch
                     else self._head_times.get(head or ""),
                     restorable=restorable.get(wt.path, 0),

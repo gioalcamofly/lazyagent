@@ -246,6 +246,9 @@ class ReviewRequestHub:
         self.backoff = 0.0
         self.backoff_until = 0.0
         self.calls: deque[float] = deque()
+        # The shared GitHub state (github_health.py) each call reports to;
+        # the status projection sets it.
+        self.health: Any = None
         self._polling = False
         self._viewer_tried = False
 
@@ -276,11 +279,17 @@ class ReviewRequestHub:
         try:
             code, out, err = await asyncio.wait_for(self.run(args), CALL_TIMEOUT)
         except asyncio.TimeoutError as e:
+            if self.health is not None:
+                self.health.failed("gh api graphql timed out", now)
             raise TrackerError("gh api graphql timed out") from e
         if code != 0:
             if _rate_limited(err) or _rate_limited(out):
                 raise RateLimited((err or out).strip()[:200])
+            if self.health is not None:
+                self.health.failed(err.strip() or f"gh api graphql: {code}", now)
             raise TrackerError(f"gh api graphql failed: {err.strip() or code}")
+        if self.health is not None:
+            self.health.succeeded()
         return out
 
     def _failed(self, now: float, e: Exception) -> None:
@@ -292,7 +301,9 @@ class ReviewRequestHub:
             )
             self.backoff_until = now + self.backoff
         if message != self.error:
-            log.warning("review requests: %s", message)
+            # An outage is logged once, by the shared state.
+            outage = self.health is not None and not self.health.available
+            log.log(logging.DEBUG if outage else logging.WARNING, "review requests: %s", message)
         self.error, self.error_at = message, now
 
     async def poll(self, owner: str, name: str, *, force: bool = False) -> bool:

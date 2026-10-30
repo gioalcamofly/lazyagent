@@ -49,6 +49,7 @@ from lazyagent.engine.events import (
     ENGINE_NOTICE,
     ENGINE_RESTORED,
     ENGINE_SHUTDOWN,
+    GITHUB_UPDATED,
     JOB_FINISHED,
     JOB_OUTPUT,
     JOB_STARTED,
@@ -290,6 +291,7 @@ class Engine:
             find_root=find_root or (lambda: find_repo_root()),
         )
         self.worktree_service.subscribe(self._on_worktree_event)
+        self.worktree_service.github.on_change = self._github_changed
         # Work items (proposal 0013): kept current from the events above,
         # with the inbox queue they read.
         self.actionables = ActionableQueue(self)
@@ -704,8 +706,18 @@ class Engine:
         yet; see :meth:`has_pr_info`)."""
         return self.worktree_service.pr_info(path)
 
+    def _github_changed(self) -> None:
+        """GitHub stopped answering or answers again: clients hear it, and
+        the rows read pr.exists again (unknown during an outage)."""
+        self.events.emit(GITHUB_UPDATED, self.worktree_service.github.to_dict())
+        self.status.mark_dirty()
+
     def has_pr_info(self, path: str) -> bool:
         return self.worktree_service.has_pr_info(path)
+
+    def pr_known(self, path: str) -> bool:
+        """See :meth:`WorktreeService.pr_known`."""
+        return self.worktree_service.pr_known(path)
 
     async def refresh_pr_info(self, paths: Collection[str]) -> None:
         await self.worktree_service.refresh_pr_info(paths)

@@ -116,7 +116,7 @@ class DummyWorktreeManager:
         return PrDiff("", f"diff for {worktree_path}", "")
 
     @staticmethod
-    def is_gh_available() -> bool:
+    def is_gh_installed() -> bool:
         return False
 
 

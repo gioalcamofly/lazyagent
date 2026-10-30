@@ -16,6 +16,10 @@ protocol events they become:
 - ``pr_info.updated``: ``data`` is ``{"path": str, "pr_info": PrInfo | None}``,
   only when a worktree's PR info changed (or was fetched for the first time).
 
+A PR round that ``gh`` cannot answer (offline, logged out) changes nothing:
+the last PR info stays, and :attr:`WorktreeService.github` spaces the next
+attempts out (engine/github_health.py).
+
 All git/gh subprocesses run in ``asyncio.to_thread``; the caches and the
 subscriber calls stay on the loop that drives the service.
 """
@@ -34,8 +38,10 @@ from typing import Any
 
 from lazyagent import diagnostics as diag
 from lazyagent.engine.base_merges import BaseMerges
+from lazyagent.engine.github_health import GithubHealth
 from lazyagent.models import GitStatus, PrInfo, WorktreeInfo
 from lazyagent.worktree_manager import (
+    GhCallError,
     GithubRepo,
     WorktreeManager,
     WorktreeManagerError,
@@ -128,7 +134,9 @@ class WorktreeService:
         self._pr_in_flight: set[str] = set()
         # Set when the fetch a path is in flight with ends.
         self._pr_done: dict[str, asyncio.Event] = {}
-        self._gh_available: bool | None = None
+        # Whether GitHub answers (shared with the Actions and review
+        # requests polls): a failed round keeps the last PR data.
+        self.github = GithubHealth(clock=lambda: self.clock())
         self._github_repo: Any = _UNRESOLVED
 
     # --- Subscriptions ---
@@ -400,6 +408,13 @@ class WorktreeService:
     def pr_info(self, path: str) -> PrInfo | None:
         return self._pr_infos.get(path)
 
+    def pr_known(self, path: str) -> bool:
+        """Whether ``path``'s PR info (or its absence) can be read: not while
+        GitHub fails and the poller never answered for it (a startup
+        outage), when "no info" is not "no PR". Without gh at all, absent
+        info reads as no PR, as it always did."""
+        return path in self._pr_infos or not self.github.failures
+
     async def ensure_pr_info(self, path: str, *, refresh: bool = False) -> PrInfo | None:
         """``path``'s PR info, fetched when not cached yet (or ``refresh``).
         A fetch already in flight is waited for, not doubled."""
@@ -428,13 +443,15 @@ class WorktreeService:
         done = asyncio.Event()
         for path in claimed:
             self._pr_done[path] = done
+        health = self.github
+        started = self.clock()
+        error: GhCallError | None = None
         try:
-            if self._gh_available is None:
-                with diag.timed(log, "worker.gh_auth_status"):
-                    self._gh_available = await asyncio.to_thread(
-                        self._manager_cls().is_gh_available
-                    )
-            if not self._gh_available:
+            if health.installed_flag is None:
+                health.set_installed(await asyncio.to_thread(self._manager_cls().is_gh_installed))
+            if not health.due(started):
+                # Gh missing, or an outage's next retry has not come: the
+                # last PR data stays.
                 return
 
             fields: dict[str, Any] = {"worktrees": len(targets)}
@@ -444,12 +461,14 @@ class WorktreeService:
                 with _PR_STATUS_GAUGE as in_flight:
                     span["in_flight"] = in_flight
                     span["peak_in_flight"] = _PR_STATUS_GAUGE.peak
-                    infos, batched = await asyncio.to_thread(
+                    infos, batched, error = await asyncio.to_thread(
                         self._fetch_pr_infos, repo_root, targets, self.wants_review()
                     )
                     infos = await asyncio.to_thread(self._after_ready, repo_root, infos)
                 span["batched"] = batched
                 span["found"] = sum(info is not None for info in infos.values())
+                if error is not None:
+                    span["error"] = str(error)
         finally:
             self._pr_in_flight -= claimed
             # Waiters run at the next await, after the cache is updated below.
@@ -458,6 +477,13 @@ class WorktreeService:
                 if self._pr_done.get(path) is done:
                     del self._pr_done[path]
 
+        if error is None:
+            health.pr_round_ok(self.clock())
+        elif error.missing:
+            health.set_installed(False)
+        else:
+            # What did not answer keeps its last info (and its age shows).
+            health.failed(str(error), started)
         live = {wt.path for wt in self.worktrees}
         for path, info in infos.items():
             if path not in live:
@@ -519,12 +545,17 @@ class WorktreeService:
 
     def _fetch_pr_infos(
         self, repo_root: str, targets: list[WorktreeInfo], review: bool = False,
-    ) -> tuple[dict[str, PrInfo | None], int]:
+    ) -> tuple[dict[str, PrInfo | None], int, GhCallError | None]:
         """Batched lookup first, then ``gh pr view`` for whatever it did not
-        answer. Returns the infos and how many came from the batch."""
+        answer. Returns the infos, how many came from the batch, and the
+        error that stopped the round when gh could not answer (the infos
+        then hold only what was answered before it)."""
         manager = self._manager(repo_root)
         results: dict[str, PrInfo | None] = {}
-        repo = self._resolve_github_repo(manager)
+        try:
+            repo = self._resolve_github_repo(manager)
+        except GhCallError as e:
+            return results, 0, e
         if repo is not None:
             try:
                 results = manager.get_pr_infos(targets, repo, review=review)
@@ -534,8 +565,11 @@ class WorktreeService:
         batched = len(results)
         for wt in targets:
             if wt.path not in results:
-                results[wt.path] = manager.get_pr_info(wt.path)
-        return results, batched
+                try:
+                    results[wt.path] = manager.get_pr_info(wt.path, strict=True)
+                except GhCallError as e:
+                    return results, batched, e
+        return results, batched, None
 
     @property
     def github_repo(self) -> GithubRepo | None:
@@ -546,7 +580,8 @@ class WorktreeService:
 
     def _resolve_github_repo(self, manager: WorktreeManager) -> GithubRepo | None:
         if self._github_repo is _UNRESOLVED:
-            self._github_repo = manager.get_github_repo()
+            # A GhCallError leaves it unresolved: the next round asks again.
+            self._github_repo = manager.get_github_repo(strict=True)
         return self._github_repo
 
     # --- Pollers ---

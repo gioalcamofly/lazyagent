@@ -29,8 +29,8 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, InboxConfig, Presence, ReviewCommit,
-    ReviewCommits, RulesProblem, StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
+    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, GithubHealth, InboxConfig, Presence,
+    ReviewCommit, ReviewCommits, RulesProblem, StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -1483,6 +1483,24 @@ pub fn rules_problem_text(p: &RulesProblem) -> String {
 
 /// Home's line while the rule files have errors (`rules.errors`): how many,
 /// and the first one named by its rule, file and line.
+/// Home's line while GitHub does not answer (`status_list.github`): since
+/// when, and when the PR data the rows still show was fetched. None while
+/// it answers.
+pub fn github_line(g: Option<&GithubHealth>, offset: i64) -> Option<String> {
+    let g = g.filter(|g| !g.available)?;
+    if g.installed == Some(false) {
+        return Some("GitHub: gh is not installed (no PR, CI or review data)".into());
+    }
+    let mut text = match g.since {
+        Some(s) => format!("GitHub unavailable since {}", home::hhmm(s, offset)),
+        None => "GitHub unavailable".to_string(),
+    };
+    if let Some(at) = g.pr_data_at {
+        text.push_str(&format!(" · PR data from {}", home::hhmm(at, offset)));
+    }
+    Some(text)
+}
+
 pub fn rules_error_line(errors: &[RulesProblem]) -> Option<String> {
     let first = errors.first()?;
     let n = errors.len();
@@ -1767,6 +1785,8 @@ impl App {
         let selected_line = selected.as_ref().and_then(|k| s.home.get(k)).cloned();
         let rules_line = rules_error_line(&s.rules_errors);
         let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
+        let github = github_line(s.github.as_ref(), home::local_offset(now));
+        let github_why = s.github.as_ref().and_then(|g| g.error.clone()).unwrap_or_default();
         let presence = s.presence.clone();
         let orchestrator = s.orchestrator.clone();
         let actions = s.orchestrator_actions.clone();
@@ -1794,6 +1814,11 @@ impl App {
         });
         egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(CONTENT_MAX));
+            if let Some(text) = &github {
+                // gh's error on hover; the rows keep their last PR data.
+                ui.add(egui::Label::new(RichText::new(text).color(t.yellow)).truncate())
+                    .on_hover_text(format!("{github_why}\nRetrying with backoff (at most every 10 minutes)."));
+            }
             if let Some(text) = &rules_line {
                 // Under the top bar while a rule file has errors; each one in
                 // full on hover (the page that lists them is R6's).

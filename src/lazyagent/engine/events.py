@@ -45,6 +45,7 @@ JOB_OUTPUT = "job.output"
 JOB_FINISHED = "job.finished"
 UI_COMMAND = "ui.command"
 UI_VIEW_CHANGED = "ui.view_changed"
+GITHUB_UPDATED = "github.updated"
 
 _DEFAULT_LOG_MAXLEN = 1000
 

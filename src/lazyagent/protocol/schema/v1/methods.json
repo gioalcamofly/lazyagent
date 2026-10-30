@@ -1086,6 +1086,7 @@
           }
         },
         "presence": {"$ref": "#/$defs/presence"},
+        "github": {"$ref": "#/$defs/github_health"},
         "orchestrator": {
           "type": "object",
           "description": "The orchestrator as Home shows it (feature orchestrator_activity).",
@@ -1622,6 +1623,19 @@
       "properties": {"decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}, "description": "Newest first."}}
     },
 
+    "github_health": {
+      "type": "object",
+      "description": "Whether GitHub answers (feature github_health). While gh fails, the PR, Actions and review request polls retry 1, 2, 4, 8, then every 10 minutes, and keep their last data.",
+      "required": ["available"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "installed": {"type": "boolean", "description": "False: gh is not installed (found once). Absent: installed or not checked yet."},
+        "since": {"type": ["number", "null"], "description": "When the outage began (the first failed call)."},
+        "error": {"type": ["string", "null"], "description": "gh's last error, on one line, shortened."},
+        "retry_at": {"type": "number", "description": "When the polls try again."},
+        "pr_data_at": {"type": "number", "description": "When a PR poll last answered: the age of the PR data rows show."}
+      }
+    },
     "presence": {
       "type": "object",
       "description": "Whether the user is around (feature first_responder): mode is the override (auto follows input reports); no UI connected is away.",

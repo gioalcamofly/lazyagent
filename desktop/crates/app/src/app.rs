@@ -197,6 +197,8 @@ pub struct State {
     pub orchestrator_actions: Option<Vec<lazyagent_proto::types::OrchestratorAction>>,
     /// The rule files' errors (feature `rules`): Home's error line.
     pub rules_errors: Vec<lazyagent_proto::types::RulesProblem>,
+    /// Whether GitHub answers (`status_list.github`, `github.updated`).
+    pub github: Option<lazyagent_proto::types::GithubHealth>,
     /// "How lazyagent works" (R6): where it goes back to, its filters, the
     /// engine's catalog.
     pub guide: crate::how_it_works::Guide,
@@ -314,6 +316,7 @@ impl State {
             orchestrator: None,
             orchestrator_actions: None,
             rules_errors: vec![],
+            github: None,
             guide: Default::default(),
             why: None,
             undo: None,
@@ -697,6 +700,7 @@ impl State {
                 s.status_counts = list.counts;
                 s.presence = list.presence;
                 s.orchestrator = list.orchestrator;
+                s.github = list.github;
                 s.status_rows = list.rows.into_iter().map(|r| (r.key.clone(), r)).collect();
                 s.inbox_gen += 1;
                 s.inbox_loaded |= 1;
@@ -831,6 +835,7 @@ impl State {
                 s.status_counts = list.counts;
                 s.presence = list.presence;
                 s.orchestrator = list.orchestrator;
+                s.github = list.github;
             }
         });
     }
@@ -1179,6 +1184,7 @@ impl State {
             }
             EngineEvent::DecisionExplain(r) => self.on_explain(r.explain),
             EngineEvent::RulesErrors(r) => self.rules_errors = r.errors,
+            EngineEvent::GithubUpdated(g) => self.github = Some(g),
             EngineEvent::DecisionCreated(d) | EngineEvent::DecisionResolved(d) => {
                 self.decisions.insert(d.decision.id.clone(), d.decision);
                 self.inbox_gen += 1;

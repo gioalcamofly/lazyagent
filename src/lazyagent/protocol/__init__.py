@@ -193,6 +193,7 @@ EVENTS: tuple[str, ...] = (
     "decision.resolved",
     "rules.changed",
     "rules.errors",
+    "github.updated",
     "ui.command",
     "ui.view_changed",
 )

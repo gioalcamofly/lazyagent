@@ -5566,6 +5566,44 @@ fn home_names_a_broken_rule_by_its_file_and_line() {
 }
 
 #[test]
+fn github_line_says_since_when_and_how_old_the_pr_data_is() {
+    use crate::home_view::github_line;
+    use lazyagent_proto::types::GithubHealth;
+    assert_eq!(github_line(None, 0), None);
+    let up = GithubHealth { available: true, pr_data_at: Some(3600.0), ..Default::default() };
+    assert_eq!(github_line(Some(&up), 0), None);
+    // 09:12 and 09:05 UTC; an hour east, 10:12.
+    let down = GithubHealth { since: Some(33_120.0), pr_data_at: Some(32_700.0), ..Default::default() };
+    assert_eq!(github_line(Some(&down), 0).unwrap(), "GitHub unavailable since 09:12 · PR data from 09:05");
+    assert_eq!(github_line(Some(&down), 3600).unwrap(), "GitHub unavailable since 10:12 · PR data from 10:05");
+    let first = GithubHealth { since: Some(33_120.0), ..Default::default() };
+    assert_eq!(github_line(Some(&first), 0).unwrap(), "GitHub unavailable since 09:12");
+    let missing = GithubHealth { installed: Some(false), ..Default::default() };
+    assert!(github_line(Some(&missing), 0).unwrap().contains("not installed"));
+}
+
+#[test]
+fn home_shows_github_unavailable_until_it_answers_again() {
+    let (app, tx) = engine_home(I4E);
+    let mut h = harness(app);
+    let _calls = fake_engine(&h, |_, _| None);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("GitHub unavailable").is_none());
+    tx.send(event(
+        "github.updated",
+        json!({"available": false, "since": 1000.0, "error": "error connecting to api.github.com",
+               "retry_at": 1060.0, "pr_data_at": 940.0}),
+    ))
+    .unwrap();
+    h.run_steps(3);
+    h.get_by_label_contains("GitHub unavailable since");
+    assert!(h.query_by_label_contains("PR data from").is_some());
+    tx.send(event("github.updated", json!({"available": true, "pr_data_at": 1100.0}))).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("GitHub unavailable").is_none());
+}
+
+#[test]
 fn without_the_rules_feature_home_does_not_ask() {
     let (app, _tx) = engine_home(I4E);
     let h = harness(app);

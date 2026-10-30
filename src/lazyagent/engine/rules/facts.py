@@ -188,7 +188,7 @@ def _pr_enum(attr: str, table: dict[str, str]) -> Getter:
 def _row_pr_state(c: RowContext) -> Any:
     pr = c.facts.pr
     if pr is None:
-        return "none"
+        return "none" if c.facts.pr_known else UNKNOWN
     return _PR_STATES.get(pr.state, UNKNOWN)
 
 
@@ -227,6 +227,11 @@ def _owner_approved_sha(c: RowContext) -> Any:
         return UNKNOWN
     approval = c.facts.owner_approval
     return approval.sha if approval is not None else ""
+
+
+def _exists(pr: Any, known: bool) -> Any:
+    """Unknown while GitHub fails and the poller never answered here."""
+    return True if pr is not None else (False if known else UNKNOWN)
 
 
 def _mine(pr: Any, me: str | None) -> Any:
@@ -432,7 +437,7 @@ def _item_pr_enum(attr: str, table: dict[str, str]) -> Getter:
 def _item_pr_state(c: ItemContext) -> Any:
     pr = c.place.pr
     if pr is None:
-        return "none"
+        return "none" if c.place.pr_known else UNKNOWN
     return _PR_STATES.get(pr.state.upper(), UNKNOWN)
 
 
@@ -689,7 +694,8 @@ _fact("agent.reported", BOOL, "the agent's report says where the ball is (it wor
       item=lambda c: c.agent is not None and c.place.reported == c.agent.agent_id)
 
 _fact("pr.exists", BOOL, "there is a PR", _PRP, "≤ 60 s", "poll",
-      row=lambda c: c.facts.pr is not None, item=lambda c: c.place.pr is not None)
+      row=lambda c: _exists(c.facts.pr, c.facts.pr_known),
+      item=lambda c: _exists(c.place.pr, c.place.pr_known))
 _fact("pr.state", PR_STATE, "the PR's state", _PRP, "≤ 60 s", "poll",
       row=_row_pr_state, item=_item_pr_state)
 _fact("pr.review", PR_REVIEW, "the PR's review decision", _PRP, "≤ 60 s", "poll",
