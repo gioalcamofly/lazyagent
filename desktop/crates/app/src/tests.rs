@@ -5682,3 +5682,6 @@ mod i4j;
 // The Diff view wraps long lines and hides its file list; the sidebar
 // collapses on every screen.
 mod d2;
+
+// H1: a Home item opens on a click anywhere on its surface.
+mod h1;
