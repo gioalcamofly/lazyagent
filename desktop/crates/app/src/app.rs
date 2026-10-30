@@ -213,6 +213,9 @@ pub struct State {
     home_changed: HashMap<String, (String, f64)>,
     /// Lines that changed after this carry a dot (the last look).
     pub look_from: f64,
+    /// Home's item layout: a temporary dev-only switch for the H2 proposals
+    /// (`LAZYAGENT_HOME_ITEM_STYLE`), the current one by default.
+    pub home_item_style: crate::home_view::ItemStyle,
     pub pr_panel: bool,
     /// Worktree → whether `get_pr_info` could fetch (false: no gh).
     pub pr_fetched: HashMap<String, bool>,
@@ -322,6 +325,7 @@ impl State {
             home_key: (false, u64::MAX, u64::MAX),
             home_changed: HashMap::new(),
             look_from,
+            home_item_style: crate::home_view::ItemStyle::from_env(),
             pr_panel: false,
             pr_fetched: HashMap::new(),
             pending_g: None,

@@ -39,6 +39,9 @@ use crate::home::{self, LABEL_BALLS, LABEL_CHARS, Label, Line, Zone};
 use crate::store;
 use crate::theme::Theme;
 
+mod proposals;
+pub use proposals::ItemStyle;
+
 /// Park until…: a time from now, or an event the engine watches.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Park {
@@ -1755,6 +1758,7 @@ impl App {
             close_stop: s.has(F_CLOSE_STOP),
             why: s.has("rules"),
             restorable: s.restorable.iter().map(|r| r.worktree_path.clone()).collect(),
+            style: s.home_item_style,
         };
         let keys_ctx = KeysCtx {
             approvals: ctx.approvals,
@@ -1804,6 +1808,10 @@ impl App {
                 orchestrator_strip(ui, &ctx, presence.as_ref(), counts, orchestrator.as_ref(), actions.as_deref(), strip_open, &mut acts);
             }
             let zone = |ui: &mut Ui, z: Zone, forms: &mut Forms, acts: &mut Vec<Act>| {
+                if z == Zone::Flight && ctx.style == ItemStyle::ByBall {
+                    proposals::by_ball(ui, &ctx, &lines[z as usize], forms, acts);
+                    return;
+                }
                 let mut group: Option<&str> = None;
                 for (i, l) in lines[z as usize].iter().enumerate() {
                     // In flight is grouped by project (home::group_by_project).
@@ -1821,6 +1829,9 @@ impl App {
                     line_ui(ui, &ctx, l, z, false, forms, acts);
                 }
             };
+            if ctx.style == ItemStyle::Grid {
+                proposals::grid_header(ui, &ctx);
+            }
             if !lines[0].is_empty() {
                 zone_header(ui, &t, lines[0].len(), "Now", t.yellow, |_| {});
                 zone(ui, Zone::Now, &mut forms_out, &mut acts);
@@ -2132,6 +2143,8 @@ struct LineCtx<'a> {
     why: bool,
     /// The worktrees with a restorable agent: "Restore agent and delegate".
     restorable: std::collections::HashSet<String>,
+    /// The item layout (H2 proposals; `Current` by default).
+    style: ItemStyle,
 }
 
 /// "Presence: auto (present)": the toggle, as one menu.
@@ -2306,6 +2319,22 @@ fn ci_chip(ui: &mut Ui, t: &Theme, l: &Line) {
     r.on_hover_text(note);
 }
 
+/// What an inbox line says after its verb: "approve: npm test" after
+/// "Approve" is the fact alone.
+fn inbox_text(c: &LineCtx, l: &Line) -> String {
+    if l.looking() && c.first_responder {
+        "orchestrator · looking".to_string()
+    } else if let Some(top) = l.top.as_ref().filter(|t| t.kind == "decision") {
+        // A brief's question (or "agent a2 asks: …") reads better than its state.
+        top.label.clone()
+    } else if let Some(ci) = l.top.as_ref().and_then(|t| t.ci_text()) {
+        // The red workflow and its failed job (feature actions).
+        ci
+    } else {
+        humanize(l.state.split_once(": ").map(|(_, rest)| rest).unwrap_or(&l.state))
+    }
+}
+
 fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &mut Forms, acts: &mut Vec<Act>) {
     let t = c.t;
     let sel = l.sel();
@@ -2322,6 +2351,13 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
             } else if next {
                 // The next round, not this one yet.
                 ui.multiply_opacity(0.55);
+            }
+            if c.style != ItemStyle::Current {
+                let head = proposals::head(ui, c, l, shown, selected, next, &mut cut);
+                if expanded {
+                    details(ui, c, l, cut, forms, acts);
+                }
+                return head;
             }
             let head = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -2356,18 +2392,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     cell(ui, 112.0, RichText::new(l.verb()).strong().color(color));
                     priority_cell(ui, t, &l.priority);
                     cut = name_cell(ui, name_w, &l.name);
-                    // "approve: npm test" after "Approve": the fact alone.
-                    let text = if l.looking() && c.first_responder {
-                        "orchestrator · looking".to_string()
-                    } else if let Some(top) = l.top.as_ref().filter(|t| t.kind == "decision") {
-                        // A brief's question (or "agent a2 asks: …") reads better than its state.
-                        top.label.clone()
-                    } else if let Some(ci) = l.top.as_ref().and_then(|t| t.ci_text()) {
-                        // The red workflow and its failed job (feature actions).
-                        ci
-                    } else {
-                        humanize(l.state.split_once(": ").map(|(_, rest)| rest).unwrap_or(&l.state))
-                    };
+                    let text = inbox_text(c, l);
                     let age = c.now - l.top.as_ref().map(|t| t.since).unwrap_or(l.changed_at);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(home::age(age)).small().color(t.muted));

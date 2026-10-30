@@ -5644,3 +5644,6 @@ mod i4j;
 // The Diff view wraps long lines and hides its file list; the sidebar
 // collapses on every screen.
 mod d2;
+
+// H2: Home item layout proposals, one sample in every style.
+mod h2;
