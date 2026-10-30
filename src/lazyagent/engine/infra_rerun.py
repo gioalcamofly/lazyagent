@@ -8,10 +8,14 @@ nothing about the branch, and re-running it is what anyone would do. It is
 bounded and switchable: ``[ci] rerun_infra = false`` turns it off, ``[ci]
 rerun_infra_max_attempts`` (3) caps it.
 
-**What counts as infrastructure.** A job of a red run that concluded
+**What counts as infrastructure.** A job of a run that concluded
+``failure`` (runner loss leaves the run ``failure``), the job itself
 ``failure`` or ``cancelled`` with **no failing step**, and either one of
 :data:`MARKERS` in its annotations (``check-runs/<job id>/annotations``,
-read only for such a job) or no step that concluded at all. A job that
+read only for such a job) or no step that concluded at all. "The operation
+was canceled" is not a marker: it is what a deliberate cancel leaves (the
+Cancel button, ``gh run cancel``, ``concurrency: cancel-in-progress``), and
+a run cancelled so concludes ``cancelled``: never re-run. A job that
 timed out is not one (a hang may be the branch's). A run with any other
 failing job is left alone: its red is real either way, and a re-run would
 only hide it for a while (a matrix's ``fail-fast`` cancels the siblings of a
@@ -54,7 +58,6 @@ log = logging.getLogger(__name__)
 MARKERS: tuple[tuple[str, str], ...] = (
     ("the runner has received a shutdown signal", "runner shut down"),
     ("lost communication with the server", "runner lost"),
-    ("the operation was canceled", "cancelled, no step failed"),
 )
 NO_STEP = "no step ran"
 DEFAULT_MAX_ATTEMPTS = 3
@@ -185,6 +188,10 @@ class InfraReruns:
         issued = False
         reads = 0
         for branch, run in red:
+            if run.conclusion != "failure":
+                # A cancelled run was cancelled on purpose; a timeout is
+                # not the runner's.
+                continue
             if run.attempt >= config.rerun_infra_max_attempts or run.id in self.pending:
                 continue
             jobs = self.hub._infra.get((run.id, run.attempt))

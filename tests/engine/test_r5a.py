@@ -324,7 +324,8 @@ SHUTDOWN = "The runner has received a shutdown signal. This can happen when ..."
 @pytest.mark.parametrize("messages, reason", [
     ([SHUTDOWN], "runner shut down"),
     ([LOST], "runner lost"),
-    (["The operation was canceled."], "cancelled, no step failed"),
+    # What a deliberate cancel leaves: not a runner loss.
+    (["The operation was canceled."], None),
     ([], None),
 ])
 def test_the_markers(messages, reason):
@@ -515,3 +516,59 @@ def test_the_readmes_r5a_example_loads_as_written():
     config = merge_parts([("global", part)])
     assert (config.gating_from_protection, config.rerun_infra,
             config.rerun_infra_max_attempts) == (True, True, 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["manual", "concurrency"])
+async def test_a_cancelled_run_is_never_re_run(event):
+    # A person (Cancel, gh run cancel) or concurrency: cancel-in-progress
+    # cancelled it: the run concludes cancelled, its job too, with "The
+    # operation was canceled." and no failing step.
+    gh = FakeGh([run_json(11, "feat", HEAD, path=WF, event="pull_request",
+                          conclusion="cancelled")])
+    steps = (("Set up job", "success"), ("Run pytest", "cancelled")) if event == "manual" else ()
+    gh.jobs[11] = infra_jobs((501, JOB, "cancelled", steps))
+    gh.annotations[501] = ["The operation was canceled."]
+    clock = Clock()
+    hub = _hub(gh, clock)
+    await _hub_poll(hub, clock)
+    assert hub.verdict("feat").state == "green"  # a cancelled run is not red
+    # Even handed to the re-run with its jobs read, the run's conclusion stops it.
+    import json
+
+    hub._infra[(11, 1)] = parse_infra(json.dumps(gh.jobs[11]))
+    assert await hub.reruns.run([("feat", hub.find_run(11))], hub.tests.config) is False
+    assert gh.rerun_calls() == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_job_in_a_failed_run_needs_a_runner_loss_marker():
+    gh = _infra_gh()
+    gh.jobs[11] = infra_jobs((501, JOB, "cancelled", (("Set up job", "success"),
+                                                      ("Run pytest", "cancelled"))))
+    gh.annotations[501] = ["The operation was canceled."]
+    clock = Clock()
+    hub = _hub(gh, clock)
+    await _hub_poll(hub, clock)
+    assert gh.rerun_calls() == []
+    # The same job with a shutdown signal is the runner's.
+    gh2 = _infra_gh()
+    gh2.jobs[11] = gh.jobs[11]
+    gh2.annotations[501] = ["The operation was canceled.", SHUTDOWN]
+    hub2 = _hub(gh2, clock)
+    await _hub_poll(hub2, clock)
+    assert gh2.rerun_calls() == [["run", "rerun", "--job", "501"]]
+
+
+@pytest.mark.asyncio
+async def test_a_runner_lost_run_on_an_older_head_is_ignored():
+    old = "f" * 40
+    gh = FakeGh([run_json(12, "feat", HEAD, path=WF, event="pull_request", conclusion="success",
+                          created="2026-10-24T11:00:00Z"),
+                 run_json(11, "feat", old, path=WF, event="pull_request")])
+    gh.jobs[11] = infra_jobs((501, JOB, "failure", (("Run pytest", None),)))
+    gh.annotations[501] = [LOST]
+    clock = Clock()
+    hub = _hub(gh, clock)
+    await _hub_poll(hub, clock)
+    assert gh.rerun_calls() == []
