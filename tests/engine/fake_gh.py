@@ -43,6 +43,18 @@ def jobs_json(*failed: tuple[str, str], passed: tuple[str, ...] = ("lint",)) -> 
     return {"total_count": len(jobs), "jobs": jobs}
 
 
+def infra_jobs(*jobs: tuple[int, str, str, tuple[tuple[str, str | None], ...]],
+               passed: tuple[str, ...] = ("lint",)) -> dict[str, Any]:
+    """A jobs response with ids: (id, name, conclusion, ((step,
+    conclusion), ...)) per job that did not pass."""
+    out = [{"id": jid, "name": name, "conclusion": conclusion,
+            "html_url": f"https://github.com/o/r/job/{jid}",
+            "steps": [{"name": n, "conclusion": c} for n, c in steps]}
+           for jid, name, conclusion, steps in jobs]
+    out += [{"name": name, "conclusion": "success", "steps": []} for name in passed]
+    return {"total_count": len(out), "jobs": out}
+
+
 def http(status: int, body: Any = "", headers: dict[str, str] | None = None) -> tuple[int, str, str]:
     """``gh api -i`` output: exit code, stdout (status line, headers, body),
     stderr. A 304 exits 1 with ``gh: HTTP 304`` on stderr, as gh does."""
@@ -83,6 +95,15 @@ class FakeGh:
         # run id → the run (``actions/runs/<id>``), for runs not in the
         # window.
         self.run_details: dict[int, dict[str, Any]] = {}
+        # R5a: branch → its required checks (``branches/<b>``; an int: that
+        # HTTP error, 404 for a branch not listed), branch → its rulesets'
+        # required contexts, the repo's default branch, job id → its
+        # annotations' messages, and the ``gh run rerun`` calls' exit code.
+        self.protection: dict[str, list[str] | int] = {}
+        self.rulesets: dict[str, list[str]] = {}
+        self.default_branch: str | None = "main"
+        self.annotations: dict[int, list[str]] = {}
+        self.rerun_code = 0
 
     def set_runs(self, runs: list[dict[str, Any]], etag: str) -> None:
         self.runs, self.etag = runs, etag
@@ -91,6 +112,13 @@ class FakeGh:
         """The repo's window calls (not a head's own)."""
         return [c for c in self.calls
                 if any("actions/runs?" in a and "head_sha=" not in a for a in c)]
+
+    def rerun_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:2] == ["run", "rerun"]]
+
+    def required_calls(self) -> list[list[str]]:
+        return [c for c in self.calls
+                if any("/branches/" in a or a == "repos/{owner}/{repo}" for a in c)]
 
     def head_calls(self) -> list[list[str]]:
         return [c for c in self.calls if any("head_sha=" in a for a in c)]
@@ -107,7 +135,28 @@ class FakeGh:
             if log is None:
                 return 1, "", "failed to get run log: not found"
             return 0, log, ""
+        if args[:2] == ["run", "rerun"]:
+            return self.rerun_code, "", "" if self.rerun_code == 0 else "gh: run is not done"
         path = args[-1]
+        if path == "repos/{owner}/{repo}":
+            if self.default_branch is None:
+                return http(404, {"message": "Not Found"})
+            return http(200, {"default_branch": self.default_branch})
+        if path.startswith("repos/{owner}/{repo}/rules/branches/"):
+            branch = path.split("/rules/branches/", 1)[1]
+            return http(200, [{"type": "required_status_checks", "parameters": {
+                "required_status_checks": [{"context": c} for c in self.rulesets.get(branch, [])]}}])
+        if path.startswith("repos/{owner}/{repo}/branches/"):
+            branch = path.split("/branches/", 1)[1]
+            got = self.protection.get(branch, 404)
+            if isinstance(got, int):
+                return http(got, {"message": "error"})
+            return http(200, {"name": branch, "protected": bool(got), "protection": {
+                "enabled": bool(got), "required_status_checks": {
+                    "contexts": got[:1], "checks": [{"context": c} for c in got[1:]]}}})
+        if "/check-runs/" in path and "/annotations" in path:
+            job_id = int(path.split("/check-runs/")[1].split("/")[0])
+            return http(200, [{"message": m} for m in self.annotations.get(job_id, [])])
         if "head_sha=" in path:
             sha = path.split("head_sha=")[1].split("&")[0]
             runs = self.head_runs.get(sha, [])

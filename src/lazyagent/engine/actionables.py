@@ -917,7 +917,7 @@ class ActionableQueue:
         requests = list(requests_hub.requests) if known else []
         hub = getattr(engine, "actions", None)
         tests = getattr(hub, "tests", None)
-        if tests is not None and not tests.config.configured:
+        if tests is not None and not tests.active:
             tests = None
         if tests is not None:
             tests.attestations = getattr(engine, "attestations", None)

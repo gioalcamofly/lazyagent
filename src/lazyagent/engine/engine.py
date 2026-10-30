@@ -703,8 +703,16 @@ class Engine:
 
     def get_pr_info(self, path: str) -> PrInfo | None:
         """The cached PR info of a worktree (``None`` also when not fetched
-        yet; see :meth:`has_pr_info`)."""
-        return self.worktree_service.pr_info(path)
+        yet; see :meth:`has_pr_info`). A job the engine re-ran for an
+        infrastructure failure reads as queued until GitHub shows the new
+        attempt (engine/infra_rerun.py)."""
+        pr = self.worktree_service.pr_info(path)
+        hub = getattr(self, "actions", None)
+        if pr is None or hub is None or not hub.reruns.pending:
+            return pr
+        from lazyagent.engine.infra_rerun import queued_checks
+
+        return queued_checks(pr, hub.reruns.checks())
 
     def _github_changed(self) -> None:
         """GitHub stopped answering or answers again: clients hear it, and

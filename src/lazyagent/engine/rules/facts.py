@@ -73,6 +73,7 @@ LABELS = open_set("label")
 # Check ids (``<workflow file>/<job>``) and test ids, lower case.
 CHECKS = open_set("check")
 TESTS = open_set("test")
+REQUIRED_SOURCE = enum("required_source", ("protection", "default_branch", "config", "none"))
 GESTURE_KIND = enum("gesture_kind", ("label", "park", "close", "none"))
 
 _PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
@@ -540,6 +541,19 @@ def _first_policy(c: Any) -> Any:
     return UNKNOWN if first is None else first
 
 
+def _required_source(c: Any) -> Any:
+    """R5a: where the gating comes from (branch protection, the default
+    branch's, [ci.check] alone, none)."""
+    t = _tests_of(c)
+    return "none" if t is None else t.required_source
+
+
+def _required_checks(c: Any) -> Any:
+    t = _tests_of(c)
+    required = t.required if t is not None else None
+    return frozenset() if required is None else frozenset(n.lower() for n in required.names)
+
+
 def _unrelated(c: Any) -> Any:
     t = _tests_of(c)
     if t is None:
@@ -787,6 +801,13 @@ _fact("ci.only_nongating", BOOL,
       _GT, "per pass", "free", row=_only_nongating, item=_only_nongating)
 _fact("ci.first_policy", TEXT, "the first failing policy check", _GT, "per pass", "free",
       row=_first_policy, item=_first_policy)
+_RQ5 = "branch protection and rulesets of the PR's base (R5a)"
+_fact("ci.required_source", REQUIRED_SOURCE,
+      "where the checks that gate the merge come from: the base's protection, the default "
+      "branch's (the base requires none), [ci.check] alone, or none",
+      _RQ5, "≤ 6 h", "extra", row=_required_source, item=_required_source)
+_fact("ci.required_checks", CHECKS, "the checks the PR's base requires (as the PR names them)",
+      _RQ5, "≤ 6 h", "extra", row=_required_checks, item=_required_checks)
 _fact("ci.unrelated", BOOL, "CI is red only for reasons unrelated to the branch",
       "mechanism A", "per pass", "extra", row=_unrelated, item=_unrelated)
 _fact("ci.unrelated_summary", TEXT, "what explains the red (empty: nothing)", "mechanism A",
