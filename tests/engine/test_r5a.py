@@ -442,7 +442,7 @@ async def test_evals_and_policy_checks_are_never_re_run(job, workflow, rules):
 
 
 def _tables(text: str):
-    import tomllib
+    from lazyagent.config import tomllib
 
     data = tomllib.loads(text)
     return data.get("ci"), data.get("ci_unrelated")
@@ -503,9 +503,9 @@ async def test_on_the_row_a_re_run_reads_as_running_with_no_ci_item_and_a_timeli
 
 def test_the_readmes_r5a_example_loads_as_written():
     import re
-    import tomllib
     from pathlib import Path
 
+    from lazyagent.config import tomllib
     from lazyagent.engine.ci_tests import merge_parts
 
     readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
