@@ -553,9 +553,10 @@ def test_the_readme_examples_do_what_the_readme_says():
     # The third, the owner/peer review recipe: tests/engine/rules/test_review_facts.py;
     # the fourth, [review] generated_paths, the sixth, gating and policy:
     # tests/engine/test_r4c.py; the fifth, [ci.check] and [ci_unrelated]:
-    # tests/engine/test_ci_tests.py; the seventh, [ci] nondeterministic and
-    # attestations: tests/engine/test_attest.py.
-    assert len(blocks) == 7
+    # tests/engine/test_ci_tests.py; the seventh, [ci] gating_from_protection
+    # and rerun_infra: tests/engine/test_r5a.py; the eighth, [ci]
+    # nondeterministic and attestations: tests/engine/test_attest.py.
+    assert len(blocks) == 8
     cat, errors, warnings = catalog_of(("global", blocks[0]))
     assert errors == [] and warnings == []
     assert cat.by_id["merge"].origin == "global"

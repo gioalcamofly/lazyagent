@@ -875,6 +875,63 @@ policy or unrelated). A merge rule then reads `(ci.state in ["green",
 | `[ci] nondeterministic` | Fix CI, until an attestation explains it | yes, to investigate and attest |
 | `[inbox] auto_delegate_skip_checks` | Fix CI | no: it stays yours |
 
+**Which checks gate: branch protection.** You need not keep the gating list
+by hand: GitHub already knows which checks a merge requires. For each red
+PR's base, the engine reads the base's protection (`gh api
+repos/{owner}/{repo}/branches/<base>`: `required_status_checks`, which a
+user with read access may read, unlike `.../protection`) and its rulesets
+(`.../rules/branches/<base>`, rule `required_status_checks`). A base that
+requires nothing (a project branch, typically) borrows the default
+branch's set, since that is where the code lands. Then a red check that is
+not required, **while every required check has passed** on the head, counts
+as non-gating, as if its table said `gating = false`; until then (a
+required check still running or missing), every red gates. Names are
+matched as the PR's checks name them: the job name with its matrix values
+(`unit-tests (3.12)`), `<workflow> / <job>`, or a commit status's context,
+without case.
+
+- An explicit `[ci.check."<name>"] gating = true` or `false` always wins
+  over the derived set; `policy = true` stays yours alone.
+- Each set is cached per branch for 6 hours, read only while a PR on that
+  base is red (two calls; three more the first time a base borrows the
+  default branch's), through the Actions hub's caps and only while GitHub
+  answers.
+- When the protection cannot be read (GitHub refuses, or has not answered
+  yet), nothing changes: every red gates unless your tables say otherwise.
+- The fact `ci.required_source` says where the gating came from:
+  `protection`, `default_branch`, `config` (your `[ci.check]` tables alone)
+  or `none`; `ci.required_checks` is the set. Why? (`w`, `lazyagent status
+  --why`, `rules_explain`'s `ci_required`) lists the required checks and
+  their source: `Required checks (branch protection of main): build, lint;
+  red but not gating: eval-suite.`
+
+**Infrastructure failures: re-run by the engine.** A job whose runner went
+away (a spot runner reclaimed, a host that lost its connection) says
+nothing about the branch. The engine re-runs it itself, `gh run rerun
+--job <id>`, while the run's attempt is below `rerun_infra_max_attempts`
+(3; a re-run gets a new attempt and new job ids, so the cap holds across
+polls, and each attempt is tried once). This is the one CI write the engine
+makes on its own, a deliberate exception: everything else on GitHub is
+yours or an agent's. A job counts when it concluded `failure` or
+`cancelled` with no failing step, and its annotations say "The runner has
+received a shutdown signal", "lost communication with the server" or "The
+operation was canceled", or no step concluded at all. Never re-run: a job
+with a failing step, a timed-out job, a run with any other real failure
+(a matrix's `fail-fast` cancels the siblings of a failing job), an eval
+(a check in `[ci] nondeterministic`, or one whose name says `eval`), a
+`policy = true` check. While the re-run is pending, the row's CI reads
+running, not red, so no Fix CI and no auto-delegation for that red; the
+timeline says `re-ran unit-tests (3.12) (runner lost), attempt 2`, and the
+engine's log says it at INFO.
+
+```toml
+# rules.toml (global or repo)
+[ci]
+gating_from_protection = true    # default; false: only your [ci.check] tables decide
+rerun_infra = true               # default; false: the engine never re-runs a job
+rerun_infra_max_attempts = 3     # default (1 to 10): no re-run once the run reaches this attempt
+```
+
 When every failing check is unrelated, Fix CI clears and the row carries
 `CI red · unrelated (base also red: 2 tests)` (`status_list {fields:
 ["ci_note"]}`; the CLI and MCP tables add it to the state). If the base's
@@ -944,6 +1001,8 @@ min_base_runs = 8                          # a check's own keys win over [ci]'s
 | `[ci] nondeterministic` | Check names (job, job without matrix values, or `<workflow file>/<job>`; `*` and `?` work) whose red may be attested |
 | `[ci] accept_attestation_for` | The checks an accepted attestation takes out of `ci.related_failures` |
 | `[ci] attestation_ttl` | `"72h"` (default), `"3d"`, or seconds |
+| `[ci] gating_from_protection` | `true` (default): a red check the base's protection (or rulesets, or the default branch's) does not require does not gate once every required check passed; see "Which checks gate" above |
+| `[ci] rerun_infra`, `rerun_infra_max_attempts` | `true`, `3` (defaults): the engine re-runs a job whose runner was lost; see "Infrastructure failures" above |
 | `min_base_runs`, `min_repetitions`, `max_drop` | In `[ci]` or per check: base runs cited (5), runs on the head (3), how far below the base's lowest pass rate the branch's lowest may be (0.05) |
 | `[ci.check."<name>"] confirm` | `"user"` (default) or `"none"`; an attestation whose method is not `range` always asks you |
 
