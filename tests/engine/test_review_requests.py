@@ -49,7 +49,7 @@ def _engine(gh: FakeSearch, *worktrees, config: Config | None = None):
     engine.status.clock = clock
     engine.actionables.clock = clock
     engine.review_requests = ReviewRequestHub("/tmp/repo", run=gh, clock=clock)
-    engine.worktree_service._gh_available = True
+    engine.worktree_service.github.set_installed(True)
     engine.worktree_service._github_repo = GithubRepo("o", "r")
     return engine, clock
 
@@ -451,12 +451,13 @@ async def test_never_two_polls_at_once():
 
 
 @pytest.mark.asyncio
-async def test_no_poll_until_gh_works_and_the_repo_is_known():
+async def test_no_poll_while_github_fails_nor_until_the_repo_is_known():
     gh = FakeSearch([_asked()])
     engine, _ = _engine(gh)
-    engine.worktree_service._gh_available = None
+    health = engine.worktree_service.github
+    health.failed("could not resolve host")
     await _pass(engine)
-    engine.worktree_service._gh_available = True
+    health.succeeded()
     engine.worktree_service._github_repo = None
     await _pass(engine)
     assert gh.calls == [] and KEY not in _rows(engine)

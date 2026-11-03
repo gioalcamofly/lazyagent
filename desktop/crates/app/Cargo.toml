@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 lazyagent-proto = { path = "../proto" }
 lazyagent-term = { path = "../term" }
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ab_glyph = "0.2"

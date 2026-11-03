@@ -246,7 +246,7 @@ async def test_the_projection_reads_a_red_prs_head_and_its_log_summary_names_bot
     hub = _hub(gh, clock=clock)
     engine.actions = hub
     engine.worktree_service._pr_infos[FEAT] = _red_pr()
-    engine.worktree_service._gh_available = True
+    engine.worktree_service.github.set_installed(True)
     engine.status._poll_actions()
     await engine.wait_idle()
     [item] = [i for i in engine.actionables.list()["items"] if i["kind"] == "ci"]

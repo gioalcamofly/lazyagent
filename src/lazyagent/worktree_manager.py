@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -361,6 +362,31 @@ def _format_size(num_bytes: int) -> str:
 
 class WorktreeManagerError(Exception):
     """Raised when worktree operations fail."""
+
+
+class GhCallError(WorktreeManagerError):
+    """``gh`` could not answer (network, auth, not installed): not the same
+    as "no PR" or "not a GitHub repo"."""
+
+    def __init__(self, message: str, *, missing: bool = False) -> None:
+        super().__init__(message)
+        self.missing = missing
+
+
+# What gh says when the answer is a known absence, not a failure.
+_NO_PR = ("no pull requests found", "no open pull requests")
+_NOT_GITHUB = ("none of the git remotes", "no git remotes", "not a git repository")
+
+
+def _says(stderr: str, phrases: tuple[str, ...]) -> bool:
+    text = (stderr or "").lower()
+    return any(p in text for p in phrases)
+
+
+def _gh_error(e: Exception) -> GhCallError:
+    if isinstance(e, FileNotFoundError):
+        return GhCallError("gh is not installed", missing=True)
+    return GhCallError(f"gh: {e}")
 
 
 class WorktreeManager:
@@ -992,8 +1018,12 @@ class WorktreeManager:
             f"{_PR_FIELDS}"
         )
 
-    def get_github_repo(self) -> GithubRepo | None:
-        """The repository ``gh pr view`` resolves against, via ``gh repo view``."""
+    def get_github_repo(self, *, strict: bool = False) -> GithubRepo | None:
+        """The repository ``gh pr view`` resolves against, via ``gh repo view``.
+
+        ``strict``: raises :class:`GhCallError` when gh could not answer;
+        None then only means the repo is not on GitHub.
+        """
         try:
             result = _run(
                 ["gh", "repo", "view", "--json", "owner,name"],
@@ -1002,11 +1032,18 @@ class WorktreeManager:
                 cwd=self.repo_path,
                 timeout=10,
             )
-            if result.returncode != 0:
-                return None
+        except (subprocess.TimeoutExpired, OSError) as e:
+            if strict:
+                raise _gh_error(e) from e
+            return None
+        if result.returncode != 0:
+            if strict and not _says(result.stderr, _NOT_GITHUB):
+                raise GhCallError(result.stderr.strip() or f"gh repo view: {result.returncode}")
+            return None
+        try:
             data = json.loads(result.stdout)
             return GithubRepo(owner=data["owner"]["login"], name=data["name"])
-        except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError):
             return None
 
     def pr_head_refs(
@@ -1111,8 +1148,12 @@ class WorktreeManager:
         return result
 
     @staticmethod
-    def get_pr_info(worktree_path: str | Path) -> PrInfo | None:
-        """Get PR info for a worktree via ``gh pr view``."""
+    def get_pr_info(worktree_path: str | Path, *, strict: bool = False) -> PrInfo | None:
+        """Get PR info for a worktree via ``gh pr view``.
+
+        ``strict``: raises :class:`GhCallError` when gh could not answer;
+        None then only means the branch has no PR.
+        """
         try:
             result = _run(
                 [
@@ -1127,24 +1168,19 @@ class WorktreeManager:
                 timeout=10,
             )
             if result.returncode != 0:
+                if strict and not _says(result.stderr, _NO_PR + _NOT_GITHUB):
+                    raise GhCallError(result.stderr.strip() or f"gh pr view: {result.returncode}")
                 return None
             return WorktreeManager._parse_pr_info(result.stdout)
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError) as e:
+            if strict:
+                raise _gh_error(e) from e
             return None
 
     @staticmethod
-    def is_gh_available() -> bool:
-        """Check if ``gh`` CLI is installed and authenticated."""
-        try:
-            result = _run(
-                ["gh", "auth", "status"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
+    def is_gh_installed() -> bool:
+        """Whether the ``gh`` CLI is on PATH (logged in or not)."""
+        return shutil.which("gh") is not None
 
 
 def find_repo_root(start_path: str | Path | None = None) -> Path:

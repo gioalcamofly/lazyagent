@@ -166,7 +166,7 @@ async def test_owner_approve_records_the_agents_pr_head_and_refuses_the_orchestr
     from lazyagent.models import PrInfo
 
     feat = engine.feat
-    engine.worktree_service._gh_available = False
+    engine.worktree_service.github.set_installed(False)
     engine.worktree_service._pr_infos[feat] = PrInfo(7, "Feat", "OPEN", [], head_sha="a" * 40,
                                                      base_ref="main")
     worker = await engine.spawn_agent(feat)

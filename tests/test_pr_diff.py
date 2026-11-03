@@ -141,7 +141,7 @@ class TestBaseRefs:
 def _service(repo: Path) -> WorktreeService:
     service = WorktreeService(find_root=lambda: repo)
     service.rescan()
-    service._gh_available = False  # never the real gh
+    service.github.set_installed(False)  # never the real gh
     return service
 
 
@@ -227,12 +227,12 @@ class TestResolvedBase:
 
     async def test_waits_for_a_pr_lookup_in_flight(self, repo, monkeypatch):
         service = _service(repo)
-        service._gh_available = True
+        service.github.set_installed(True)
         calls = []
 
         def fetch(root, targets, review=False):
             calls.append([wt.path for wt in targets])
-            return {str(repo): _pr("feature-a")}, 0
+            return {str(repo): _pr("feature-a")}, 0, None
 
         monkeypatch.setattr(service, "_fetch_pr_infos", fetch)
         import asyncio

@@ -65,7 +65,7 @@ class DummyWorktreeManager:
         return PrDiff("", "", "")
 
     @staticmethod
-    def is_gh_available():
+    def is_gh_installed():
         return False
 
 

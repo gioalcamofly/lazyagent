@@ -134,6 +134,9 @@ class Facts:
     worktree_path: str | None
     agents: tuple[AgentFact, ...] = ()
     pr: PrInfo | None = None
+    # False while GitHub fails and the PR poller never answered for this
+    # worktree: a None pr is then unknown, not "no PR".
+    pr_known: bool = True
     commit_time: float | None = None
     restorable: int = 0
     note: dict[str, Any] | None = None
@@ -235,6 +238,21 @@ def _failing_check(pr: PrInfo) -> str:
         if check.conclusion.upper() == "FAILURE":
             return check.name
     return ""
+
+
+def required_sentence(tests: Any) -> str:
+    """Why?'s line on the gating (R5a): "Required checks (branch protection
+    of main): unit, lint; e2e red · not gating." """
+    r = tests.required
+    if r is None:
+        return "Gating from [ci.check] in the rule files."
+    where = (f"branch protection of {r.base}" if r.source == "protection"
+             else f"{r.read_from}'s branch protection; {r.base} requires none")
+    text = f"Required checks ({where}): {', '.join(r.names)}."
+    nongating = tests.nongating_failures
+    if nongating:
+        text = f"{text[:-1]}; red but not gating: {tests._names(nongating)}."
+    return text
 
 
 def repo_name(engine: Engine) -> str:
@@ -773,6 +791,12 @@ class StatusProjection:
 
         # One sentence for people, above the rules' detail (the Why? view).
         out["answer"] = answer(out)
+        tests = facts.ci_tests
+        if tests is not None and tests.required_source != "none":
+            # R5a: which checks gate the merge, and where that came from.
+            out["ci_required"] = tests.required_dict()
+            if tests.red:
+                out["answer"] = f"{out['answer']} {required_sentence(tests)}"
         skipped = self._engine.autodelegate.skipped.get(key)
         if skipped:
             # The skip list (engine/autodelegate.py): why no agent got it.
@@ -990,14 +1014,16 @@ class StatusProjection:
 
     def _poll_review_requests(self) -> None:
         """Search the review requests when due, at the PR poller's cadence,
-        once it has found ``gh`` working and the repo it resolves against."""
+        once it has resolved the repo; while GitHub fails, at its backoff
+        (github_health.py)."""
         hub = getattr(self._engine, "review_requests", None)
         service = self._engine.worktree_service
-        if hub is None or service._gh_available is not True:
+        if hub is None or not service.github.due():
             return
         repo = service.github_repo
         if repo is None:
             return
+        hub.health = service.github
 
         async def poll() -> None:
             if await hub.poll(repo.owner, repo.name):
@@ -1008,13 +1034,15 @@ class StatusProjection:
     def _poll_actions(self) -> None:
         """Poll GitHub Actions when due (a new branch at once): the
         members' branches but the merge targets, one poll at a time, once
-        the PR poller has found ``gh`` working."""
+        GitHub answers (while it fails, at its backoff: github_health.py)."""
         hub = getattr(self._engine, "actions", None)
         if hub is None or not hub.enabled:
             return
-        if self._engine.worktree_service._gh_available is not True:
-            # The PR poller finds out whether gh works (its first tick).
+        health = self._engine.worktree_service.github
+        if health.installed_flag is None or not health.due():
+            # The PR poller finds out whether gh is installed (its first tick).
             return
+        hub.health = health
         targets = set(self.merge_targets()) | {"main", "master"}
         members = [wt for wt in self._members() if wt.branch and wt.branch not in targets]
         branches = [wt.branch for wt in members]
@@ -1025,16 +1053,31 @@ class StatusProjection:
             pr = self._engine.get_pr_info(wt.path)
             if pr is not None and pr.state.upper() == "OPEN" and pr.head_sha and ci_state(pr) == "red":
                 red_heads[wt.branch] = pr.head_sha
-        hub.tests.config = self.catalog.ci
+        hub.tests.config = config = self.catalog.ci
         hub.tests.attestations = self._engine.attestations
-        if hub.tests.config.configured:
+        bases: set[str] = set()
+        if config.configured or config.gating_from_protection:
             hub.tests.targets = {wt.branch: self._target(wt) for wt in members}
+            # The red PRs' bases: their required checks (R5a).
+            bases = {t.base for b, t in hub.tests.targets.items() if b in red_heads}
+        hub.reruns.on_rerun = self._infra_rerun
 
         async def poll() -> None:
-            if await hub.poll(branches, red_heads=red_heads):
+            if await hub.poll(branches, red_heads=red_heads, bases=bases):
                 self.mark_dirty()
 
         self._spawn(poll())
+
+    def _infra_rerun(self, branch: str, run: Any, job: Any, reason: str, attempt: int) -> None:
+        """The engine re-ran a job its runner lost (engine/infra_rerun.py):
+        on the row's timeline."""
+        wt = next((w for w in self._members() if w.branch == branch), None)
+        if wt is None:
+            return
+        self._engine.overlay.add(work_item_key(repo_name(self._engine), wt), "ci", "engine",
+                                 f"re-ran {job.name} ({reason}), attempt {attempt}",
+                                 ref=job.url or run.html_url)
+        self.mark_dirty()
 
     def _target(self, wt: Any) -> Any:
         """What mechanism A compares a branch with: its open PR's base
@@ -1201,6 +1244,7 @@ class StatusProjection:
         result["counts"].update(responder.counts(now))
         result["presence"] = responder.presence.to_dict(now)
         result["orchestrator"] = responder.report()
+        result["github"] = self._engine.worktree_service.github.to_dict()
         result["generated_at"] = now
         return result
 
@@ -1326,6 +1370,7 @@ class StatusProjection:
             stale = (
                 not facts.agents
                 and facts.pr is None
+                and facts.pr_known
                 and not facts.restorable
                 and now - changed_at > config.stale_days * 86400
             )
@@ -1463,7 +1508,7 @@ class StatusProjection:
         hub = getattr(self._engine, "review_requests", None)
         if hub is None or not hub.enabled or hub.known or hub.error is not None:
             return False
-        return self._engine.worktree_service._gh_available is not False
+        return self._engine.worktree_service.github.available
 
     def _branches(self) -> set[str]:
         """Every local branch: the worktrees' and every for-each-ref one."""
@@ -1672,7 +1717,7 @@ class StatusProjection:
         requests = list(hub.requests) if known else []
         out = []
         hub = getattr(engine, "actions", None)
-        tests = hub.tests if hub is not None and hub.tests.config.configured else None
+        tests = hub.tests if hub is not None and hub.tests.active else None
         if tests is not None:
             tests.attestations = engine.attestations
         for wt in self._members():
@@ -1699,6 +1744,7 @@ class StatusProjection:
                     worktree_path=wt.path,
                     agents=agents,
                     pr=pr,
+                    pr_known=pr is not None or engine.pr_known(wt.path),
                     commit_time=self._commit_times.get(branch) if branch
                     else self._head_times.get(head or ""),
                     restorable=restorable.get(wt.path, 0),

@@ -1385,6 +1385,37 @@
   },
   {
    "cost": "extra",
+   "freshness": "≤ 6 h",
+   "name": "ci.required_source",
+   "phrase": "where the checks that gate the merge come from: the base's protection, the default branch's (the base requires none), [ci.check] alone, or none",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "branch protection and rulesets of the PR's base (R5a)",
+   "type": "enum required_source",
+   "values": [
+    "protection",
+    "default_branch",
+    "config",
+    "none"
+   ]
+  },
+  {
+   "cost": "extra",
+   "freshness": "≤ 6 h",
+   "name": "ci.required_checks",
+   "phrase": "the checks the PR's base requires (as the PR names them)",
+   "scopes": [
+    "row",
+    "item"
+   ],
+   "source": "branch protection and rulesets of the PR's base (R5a)",
+   "type": "set check",
+   "values": []
+  },
+  {
+   "cost": "extra",
    "freshness": "per pass",
    "name": "ci.unrelated",
    "phrase": "CI is red only for reasons unrelated to the branch",

@@ -29,8 +29,8 @@
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Ui, Vec2};
 use lazyagent_proto::types::{
-    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, InboxConfig, Presence, ReviewCommit,
-    ReviewCommits, RulesProblem, StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
+    Actionable, ActionableResult, Attestation, CiLogSummary, Decision, Delegation, GithubHealth, InboxConfig, Presence,
+    ReviewCommit, ReviewCommits, RulesProblem, StatusGestureResult, StatusRow, StatusTimeline, TimelineEntry,
 };
 use serde_json::{Value, json};
 
@@ -1486,6 +1486,24 @@ pub fn rules_problem_text(p: &RulesProblem) -> String {
 
 /// Home's line while the rule files have errors (`rules.errors`): how many,
 /// and the first one named by its rule, file and line.
+/// Home's line while GitHub does not answer (`status_list.github`): since
+/// when, and when the PR data the rows still show was fetched. None while
+/// it answers.
+pub fn github_line(g: Option<&GithubHealth>, offset: i64) -> Option<String> {
+    let g = g.filter(|g| !g.available)?;
+    if g.installed == Some(false) {
+        return Some("GitHub: gh is not installed (no PR, CI or review data)".into());
+    }
+    let mut text = match g.since {
+        Some(s) => format!("GitHub unavailable since {}", home::hhmm(s, offset)),
+        None => "GitHub unavailable".to_string(),
+    };
+    if let Some(at) = g.pr_data_at {
+        text.push_str(&format!(" · PR data from {}", home::hhmm(at, offset)));
+    }
+    Some(text)
+}
+
 pub fn rules_error_line(errors: &[RulesProblem]) -> Option<String> {
     let first = errors.first()?;
     let n = errors.len();
@@ -1771,6 +1789,8 @@ impl App {
         let selected_line = selected.as_ref().and_then(|k| s.home.get(k)).cloned();
         let rules_line = rules_error_line(&s.rules_errors);
         let rules_all: Vec<String> = s.rules_errors.iter().map(rules_problem_text).collect();
+        let github = github_line(s.github.as_ref(), home::local_offset(now));
+        let github_why = s.github.as_ref().and_then(|g| g.error.clone()).unwrap_or_default();
         let presence = s.presence.clone();
         let orchestrator = s.orchestrator.clone();
         let actions = s.orchestrator_actions.clone();
@@ -1798,6 +1818,11 @@ impl App {
         });
         egui::ScrollArea::vertical().id_salt("home").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(CONTENT_MAX));
+            if let Some(text) = &github {
+                // gh's error on hover; the rows keep their last PR data.
+                ui.add(egui::Label::new(RichText::new(text).color(t.yellow)).truncate())
+                    .on_hover_text(format!("{github_why}\nRetrying with backoff (at most every 10 minutes)."));
+            }
             if let Some(text) = &rules_line {
                 // Under the top bar while a rule file has errors; each one in
                 // full on hover (the page that lists them is R6's).
@@ -2340,12 +2365,10 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
     let sel = l.sel();
     let selected = c.selected == Some(sel.as_str());
     let expanded = forms.expanded.as_deref() == Some(sel.as_str());
-    let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
     let mut cut = false;
-    let resp = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
+    let resp = item_surface(ui, t, ("home-line", &sel), selected, |ui| {
+        ui.scope(|ui| {
+            ui.style_mut().interaction.selectable_labels = false;
             if l.done() {
                 ui.multiply_opacity(0.45);
             } else if next {
@@ -2353,13 +2376,10 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                 ui.multiply_opacity(0.55);
             }
             if c.style != ItemStyle::Current {
-                let head = proposals::head(ui, c, l, shown, selected, next, &mut cut);
-                if expanded {
-                    details(ui, c, l, cut, forms, acts);
-                }
-                return head;
+                proposals::head(ui, c, l, shown, selected, next, &mut cut);
+                return;
             }
-            let head = ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
                 if matches!(shown, Zone::Flight | Zone::Parked) {
@@ -2468,20 +2488,60 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
                     );
                 });
             }
-            if expanded {
-                details(ui, c, l, cut, forms, acts);
-            }
-            head.response
-        },
-    );
-    if selected {
-        let r = resp.response.rect;
-        ui.painter().rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(3.0, r.height())), 0.0, t.primary);
-    }
-    if resp.inner.interact(Sense::click()).clicked() {
+        });
+        if expanded {
+            item_details(ui, |ui| details(ui, c, l, cut, forms, acts));
+        }
+    });
+    if resp.response.clicked() {
         acts.push(Act::Select(sel.clone()));
         acts.push(Act::Toggle(sel));
     }
+}
+
+/// A Home item's whole surface (every line, padding and gaps) as one
+/// click target, under the widgets it holds: a button or a link inside
+/// takes its own click. Hover highlights the surface; selected, a bar on
+/// the left. The caller reads `clicked()` on the response.
+fn item_surface<R>(
+    ui: &mut Ui,
+    t: &Theme,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    selected: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let r = ui.scope_builder(egui::UiBuilder::new().id_salt(id).sense(Sense::click()), |ui| {
+        let fill = if selected {
+            t.select_bg
+        } else if ui.response().hovered() {
+            t.hover
+        } else {
+            Color32::TRANSPARENT
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                add(ui)
+            })
+            .inner
+    });
+    if selected {
+        let rect = r.response.rect;
+        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, t.primary);
+    }
+    let response = r.response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    egui::InnerResponse::new(r.inner, response)
+}
+
+/// An expanded item's details: a click on their empty space stays there
+/// (it does not fold the item), their widgets work as usual.
+fn item_details(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
+        ui.set_min_width(ui.available_width());
+        add(ui)
+    });
 }
 
 /// The user's gesture, as words: "label QA (others), by you 5m ago".
@@ -2566,55 +2626,41 @@ fn ghost_ui(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Ve
     let sel = l.sel();
     let selected = c.selected == Some(sel.as_str());
     let expanded = forms.expanded.as_deref() == Some(sel.as_str());
-    let fill = if selected { t.select_bg } else { Color32::TRANSPARENT };
     let mut cut = false;
-    let r = egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
-            let head = ui.scope(|ui| {
-                if !selected && !expanded {
-                    ui.multiply_opacity(0.7);
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
-                    let mark = if selected {
-                        RichText::new("▸").color(t.primary)
-                    } else {
-                        RichText::new("↳").color(t.muted)
-                    };
-                    cell(ui, 10.0, mark);
-                    cell(ui, 112.0, RichText::new(l.verb()).strong().color(t.purple));
-                    priority_cell(ui, t, &l.priority);
-                    cut = name_cell(ui, name_w, &l.name);
-                    let where_ = if ghost.zone == Zone::Now { "Now" } else { "the Round" };
-                    let text = match l.top.as_ref().filter(|t| t.kind == "decision") {
-                        Some(top) => top.label.clone(),
-                        None => l.state.clone(),
-                    };
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
-                        ui.label(RichText::new(format!("under its {} in {where_}", ghost.verb)).small().color(t.muted));
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(format!("· {text}"))).truncate());
-                        });
-                    });
-                })
-            });
-            if expanded {
-                details(ui, c, l, cut, forms, acts);
+    let r = item_surface(ui, t, ("home-ghost", &sel), selected, |ui| {
+        ui.scope(|ui| {
+            ui.style_mut().interaction.selectable_labels = false;
+            if !selected && !expanded {
+                ui.multiply_opacity(0.7);
             }
-            head.response
-        },
-    );
-    if selected {
-        let rect = r.response.rect;
-        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, t.primary);
-    }
-    // The head row as a whole takes the click (its labels only show).
-    let click = ui.interact(r.inner.rect, ui.scope_id().with(("home-ghost", &sel)), Sense::click());
-    if click.on_hover_text("Its item, on its own line: Enter or a click expands it").clicked() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let name_w = (ui.available_width() * NAME_SHARE).clamp(NAME_MIN, NAME_MAX);
+                let mark =
+                    if selected { RichText::new("▸").color(t.primary) } else { RichText::new("↳").color(t.muted) };
+                cell(ui, 10.0, mark);
+                cell(ui, 112.0, RichText::new(l.verb()).strong().color(t.purple));
+                priority_cell(ui, t, &l.priority);
+                cut = name_cell(ui, name_w, &l.name);
+                let where_ = if ghost.zone == Zone::Now { "Now" } else { "the Round" };
+                let text = match l.top.as_ref().filter(|t| t.kind == "decision") {
+                    Some(top) => top.label.clone(),
+                    None => l.state.clone(),
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(home::age(c.now - l.changed_at)).small().color(t.muted));
+                    ui.label(RichText::new(format!("under its {} in {where_}", ghost.verb)).small().color(t.muted));
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(format!("· {text}"))).truncate());
+                    });
+                });
+            })
+        });
+        if expanded {
+            item_details(ui, |ui| details(ui, c, l, cut, forms, acts));
+        }
+    });
+    if r.response.on_hover_text("Its item, on its own line: Enter or a click expands it").clicked() {
         acts.push(Act::Select(sel.clone()));
         acts.push(Act::Toggle(sel));
     }

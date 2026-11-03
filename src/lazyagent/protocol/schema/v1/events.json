@@ -345,6 +345,10 @@
         "rules": {"type": "integer", "description": "Row rules in the effective catalog."}
       }
     },
+    "github.updated": {
+      "description": "Feature github_health: GitHub stopped answering, or answers again (status_list github).",
+      "$ref": "methods.json#/$defs/github_health"
+    },
     "rules.errors": {
       "type": "object",
       "description": "Feature rules: the rule files' errors changed (an empty list: none left).",

@@ -376,7 +376,7 @@ async def test_the_projection_polls_only_tracked_branches_once_gh_works():
     engine.status._poll_actions()
     await engine.wait_idle()
     assert gh.calls == [], "the PR poller has not found gh working yet"
-    engine.worktree_service._gh_available = True
+    engine.worktree_service.github.set_installed(True)
     engine.status._poll_actions()
     await engine.wait_idle()
     assert hub.tracked == {"feat"}, "main is a merge target"

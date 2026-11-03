@@ -128,7 +128,7 @@ def test_a_force_push_that_drops_the_approved_commit_is_lost(repo):
 def _engine(pr: PrInfo | None = None):
     engine = make_engine([worktree("/tmp/repo"), worktree(FEAT, "feat", is_main=False)])
     engine.status.clock = lambda: NOW
-    engine.worktree_service._gh_available = False
+    engine.worktree_service.github.set_installed(False)
     engine.worktree_service._pr_infos[FEAT] = pr if pr is not None else _pr()
     engine._tokens[TOKEN] = (FEAT, "a1")
     engine.registry.states[FEAT] = {"a1": AgentState(status=AgentStatus.WAITING,

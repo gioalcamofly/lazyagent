@@ -202,6 +202,9 @@ FEATURES: tuple[str, ...] = (
     # permission_mode, [inbox] hang_seconds in the global config.toml or the
     # repo's file).
     "settings",
+    # Whether GitHub answers (github_health.py): status_list github, the
+    # github.updated event; a failed poll keeps the last PR data.
+    "github_health",
 )
 
 STREAM_RESIZED = "stream.resized"

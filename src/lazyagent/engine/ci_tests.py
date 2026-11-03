@@ -83,11 +83,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lazyagent.engine.infra_rerun import DEFAULT_MAX_ATTEMPTS
 from lazyagent.engine.trackers import TrackerError
 from lazyagent.models import WorkflowJob, WorkflowRun
 
 if TYPE_CHECKING:
     from lazyagent.engine.actions import ActionsHub, CiVerdict
+    from lazyagent.engine.required_checks import Required
     from lazyagent.models import PrInfo
 
 log = logging.getLogger(__name__)
@@ -172,6 +174,9 @@ class CheckConfig:
     # an item only once the merge is next).
     gating: bool = True
     policy: bool = False
+    # The table says ``gating`` itself (R5a: it wins over the gating read
+    # from branch protection).
+    gating_set: bool = False
 
     @property
     def gate(self) -> str:
@@ -231,11 +236,22 @@ class CiConfig:
     attestation_ttl: int = DEFAULT_ATTESTATION_TTL
     attest_defaults: AttestRules = ATTEST_DEFAULTS
     attest_checks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # R5a: which checks gate comes from branch protection (engine/
+    # required_checks.py) unless a [ci.check] says; infrastructure failures
+    # are re-run (engine/infra_rerun.py) up to this many attempts.
+    gating_from_protection: bool = True
+    rerun_infra: bool = True
+    rerun_infra_max_attempts: int = DEFAULT_MAX_ATTEMPTS
 
     @property
     def configured(self) -> bool:
-        return any(c.tests_from or c.gate != "gating" for c in self.checks) \
+        return any(c.tests_from or c.gate != "gating" or c.gating_set for c in self.checks) \
             or bool(self.nondeterministic)
+
+    @property
+    def gates_set(self) -> bool:
+        """A [ci.check] says gating or policy: the user's own list."""
+        return any(c.gating_set or c.policy for c in self.checks)
 
     def check(self, check: str, job: str) -> CheckConfig | None:
         return next((c for c in self.checks if c.matches(check, job)), None)
@@ -244,6 +260,12 @@ class CiConfig:
         """The check's gate (R4c): ``gating`` unless its table says."""
         c = self.check(check, job or check)
         return c.gate if c is not None else "gating"
+
+    def own_gate(self, check: str, job: str = "") -> str | None:
+        """The gate a [ci.check] table sets itself (``gating = true/false``,
+        ``policy = true``); None: the table does not say."""
+        c = self.check(check, job or check)
+        return c.gate if c is not None and (c.gating_set or c.policy) else None
 
     def tests_for(self, check: str, job: str) -> CheckConfig | None:
         """The check's config when it has ``tests_from``."""
@@ -273,7 +295,7 @@ class CiConfig:
                 | ({"aggregate": c.aggregate} if c.aggregate is not None else {})
                 | ({"test_regex": c.test_regex} if c.test_regex else {})
                 | ({"total_regex": c.total_regex} if c.total_regex else {})
-                | ({"gating": False} if not c.gating else {})
+                | ({"gating": c.gating} if c.gating_set else {})
                 | ({"policy": True} if c.policy else {})
                 for c in self.checks
             ],
@@ -285,14 +307,17 @@ class CiConfig:
             "attestation_ttl": self.attestation_ttl,
             "attest": self.attest_defaults.to_dict(),
             "attest_checks": {k: dict(v) for k, v in sorted(self.attest_checks.items())},
-        } | ({"detect_aggregates": True} if self.detect_aggregates else {})
+        } | ({"detect_aggregates": True} if self.detect_aggregates else {}) \
+          | {k: getattr(self, k) for k in OPTION_KEYS if getattr(self, k) != getattr(NO_CONFIG, k)}
 
 
 NO_CONFIG = CiConfig()
 
+# R5a's [ci] switches.
+OPTION_KEYS = ("gating_from_protection", "rerun_infra", "rerun_infra_max_attempts")
 CI_KEYS = frozenset({
     "check", "nondeterministic", "accept_attestation_for", "attestation_ttl",
-    "min_base_runs", "min_repetitions", "max_drop",
+    "min_base_runs", "min_repetitions", "max_drop", *OPTION_KEYS,
 })
 ATTEST_KEYS = frozenset({"confirm", "min_base_runs", "min_repetitions", "max_drop"})
 CHECK_KEYS = frozenset({"tests_from", "test_regex", "total_regex", "aggregate", "gating",
@@ -315,6 +340,8 @@ class CiPart:
     # attestation keys.
     attest: dict[str, Any] = field(default_factory=dict)
     attest_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # R5a: gating_from_protection, rerun_infra, rerun_infra_max_attempts.
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 _TTL = re.compile(r"^(\d+)\s*([smhd])$")
@@ -334,6 +361,16 @@ def _ttl(value: Any) -> int:
     if m is None or int(m[1]) <= 0:
         raise ValueError('attestation_ttl must be a duration such as "72h" or "3d" (or seconds)')
     return int(m[1]) * _UNITS[m[2]]
+
+
+def _option(key: str, value: Any) -> Any:
+    if key == "rerun_infra_max_attempts":
+        if type(value) is not int or not 1 <= value <= 10:
+            raise ValueError("rerun_infra_max_attempts must be a number from 1 to 10")
+        return value
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
 
 
 def _attest_value(key: str, value: Any) -> Any:
@@ -363,7 +400,9 @@ def parse_tables(ci: Any, unrelated: Any) -> tuple[CiPart, list[str], list[str]]
                 errors.append(f"unknown key {key!r} in [ci]")
             for key in sorted(set(ci) & (CI_KEYS - {"check"})):
                 try:
-                    if key in ("nondeterministic", "accept_attestation_for"):
+                    if key in OPTION_KEYS:
+                        part.options[key] = _option(key, ci[key])
+                    elif key in ("nondeterministic", "accept_attestation_for"):
                         part.attest[key] = _names(f"[ci] {key}", ci[key])
                     elif key == "attestation_ttl":
                         part.attest[key] = _ttl(ci[key])
@@ -451,12 +490,12 @@ def _check_config(name: Any, table: Any, where: str, warnings: list[str]) -> Che
     gating, policy = table.get("gating", True), table.get("policy", False)
     if policy and table.get("gating") is True:
         raise ValueError("a policy check is not a merge gate: drop gating = true")
-    gates = dict(gating=gating, policy=policy)
+    gates = dict(gating=gating, policy=policy, gating_set="gating" in table)
     sources = table.get("tests_from")
     if aggregate and sources is not None:
         raise ValueError("an aggregate job has no tests of its own: drop tests_from")
     if sources is None:
-        if aggregate is None and gating and not policy:
+        if aggregate is None and gating and not policy and "gating" not in table:
             return None
         if "test_regex" in table or "total_regex" in table:
             raise ValueError("test_regex and total_regex are for log:regex")
@@ -490,6 +529,7 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
     projects: dict[str, str] = {}
     attest: dict[str, Any] = {}
     attest_checks: dict[str, dict[str, Any]] = {}
+    options: dict[str, Any] = {}
     for scope, part in parts:
         if detect is None:
             detect = part.detect_aggregates
@@ -505,8 +545,10 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
             attest.setdefault(key, value)
         for name, own in part.attest_checks.items():
             attest_checks.setdefault(name, own)
+        for key, value in part.options.items():
+            options.setdefault(key, value)
     if not checks and compare_to is None and not projects and fetches is None \
-            and detect is None and not attest and not attest_checks:
+            and detect is None and not attest and not attest_checks and not options:
         return NO_CONFIG
     defaults = AttestRules(**{k: attest[k] for k in ATTEST_KEYS - {"confirm"} if k in attest})
     return CiConfig(tuple(checks), compare_to or BUILD_BASE, compare_from, projects,
@@ -514,7 +556,7 @@ def merge_parts(parts: Iterable[tuple[str, CiPart]]) -> CiConfig:
                     nondeterministic=attest.get("nondeterministic", ()),
                     accept_attestation_for=attest.get("accept_attestation_for", ()),
                     attestation_ttl=attest.get("attestation_ttl", DEFAULT_ATTESTATION_TTL),
-                    attest_defaults=defaults, attest_checks=attest_checks)
+                    attest_defaults=defaults, attest_checks=attest_checks, **options)
 
 
 # ----------------------------------------------------------------------
@@ -1104,6 +1146,12 @@ class CiTests:
     # R4c: the failing checks whose table makes them ``nongating`` or
     # ``policy`` (a check id, or an other's lower-case name); the rest gate.
     gates: Mapping[str, str] = field(default_factory=dict)
+    # R5a: the base's required checks (engine/required_checks.py), and
+    # where the gating comes from: ``protection``, ``default_branch``
+    # (the base requires nothing; the default branch's set), ``config``
+    # ([ci.check] gating / policy alone) or ``none``.
+    required: Required | None = None
+    required_source: str = "none"
 
     @property
     def red(self) -> bool:
@@ -1279,7 +1327,15 @@ class CiTests:
                         "detail": "no test data: not an Actions job, or its jobs are not read yet"}
                        | ({"gate": self.gate(o)} if self.gates else {})
                        for o, n in self.others],
-        } | ({"only_nongating": self.only_nongating} if self.gates else {})
+        } | ({"only_nongating": self.only_nongating} if self.gates else {}) \
+          | ({"required": self.required_dict()} if self.required_source != "none" else {})
+
+    def required_dict(self) -> dict[str, Any]:
+        """Which checks gate and where that came from (rules_explain)."""
+        out: dict[str, Any] = {"source": self.required_source}
+        if self.required is not None:
+            out |= self.required.to_dict()
+        return out
 
 
 # ----------------------------------------------------------------------
@@ -1814,7 +1870,7 @@ class CiTestsHub:
                  target: Target | None = None) -> CiTests | None:
         """The work item's mechanism-A verdict; None when no check has
         ``tests_from`` (nothing configured: the rows are as before)."""
-        if not self.config.configured or not branch:
+        if not self.active or not branch:
             return None
         if self.hub.runs is not self._runs_seen:
             # A new runs window: the base's newest runs may have changed.
@@ -1849,9 +1905,9 @@ class CiTestsHub:
                     others += [(c.name.lower(), c.name) for c in pr.checks
                                if c.conclusion.upper() in ("FAILURE", "ERROR", "TIMED_OUT")
                                and "/actions/runs/" in c.details_url]
-                return self._gated((), others)
+                return self._gated((), others, target, pr)
         if v is None or v.state != "red":
-            return self._gated((), others)
+            return self._gated((), others, target, pr)
         checks: list[CheckResult] = []
         for run in v.red:
             if not run.failed_jobs:
@@ -1864,14 +1920,47 @@ class CiTestsHub:
             for job in run.failed_jobs:
                 checks.append(own[job.name] if job.name in own
                               else _aggregate_result(run, job.name, list(own.values())))
-        return self._gated(checks, others)
+        return self._gated(checks, others, target, pr)
 
-    def _gated(self, checks: Iterable[CheckResult], others: Iterable[tuple[str, str]]) -> CiTests:
-        """The verdict with each failing check's gate (R4c)."""
+    def _gated(self, checks: Iterable[CheckResult], others: Iterable[tuple[str, str]],
+               target: Target | None = None, pr: PrInfo | None = None) -> CiTests:
+        """The verdict with each failing check's gate (R4c). A [ci.check]
+        that says gating or policy wins; else, with the base's required
+        checks known (R5a), a red check that is not required gates only
+        until every required check has passed on the head."""
         checks, others = tuple(checks), tuple(others)
-        gates = {c.check: g for c in checks if (g := self.config.gate_of(c.check, c.job)) != "gating"}
-        gates |= {o: g for o, n in others if (g := self.config.gate_of(n)) != "gating"}
-        return CiTests(checks, others, gates)
+        required = self.required_for(target)
+        passed = required is not None and required.all_passed(pr)
+
+        def gate(names: tuple[str, ...], check: str, job: str) -> str:
+            own = self.config.own_gate(check, job)
+            if own is not None:
+                return own
+            if passed and required is not None and not required.covers(*names):
+                return "nongating"
+            return self.config.gate_of(check, job)
+
+        gates = {c.check: g for c in checks
+                 if (g := gate((c.job, f"{c.workflow} / {c.job}", c.check), c.check, c.job))
+                 != "gating"}
+        gates |= {o: g for o, n in others if (g := gate((n,), n, n)) != "gating"}
+        source = required.source if required is not None \
+            else ("config" if self.config.gates_set else "none")
+        return CiTests(checks, others, gates, required, source)
+
+    def required_for(self, target: Target | None) -> Required | None:
+        """The target's base's required checks; None when unknown, off or
+        nothing is required."""
+        if target is None or not self.config.gating_from_protection:
+            return None
+        return self.hub.required.for_base(target.base)
+
+    @property
+    def active(self) -> bool:
+        """A pass builds a verdict: a [ci] table says something, or a
+        base's required checks are known (R5a)."""
+        return self.config.configured or (
+            self.config.gating_from_protection and self.hub.required.known())
 
     def _is_aggregate(self, run: WorkflowRun, job: WorkflowJob) -> bool:
         """``aggregate`` when the check sets it; else, only with ``[ci_unrelated]

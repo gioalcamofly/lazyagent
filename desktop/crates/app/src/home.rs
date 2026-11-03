@@ -1223,6 +1223,23 @@ pub fn middle_ellipsis(text: &str, max: usize) -> String {
     out
 }
 
+/// `HH:MM` of a Unix time, `offset` seconds east of UTC.
+pub fn hhmm(unix: f64, offset: i64) -> String {
+    let secs = (unix.floor() as i64 + offset).rem_euclid(86_400);
+    format!("{:02}:{:02}", secs / 3600, secs % 3600 / 60)
+}
+
+/// The local zone's offset from UTC at a Unix time, in seconds.
+pub fn local_offset(unix: f64) -> i64 {
+    let t = unix as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are to live locals; localtime_r is reentrant.
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.tm_gmtoff as i64
+}
+
 /// `<1m`, `4m`, `2h`, `3d`: never `0s` (the engine's `format_age`).
 pub fn age(seconds: f64) -> String {
     let s = seconds.max(0.0);

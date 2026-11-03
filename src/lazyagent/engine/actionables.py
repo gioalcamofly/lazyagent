@@ -314,6 +314,9 @@ class Place:
     tests: Any = None
     # [review] not_human of the rule files (pr.human_approvals).
     not_human: frozenset[str] = frozenset()
+    # False while GitHub fails and the PR poller never answered here (a
+    # None pr is then unknown, not "no PR"; status.Facts.pr_known).
+    pr_known: bool = True
 
     @property
     def running(self) -> bool:
@@ -914,11 +917,12 @@ class ActionableQueue:
         requests = list(requests_hub.requests) if known else []
         hub = getattr(engine, "actions", None)
         tests = getattr(hub, "tests", None)
-        if tests is not None and not tests.config.configured:
+        if tests is not None and not tests.active:
             tests = None
         if tests is not None:
             tests.attestations = getattr(engine, "attestations", None)
         catalog = getattr(getattr(engine, "status", None), "catalog", None)
+        known_pr = getattr(engine, "pr_known", lambda path: True)
         not_human = getattr(catalog, "not_human", frozenset())
         for wt in engine.worktrees:
             if wt.is_bare:
@@ -945,6 +949,7 @@ class ActionableQueue:
                     requests_known=known,
                     not_human=not_human,
                     report_holds=overlay is not None and overlay.holding(key, now) is not None,
+                    pr_known=pr is not None or known_pr(wt.path),
                 )
             )
         # The review requests no worktree holds: places with no path.

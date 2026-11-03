@@ -913,6 +913,30 @@ pub struct StatusList {
     /// The orchestrator's report and queue (I4e; older engines: absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorStatus>,
+    /// Whether GitHub answers (feature `github_health`; older engines: absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubHealth>,
+}
+
+/// `status_list.github` and the `github.updated` event (feature
+/// `github_health`): while gh fails, the engine retries with backoff and the
+/// rows keep their last PR data, `pr_data_at` old.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GithubHealth {
+    pub available: bool,
+    /// `Some(false)`: gh is not installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<bool>,
+    /// When the outage began.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<f64>,
+    /// When a PR poll last answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_data_at: Option<f64>,
 }
 
 /// A row's last real step (`status_row.last_step`).
@@ -1979,6 +2003,7 @@ pub enum EngineEvent {
     DecisionResolved(Box<DecisionResult>),
     DecisionExplain(Box<DecisionExplainResult>),
     RulesErrors(RulesErrors),
+    GithubUpdated(GithubHealth),
     /// A known name with a payload we could not read, or an unknown event.
     Other(Event),
 }
@@ -2017,6 +2042,7 @@ pub const KNOWN_EVENTS: &[&str] = &[
     "decision.answered",
     "decision.explain",
     "rules.errors",
+    "github.updated",
 ];
 
 impl EngineEvent {
@@ -2056,6 +2082,7 @@ impl EngineEvent {
             "decision.resolved" | "decision.answered" => de(&event).map(|d| EngineEvent::DecisionResolved(Box::new(d))),
             "decision.explain" => de(&event).map(|d| EngineEvent::DecisionExplain(Box::new(d))),
             "rules.errors" => de(&event).map(EngineEvent::RulesErrors),
+            "github.updated" => de(&event).map(EngineEvent::GithubUpdated),
             _ => None,
         };
         parsed.unwrap_or(EngineEvent::Other(event))

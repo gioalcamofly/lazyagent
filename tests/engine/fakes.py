@@ -101,7 +101,7 @@ class FakeManager:
         self.get_diff(path, base=base)
         return PrDiff("", "", "")
 
-    def is_gh_available(self) -> bool:
+    def is_gh_installed(self) -> bool:
         return False
 
 
