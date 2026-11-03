@@ -4,7 +4,7 @@
 //! drawn in every `home_item_style`, dark and light.
 
 use super::*;
-use crate::home_view::ItemStyle;
+use crate::home_view::{DetailStyle, ItemStyle};
 
 fn caps() -> Vec<&'static str> {
     I4E.iter()
@@ -39,7 +39,7 @@ fn sample(tx: &mpsc::Sender<Msg>, now: f64) {
     upload["needs_you"] = needs(&[&approval]);
     upload["agents"] = json!([{"id": "a1", "status": "waiting_for_approval", "since": now - 120.0}]);
     // Round: a red CI with a review behind it, on a long branch name.
-    let long = "billing-retries-with-exponential-backoff-and-jitter";
+    let long = LONG;
     let mut ci = json!({"id": format!("Ci:/r/repo-{long}:15"), "occurrence": "c@1", "kind": "ci", "level": "round",
         "title": "ci", "label": "#15 Retry failed charges", "detail": "", "state": "CI red: unit-tests",
         "work_item": format!("repo:{long}"), "worktree_path": format!("/r/repo-{long}"), "agent_id": null,
@@ -116,14 +116,40 @@ fn sample(tx: &mpsc::Sender<Msg>, now: f64) {
     }
 }
 
+const LONG: &str = "billing-retries-with-exponential-backoff-and-jitter";
+
+/// What happened on a line since the user looked (status_timeline).
+fn timeline(key: &str, now: f64) -> serde_json::Value {
+    let e = |ago: f64, kind: &str, actor: &str, text: &str| json!({"at": now - ago, "kind": kind, "actor": actor, "text": text});
+    let entries = match key.strip_prefix("repo:").unwrap_or(key) {
+        "upload-resume" => vec![
+            e(600.0, "commit", "agent:a1", "commit 8c1d2e0: resume uploads from the last chunk"),
+            e(120.0, "ball", "engine", "agent → you: approve: npm test"),
+        ],
+        LONG => vec![
+            e(1800.0, "commit", "agent:a2", "commit 4f2a9c1: retry failed charges with jitter"),
+            e(900.0, "ball", "engine", "agent → you: CI red: unit-tests"),
+            e(700.0, "review", "engine", "changes requested on PR #15"),
+        ],
+        "retry-policy" => vec![e(600.0, "decision", "agent:a2", "brief d1: Retries: fixed or exponential backoff?")],
+        _ => vec![],
+    };
+    json!({"key": key, "since": now - 3600.0, "seen_at": now - 3600.0, "entries": entries})
+}
+
 /// Home with the sample in `style`, `dark` or light, at `width`.
 fn home(style: ItemStyle, dark: bool, width: f32) -> Harness<'static, App> {
+    home_with(style, DetailStyle::Current, dark, width, 960.0)
+}
+
+fn home_with(style: ItemStyle, detail: DetailStyle, dark: bool, width: f32, height: f32) -> Harness<'static, App> {
     let now = crate::app::unix_now();
     let caps = caps();
     let (mut app, tx) = engine_home(&caps);
     app.state.look_from = now;
     app.state.home_item_style = style;
-    let mut h = Harness::builder().with_size([width, 960.0]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
+    app.state.home_detail_style = detail;
+    let mut h = Harness::builder().with_size([width, height]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
     h.run_steps(2);
     if dark != (h.state().state.theme.kind == ThemeKind::Dark) {
         let ctx = h.ctx.clone();
@@ -131,7 +157,7 @@ fn home(style: ItemStyle, dark: bool, width: f32) -> Harness<'static, App> {
         h.run_steps(2);
     }
     fake_engine(&h, |m, p| match m {
-        "status_timeline" => Some(json!({"key": p["key"], "since": null, "seen_at": null, "entries": []})),
+        "status_timeline" => Some(timeline(p["key"].as_str().unwrap_or(""), crate::app::unix_now())),
         _ => None,
     });
     sample(&tx, now);
@@ -164,6 +190,60 @@ fn h2_screenshots() {
             let mut h = home(style, dark, width);
             match h.render() {
                 Ok(image) => image.save(out.join(format!("lazyagent-desktop-h2-{}-{tag}.png", style.name()))).unwrap(),
+                Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+                Err(_) => return,
+            }
+        }
+    }
+}
+
+/// The sample's three expanded items: an approval in Now, a red CI with a
+/// review behind it, a brief in To sit down with.
+fn expand_three(h: &mut Harness<'static, App>) {
+    let now = crate::app::unix_now();
+    let keys = ["repo:upload-resume".to_string(), format!("repo:{LONG}"), "repo:retry-policy".to_string()];
+    let log: lazyagent_proto::types::CiLogSummary = serde_json::from_value(json!({
+        "key": keys[1], "runs": [], "text": "",
+        "jobs": [{"name": "unit-tests", "step": "Run tests", "url": "", "total": 3, "lines": [
+            "FAILED tests/test_retry.py::test_backoff_caps_at_30s - AssertionError: 45.0 > 30",
+            "FAILED tests/test_retry.py::test_jitter_is_bounded - AssertionError",
+            "2 failed, 118 passed in 9.41s"]}]}))
+    .unwrap();
+    let s = &mut h.state_mut().state;
+    s.ci_logs.insert(keys[1].clone(), ((0, 0), Some(log)));
+    for k in &keys {
+        s.timelines.insert(k.clone(), serde_json::from_value(timeline(k, now)).unwrap());
+    }
+    s.home.selected = Some(keys[1].clone());
+    s.home.expanded = Some(keys[1].clone());
+    s.home.expanded_also = vec![keys[0].clone(), keys[2].clone()];
+    h.run_steps(4);
+}
+
+#[test]
+fn every_detail_style_draws_the_three_items() {
+    for detail in DetailStyle::ALL {
+        let mut h = home_with(ItemStyle::Grid, detail, true, 1400.0, 1500.0);
+        expand_three(&mut h);
+        // The approval's command and the brief's question, in every style.
+        h.get_by_label("npm test -- --runInBand src/upload");
+        assert!(h.query_all_by_label_contains("Retries: fixed or exponential backoff?").count() >= 1, "{detail:?}");
+    }
+}
+
+/// docs/design/desktop-screenshots/h2d-*.png: the grid line (d) with three
+/// items expanded, each detail style, dark, light and 1000 px.
+#[test]
+fn h2_detail_screenshots() {
+    let out = std::env::temp_dir();
+    for detail in DetailStyle::ALL {
+        for (dark, tag, width) in [(true, "dark", 1400.0), (false, "light", 1400.0), (true, "narrow-dark", 1000.0)] {
+            let mut h = home_with(ItemStyle::Grid, detail, dark, width, 1500.0);
+            expand_three(&mut h);
+            match h.render() {
+                Ok(image) => {
+                    image.save(out.join(format!("lazyagent-desktop-h2d-{}-{tag}.png", detail.name()))).unwrap()
+                }
                 Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
                 Err(_) => return,
             }

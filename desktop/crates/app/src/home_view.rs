@@ -39,7 +39,9 @@ use crate::home::{self, LABEL_BALLS, LABEL_CHARS, Label, Line, Zone};
 use crate::store;
 use crate::theme::Theme;
 
+mod detail_proposals;
 mod proposals;
+pub use detail_proposals::DetailStyle;
 pub use proposals::ItemStyle;
 
 /// Park until…: a time from now, or an event the engine watches.
@@ -1729,6 +1731,7 @@ impl App {
         let home = &self.state.home;
         let forms = Forms {
             expanded: home.expanded.clone(),
+            expanded_also: home.expanded_also.clone(),
             parking: home.parking.clone(),
             park_whole: home.park_whole,
             closing: home.closing.clone(),
@@ -1777,6 +1780,7 @@ impl App {
             why: s.has("rules"),
             restorable: s.restorable.iter().map(|r| r.worktree_path.clone()).collect(),
             style: s.home_item_style,
+            detail: s.home_detail_style,
         };
         let keys_ctx = KeysCtx {
             approvals: ctx.approvals,
@@ -2128,6 +2132,8 @@ impl App {
 #[derive(Clone, PartialEq)]
 struct Forms {
     expanded: Option<String>,
+    /// H2 screenshots only (`Home::expanded_also`).
+    expanded_also: Vec<String>,
     parking: Option<String>,
     park_whole: bool,
     closing: Option<String>,
@@ -2170,6 +2176,8 @@ struct LineCtx<'a> {
     restorable: std::collections::HashSet<String>,
     /// The item layout (H2 proposals; `Current` by default).
     style: ItemStyle,
+    /// The expanded item's layout (H2 proposals; `Current` by default).
+    detail: DetailStyle,
 }
 
 /// "Presence: auto (present)": the toggle, as one menu.
@@ -2364,7 +2372,7 @@ fn line_ui(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, next: bool, forms: &
     let t = c.t;
     let sel = l.sel();
     let selected = c.selected == Some(sel.as_str());
-    let expanded = forms.expanded.as_deref() == Some(sel.as_str());
+    let expanded = forms.expanded.as_deref() == Some(sel.as_str()) || forms.expanded_also.contains(&sel);
     let mut cut = false;
     let resp = item_surface(ui, t, ("home-line", &sel), selected, |ui| {
         ui.scope(|ui| {
@@ -3069,497 +3077,577 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
         if cut {
             ui.label(RichText::new(&l.name).small().strong().color(t.text));
         }
-        let is_brief = l.top.as_ref().is_some_and(|t| t.kind == "decision");
-        let kind = l.top.as_ref().map(|t| t.kind.as_str()).unwrap_or("");
-        match (&l.top, &l.brief) {
-            (Some(_), Some(d)) if is_brief => {
-                let picked = forms.brief_choice.as_ref().filter(|(id, _)| *id == d.id).map(|(_, c)| c.as_str());
-                brief_ui(ui, t, d, c.decision_view || c.first_responder, picked, acts, l);
-            }
-            (Some(top), _) => {
-                // What it asks, in full and readable: the command, the question.
-                if let Some(ask) = l.ask_text() {
-                    let text = if kind == "approval" { RichText::new(ask).monospace() } else { RichText::new(ask) };
-                    egui::Frame::new().fill(t.panel).corner_radius(4).inner_margin(6).show(ui, |ui| {
-                        ui.add(egui::Label::new(text.color(t.text)).wrap());
-                    });
-                    ui.label(RichText::new(&top.label).small().color(t.muted));
-                } else {
-                    // A Confirm item's evidence has its own block below.
-                    let detail = if top.attestation.is_some() { "" } else { top.detail.as_str() };
-                    let text = [top.label.as_str(), detail]
-                        .iter()
-                        .filter(|x| !x.is_empty())
-                        .map(|x| humanize(x))
-                        .collect::<Vec<_>>();
-                    ui.label(RichText::new(text.join(" · ")).small().color(t.muted));
-                }
-            }
-            _ => {}
+        if c.detail != DetailStyle::Current {
+            detail_proposals::details(ui, c, l, forms, focus, acts);
+            return;
         }
-        if let Some(a) = l.top.as_ref().filter(|t| t.kind == "attestation_confirm").and_then(|t| t.attestation.as_ref())
-        {
-            attestation_ui(ui, t, a, forms, focus, acts);
+        if c.style != ItemStyle::Current {
+            moved_lines(ui, c, l);
         }
-        // Every open item, and which one leads the line. A brief behind
-        // the top one is answered here too ("Answer here"): never a dead end.
-        let sel = l.sel();
-        let mine = l.ghost.as_ref().map(|g| g.item.as_str());
-        if l.items().len() > 1 {
-            ui.label(RichText::new("Its items").small().strong().color(t.muted));
-            for (i, item) in l.items().iter().enumerate() {
-                let mut text = format!("{}. {} · {}", i + 1, home::kind_verb(&item.kind), home::item_words(item));
-                if mine == Some(item.id.as_str()) {
-                    text.push_str(" · this line");
-                } else if i == 0 {
-                    text.push_str(" · leads the line");
-                } else if item.level == "deep" && mine.is_none() {
-                    text.push_str(" · also in To sit down with");
-                }
-                text.push_str(&format!(" · {}", home::age(c.now - item.since)));
-                let open = forms.item_open.as_ref().is_some_and(|(s, id)| *s == sel && *id == item.id);
-                let brief = (i > 0 && item.kind == "decision" && mine.is_none()).then(|| l.under_item(&item.id)).flatten();
-                let alone = c.delegate_all
-                    && l.delegates().is_some_and(|d| d.len() > 1 && d.contains(&item.id))
-                    && l.row.as_ref().is_some_and(|r| !r.agents.is_empty());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
-                    if alone
-                        && ui.small_button("delegate this one").on_hover_text("Only this item, to the branch's agent").clicked()
-                    {
-                        acts.push(Act::DelegateItem(l.clone(), item.id.clone()));
-                    }
-                    if brief.is_some() {
-                        let what = if open { "hide" } else { "Answer here" };
-                        if ui.small_button(what).clicked() {
-                            acts.push(Act::ItemOpen(sel.clone(), item.id.clone()));
-                        }
-                    }
+        ask_block(ui, c, l, forms, focus, acts);
+        items_block(ui, c, l, forms, acts);
+        answer_block(ui, c, l, forms, focus, acts);
+        facts_block(ui, c, l);
+        explain_block(ui, c, l);
+        owner_block(ui, c, l, forms, focus, acts);
+        ci_log_block(ui, c, l, acts);
+        timeline_block(ui, c, l);
+        buttons_bar(ui, detail_buttons(c, l), acts);
+        pass_reason(ui, c, l);
+        forms_block(ui, c, l, forms, focus, acts);
+    });
+    ui.add_space(2.0);
+}
+
+/// What the item asks, in full: the brief, the command, the question; a
+/// Confirm item's evidence.
+fn ask_block(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, focus: bool, acts: &mut Vec<Act>) {
+    let t = c.t;
+    let is_brief = l.top.as_ref().is_some_and(|t| t.kind == "decision");
+    let kind = l.top.as_ref().map(|t| t.kind.as_str()).unwrap_or("");
+    match (&l.top, &l.brief) {
+        (Some(_), Some(d)) if is_brief => {
+            let picked = forms.brief_choice.as_ref().filter(|(id, _)| *id == d.id).map(|(_, c)| c.as_str());
+            brief_ui(ui, t, d, c.decision_view || c.first_responder, picked, acts, l);
+        }
+        (Some(top), _) => {
+            // What it asks, in full and readable: the command, the question.
+            if let Some(ask) = l.ask_text() {
+                let text = if kind == "approval" { RichText::new(ask).monospace() } else { RichText::new(ask) };
+                egui::Frame::new().fill(t.panel).corner_radius(4).inner_margin(6).show(ui, |ui| {
+                    ui.add(egui::Label::new(text.color(t.text)).wrap());
                 });
-                if open && let Some(u) = brief {
-                    ui.indent(("home-item", &item.id), |ui| match &u.brief {
-                        Some(d) => {
-                            let picked = forms.brief_choice.as_ref().filter(|(id, _)| *id == d.id).map(|(_, c)| c.as_str());
-                            brief_ui(ui, t, d, c.decision_view || c.first_responder, picked, acts, l);
-                        }
-                        None => {
-                            ui.label(RichText::new("…").small().color(t.muted));
-                        }
-                    });
-                }
-            }
-        }
-        if let Some(rc) = l.review_commits() {
-            review_commits_ui(ui, t, rc, acts);
-        }
-        if kind == "approval" && c.approvals {
-            ui.horizontal(|ui| {
-                if ui.button(RichText::new("Approve  (a)").color(t.green)).clicked() {
-                    acts.push(Act::Approve(l.clone(), true));
-                }
-                if ui
-                    .button(RichText::new("Deny  (⇧D)").color(t.red))
-                    .on_hover_text("Sent after 5 s, unless you undo it")
-                    .clicked()
-                {
-                    acts.push(Act::Approve(l.clone(), false));
-                }
-                ui.label(
-                    RichText::new("sent to the agent's prompt, only while it is on its screen").small().color(t.muted),
-                );
-            });
-        }
-        if kind == "question" && c.questions {
-            if forms.answering.as_ref().is_none_or(|(k, _)| *k != l.key) {
-                forms.answering = Some((l.key.clone(), String::new()));
-            }
-            let text = &mut forms.answering.as_mut().expect("just set").1;
-            ui.horizontal(|ui| {
-                let edit = ui.add(
-                    egui::TextEdit::singleline(text)
-                        .hint_text("your answer; it reaches the agent once its turn is over")
-                        .desired_width((ui.available_width() - 160.0).max(200.0)),
-                );
-                if focus {
-                    edit.request_focus();
-                }
-                let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
-                if (ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Send  (Enter)")).clicked() || enter)
-                    && !text.trim().is_empty()
-                {
-                    acts.push(Act::Answer(l.clone(), text.clone()));
-                }
-                if edit.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
-                    acts.push(Act::AnswerCancel);
-                }
-            });
-        }
-        if let Some(row) = &l.row {
-            for a in &row.agents {
-                ui.label(
-                    RichText::new(format!(
-                        "agent {}  {} {}",
-                        a.id,
-                        humanize(store::status_text(&a.status)),
-                        home::age(c.now - a.since)
-                    ))
-                    .small()
-                    .color(t.muted),
-                );
-            }
-            if let Some(pr) = &row.pr {
-                let review = pr.review.replace('_', " ").to_lowercase();
-                let facts: Vec<String> = [format!("PR #{}", pr.number), review, format!("CI {}", pr.ci)]
-                    .into_iter()
+                ui.label(RichText::new(&top.label).small().color(t.muted));
+            } else {
+                // A Confirm item's evidence has its own block below.
+                let detail = if top.attestation.is_some() { "" } else { top.detail.as_str() };
+                let text = [top.label.as_str(), detail]
+                    .iter()
                     .filter(|x| !x.is_empty())
-                    .collect();
-                ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
-            }
-            if let Some(rr) = &row.review_request {
-                // The item line names the PR and who asked: when, and through
-                // which team, is what it does not say.
-                let mut text = format!("review requested {} ago", home::age(c.now - rr.requested_at));
-                if let Some(team) = &rr.team {
-                    text.push_str(&format!(" · through team {team}"));
-                }
-                text.push_str(" · it goes once you review it on the PR");
-                ui.label(RichText::new(text).small().color(t.muted));
-            }
-            if let Some(p) = &row.project {
-                let mut text = format!("project {}", p.title);
-                for w in &row.waits_on {
-                    let review = if w.state == "review" { " (in review)" } else { "" };
-                    text.push_str(&format!(" · waits on {}{review}", w.title));
-                }
-                ui.label(RichText::new(text).small().color(t.muted));
-            } else if !row.waits_on.is_empty() {
-                let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
-                ui.label(RichText::new(format!("waits on {}", titles.join(", "))).small().color(t.muted));
-            }
-            if let Some(f) = &row.feeder {
-                let mut text = format!("from {}", f["source"].as_str().unwrap_or("a feeder"));
-                if let Some(p) = f["priority"].as_str().filter(|p| *p != "medium") {
-                    text.push_str(&format!(" · {p} priority"));
-                }
-                if let Some(url) = f["url"].as_str() {
-                    text.push_str(&format!(" · {url}"));
-                }
-                ui.label(RichText::new(text).small().color(t.muted));
-            }
-            if let Some(tr) = &row.tracker {
-                let stale = if tr.stale { format!(" ({} ago)", home::age(c.now - tr.at)) } else { String::new() };
-                ui.label(
-                    RichText::new(format!("{} {}: {}{stale}", tr.adapter.replace('_', " "), tr.key, tr.state))
-                        .small()
-                        .color(t.muted),
-                );
-            }
-            if let Some(note) = &row.note {
-                ui.label(
-                    RichText::new(format!("notes: \"{}\" ({})", note.text, home::age(c.now - note.at)))
-                        .small()
-                        .color(t.text),
-                );
-            }
-            if let Some(g) = &row.gesture {
-                ui.label(RichText::new(gesture_text(g, c.now)).small().color(t.purple));
-            }
-            // The skip list: why no agent was sent ([inbox] auto_delegate_skip_checks).
-            if let Some(text) = &row.auto_delegate {
-                ui.label(RichText::new(text).small().color(t.yellow));
+                    .map(|x| humanize(x))
+                    .collect::<Vec<_>>();
+                ui.label(RichText::new(text.join(" · ")).small().color(t.muted));
             }
         }
-        let target = match l.top.as_ref().and_then(|t| t.decision_id.clone()) {
-            Some(id) => id,
-            None => format!("key:{}", l.key),
-        };
-        if c.decision_view
-            && let Some(e) = c.explains.get(&format!("explain:{target}"))
-        {
-            match &e.text {
-                Some(text) if e.state == "answered" => {
-                    ui.label(RichText::new(crate::decision_view::explained_by(e)).small().strong().color(t.cyan));
-                    ui.label(RichText::new(text).small().color(t.text));
-                }
-                _ => {
-                    ui.label(RichText::new(format!("explain: asked {}", e.to.replace(':', " "))).small().color(t.muted));
-                }
+        _ => {}
+    }
+    if let Some(a) = l.top.as_ref().filter(|t| t.kind == "attestation_confirm").and_then(|t| t.attestation.as_ref()) {
+        attestation_ui(ui, t, a, forms, focus, acts);
+    }
+}
+
+/// Every open item, and which one leads the line.
+fn items_block(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, acts: &mut Vec<Act>) {
+    let t = c.t;
+    // Every open item, and which one leads the line. A brief behind
+    // the top one is answered here too ("Answer here"): never a dead end.
+    let sel = l.sel();
+    let mine = l.ghost.as_ref().map(|g| g.item.as_str());
+    if l.items().len() > 1 {
+        ui.label(RichText::new("Its items").small().strong().color(t.muted));
+        for (i, item) in l.items().iter().enumerate() {
+            let mut text = format!("{}. {} · {}", i + 1, home::kind_verb(&item.kind), home::item_words(item));
+            if mine == Some(item.id.as_str()) {
+                text.push_str(" · this line");
+            } else if i == 0 {
+                text.push_str(" · leads the line");
+            } else if item.level == "deep" && mine.is_none() {
+                text.push_str(" · also in To sit down with");
             }
-        }
-        if let Some(hold) = l.hold() {
-            let who = if hold.auto { "held for the orchestrator (its worker's work)" } else { "the orchestrator holds it" };
-            ui.label(
-                RichText::new(format!("{who}: {} · {} more", hold.note, left(hold.until - c.now)))
-                    .small()
-                    .color(t.cyan),
-            );
-        }
-        if let Some(d) = l.row.as_ref().and_then(|r| r.delegation.as_ref()) {
-            let text = match d.phase.as_str() {
-                "on_it" => format!("delegated to agent {} {} ago: {}", d.agent, home::age(c.now - d.at), d.fact),
-                _ => d.state.clone(),
-            };
-            ui.label(RichText::new(text).small().color(t.cyan));
-            if let Some(held) = hold_text(d, c.now) {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(held).small().color(t.yellow));
-                    if send_anyway(d, c.now) {
-                        if ui
-                            .small_button("Send anyway")
-                            .on_hover_text("Type it into the agent's terminal now, whatever it is doing")
-                            .clicked()
-                        {
-                            acts.push(Act::SendAnyway(l.clone()));
-                        }
-                        ui.label(RichText::new("or open its terminal (o)").small().color(t.muted));
+            text.push_str(&format!(" · {}", home::age(c.now - item.since)));
+            let open = forms.item_open.as_ref().is_some_and(|(s, id)| *s == sel && *id == item.id);
+            let brief = (i > 0 && item.kind == "decision" && mine.is_none()).then(|| l.under_item(&item.id)).flatten();
+            let alone = c.delegate_all
+                && l.delegates().is_some_and(|d| d.len() > 1 && d.contains(&item.id))
+                && l.row.as_ref().is_some_and(|r| !r.agents.is_empty());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(text).small().color(if i == 0 { t.text } else { t.muted }));
+                if alone
+                    && ui
+                        .small_button("delegate this one")
+                        .on_hover_text("Only this item, to the branch's agent")
+                        .clicked()
+                {
+                    acts.push(Act::DelegateItem(l.clone(), item.id.clone()));
+                }
+                if brief.is_some() {
+                    let what = if open { "hide" } else { "Answer here" };
+                    if ui.small_button(what).clicked() {
+                        acts.push(Act::ItemOpen(sel.clone(), item.id.clone()));
                     }
-                });
-            }
-        }
-        if l.zone == Zone::Parked
-            && let Some(g) = l.gesture()
-        {
-            let mut text = park_until_text(g, c.now);
-            if l.parked_needs_you() {
-                text.push_str(" · needs you: its items are not routed to the orchestrator");
-            }
-            if g["waiting"] == true {
-                let source = g["source"].as_str().unwrap_or("the feeder");
-                text.push_str(&format!(" · held in {source}'s Waiting lane; u unparks it until {source} changes it"));
-            }
-            ui.label(RichText::new(text).small().color(if l.parked_needs_you() { t.yellow } else { t.muted }));
-        }
-        if let Some(claim) = &l.claim {
-            ui.label(
-                RichText::new(format!(
-                    "with the orchestrator for {} more · it may: {}",
-                    left(claim.until - c.now),
-                    claim.allowed.join(", ").replace('_', " ")
-                ))
-                .small()
-                .color(t.cyan),
-            );
-        }
-        if c.first_responder && l.looking() && l.claim.is_none() && l.hold().is_none() {
-            ui.label(RichText::new("The orchestrator is looking at this first.").small().color(t.cyan));
-        }
-        if c.first_responder
-            && let Some(d) = &l.decided
-        {
-            ui.label(RichText::new(format!("{}: {}", d.brief.question, decided_text(d))).small().color(t.cyan));
-            if d.revertible == Some(true) {
-                match forms.reverting.as_mut().filter(|r| r.0 == d.id) {
-                    Some((id, comment)) => {
-                        // A real confirmation: what reverting does.
-                        ui.label(RichText::new(revert_text(d)).small().color(t.text));
-                        ui.horizontal(|ui| {
-                            let edit = ui.add(
-                                egui::TextEdit::singleline(comment)
-                                    .hint_text("comment for the agent (optional)")
-                                    .desired_width(320.0),
-                            );
-                            if focus {
-                                edit.request_focus();
-                            }
-                            let enter =
-                                (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
-                            if ui.button("Revert").clicked() || enter {
-                                acts.push(Act::Revert(id.clone(), comment.clone()));
-                            }
-                            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                                acts.push(Act::RevertCancel);
-                            }
-                        });
+                }
+            });
+            if open && let Some(u) = brief {
+                ui.indent(("home-item", &item.id), |ui| match &u.brief {
+                    Some(d) => {
+                        let picked = forms.brief_choice.as_ref().filter(|(id, _)| *id == d.id).map(|(_, c)| c.as_str());
+                        brief_ui(ui, t, d, c.decision_view || c.first_responder, picked, acts, l);
                     }
                     None => {
-                        if ui.button("Revert…  (⇧U)").on_hover_text("Tell the agent your choice instead").clicked() {
-                            acts.push(Act::RevertOpen(l.clone()));
-                        }
-                    }
-                }
-            }
-        }
-        if c.actions
-            && let Some(top) = l.top.as_ref().filter(|t| t.is_ci())
-        {
-            ui.add_space(2.0);
-            ui.label(RichText::new("Failed log").small().strong().color(t.muted));
-            // With no Actions run the engine says whose red it is (0, 0).
-            let wanted = top.run.as_ref().map(|r| (r.id, r.attempt)).unwrap_or((0, 0));
-            match c.ci_logs.get(&l.key) {
-                Some((r, Some(summary))) if *r == wanted => ci_log(ui, t, summary, acts),
-                Some((r, None)) if *r == wanted => {
-                    ui.label(RichText::new("…").small().color(t.muted));
-                }
-                // Not read yet, or for an older run: ask (once per run).
-                _ => acts.push(Act::CiLog(l.key.clone(), wanted)),
-            }
-        }
-        if c.gestures && l.row.is_some() {
-            ui.add_space(2.0);
-            ui.label(RichText::new("Since you looked").small().strong().color(t.muted));
-            match c.timelines.get(&l.key) {
-                None => {
-                    ui.label(RichText::new("…").small().color(t.muted));
-                }
-                Some(tl) if tl.entries.is_empty() => {
-                    ui.label(RichText::new("nothing new").small().color(t.muted));
-                }
-                Some(tl) => {
-                    for e in tl.entries.iter().rev().take(12) {
-                        ui.label(RichText::new(timeline_line(e, c.now)).small().color(t.text));
-                    }
-                }
-            }
-        }
-        // The actions: the first few as buttons, the rest under "More…".
-        let mut buttons: Vec<Button> = vec![];
-        if l.verb() == "Merge"
-            && let Some(url) = &l.url
-        {
-            // Merging is done on the PR, by you: its button comes first.
-            let mut b = button("Open PR to merge  (p)", Act::Pr(url.clone()));
-            b.hover = Some("Merging happens on the PR page");
-            buttons.push(b);
-        }
-        let reviewing = l.top.as_ref().is_some_and(|t| t.kind == "review_request");
-        if reviewing && let Some(url) = &l.url {
-            // A teammate's PR: the review is done on the PR page.
-            let mut b = button("Open PR to review  (p)", Act::Pr(url.clone()));
-            b.hover = Some("Approve, request changes or comment there: the line goes once you do");
-            buttons.push(b);
-        }
-        if l.verb() == "Review" && l.approvable().is_some_and(|a| !a.approved) {
-            // The user's own review, done outside GitHub (R3d): a button only
-            // where Review is the verb (it replaces nothing there); ⇧A
-            // works on every approvable line.
-            let mut b = button("Approve  (⇧A)", Act::OwnerApprove(l.clone()));
-            b.hover = Some("You reviewed this head: only commits after it bring the review back");
-            buttons.push(b);
-        }
-        if l.place.is_some() {
-            buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
-        }
-        let ci = l.top.as_ref().is_some_and(|t| t.is_ci());
-        // The engine's catalog: only what the branch's agent can resolve (I4h).
-        let delegable_kind = l.delegable();
-        let live = match &l.row {
-            Some(r) => !r.agents.is_empty(),
-            // The client's own queue: its CI line sends the failures to
-            // the worktree's agent, and says so when there is none.
-            None => true,
-        };
-        if c.delegation && delegable_kind && l.row.is_some() && !l.done() {
-            // Only an agent that runs can be delegated to; else restore it,
-            // or start one, first.
-            let restorable = l.place.as_ref().is_some_and(|p| c.restorable.contains(p));
-            let mut b = match (live, restorable) {
-                (true, _) => button(
-                    format!("{}  (d)", l.delegate_label()),
-                    if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) },
-                ),
-                (false, true) => button("Restore agent and delegate", Act::RestoreDelegate(l.clone())),
-                (false, false) => button("Spawn an agent for this", Act::SpawnDelegate(l.clone())),
-            };
-            b.hover = Some(if live {
-                "It comes back if the fact still holds"
-            } else {
-                "No agent runs here: it starts one, then hands it the item once its first turn ends"
-            });
-            buttons.push(b);
-        } else if ci && !c.delegation && live && delegable_kind {
-            // Older engines: the failures go to the agent as a prompt.
-            let mut b = button("Delegate to its agent  (d)", Act::SendCi(l.clone()));
-            b.hover = Some("It comes back if the fact still holds");
-            buttons.push(b);
-        }
-        let row_gestures = c.gestures && l.row.is_some() && !l.done();
-        if l.top.is_some() {
-            let mut b = button("Dismiss  (x)", Act::Dismiss(l.clone()));
-            b.hover = Some("Hide until it happens again, for every client");
-            buttons.push(b);
-        }
-        if l.top.is_some() || row_gestures {
-            buttons.push(button("Park until…  (z)", Act::ParkMenu(l.sel())));
-        }
-        if l.claim.is_some() || l.hold().is_some() {
-            buttons.push(button("Take back  (u)", Act::TakeBack(l.clone())));
-        } else if ((l.row.is_some() && !l.done()) || !c.engine) && l.passable() {
-            // Not where only the user may act: approve, answer, review, merge (I4h).
-            let mut b = button("Pass to orchestrator  (⇧O)", Act::Pass(l.clone()));
-            b.enabled = c.pass.is_ok() && l.row.is_some();
-            buttons.push(b);
-        }
-        let unpark = if l.zone == Zone::Parked { "Unpark  (u)" } else { "Clear  (u)" };
-        if c.gestures && l.claim.is_none() && l.gesture().is_some() {
-            buttons.push(button(unpark, Act::TakeBack(l.clone())));
-        }
-        if l.place.is_some() {
-            let mut b = button("Notes  (n)", Act::Notes(l.clone()));
-            b.more = true;
-            buttons.push(b);
-        }
-        if let Some(url) = &l.url
-            && l.verb() != "Merge"
-            && !reviewing
-        {
-            buttons.push(button("PR  (p)", Act::Pr(url.clone())));
-        }
-        if row_gestures {
-            let mut b = button("Label…  (l)", Act::LabelOpen(l.clone()));
-            b.hover = Some("Who has the ball, in your words (e.g. QA)");
-            buttons.push(b);
-            let mut b = button("Close…  (⇧X)", Act::CloseMenu(l.sel()));
-            b.hover = Some("Close the work item and stop its agent; the worktree, branch and PR stay");
-            buttons.push(b);
-        }
-        if c.gestures && l.row.is_some() && l.unseen(c.look) {
-            buttons.push(button("Seen  (m)", Act::SeenLine(l.clone())));
-        }
-        if c.why && l.row.is_some() {
-            let mut b = button("Why?  (w)", Act::Why(l.clone()));
-            b.hover = Some("The rule that put it here, and the facts it saw");
-            b.more = true;
-            buttons.push(b);
-        }
-        let (buttons, mut rest) = bar(buttons, |b| b.more);
-        ui.horizontal_wrapped(|ui| {
-            for b in buttons {
-                let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
-                if let Some(h) = b.hover {
-                    r = r.on_hover_text(h);
-                }
-                if r.clicked() {
-                    acts.push(b.act);
-                }
-            }
-            if !rest.is_empty() {
-                ui.menu_button("More…", |ui| {
-                    ui.set_min_width(220.0);
-                    for b in rest.drain(..) {
-                        let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
-                        if let Some(h) = b.hover {
-                            r = r.on_hover_text(h);
-                        }
-                        if r.clicked() {
-                            acts.push(b.act);
-                            ui.close();
-                        }
+                        ui.label(RichText::new("…").small().color(t.muted));
                     }
                 });
             }
-        });
-        if let Err(why) = c.pass
-            && l.row.is_some()
-            && !l.done()
-            && l.passable()
-        {
-            // On a line of its own: wrapped, never cut.
-            ui.add(egui::Label::new(RichText::new(why).small().color(t.muted)).wrap());
         }
-        if forms.parking == Some(l.sel()) {
-            let whole = forms.park_whole || l.top.is_none();
-            egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
+    }
+}
+
+/// Answered on the line: an approval, a question; what to review.
+fn answer_block(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, focus: bool, acts: &mut Vec<Act>) {
+    let t = c.t;
+    let kind = l.top.as_ref().map(|t| t.kind.as_str()).unwrap_or("");
+    if let Some(rc) = l.review_commits() {
+        review_commits_ui(ui, t, rc, acts);
+    }
+    if kind == "approval" && c.approvals {
+        ui.horizontal(|ui| {
+            if ui.button(RichText::new("Approve  (a)").color(t.green)).clicked() {
+                acts.push(Act::Approve(l.clone(), true));
+            }
+            if ui
+                .button(RichText::new("Deny  (⇧D)").color(t.red))
+                .on_hover_text("Sent after 5 s, unless you undo it")
+                .clicked()
+            {
+                acts.push(Act::Approve(l.clone(), false));
+            }
+            ui.label(
+                RichText::new("sent to the agent's prompt, only while it is on its screen").small().color(t.muted),
+            );
+        });
+    }
+    if kind == "question" && c.questions {
+        if forms.answering.as_ref().is_none_or(|(k, _)| *k != l.key) {
+            forms.answering = Some((l.key.clone(), String::new()));
+        }
+        let text = &mut forms.answering.as_mut().expect("just set").1;
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text("your answer; it reaches the agent once its turn is over")
+                    .desired_width((ui.available_width() - 160.0).max(200.0)),
+            );
+            if focus {
+                edit.request_focus();
+            }
+            let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+            if (ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Send  (Enter)")).clicked() || enter)
+                && !text.trim().is_empty()
+            {
+                acts.push(Act::Answer(l.clone(), text.clone()));
+            }
+            if edit.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                acts.push(Act::AnswerCancel);
+            }
+        });
+    }
+}
+
+/// The row's facts: agents, PR, review request, project, feeder, tracker,
+/// notes, the user's gesture, the skip list.
+fn facts_block(ui: &mut Ui, c: &LineCtx, l: &Line) {
+    let t = c.t;
+    if let Some(row) = &l.row {
+        for a in &row.agents {
+            ui.label(
+                RichText::new(format!(
+                    "agent {}  {} {}",
+                    a.id,
+                    humanize(store::status_text(&a.status)),
+                    home::age(c.now - a.since)
+                ))
+                .small()
+                .color(t.muted),
+            );
+        }
+        if let Some(pr) = &row.pr {
+            let review = pr.review.replace('_', " ").to_lowercase();
+            let facts: Vec<String> = [format!("PR #{}", pr.number), review, format!("CI {}", pr.ci)]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect();
+            ui.label(RichText::new(facts.join(" · ")).small().color(t.muted));
+        }
+        if let Some(rr) = &row.review_request {
+            // The item line names the PR and who asked: when, and through
+            // which team, is what it does not say.
+            let mut text = format!("review requested {} ago", home::age(c.now - rr.requested_at));
+            if let Some(team) = &rr.team {
+                text.push_str(&format!(" · through team {team}"));
+            }
+            text.push_str(" · it goes once you review it on the PR");
+            ui.label(RichText::new(text).small().color(t.muted));
+        }
+        if let Some(p) = &row.project {
+            let mut text = format!("project {}", p.title);
+            for w in &row.waits_on {
+                let review = if w.state == "review" { " (in review)" } else { "" };
+                text.push_str(&format!(" · waits on {}{review}", w.title));
+            }
+            ui.label(RichText::new(text).small().color(t.muted));
+        } else if !row.waits_on.is_empty() {
+            let titles: Vec<&str> = row.waits_on.iter().map(|w| w.title.as_str()).collect();
+            ui.label(RichText::new(format!("waits on {}", titles.join(", "))).small().color(t.muted));
+        }
+        if let Some(f) = &row.feeder {
+            let mut text = format!("from {}", f["source"].as_str().unwrap_or("a feeder"));
+            if let Some(p) = f["priority"].as_str().filter(|p| *p != "medium") {
+                text.push_str(&format!(" · {p} priority"));
+            }
+            if let Some(url) = f["url"].as_str() {
+                text.push_str(&format!(" · {url}"));
+            }
+            ui.label(RichText::new(text).small().color(t.muted));
+        }
+        if let Some(tr) = &row.tracker {
+            let stale = if tr.stale { format!(" ({} ago)", home::age(c.now - tr.at)) } else { String::new() };
+            ui.label(
+                RichText::new(format!("{} {}: {}{stale}", tr.adapter.replace('_', " "), tr.key, tr.state))
+                    .small()
+                    .color(t.muted),
+            );
+        }
+        if let Some(note) = &row.note {
+            ui.label(
+                RichText::new(format!("notes: \"{}\" ({})", note.text, home::age(c.now - note.at)))
+                    .small()
+                    .color(t.text),
+            );
+        }
+        if let Some(g) = &row.gesture {
+            ui.label(RichText::new(gesture_text(g, c.now)).small().color(t.purple));
+        }
+        // The skip list: why no agent was sent ([inbox] auto_delegate_skip_checks).
+        if let Some(text) = &row.auto_delegate {
+            ui.label(RichText::new(text).small().color(t.yellow));
+        }
+    }
+}
+
+/// The decision view's explanation, when one was asked.
+fn explain_block(ui: &mut Ui, c: &LineCtx, l: &Line) {
+    let t = c.t;
+    let target = match l.top.as_ref().and_then(|t| t.decision_id.clone()) {
+        Some(id) => id,
+        None => format!("key:{}", l.key),
+    };
+    if c.decision_view
+        && let Some(e) = c.explains.get(&format!("explain:{target}"))
+    {
+        match &e.text {
+            Some(text) if e.state == "answered" => {
+                ui.label(RichText::new(crate::decision_view::explained_by(e)).small().strong().color(t.cyan));
+                ui.label(RichText::new(text).small().color(t.text));
+            }
+            _ => {
+                ui.label(RichText::new(format!("explain: asked {}", e.to.replace(':', " "))).small().color(t.muted));
+            }
+        }
+    }
+}
+
+/// Who else has it: a hold, a delegation, a park, a claim, the
+/// orchestrator's decision (with Revert).
+fn owner_block(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, focus: bool, acts: &mut Vec<Act>) {
+    let t = c.t;
+    if let Some(hold) = l.hold() {
+        let who = if hold.auto { "held for the orchestrator (its worker's work)" } else { "the orchestrator holds it" };
+        ui.label(
+            RichText::new(format!("{who}: {} · {} more", hold.note, left(hold.until - c.now))).small().color(t.cyan),
+        );
+    }
+    if let Some(d) = l.row.as_ref().and_then(|r| r.delegation.as_ref()) {
+        let text = match d.phase.as_str() {
+            "on_it" => format!("delegated to agent {} {} ago: {}", d.agent, home::age(c.now - d.at), d.fact),
+            _ => d.state.clone(),
+        };
+        ui.label(RichText::new(text).small().color(t.cyan));
+        if let Some(held) = hold_text(d, c.now) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(held).small().color(t.yellow));
+                if send_anyway(d, c.now) {
+                    if ui
+                        .small_button("Send anyway")
+                        .on_hover_text("Type it into the agent's terminal now, whatever it is doing")
+                        .clicked()
+                    {
+                        acts.push(Act::SendAnyway(l.clone()));
+                    }
+                    ui.label(RichText::new("or open its terminal (o)").small().color(t.muted));
+                }
+            });
+        }
+    }
+    if l.zone == Zone::Parked
+        && let Some(g) = l.gesture()
+    {
+        let mut text = park_until_text(g, c.now);
+        if l.parked_needs_you() {
+            text.push_str(" · needs you: its items are not routed to the orchestrator");
+        }
+        if g["waiting"] == true {
+            let source = g["source"].as_str().unwrap_or("the feeder");
+            text.push_str(&format!(" · held in {source}'s Waiting lane; u unparks it until {source} changes it"));
+        }
+        ui.label(RichText::new(text).small().color(if l.parked_needs_you() { t.yellow } else { t.muted }));
+    }
+    if let Some(claim) = &l.claim {
+        ui.label(
+            RichText::new(format!(
+                "with the orchestrator for {} more · it may: {}",
+                left(claim.until - c.now),
+                claim.allowed.join(", ").replace('_', " ")
+            ))
+            .small()
+            .color(t.cyan),
+        );
+    }
+    if c.first_responder && l.looking() && l.claim.is_none() && l.hold().is_none() {
+        ui.label(RichText::new("The orchestrator is looking at this first.").small().color(t.cyan));
+    }
+    if c.first_responder
+        && let Some(d) = &l.decided
+    {
+        ui.label(RichText::new(format!("{}: {}", d.brief.question, decided_text(d))).small().color(t.cyan));
+        if d.revertible == Some(true) {
+            match forms.reverting.as_mut().filter(|r| r.0 == d.id) {
+                Some((id, comment)) => {
+                    // A real confirmation: what reverting does.
+                    ui.label(RichText::new(revert_text(d)).small().color(t.text));
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(comment)
+                                .hint_text("comment for the agent (optional)")
+                                .desired_width(320.0),
+                        );
+                        if focus {
+                            edit.request_focus();
+                        }
+                        let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+                        if ui.button("Revert").clicked() || enter {
+                            acts.push(Act::Revert(id.clone(), comment.clone()));
+                        }
+                        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                            acts.push(Act::RevertCancel);
+                        }
+                    });
+                }
+                None => {
+                    if ui.button("Revert…  (⇧U)").on_hover_text("Tell the agent your choice instead").clicked() {
+                        acts.push(Act::RevertOpen(l.clone()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A CI line's failed log.
+fn ci_log_block(ui: &mut Ui, c: &LineCtx, l: &Line, acts: &mut Vec<Act>) {
+    let t = c.t;
+    if c.actions
+        && let Some(top) = l.top.as_ref().filter(|t| t.is_ci())
+    {
+        ui.add_space(2.0);
+        ui.label(RichText::new("Failed log").small().strong().color(t.muted));
+        // With no Actions run the engine says whose red it is (0, 0).
+        let wanted = top.run.as_ref().map(|r| (r.id, r.attempt)).unwrap_or((0, 0));
+        match c.ci_logs.get(&l.key) {
+            Some((r, Some(summary))) if *r == wanted => ci_log(ui, t, summary, acts),
+            Some((r, None)) if *r == wanted => {
+                ui.label(RichText::new("…").small().color(t.muted));
+            }
+            // Not read yet, or for an older run: ask (once per run).
+            _ => acts.push(Act::CiLog(l.key.clone(), wanted)),
+        }
+    }
+}
+
+/// Since you looked: the item's timeline.
+fn timeline_block(ui: &mut Ui, c: &LineCtx, l: &Line) {
+    let t = c.t;
+    if c.gestures && l.row.is_some() {
+        ui.add_space(2.0);
+        ui.label(RichText::new("Since you looked").small().strong().color(t.muted));
+        match c.timelines.get(&l.key) {
+            None => {
+                ui.label(RichText::new("…").small().color(t.muted));
+            }
+            Some(tl) if tl.entries.is_empty() => {
+                ui.label(RichText::new("nothing new").small().color(t.muted));
+            }
+            Some(tl) => {
+                for e in tl.entries.iter().rev().take(12) {
+                    ui.label(RichText::new(timeline_line(e, c.now)).small().color(t.text));
+                }
+            }
+        }
+    }
+}
+
+/// The item's actions, primary first.
+fn detail_buttons(c: &LineCtx, l: &Line) -> Vec<Button> {
+    // The actions: the first few as buttons, the rest under "More…".
+    let mut buttons: Vec<Button> = vec![];
+    if l.verb() == "Merge"
+        && let Some(url) = &l.url
+    {
+        // Merging is done on the PR, by you: its button comes first.
+        let mut b = button("Open PR to merge  (p)", Act::Pr(url.clone()));
+        b.hover = Some("Merging happens on the PR page");
+        buttons.push(b);
+    }
+    let reviewing = l.top.as_ref().is_some_and(|t| t.kind == "review_request");
+    if reviewing && let Some(url) = &l.url {
+        // A teammate's PR: the review is done on the PR page.
+        let mut b = button("Open PR to review  (p)", Act::Pr(url.clone()));
+        b.hover = Some("Approve, request changes or comment there: the line goes once you do");
+        buttons.push(b);
+    }
+    if l.verb() == "Review" && l.approvable().is_some_and(|a| !a.approved) {
+        // The user's own review, done outside GitHub (R3d): a button only
+        // where Review is the verb (it replaces nothing there); ⇧A
+        // works on every approvable line.
+        let mut b = button("Approve  (⇧A)", Act::OwnerApprove(l.clone()));
+        b.hover = Some("You reviewed this head: only commits after it bring the review back");
+        buttons.push(b);
+    }
+    if l.place.is_some() {
+        buttons.push(button("Open terminal  (o)", Act::Open(l.clone())));
+    }
+    let ci = l.top.as_ref().is_some_and(|t| t.is_ci());
+    // The engine's catalog: only what the branch's agent can resolve (I4h).
+    let delegable_kind = l.delegable();
+    let live = match &l.row {
+        Some(r) => !r.agents.is_empty(),
+        // The client's own queue: its CI line sends the failures to
+        // the worktree's agent, and says so when there is none.
+        None => true,
+    };
+    if c.delegation && delegable_kind && l.row.is_some() && !l.done() {
+        // Only an agent that runs can be delegated to; else restore it,
+        // or start one, first.
+        let restorable = l.place.as_ref().is_some_and(|p| c.restorable.contains(p));
+        let mut b = match (live, restorable) {
+            (true, _) => button(
+                format!("{}  (d)", l.delegate_label()),
+                if ci { Act::SendCi(l.clone()) } else { Act::Delegate(l.clone()) },
+            ),
+            (false, true) => button("Restore agent and delegate", Act::RestoreDelegate(l.clone())),
+            (false, false) => button("Spawn an agent for this", Act::SpawnDelegate(l.clone())),
+        };
+        b.hover = Some(if live {
+            "It comes back if the fact still holds"
+        } else {
+            "No agent runs here: it starts one, then hands it the item once its first turn ends"
+        });
+        buttons.push(b);
+    } else if ci && !c.delegation && live && delegable_kind {
+        // Older engines: the failures go to the agent as a prompt.
+        let mut b = button("Delegate to its agent  (d)", Act::SendCi(l.clone()));
+        b.hover = Some("It comes back if the fact still holds");
+        buttons.push(b);
+    }
+    let row_gestures = c.gestures && l.row.is_some() && !l.done();
+    if l.top.is_some() {
+        let mut b = button("Dismiss  (x)", Act::Dismiss(l.clone()));
+        b.hover = Some("Hide until it happens again, for every client");
+        buttons.push(b);
+    }
+    if l.top.is_some() || row_gestures {
+        buttons.push(button("Park until…  (z)", Act::ParkMenu(l.sel())));
+    }
+    if l.claim.is_some() || l.hold().is_some() {
+        buttons.push(button("Take back  (u)", Act::TakeBack(l.clone())));
+    } else if ((l.row.is_some() && !l.done()) || !c.engine) && l.passable() {
+        // Not where only the user may act: approve, answer, review, merge (I4h).
+        let mut b = button("Pass to orchestrator  (⇧O)", Act::Pass(l.clone()));
+        b.enabled = c.pass.is_ok() && l.row.is_some();
+        buttons.push(b);
+    }
+    let unpark = if l.zone == Zone::Parked { "Unpark  (u)" } else { "Clear  (u)" };
+    if c.gestures && l.claim.is_none() && l.gesture().is_some() {
+        buttons.push(button(unpark, Act::TakeBack(l.clone())));
+    }
+    if l.place.is_some() {
+        let mut b = button("Notes  (n)", Act::Notes(l.clone()));
+        b.more = true;
+        buttons.push(b);
+    }
+    if let Some(url) = &l.url
+        && l.verb() != "Merge"
+        && !reviewing
+    {
+        buttons.push(button("PR  (p)", Act::Pr(url.clone())));
+    }
+    if row_gestures {
+        let mut b = button("Label…  (l)", Act::LabelOpen(l.clone()));
+        b.hover = Some("Who has the ball, in your words (e.g. QA)");
+        buttons.push(b);
+        let mut b = button("Close…  (⇧X)", Act::CloseMenu(l.sel()));
+        b.hover = Some("Close the work item and stop its agent; the worktree, branch and PR stay");
+        buttons.push(b);
+    }
+    if c.gestures && l.row.is_some() && l.unseen(c.look) {
+        buttons.push(button("Seen  (m)", Act::SeenLine(l.clone())));
+    }
+    if c.why && l.row.is_some() {
+        let mut b = button("Why?  (w)", Act::Why(l.clone()));
+        b.hover = Some("The rule that put it here, and the facts it saw");
+        b.more = true;
+        buttons.push(b);
+    }
+    buttons
+}
+
+/// The actions: the first few as buttons, the rest under "More…".
+fn buttons_bar(ui: &mut Ui, buttons: Vec<Button>, acts: &mut Vec<Act>) {
+    let (buttons, mut rest) = bar(buttons, |b| b.more);
+    ui.horizontal_wrapped(|ui| {
+        for b in buttons {
+            let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
+            if let Some(h) = b.hover {
+                r = r.on_hover_text(h);
+            }
+            if r.clicked() {
+                acts.push(b.act);
+            }
+        }
+        if !rest.is_empty() {
+            ui.menu_button("More…", |ui| {
+                ui.set_min_width(220.0);
+                for b in rest.drain(..) {
+                    let mut r = ui.add_enabled(b.enabled, egui::Button::new(b.text));
+                    if let Some(h) = b.hover {
+                        r = r.on_hover_text(h);
+                    }
+                    if r.clicked() {
+                        acts.push(b.act);
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// The park, close and label forms.
+/// Why Pass is off, on a line of its own: wrapped, never cut.
+fn pass_reason(ui: &mut Ui, c: &LineCtx, l: &Line) {
+    if let Err(why) = c.pass
+        && l.row.is_some()
+        && !l.done()
+        && l.passable()
+    {
+        ui.add(egui::Label::new(RichText::new(why).small().color(c.t.muted)).wrap());
+    }
+}
+
+fn forms_block(ui: &mut Ui, c: &LineCtx, l: &Line, forms: &mut Forms, focus: bool, acts: &mut Vec<Act>) {
+    let t = c.t;
+    if forms.parking == Some(l.sel()) {
+        let whole = forms.park_whole || l.top.is_none();
+        egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let what = if whole { "Park the whole work item until" } else { "Park this item until" };
                     ui.label(RichText::new(what).small().color(t.muted));
@@ -3583,51 +3671,70 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
                 }
                 ui.label(RichText::new("1-5 choose · w whole work item · Esc close").small().color(t.muted));
             });
-        }
-        if forms.closing == Some(l.sel()) {
-            let agents: Vec<String> = l.row.as_ref().map(|r| r.agents.iter().map(|a| a.id.clone()).collect()).unwrap_or_default();
-            egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
-                ui.label(RichText::new(close_text(&agents, c.close_stop)).small().color(t.text));
-                ui.horizontal_wrapped(|ui| {
-                    let stop = if c.close_stop && !agents.is_empty() { " and stop" } else { "" };
-                    if ui.button(RichText::new(format!("Close as done{stop}")).small()).clicked() {
-                        acts.push(Act::Close(l.clone(), "done"));
-                    }
-                    if ui.button(RichText::new(format!("Close as dropped{stop}")).small()).clicked() {
-                        acts.push(Act::Close(l.clone(), "dropped"));
-                    }
-                    if ui.button(RichText::new("Cancel  (Esc)").small()).clicked() {
-                        acts.push(Act::CloseMenu(l.sel()));
-                    }
-                });
-            });
-        }
-        if let Some(label) = forms.labeling.as_mut().filter(|f| f.key == l.key) {
+    }
+    if forms.closing == Some(l.sel()) {
+        let agents: Vec<String> =
+            l.row.as_ref().map(|r| r.agents.iter().map(|a| a.id.clone()).collect()).unwrap_or_default();
+        egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).inner_margin(6).show(ui, |ui| {
+            ui.label(RichText::new(close_text(&agents, c.close_stop)).small().color(t.text));
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Ball with").small().color(t.muted));
-                for b in LABEL_BALLS {
-                    if ui.selectable_label(label.ball == b, RichText::new(b).small()).clicked() {
-                        label.ball = b.to_string();
-                    }
+                let stop = if c.close_stop && !agents.is_empty() { " and stop" } else { "" };
+                if ui.button(RichText::new(format!("Close as done{stop}")).small()).clicked() {
+                    acts.push(Act::Close(l.clone(), "done"));
                 }
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut label.text)
-                        .char_limit(LABEL_CHARS)
-                        .hint_text("e.g. QA")
-                        .desired_width(200.0),
-                );
-                if focus {
-                    edit.request_focus();
+                if ui.button(RichText::new(format!("Close as dropped{stop}")).small()).clicked() {
+                    acts.push(Act::Close(l.clone(), "dropped"));
                 }
-                let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
-                if ui.button("Save").clicked() || enter {
-                    acts.push(Act::LabelSave(label.clone()));
-                }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                    acts.push(Act::LabelCancel);
+                if ui.button(RichText::new("Cancel  (Esc)").small()).clicked() {
+                    acts.push(Act::CloseMenu(l.sel()));
                 }
             });
-        }
-    });
-    ui.add_space(2.0);
+        });
+    }
+    if let Some(label) = forms.labeling.as_mut().filter(|f| f.key == l.key) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Ball with").small().color(t.muted));
+            for b in LABEL_BALLS {
+                if ui.selectable_label(label.ball == b, RichText::new(b).small()).clicked() {
+                    label.ball = b.to_string();
+                }
+            }
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut label.text)
+                    .char_limit(LABEL_CHARS)
+                    .hint_text("e.g. QA")
+                    .desired_width(200.0),
+            );
+            if focus {
+                edit.request_focus();
+            }
+            let enter = (edit.lost_focus() || edit.has_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
+            if ui.button("Save").clicked() || enter {
+                acts.push(Act::LabelSave(label.clone()));
+            }
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                acts.push(Act::LabelCancel);
+            }
+        });
+    }
+}
+
+/// The lines a proposal's collapsed line no longer shows (H2): the
+/// orchestrator's release note, the last step, the suggestion.
+fn moved_lines(ui: &mut Ui, c: &LineCtx, l: &Line) {
+    let t = c.t;
+    if let Some(note) = l.released_note() {
+        ui.label(RichText::new(note).small().color(t.cyan));
+    }
+    if let Some(step) = l.row.as_ref().and_then(|r| r.last_step.as_ref()) {
+        let actor = if step.actor == "engine" { String::new() } else { format!(" · {}", step.actor) };
+        ui.label(
+            RichText::new(format!("last step: {} ({} ago{actor})", step.text, home::age(c.now - step.at)))
+                .small()
+                .color(t.muted),
+        );
+    }
+    if let Some(hint) = l.row.as_ref().and_then(|r| r.suggestion.as_deref()) {
+        ui.label(RichText::new(format!("suggestion: {hint}")).small().color(t.text));
+    }
 }

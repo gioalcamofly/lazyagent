@@ -909,6 +909,9 @@ pub struct Home {
     /// The selected and the expanded line, by [`Line::sel`].
     pub selected: Option<String>,
     pub expanded: Option<String>,
+    /// More lines drawn expanded, for the H2 proposal screenshots only
+    /// (goes with the dev-only style switches).
+    pub expanded_also: Vec<String>,
     /// An item behind the top one opened in its expanded line (a brief
     /// answered in place, I4g): the line's sel and the item's id.
     pub item_open: Option<(String, String)>,

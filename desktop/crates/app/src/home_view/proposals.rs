@@ -422,12 +422,9 @@ fn grid_row(ui: &mut Ui, c: &LineCtx, l: &Line, shown: Zone, selected: bool, cut
         cell(ui, GRID_NEXT, word.color(color));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             cell(ui, GRID_AGE, RichText::new(age_of(c, l, shown)).small().color(t.muted));
-            let agent = l
-                .running_agent()
-                .map(|a| (format!("{} ●", a.id), t.green))
-                .or_else(|| row.and_then(|r| r.agents.first()).map(|a| (a.id.clone(), t.muted)));
-            let (text, color) = agent.unwrap_or_default();
-            cell(ui, GRID_AGENT, RichText::new(text).small().color(color));
+            // Only an agent that runs: an idle id says nothing at a glance.
+            let agent = l.running_agent().map(|a| format!("{} ●", a.id)).unwrap_or_default();
+            cell(ui, GRID_AGENT, RichText::new(agent).small().color(t.green));
             let ci = match (pr.map(|p| p.ci.as_str()), l.ci_note()) {
                 (Some("red"), Some(_)) => ("✖", t.muted),
                 (Some("red"), None) => ("✖", t.red),
