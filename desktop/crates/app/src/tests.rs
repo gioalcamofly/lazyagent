@@ -2693,9 +2693,8 @@ fn home_shows_the_engines_rows_once_and_never_reorders_under_the_cursor() {
     let next: Vec<String> = h.state().state.home.next_round().iter().map(|l| l.name.clone()).collect();
     assert_eq!(next, ["cart"], "dimmed under the Round");
     h.get_by_label("Round (+1 next)");
-    h.get_by_label("next round");
     h.get_by_label("deliver now ▸");
-    h.get_by_label("2 items");
+    assert!(h.query_all_by_label_contains("  +1").count() >= 1, "the item behind the top one, counted");
     assert!(h.state().title.starts_with("(1 now · 1) "), "{}", h.state().title);
     // Back from a terminal is a cut point: the Round is delivered.
     h.key_press(egui::Key::G);
@@ -2728,10 +2727,18 @@ fn pass_to_orchestrator_is_offered_only_when_it_can_work() {
     h.run_steps(2);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    h.get_by_label("This engine is too old to pass items to the orchestrator: restart it (File → Restart…)");
+    // Off (too old an engine, then no orchestrator): under More…, its
+    // reason on hover; never a line of its own.
+    assert!(h.query_by_label("Pass to orchestrator  (⇧O)").is_none());
+    assert!(h.query_by_label_contains("too old to pass").is_none());
     h.state_mut().state.capabilities.as_mut().unwrap().push("claims".into());
     h.run_steps(2);
-    h.get_by_label("No orchestrator is running: start one (the ◆ Orchestrator row), then pass the item");
+    assert!(h.query_by_label("Pass to orchestrator  (⇧O)").is_none());
+    h.get_by_label("More…").click();
+    h.run_steps(2);
+    h.get_by_label("Pass to orchestrator  (⇧O)");
+    h.get_by_label("More…").click();
+    h.run_steps(2);
     tx.send(event(
         "agent.spawned",
         json!({"worktree_path": "__orchestrator__", "agent_id": "", "session_id": "so", "label": "Orchestrator",
@@ -2739,10 +2746,8 @@ fn pass_to_orchestrator_is_offered_only_when_it_can_work() {
     ))
     .unwrap();
     h.run_steps(2);
-    assert!(
-        h.query_by_label("No orchestrator is running: start one (the ◆ Orchestrator row), then pass the item")
-            .is_none()
-    );
+    // Usable: inline.
+    h.get_by_label("Pass to orchestrator  (⇧O)");
     // No engine behind this one: the gesture fails, and says so.
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::O);
     h.run_steps(2);
@@ -2964,6 +2969,7 @@ fn tracker_rows_and_items_show_on_home() {
     h.get_by_label("· 2 not started");
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
+    show_more(&mut h);
     h.get_by_label("github issues 41: returned by QA (10m ago)");
 }
 
@@ -2985,6 +2991,13 @@ fn fake_engine(
         Some(Ok(answer(method, params).unwrap_or_else(|| json!({}))))
     }));
     calls
+}
+
+/// Opens the expanded line's "Show more" (its items, the timeline, every
+/// fact).
+fn show_more(h: &mut Harness<'static, App>) {
+    h.get_by_label_contains("Show more ▸").click();
+    h.run_steps(2);
 }
 
 fn calls_of(calls: &Calls, method: &str) -> Vec<serde_json::Value> {
@@ -3079,8 +3092,7 @@ fn briefs_show_compactly_read_only_and_invalid_ones_ask_in_the_terminal() {
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "decision_get"), [json!({"id": "d1"})]);
-    h.get_by_label("brief by agent a2 · 2 options · reversible: yes · recommends A");
-    h.get_by_label("Retries: fixed or exponential backoff?");
+    assert!(h.query_all_by_label("Retries: fixed or exponential backoff?").count() >= 1);
     h.get_by_label("A  Exponential, cap 30 s — slower failure on outages   (recommended)");
     h.get_by_label("B  Fixed 2 s, 5 tries — 3/30 runs time out");
     h.get_by_label("Reversible: yes · If wrong: slower failures under load");
@@ -3141,7 +3153,6 @@ fn row_gestures_label_park_close_and_clear_through_the_engine() {
     let line = h.state().state.home.shown_in(Zone::Flight)[0].clone();
     assert_eq!((line.ball.as_str(), line.state.as_str()), ("others", "QA · CI running"));
     h.get_by_label("QA · CI running");
-    h.get_by_label_contains("labelled \"QA\" (others), by you");
     // z on a row with no inbox item parks the work item.
     h.key_press(egui::Key::Z);
     h.run_steps(2);
@@ -3218,6 +3229,8 @@ fn since_you_looked_fetches_the_timeline_and_marks_the_item_seen() {
     assert_eq!(calls_of(&calls, "status_timeline"), [json!({"key": "repo:billing"})]);
     let seen = calls_of(&calls, "status_seen");
     assert_eq!((seen.len(), &seen[0]["key"]), (1, &json!("repo:billing")));
+    h.get_by_label_contains("Show more ▸  2 since you looked");
+    show_more(&mut h);
     h.get_by_label("Since you looked");
     h.get_by_label("30m ago  commit  try fixed backoff");
     h.get_by_label("20m ago  ci  CI red");
@@ -3330,9 +3343,12 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     h.run_steps(2);
     assert_eq!(home_names(&h, Zone::Flight), ["billing", "search"]);
     h.get_by_label("looking");
-    h.get_by_label("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here");
-    // Shift+U: Revert, with an optional comment for the agent.
+    // Its decision, in the line's details.
     h.state_mut().state.home.selected = Some("repo:billing".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.get_by_label_contains("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here");
+    // Shift+U: Revert, with an optional comment for the agent.
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::U);
     h.run_steps(2);
     h.get_by_label_contains("Revert the orchestrator's B: agent a2 is told your override");
@@ -3342,7 +3358,7 @@ fn first_responder_presence_looking_decided_revert_and_counts() {
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "decision_revert"), [json!({"id": "d1", "comment": "use A, outages matter"})]);
     assert!(h.state().state.toasts.iter().any(|t| t.text == "Reverted: the agent is told."));
-    h.get_by_label("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here (final)");
+    h.get_by_label_contains("decided by orchestrator: B (Fixed 2 s, 5 tries) — fixed is enough here (final)");
     assert!(h.query_by_label("Revert…  (⇧U)").is_none(), "reverted once");
 }
 
@@ -3722,14 +3738,15 @@ fn a_red_run_shows_its_workflow_and_job_and_the_expanded_line_its_failed_log() {
     item["run"] = red_run(1);
     let (mut h, tx, calls) = ci_home(I7, item.clone());
     assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Round)[0].verb(), "Fix CI");
-    h.get_by_label("· CI red · Tests / unit (step: Run pytest)");
-    // Expanded: the failed log, read once per run.
+    h.get_by_label("CI red · Tests / unit (step: Run pytest)");
+    // Expanded: the failed log, read once per run, in its section.
     h.key_press(egui::Key::Enter);
     h.run_steps(4);
     assert_eq!(calls_of(&calls, "ci_log_summary"), [json!({"key": "repo:cart"})]);
-    h.get_by_label("Failed log");
+    h.get_by_label("CI failed");
     h.get_by_label("unit · Run pytest");
-    h.get_by_label("E   assert 1 == 2\nFAILED tests/test_cart.py::test_total");
+    h.get_by_label("E   assert 1 == 2");
+    h.get_by_label("FAILED tests/test_cart.py::test_total");
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "ci_log_summary").len(), 1, "not asked again for the same run");
     // A re-run that failed again (attempt 2): read again.
@@ -3793,10 +3810,11 @@ fn without_ci_tracking_a_red_pr_is_delegated_with_the_failure_prompt() {
     tx.send(event("pr_info.updated", json!({"path": "/r/repo-cart", "pr_info": pr_json()}))).unwrap();
     h.run_steps(2);
     // No run: the line keeps the engine's state.
-    h.get_by_label("· tests");
+    h.get_by_label("tests");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    assert!(h.query_by_label("Failed log").is_none());
+    // The problem's section, but no log asked for.
+    h.get_by_label("CI failed");
     assert!(calls_of(&calls, "ci_log_summary").is_empty());
     h.key_press(egui::Key::D);
     h.run_steps(2);
@@ -3946,9 +3964,7 @@ fn held_passed_and_released_rows_say_what_the_orchestrator_does() {
     let looking = text_of(&h.get_by_label_contains("looking · "));
     assert!(looking.ends_with(" left") && looking.contains("h "), "{looking}");
     assert_eq!(h.query_all_by_label("orchestrator").count(), 2, "both in the ball column");
-    h.get_by_label("orchestrator: needs a product call");
-    h.get_by_label("· needs a product call");
-    h.get_by_label("suggestion: close PR #14: its head is in develop (p opens the PR; closing it is yours)");
+    h.get_by_label("close PR #14: its head is in develop");
 }
 
 /// In flight's done rows: those with nothing to do fold into one "N done
@@ -3994,7 +4010,7 @@ fn done_rows_fold_into_one_group_folded_by_default() {
     // A done row with a suggestion stays visible, in place.
     assert_eq!(home_names(&h, crate::home::Zone::Flight), ["cart", "search", "docs"]);
     h.get_by_label("docs");
-    h.get_by_label("suggestion: close PR #47: its head is in develop (p opens the PR; closing it is yours)");
+    h.get_by_label("close PR #47: its head is in develop");
     // j/k skip the folded rows.
     h.key_press(egui::Key::Num4);
     h.run_steps(1);
@@ -4300,6 +4316,7 @@ fn in_flight_groups_by_project_with_waits_on_priority_and_not_started() {
     // Expanded: the project, what it waits on (in review), the feeder.
     h.state_mut().state.home.expanded = Some("repo:refunds".into());
     h.run_steps(2);
+    show_more(&mut h);
     h.get_by_label("project Shop · waits on cart (in review)");
     h.get_by_label_contains("from planner · low priority · https://board.example.com/c/refunds");
 }
@@ -4342,6 +4359,7 @@ fn a_waiting_item_sits_in_parked_with_its_reason_and_unparks() {
     assert_eq!(calls_of(&calls, "status_gesture"), [json!({"key": "repo:refunds", "kind": "clear"})]);
     h.state_mut().state.home.expanded = Some("repo:coupons".into());
     h.run_steps(2);
+    show_more(&mut h);
     h.get_by_label("waiting (board) for 2h 00m (design review), by feeder:board 1m ago");
 }
 
@@ -4891,7 +4909,7 @@ fn an_approval_is_answered_on_its_line_with_a_and_shift_d() {
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(h.state().state.view, crate::app::View::Home, "answered here, not in the terminal");
-    h.get_by_label("rm -rf build/ && npm run build -- --prod");
+    assert_eq!(h.query_all_by_label("rm -rf build/ && npm run build -- --prod").count(), 2, "line and ask");
     h.get_by_label("Approve  (a)");
     h.get_by_label("Deny  (⇧D)");
     // The bar names this line's keys only.
@@ -4978,7 +4996,7 @@ fn a_question_is_answered_in_a_field_under_its_line() {
     h.run_steps(3);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    h.get_by_label("Should the index include archived products?");
+    assert_eq!(h.query_all_by_label("Should the index include archived products?").count(), 2, "line and ask");
     h.event(egui::Event::Text("No, only live ones".into()));
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
@@ -5230,13 +5248,18 @@ fn a_working_line_reads_its_age_and_report_and_held_lines_their_last_step() {
     }
     h.run_steps(3);
     // Its report, and its age once, in the age column.
-    h.get_by_label("working · tests pass; opening the PR");
+    h.get_by_label("tests pass; opening the PR");
     assert!(h.query_by_label_contains("notes_append").is_none(), "never a tool name");
     h.get_by_label("verifying tests · 50m left");
-    h.get_by_label("last step: CI green (4m ago)");
     h.get_by_label("agent a3 · fixing CI red: tests");
     h.get_by_label("waits: waiting for input");
     assert!(h.query_all_by_label("orchestrator").count() >= 1);
+    // The held line's last step, in its details.
+    h.state_mut().state.home.selected = Some("repo:search".into());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    show_more(&mut h);
+    h.get_by_label("last step: CI green (4m ago)");
 }
 
 #[test]
@@ -5308,18 +5331,17 @@ fn labels_are_imperatives_items_are_counted_and_since_you_looked_says_nothing_ne
     h.run_steps(3);
     h.state_mut().state.home.cut(crate::app::unix_now());
     h.run_steps(2);
-    h.get_by_label("2 items");
-    assert!(h.query_by_label("+1").is_none());
+    // The count behind the top one, its words on hover.
+    h.get_by_label("npm test  +1");
     h.get_by_label("Request reviewer");
-    // Expanded: the short name is not repeated, nothing new, at most six
-    // buttons and the rest under More….
+    // Expanded: the short name is not repeated, nothing new, the rare
+    // actions under More….
     h.state_mut().state.home.selected = Some("repo:pdf".into());
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
+    show_more(&mut h);
     h.get_by_label("nothing new");
     assert_eq!(h.query_all_by_label("pdf").count(), 1, "the branch once, on the line");
-    h.get_by_label("More…").click();
-    h.run_steps(2);
     h.get_by_label("Close…  (⇧X)");
 }
 

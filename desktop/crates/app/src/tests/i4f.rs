@@ -66,7 +66,8 @@ fn a_deep_item_under_a_round_line_shows_in_to_sit_down_with_and_names_itself() {
     assert_eq!(home.shown_in(crate::home::Zone::Round).len(), 1);
     assert_eq!(home.deep_count(), 1, "the engine counts it in deep: so does Home");
     // "+ changes requested", not "2 items".
-    h.get_by_label("+ changes requested");
+    // "+1" (its words on hover), not "2 items".
+    assert_eq!(h.query_all_by_label_contains("  +1").count(), 1);
     assert!(h.query_by_label("2 items").is_none());
     // The ghost line in To sit down with: its verb, its state, its place.
     h.get_by_label("Address review");
@@ -76,6 +77,7 @@ fn a_deep_item_under_a_round_line_shows_in_to_sit_down_with_and_names_itself() {
     h.get_by_label("under its Fix CI in the Round").click();
     h.run_steps(3);
     assert_eq!(h.state().state.home.expanded.as_deref(), Some("repo:tax\nR:/r/repo-tax:7"));
+    show_more(&mut h);
     h.get_by_label("Its items");
     h.get_by_label_contains("1. Fix CI · CI red: e2e-suite · leads the line");
     h.get_by_label_contains("2. Address review · changes requested · this line");
@@ -120,10 +122,10 @@ fn a_ci_red_with_no_actions_run_says_whose_check_it_is() {
     h.key_press(egui::Key::Enter);
     h.run_steps(4);
     assert_eq!(calls_of(&calls, "ci_log_summary"), [json!({"key": "repo:tax"})], "asked once, with no run");
-    h.get_by_label("Failed log");
+    h.get_by_label("CI failed");
     h.get_by_label("no Actions log: check e2e-suite from CircleCI");
     h.get_by_label("e2e-suite · CircleCI");
-    h.get_by_label("open the check");
+    h.get_by_label("Open the check");
     h.run_steps(3);
     assert_eq!(calls_of(&calls, "ci_log_summary").len(), 1, "once per head, not per frame");
 }
@@ -360,7 +362,7 @@ fn home_i4f_screenshots() {
             s.home.selected = Some("repo:pdf".into());
         }
         h.run_steps(4);
-        h.get_by_label("+ changes requested");
+        h.get_by_label_contains("  +1");
         h.get_by_label_contains("a approve · ⇧D deny");
         let shot = |h: &mut Harness<'static, App>, name: &str| match h.render() {
             Ok(image) => {

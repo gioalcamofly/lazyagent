@@ -1,10 +1,9 @@
-//! H2: Home item layout proposals (docs/design/home-item-proposals.md). The
-//! same neutral sample (an approval, a red CI, a review, a brief, an agent
-//! working, a PR waiting on others, a hold, a delegated letter, a done row)
-//! drawn in every `home_item_style`, dark and light.
+//! H2: Home's grid line and expanded item (docs/design/home-items.md), on
+//! a neutral sample: an approval, a red CI with a review behind it, a
+//! review, a brief, an agent working, a PR waiting on others, a hold, a
+//! delegated letter, a done row.
 
 use super::*;
-use crate::home_view::{DetailStyle, ItemStyle};
 
 fn caps() -> Vec<&'static str> {
     I4E.iter()
@@ -137,18 +136,12 @@ fn timeline(key: &str, now: f64) -> serde_json::Value {
     json!({"key": key, "since": now - 3600.0, "seen_at": now - 3600.0, "entries": entries})
 }
 
-/// Home with the sample in `style`, `dark` or light, at `width`.
-fn home(style: ItemStyle, dark: bool, width: f32) -> Harness<'static, App> {
-    home_with(style, DetailStyle::Current, dark, width, 960.0)
-}
-
-fn home_with(style: ItemStyle, detail: DetailStyle, dark: bool, width: f32, height: f32) -> Harness<'static, App> {
+/// Home with the sample, `dark` or light, at `width` × `height`.
+fn home(dark: bool, width: f32, height: f32) -> Harness<'static, App> {
     let now = crate::app::unix_now();
     let caps = caps();
     let (mut app, tx) = engine_home(&caps);
     app.state.look_from = now;
-    app.state.home_item_style = style;
-    app.state.home_detail_style = detail;
     let mut h = Harness::builder().with_size([width, height]).build_ui_state(|ui, app: &mut App| app.draw(ui), app);
     h.run_steps(2);
     if dark != (h.state().state.theme.kind == ThemeKind::Dark) {
@@ -170,83 +163,98 @@ fn home_with(style: ItemStyle, detail: DetailStyle, dark: bool, width: f32, heig
     h
 }
 
-#[test]
-fn every_style_draws_the_sample() {
-    for style in ItemStyle::ALL {
-        let mut h = home(style, true, 1400.0);
-        h.get_by_label("Round");
-        assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Flight).len(), 5, "{style:?}");
-        h.run_steps(1);
-    }
-}
-
-/// docs/design/desktop-screenshots/h2-*.png: each style, dark and light,
-/// the same sample (written to the temp dir; copied by hand).
-#[test]
-fn h2_screenshots() {
-    let out = std::env::temp_dir();
-    for style in ItemStyle::ALL {
-        for (dark, tag, width) in [(true, "dark", 1400.0), (false, "light", 1400.0), (true, "narrow-dark", 1000.0)] {
-            let mut h = home(style, dark, width);
-            match h.render() {
-                Ok(image) => image.save(out.join(format!("lazyagent-desktop-h2-{}-{tag}.png", style.name()))).unwrap(),
-                Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
-                Err(_) => return,
-            }
-        }
-    }
-}
-
-/// The sample's three expanded items: an approval in Now, a red CI with a
-/// review behind it, a brief in To sit down with.
-fn expand_three(h: &mut Harness<'static, App>) {
+/// The sample's CI log and timelines, and `key` selected and expanded.
+fn expand(h: &mut Harness<'static, App>, key: &str) {
     let now = crate::app::unix_now();
-    let keys = ["repo:upload-resume".to_string(), format!("repo:{LONG}"), "repo:retry-policy".to_string()];
     let log: lazyagent_proto::types::CiLogSummary = serde_json::from_value(json!({
-        "key": keys[1], "runs": [], "text": "",
+        "key": format!("repo:{LONG}"), "runs": [], "text": "",
         "jobs": [{"name": "unit-tests", "step": "Run tests", "url": "", "total": 3, "lines": [
             "FAILED tests/test_retry.py::test_backoff_caps_at_30s - AssertionError: 45.0 > 30",
             "FAILED tests/test_retry.py::test_jitter_is_bounded - AssertionError",
+            "  assert 0.0 <= jitter <= 1.0",
+            "  where jitter = 1.4",
             "2 failed, 118 passed in 9.41s"]}]}))
     .unwrap();
     let s = &mut h.state_mut().state;
-    s.ci_logs.insert(keys[1].clone(), ((0, 0), Some(log)));
-    for k in &keys {
-        s.timelines.insert(k.clone(), serde_json::from_value(timeline(k, now)).unwrap());
+    s.ci_logs.insert(format!("repo:{LONG}"), ((0, 0), Some(log)));
+    for k in ["repo:upload-resume".to_string(), format!("repo:{LONG}"), "repo:retry-policy".to_string()] {
+        s.timelines.insert(k.clone(), serde_json::from_value(timeline(&k, now)).unwrap());
     }
-    s.home.selected = Some(keys[1].clone());
-    s.home.expanded = Some(keys[1].clone());
-    s.home.expanded_also = vec![keys[0].clone(), keys[2].clone()];
+    s.home.selected = Some(key.to_string());
+    s.home.expanded = Some(key.to_string());
     h.run_steps(4);
 }
 
 #[test]
-fn every_detail_style_draws_the_three_items() {
-    for detail in DetailStyle::ALL {
-        let mut h = home_with(ItemStyle::Grid, detail, true, 1400.0, 1500.0);
-        expand_three(&mut h);
-        // The approval's command and the brief's question, in every style.
-        h.get_by_label("npm test -- --runInBand src/upload");
-        assert!(h.query_all_by_label_contains("Retries: fixed or exponential backoff?").count() >= 1, "{detail:?}");
+fn the_grid_draws_the_sample() {
+    let h = home(true, 1400.0, 960.0);
+    h.get_by_label("Round");
+    for column in ["work item", "next", "state", "PR", "CI", "agent", "age"] {
+        h.get_by_label(column);
     }
+    assert_eq!(h.state().state.home.shown_in(crate::home::Zone::Flight).len(), 5);
+    // Only a running agent has a cell; the sub-lines are in the details.
+    h.get_by_label("a3 ●");
+    assert!(h.query_by_label("a2").is_none());
+    assert!(h.query_by_label_contains("last step:").is_none());
 }
 
-/// docs/design/desktop-screenshots/h2d-*.png: the grid line (d) with three
-/// items expanded, each detail style, dark, light and 1000 px.
 #[test]
-fn h2_detail_screenshots() {
+fn a_red_ci_opens_on_its_sections_and_every_action() {
+    let mut h = home(true, 1400.0, 1200.0);
+    expand(&mut h, &format!("repo:{LONG}"));
+    // A section per problem: the failed job by name, the log head framed.
+    h.get_by_label("CI failed");
+    h.get_by_label("unit-tests · Run tests");
+    h.get_by_label("Changes requested");
+    h.get_by_label("FAILED tests/test_retry.py::test_jitter_is_bounded - AssertionError");
+    assert!(h.query_by_label("2 failed, 118 passed in 9.41s").is_none(), "only the head while folded");
+    // Every usable action inline; Pass, off, under More… with its reason.
+    for b in ["Delegate all (2)  (d)", "Open terminal  (o)", "Dismiss  (x)", "Park until…  (z)", "PR  (p)"] {
+        h.get_by_label(b);
+    }
+    assert!(h.query_by_label("Pass to orchestrator  (⇧O)").is_none());
+    assert!(h.query_by_label_contains("No orchestrator is running").is_none());
+    // "Show more" says what it holds, and opens it.
+    h.get_by_label_contains("Show more ▸  2 items · 2 more log lines · 3 since you looked").click();
+    h.run_steps(3);
+    h.get_by_label("2 failed, 118 passed in 9.41s");
+    h.get_by_label("Since you looked");
+    h.get_by_label("Show less ▾");
+}
+
+#[test]
+fn an_approval_opens_on_its_command_and_answer_only() {
+    let mut h = home(true, 1400.0, 1200.0);
+    expand(&mut h, "repo:upload-resume");
+    h.get_by_label("npm test -- --runInBand src/upload");
+    h.get_by_label("Approve  (a)");
+    h.get_by_label("Deny  (⇧D)");
+    assert!(h.query_by_label("Agent a1").is_none());
+    assert!(h.query_by_label_contains("sent to the agent's prompt").is_none());
+}
+
+/// docs/design/desktop-screenshots/h2-*.png (written to the temp dir;
+/// copied by hand): the red CI expanded dark, light and at 1000 px; the
+/// approval and the brief, dark.
+#[test]
+fn h2_screenshots() {
     let out = std::env::temp_dir();
-    for detail in DetailStyle::ALL {
-        for (dark, tag, width) in [(true, "dark", 1400.0), (false, "light", 1400.0), (true, "narrow-dark", 1000.0)] {
-            let mut h = home_with(ItemStyle::Grid, detail, dark, width, 1500.0);
-            expand_three(&mut h);
-            match h.render() {
-                Ok(image) => {
-                    image.save(out.join(format!("lazyagent-desktop-h2d-{}-{tag}.png", detail.name()))).unwrap()
-                }
-                Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
-                Err(_) => return,
-            }
+    let ci = format!("repo:{LONG}");
+    let shots = [
+        ("ci-dark", ci.as_str(), true, 1400.0),
+        ("ci-light", ci.as_str(), false, 1400.0),
+        ("ci-narrow-dark", ci.as_str(), true, 1000.0),
+        ("approval-dark", "repo:upload-resume", true, 1400.0),
+        ("brief-dark", "repo:retry-policy", true, 1400.0),
+    ];
+    for (tag, key, dark, width) in shots {
+        let mut h = home(dark, width, 1050.0);
+        expand(&mut h, key);
+        match h.render() {
+            Ok(image) => image.save(out.join(format!("lazyagent-desktop-h2-{tag}.png"))).unwrap(),
+            Err(e) if std::env::var("LAZYAGENT_REQUIRE_GPU").as_deref() == Ok("1") => panic!("{e}"),
+            Err(_) => return,
         }
     }
 }

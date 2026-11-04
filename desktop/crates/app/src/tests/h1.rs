@@ -1,6 +1,5 @@
 //! H1: a Home item opens on a click anywhere on its surface (its padding,
-//! its state column, a second line, the gap between its lines); a button
-//! inside it does only its own thing.
+//! its state column); a button inside it does only its own thing.
 
 use super::*;
 
@@ -11,7 +10,7 @@ fn caps() -> Vec<&'static str> {
     I4E.iter().copied().chain(["rules", "actions", "item_capabilities", "delegate_all"]).collect()
 }
 
-/// A Round line with CI red, delegable, and a suggestion as its second line.
+/// A Round line with CI red, delegable.
 fn home() -> (Harness<'static, App>, Calls) {
     let (app, tx) = engine_home(&caps());
     let mut h = harness(app);
@@ -71,16 +70,14 @@ fn opened(h: &Harness<'static, App>) -> (Option<String>, Option<String>) {
 fn a_click_anywhere_on_an_item_opens_it() {
     let (mut h, _) = home();
     let verb = rect(&h, "Fix CI");
-    let state = h.get_by_label("· tests").rect();
+    let state = h.get_by_label("tests").rect();
     let age = rect(&h, "10m");
-    let second = rect(&h, "suggestion: rerun the tests");
     let points = [
         ("left padding", egui::pos2(verb.left() - 24.0, verb.center().y)),
         ("right edge", egui::pos2(age.right() + 4.0, age.center().y)),
         ("state column", state.center()),
-        ("second line", second.center()),
-        ("gap between lines", egui::pos2(verb.center().x, (verb.bottom() + second.top()) / 2.0)),
-        ("bottom padding", egui::pos2(verb.center().x, second.bottom() + 2.0)),
+        ("gap between columns", egui::pos2((verb.right() + state.left()) / 2.0, verb.center().y)),
+        ("bottom padding", egui::pos2(verb.center().x, verb.bottom() + 2.0)),
     ];
     for (what, pos) in points {
         h.state_mut().state.home.selected = None;
@@ -97,8 +94,8 @@ fn a_click_anywhere_on_an_item_opens_it() {
 #[test]
 fn the_surface_is_highlighted_and_shows_a_pointer_on_hover() {
     let (mut h, _) = home();
-    let second = rect(&h, "suggestion: rerun the tests");
-    h.event(egui::Event::PointerMoved(second.center()));
+    let state = h.get_by_label("tests").rect();
+    h.event(egui::Event::PointerMoved(state.center()));
     h.run_steps(2);
     assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::PointingHand);
 }
