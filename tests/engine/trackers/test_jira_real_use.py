@@ -152,7 +152,7 @@ async def test_error_bodies_and_hints():
         ("feat_Abc-123", "ABC-123", ["ABC"]),
         ("xabc-123", None, ["ABC"]),            # not a word of its own
         ("abc-1234", "ABC-1234", ["ABC"]),
-        ("MY_PROJ-7-x", "MY_PROJ-7", ["MY_PROJ"]),
+        ("MY_APP-7-x", "MY_APP-7", ["MY_APP"]),
         ("fix-123", None, ["ABC"]),
     ],
 )
