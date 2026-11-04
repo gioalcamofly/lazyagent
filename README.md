@@ -290,7 +290,7 @@ provider = "claude"
 # agent files a brief of its own). Nothing is sent, and no attempt counted,
 # while the branch's agent runs or holds the ball by its own status_report; an
 # attempt whose agent ends its turn waiting on you (a brief, a question, an
-# approval) is waiting, not failed. The desktop writes these keys too.
+# approval), or has not had its first turn yet, is waiting, not failed. The desktop writes these keys too.
 # auto_delegate = []
 # auto_delegate_target = "owner"   # or "orchestrator"
 # auto_delegate_max_per_day = 10
@@ -323,9 +323,9 @@ provider = "claude"
 # max_concurrent_agents = 8
 # Pass to orchestrator: how long a claim lasts (seconds).
 # claim_ttl_s = 7200
-# The finished work (agent done, changes requested) of agents the orchestrator
-# spawned is held for it this long first, then comes to you as "orchestrator
-# did not respond" (minutes; 0 turns it off).
+# The finished work (agent done after a turn, changes requested) of agents the
+# orchestrator spawned is held for it this long first, then comes to you as
+# "orchestrator did not respond" (minutes; 0 turns it off).
 # hold_spawned_ttl_min = 60
 # First responder: a worker's brief or question goes to a running orchestrator
 # first; it answers within its mandate or escalates. Unanswered after this many
