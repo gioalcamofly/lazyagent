@@ -122,6 +122,8 @@ class AgentFact:
     status: str
     detail: str = ""
     since: float = 0.0
+    # Whether it has had a turn since it started (AgentState.turned).
+    turned: bool = True
 
 
 @dataclass(frozen=True)
@@ -1833,7 +1835,8 @@ class StatusProjection:
                     self._saw[path] = now
                 known = since[agent_id] = (status, now)
             facts.append(
-                AgentFact(agent_id, status, state.detail if state else "", known[1])
+                AgentFact(agent_id, status, state.detail if state else "", known[1],
+                          state.turned if state else True)
             )
         if any(a not in ids for a in since):
             # An agent went: something happened there.

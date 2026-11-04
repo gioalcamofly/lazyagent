@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from lazyagent.engine.manifest import clip_instruction
@@ -20,6 +20,9 @@ class AgentLifecycleEvent:
     # The question the finished turn ends with (an idle status only): the
     # agent asked in prose and waits (engine/questions.py).
     question: str = ""
+    # Whether the agent has had a turn since its process started (see
+    # AgentObserver.turned), as of this event.
+    turned: bool = True
 
 
 class AgentObserver:
@@ -37,6 +40,12 @@ class AgentObserver:
     #: their status from hooks or logs do not, and the session then skips
     #: rendering the screen to text for them (proposal 0005).
     needs_screen: bool = False
+
+    #: Whether the agent has had a turn (a prompt submitted, or a turn
+    #: ended) since its process started. An agent at its prompt with none
+    #: has finished nothing: a restore, or a spawn with no instruction. True
+    #: for the providers that do not say, so they read as before.
+    turned: bool = True
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return []
@@ -82,6 +91,10 @@ class CompositeObserver(AgentObserver):
     @property
     def first_prompt(self) -> str | None:  # type: ignore[override]
         return next((o.first_prompt for o in self._observers if o.first_prompt), None)
+
+    @property
+    def turned(self) -> bool:  # type: ignore[override]
+        return all(observer.turned for observer in self._observers)
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return _flatten(observer.on_process_started() for observer in self._observers)
@@ -167,14 +180,27 @@ class JsonlTailObserver(AgentObserver):
 class ClaudeHooksObserver(JsonlTailObserver):
     """Observer that tails Claude hook events written to a JSONL file."""
 
-    def __init__(self, log_path: str, temp_dir: str | None = None) -> None:
+    def __init__(
+        self, log_path: str, temp_dir: str | None = None, *, prompted: bool = False
+    ) -> None:
         super().__init__(log_path, temp_dir=temp_dir)
         # False between the main agent's Stop and the next prompt.
         self._turn_open = True
         # The question the last finished turn ended with, until the next one.
         self._question = ""
+        # Started with an instruction (the CLI's prompt argument): its
+        # SessionStart comes before that prompt's UserPromptSubmit.
+        self._prompted = prompted
+        self.turned = False
 
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
+        event = self._map(data)
+        if event is not None and event.turned != self.turned:
+            event = replace(event, turned=self.turned)
+        return event
+
+    def _map(self, data: dict) -> AgentLifecycleEvent | None:
+
         event_name = data.get("hook_event_name")
         conversation = data.get("session_id")
         if isinstance(conversation, str) and conversation and not data.get("agent_id"):
@@ -215,6 +241,14 @@ class ClaudeHooksObserver(JsonlTailObserver):
         if event_name == "SessionStart" and not data.get("agent_id"):
             if data.get("source") == "compact":
                 return None  # mid-turn: the turn goes on
+            if self._prompted and not self.turned:
+                # Spawned with an instruction: its first prompt is on the
+                # way, so it is not at its prompt, nor done with anything.
+                return AgentLifecycleEvent(
+                    status=AgentStatus.RUNNING,
+                    confidence=LifecycleConfidence.HIGH,
+                    detail="starting",
+                )
             # At its prompt before any turn: a restore (``--resume``) types
             # nothing, so without this its first output left it running
             # until the hang check called it possibly hanged.
@@ -225,6 +259,8 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail="at its prompt",
             )
         if event_name == "UserPromptSubmit":
+            if not data.get("agent_id"):
+                self.turned = True
             self._turn_open = True
             self._question = ""
             prompt = data.get("prompt")
@@ -244,6 +280,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail="prompt submitted",
             )
         if event_name == "Stop":
+            self.turned = True
             self._turn_open = False
             self._question = _stop_question(data)
             # In interactive PTY sessions, Stop means Claude finished responding
