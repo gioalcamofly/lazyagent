@@ -1,0 +1,11 @@
+{
+  "status": 403,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "errorMessages": [
+      "Unauthorized; scope does not match"
+    ]
+  }
+}

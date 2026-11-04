@@ -10,6 +10,8 @@
   items, from its engine (proposal 0013); ``--why``: the rule behind a row.
 - ``lazyagent rules {check,show,allow,doc} [repo]``: your rule files
   (proposal 0014).
+- ``lazyagent trackers check [adapter] [repo]``: an issue-tracker adapter's
+  config and credentials against its tracker, read-only (needs no engine).
 - ``lazyagent prompts {install,status,uninstall,diff}``: lazyagent's guidance
   in your agent CLIs' prompts (:mod:`lazyagent.prompts.cli`).
 - ``lazyagent host …``: the TUI in a web page (experimental).
@@ -30,7 +32,9 @@ import sys
 
 from lazyagent import __version__
 
-SUBCOMMANDS = ("engine", "status", "rules", "pr", "prompts", "host", "mcp", "desktop", "update")
+SUBCOMMANDS = (
+    "engine", "status", "rules", "pr", "trackers", "prompts", "host", "mcp", "desktop", "update",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,8 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="TUI for managing coding agents across git worktrees",
         epilog="Subcommands: lazyagent engine {start,stop,restart,status,logs,restore} [repo] "
         "(the engine that owns the agents); lazyagent status [repo] [--json] "
-        "[--all] [--why KEY] (every branch: who has the ball, its state and age); "
+        "[--all] [--links] [--why KEY] (every branch: who has the ball, its state and age); "
         "lazyagent rules {check,show,allow,doc} [repo] (your rules.toml); "
+        "lazyagent trackers check [adapter] [repo] (an issue tracker's config and "
+        "credentials, read-only); "
         "lazyagent pr approve <branch|#n> [repo] [--revoke] (your approval of a PR's "
         "head, outside GitHub); "
         "lazyagent prompts {install,status,uninstall,diff} (lazyagent's guidance in "
@@ -91,6 +97,10 @@ def main(argv: list[str] | None = None) -> None:
         from lazyagent.engine.cli import pr_main
 
         sys.exit(pr_main(argv[1:]))
+    if argv[:1] == ["trackers"]:
+        from lazyagent.engine.cli import trackers_main
+
+        sys.exit(trackers_main(argv[1:]))
     if argv[:1] == ["prompts"]:
         from lazyagent.prompts.cli import main as prompts_main
 

@@ -2960,11 +2960,73 @@ fn tracker_rows_and_items_show_on_home() {
     h.run_steps(2);
     let line = h.state().state.home.shown_in(Zone::Round)[0].clone();
     assert_eq!((line.verb(), line.url.as_deref()), ("Update task", Some("https://example.com/issues/41")));
+    assert_eq!(line.task_url().as_deref(), Some("https://example.com/issues/41"));
     h.get_by_label("In flight");
     h.get_by_label("· 2 not started");
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     h.get_by_label("github issues 41: returned by QA (10m ago)");
+}
+
+/// The URL the app asked the OS to open within a few frames, if any.
+fn opened_url(h: &mut Harness<'static, App>) -> Option<String> {
+    // The frame that took the key or the click may be the last one run.
+    (0..4).find_map(|i| {
+        if i > 0 {
+            h.step();
+        }
+        h.output().platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
+            _ => None,
+        })
+    })
+}
+
+#[test]
+fn a_tracker_task_opens_beside_the_pr() {
+    let (app, tx) = engine_home(&["status", "actionables"]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    let jira = "https://example.atlassian.net/browse/SHOP-12";
+    let pr = "https://github.com/o/r/pull/9";
+    let mut r = status_row("SHOP-12-sso", "in_flight", None, "others", "code review", 60.0);
+    r["urls"] = json!([pr, jira]);
+    r["pr"] =
+        json!({"number": 9, "state": "OPEN", "review": "REVIEW_REQUIRED", "ci": "green", "mergeable": "MERGEABLE"});
+    r["tracker"] = json!({"adapter": "jira", "key": "SHOP-12", "url": jira, "status": "In Review",
+                          "state": "code review", "at": crate::app::unix_now() - 60.0, "stale": false});
+    tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.home.selected = Some("repo:SHOP-12-sso".into());
+    h.state_mut().state.home.expanded = Some("repo:SHOP-12-sso".into());
+    h.run_steps(4);
+    h.get_by_label("jira SHOP-12: code review");
+    h.get_by_label("PR  (p)");
+    h.get_by_label("SHOP-12  (⇧P)").click();
+    assert_eq!(opened_url(&mut h).as_deref(), Some(jira));
+
+    // No PR yet: the task's link is not offered as a PR.
+    let mut r = status_row("SHOP-13-x", "in_flight", None, "others", "to do", 60.0);
+    r["urls"] = json!(["https://example.atlassian.net/browse/SHOP-13"]);
+    r["tracker"] = json!({"adapter": "jira", "key": "SHOP-13", "url": "https://example.atlassian.net/browse/SHOP-13",
+                          "status": "To Do", "state": "To Do", "at": crate::app::unix_now() - 60.0, "stale": false});
+    tx.send(event("status.updated", json!({"row": r}))).unwrap();
+    h.run_steps(2);
+    h.state_mut().state.home.selected = Some("repo:SHOP-13-x".into());
+    h.state_mut().state.home.expanded = Some("repo:SHOP-13-x".into());
+    h.run_steps(4);
+    h.get_by_label("SHOP-13  (⇧P)");
+    assert!(h.query_by_label("PR  (p)").is_none());
+
+    // ⇧P on a line with no tracker task says so.
+    tx.send(event("status.updated", json!({"row": status_row("plain", "in_flight", None, "agent", "x", 60.0)})))
+        .unwrap();
+    h.run_steps(2);
+    h.state_mut().state.home.selected = Some("repo:plain".into());
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::P);
+    h.run_steps(2);
+    assert!(h.state().state.toasts.iter().any(|t| t.text == "No tracker task for this item."));
 }
 
 // --- Home, I4c: gestures, To sit down with, briefs, since you looked, and

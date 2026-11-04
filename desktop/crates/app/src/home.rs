@@ -271,6 +271,20 @@ impl Line {
         self.row.as_ref().and_then(|r| r.approvable.as_ref()).filter(|_| !self.done() && self.ghost.is_none())
     }
 
+    /// The row's tracker task (`row.tracker`), else a tracker item's: its
+    /// key (or "Task") and link (⇧P).
+    pub fn task(&self) -> Option<(String, String)> {
+        if let Some(tr) = self.row.as_ref().and_then(|r| r.tracker.as_ref()).filter(|t| !t.url.is_empty()) {
+            return Some((tr.key.clone(), tr.url.clone()));
+        }
+        let top = self.top.as_ref().filter(|t| t.kind == "tracker_status")?;
+        top.pr_url.clone().map(|url| ("Task".to_string(), url))
+    }
+
+    pub fn task_url(&self) -> Option<String> {
+        self.task().map(|(_, url)| url)
+    }
+
     /// What to review on the line (status_list field `review_commits`,
     /// I4j): only where Approve applies.
     pub fn review_commits(&self) -> Option<&ReviewCommits> {

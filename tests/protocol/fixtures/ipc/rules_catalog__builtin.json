@@ -33,7 +33,7 @@
         },
         {
           "id": "open_tracker",
-          "key": "p",
+          "key": "Shift+P",
           "label": "The tracker task"
         },
         {
@@ -264,8 +264,13 @@
             "where": "home"
           },
           {
-            "does": "Its PR (or tracker task)",
+            "does": "Its PR (or, with none, its link)",
             "keys": "p",
+            "where": "home"
+          },
+          {
+            "does": "Its tracker task (e.g. the Jira issue)",
+            "keys": "\u21e7P",
             "where": "home"
           },
           {
