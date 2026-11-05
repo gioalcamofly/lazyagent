@@ -3006,6 +3006,9 @@ fn a_tracker_task_opens_beside_the_pr() {
     h.state_mut().state.home.selected = Some("repo:SHOP-12-sso".into());
     h.state_mut().state.home.expanded = Some("repo:SHOP-12-sso".into());
     h.run_steps(4);
+    // The tracker's state is a fact, under Show more; its button is not.
+    h.get_by_label_contains("Show more").click();
+    h.run_steps(4);
     h.get_by_label("jira SHOP-12: code review");
     h.get_by_label("PR  (p)");
     h.get_by_label("SHOP-12  (⇧P)").click();
