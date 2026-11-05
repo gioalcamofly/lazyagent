@@ -310,7 +310,8 @@ provider = "claude"
 # auto_delegate_skip_permissions = true
 # An agent at work with no output for this long reads "agent may hang" (at
 # least 60 s). On Linux it is not while its process tree used CPU since the
-# last check, a minute ago (a long build or eval suite in the foreground).
+# last check, a minute ago (a long build or eval suite in the foreground), nor
+# while a Claude agent waits on its own background work (docs/guides/home.md).
 # Also read from the global $XDG_CONFIG_HOME/lazyagent/config.toml's [inbox]
 # (every repo; this file wins; an invalid value there is ignored with a
 # warning). Unset in both: $LAZYAGENT_HANG_SECONDS (the engine's environment),
