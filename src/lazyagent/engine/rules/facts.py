@@ -285,6 +285,12 @@ def _row_first_failing(c: RowContext) -> Any:
     return UNKNOWN if pr is None else _failing_check(pr)
 
 
+def _idle_count(c: RowContext) -> int:
+    # An agent at its prompt with no turn yet (a restore, a bare spawn) has
+    # no turn over.
+    return sum(1 for a in c.facts.agents if a.status in _IDLE and a.turned)
+
+
 def _count(statuses: frozenset[str]) -> Getter:
     def get(c: RowContext) -> int:
         return sum(1 for a in c.facts.agents if a.status in statuses)
@@ -683,7 +689,7 @@ _fact("agents.running", NUM, "the agents at work (running or starting)", _REG,
       "on agent.* events", "free", row=_count(_RUNNING),
       item=lambda c: sum(1 for a in c.place.agents if a.status in _RUNNING))
 _fact("agents.idle", NUM, "the agents whose turn is over", _REG, "on agent.* events",
-      "free", row=_count(_IDLE))
+      "free", row=_idle_count)
 _fact("agents.statuses", set_of("agent_status", AGENT_STATUSES), "the agents' statuses",
       _REG, "on agent.* events", "free",
       row=lambda c: frozenset(a.status for a in c.facts.agents),
@@ -698,6 +704,9 @@ _fact("agent.detail", TEXT, "the agent's detail line", _REG, "on agent.* events"
       item=_agent("detail"))
 _fact("agent.question", TEXT, "the question the agent's finished turn ends with", _REG,
       "on agent.* events", "free", item=_agent("question"))
+_fact("agent.turned", BOOL,
+      "the agent has had a turn since it started (not a restore or a bare spawn at its prompt)",
+      _REG, "on agent.* events", "free", item=_agent("turned"))
 _fact("place.is_orchestrator", BOOL, "the orchestrator's own place", _REG, "static",
       "free", item=_is_orchestrator)
 _fact("place.agent_holds", BOOL,

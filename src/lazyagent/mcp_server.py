@@ -1254,13 +1254,15 @@ async def work_items_upsert(
     never starts a task on its own.
 
     Args:
-        url: The task's http(s) URL (the dedupe key).
+        url: The task's http(s) URL (the dedupe key); with a tracker adapter
+            on, also a bare key it reads ("SHOP-12" with Jira: its link).
         title: Its title, as the user knows it.
         source: Who feeds it, e.g. "planner" (at most
             [status] max_open_per_source open items each, 50 by default).
         priority: "high", "medium" or "low": orders it (and its inbox items)
             within its level.
-        ticket: Its ticket key (e.g. "ABC-123"); default: read from the URL.
+        ticket: Its ticket key (e.g. "ABC-123", any case); default: read from
+            the URL (a Jira browse link's key first).
         branch: The branch it is worked on, when it has no ticket key.
         project: {"id", "title", "policy": {"continue_while_review": bool}}:
             rows group by project; with continue_while_review the
@@ -1297,7 +1299,7 @@ async def work_items_close(url: str) -> dict:
     dropped where you track it. Closing an unknown URL is not an error.
 
     Args:
-        url: The task's URL, as upserted.
+        url: The task's URL, as upserted (or the bare key that stood for it).
 
     Returns:
         Object with url, ``closed`` (false: there was none) and the ``item``.

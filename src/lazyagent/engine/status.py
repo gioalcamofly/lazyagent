@@ -122,6 +122,8 @@ class AgentFact:
     status: str
     detail: str = ""
     since: float = 0.0
+    # Whether it has had a turn since it started (AgentState.turned).
+    turned: bool = True
 
 
 @dataclass(frozen=True)
@@ -1537,8 +1539,14 @@ class StatusProjection:
             item["startable"] = self._startable(record)
             out[record["url"]] = item
         if hub.enabled:
+            # A feeder's item for the same task (its link or its key) wins,
+            # waiting or not.
+            fed = {t.casefold() for r in work_items.records.values()
+                   if (t := work_items.ticket(r))}
             for adapter, task in hub.not_started_tasks(branches):
                 url = task.url or f"{adapter}:{task.key}"
+                if task.key.casefold() in fed:
+                    continue
                 out.setdefault(url, {
                     "url": url,
                     "title": task.title,
@@ -1833,7 +1841,8 @@ class StatusProjection:
                     self._saw[path] = now
                 known = since[agent_id] = (status, now)
             facts.append(
-                AgentFact(agent_id, status, state.detail if state else "", known[1])
+                AgentFact(agent_id, status, state.detail if state else "", known[1],
+                          state.turned if state else True)
             )
         if any(a not in ids for a in since):
             # An agent went: something happened there.
@@ -2004,9 +2013,13 @@ class _Column:
     values: list[str] = field(default_factory=list)
 
 
-def format_table(result: dict[str, Any], now: float | None = None) -> str:
+def format_table(
+    result: dict[str, Any], now: float | None = None, *, links: bool = False
+) -> str:
     """``status_list``'s answer as the plain-text table ``lazyagent status``
-    prints (and the orchestrator shows as it is)."""
+    prints (and the orchestrator shows as it is). ``links``: each row's
+    URLs on the lines under it (the PR's, the feeder's, the tracker task's,
+    named by its key)."""
     now = time.time() if now is None else now
     counts = result["counts"]
     head = (
@@ -2048,4 +2061,23 @@ def format_table(result: dict[str, Any], now: float | None = None) -> str:
         lines.append(
             "  ".join(c.values[i].ljust(c.width) for c in columns).rstrip()
         )
+        if links:
+            lines += [f"    {text}" for text in row_links(rows[i])]
     return "\n".join(lines)
+
+
+def row_links(row: dict[str, Any]) -> list[str]:
+    """``PR #12 <url>``, ``SHOP-12 <url>`` (the tracker task), then the
+    row's other URLs."""
+    out: list[str] = []
+    urls = list(row.get("urls") or ())
+    tracker = row.get("tracker") or {}
+    pr = row.get("pr") or {}
+    for url in urls:
+        if tracker.get("url") == url:
+            out.append(f"{tracker.get('key') or 'task'} {url}")
+        elif pr.get("number") and url == urls[0]:
+            out.append(f"PR #{pr['number']} {url}")
+        else:
+            out.append(url)
+    return out

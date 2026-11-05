@@ -1,0 +1,16 @@
+{
+  "status": 429,
+  "headers": {
+    "X-RateLimit-Limit": "100",
+    "X-RateLimit-Remaining": "0",
+    "X-RateLimit-Reset": "2026-10-22T16:02:00Z",
+    "RateLimit-Reason": "jira-burst-based",
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "errorMessages": [
+      "Rate limit exceeded."
+    ],
+    "errors": {}
+  }
+}

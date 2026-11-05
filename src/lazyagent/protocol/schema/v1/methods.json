@@ -996,7 +996,7 @@
       "type": "object",
       "required": ["url", "title", "source"],
       "properties": {
-        "url": {"type": "string", "description": "http(s); the dedupe key."},
+        "url": {"type": "string", "description": "http(s); the dedupe key. With a tracker adapter on, also a bare key it reads (SHOP-12 with Jira), stored as its link."},
         "title": {"type": "string"},
         "source": {"type": "string", "minLength": 1, "description": "At most 32 letters, digits, _ . -. Who feeds it; [status] max_open_per_source (50) open items each."},
         "priority": {"enum": ["high", "medium", "low"], "default": "medium"},

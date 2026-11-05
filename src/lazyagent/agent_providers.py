@@ -286,8 +286,13 @@ class AgentProvider:
         context = self.build_runtime_context(worktree_path)
         return self.create_observer_from_context(context)
 
-    def create_observer_from_context(self, context: ProviderRuntimeContext):
-        """Create the lifecycle observer for the prepared runtime context."""
+    def create_observer_from_context(
+        self, context: ProviderRuntimeContext, *, prompted: bool = False
+    ):
+        """Create the lifecycle observer for the prepared runtime context.
+
+        ``prompted``: the agent starts with an instruction, so it has a
+        turn coming before it is at its prompt."""
         from lazyagent.agent_observers import (
             ClaudeHooksObserver,
             CodexAppServerObserver,
@@ -302,6 +307,7 @@ class AgentProvider:
                 ClaudeHooksObserver(
                     context.metadata["hook_log_path"],
                     temp_dir=context.metadata["temp_dir"],
+                    prompted=prompted,
                 )
             )
         elif self.name == "codex":

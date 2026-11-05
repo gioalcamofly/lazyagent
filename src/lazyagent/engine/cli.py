@@ -550,6 +550,12 @@ def build_status_parser() -> argparse.ArgumentParser:
         help="Also merged, closed and stale branches",
     )
     parser.add_argument(
+        "--links",
+        action="store_true",
+        help="Under each row, its links: the PR, the feeder's and the tracker "
+        "task's (e.g. a Jira issue)",
+    )
+    parser.add_argument(
         "--why",
         metavar="KEY",
         help="Why this row (a key or a branch) is in its state: the rule, its "
@@ -601,7 +607,7 @@ def status_main(argv: list[str] | None = None) -> int:
 
         print(format_explain(result), flush=True)
     else:
-        print(format_table(result), flush=True)
+        print(format_table(result, links=args.links), flush=True)
         _prompts_notice(root)
     return 0
 
@@ -699,6 +705,111 @@ def pr_main(argv: list[str] | None = None) -> int:
     else:
         print(f"{result['key']}: approved #{result['pr']} at {result['sha'][:7]}", flush=True)
     return 0
+
+
+# ----------------------------------------------------------------------
+# lazyagent trackers
+# ----------------------------------------------------------------------
+
+
+def build_trackers_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lazyagent trackers",
+        description="Your issue-tracker adapters (trackers.toml). Needs no engine.",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="{check}")
+    check = commands.add_parser(
+        "check", help="Check an adapter's config and credentials against its tracker",
+        description="Read trackers.toml (and the repo's .lazyagent/trackers.toml), "
+        "then, read-only, call the tracker: who you are signed in as, one search "
+        "of the issues assigned to you, and the status names to map in "
+        "[<adapter>.status] / [<adapter>.qa]. The token is never printed.")
+    check.add_argument("adapter", nargs="?", default="jira",
+                       help="The adapter's table in trackers.toml (default: jira)")
+    check.add_argument("repo", nargs="?", default=None,
+                       help="Path to git repository, for its mapping overrides "
+                       "(default: auto-detect from cwd; none outside a repo)")
+    return parser
+
+
+_MARK = {"ok": "ok  ", "warn": "warn", "fail": "FAIL", "info": "    "}
+
+
+def trackers_main(argv: list[str] | None = None) -> int:
+    """``lazyagent trackers check [adapter] [repo]``: exit 0 when nothing
+    failed, 1 otherwise, 2 on usage."""
+    from lazyagent.engine import trackers
+    from lazyagent.worktree_manager import WorktreeManagerError
+
+    parser = build_trackers_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 2
+
+    def say(level: str, text: str) -> None:
+        print(f"{_MARK.get(level, '    ')} {text}", flush=True)
+
+    if args.repo is None and ("/" in args.adapter or Path(args.adapter).is_dir()):
+        # ``lazyagent trackers check ./repo``: the default adapter.
+        args.repo, args.adapter = args.adapter, "jira"
+
+    path = trackers.config_dir() / trackers.TRACKERS_FILENAME
+    data, error = trackers.read_toml(path)
+    if error is not None:
+        say("fail", f"{path}: {error}")
+        return 1
+    if not path.is_file():
+        say("fail", f"no {path}: add a [{args.adapter}] table (see the README, "
+                    "Issue trackers)")
+        return 1
+    table = data.get(args.adapter)
+    if not isinstance(table, dict):
+        found = ", ".join(sorted(k for k, v in data.items() if isinstance(v, dict))) or "none"
+        say("fail", f"{path}: no [{args.adapter}] table (tables: {found})")
+        return 1
+    repo: dict = {}
+    root = None
+    try:
+        root = launcher.resolve_repo_root(args.repo)
+    except WorktreeManagerError:
+        if args.repo is not None:
+            say("fail", f"not a git repository: {args.repo}")
+            return 1
+    if root is not None:
+        repo_path = Path(root) / trackers.REPO_DIR / trackers.TRACKERS_FILENAME
+        repo, error = trackers.read_toml(repo_path)
+        if error is not None:
+            say("warn", f"{repo_path}: {error} (its mappings are ignored)")
+        elif repo_path.is_file():
+            say("info", f"with the mappings of {repo_path}")
+    config = trackers.tracker_config(args.adapter, table, repo)
+    say("ok" if config.enabled else "warn",
+        f"{path}: [{args.adapter}] " + ("enabled" if config.enabled
+                                       else "is not enabled (enabled = true turns it on)"))
+    say("info", f"[{args.adapter}.status]: {len(config.status)} mapped"
+                + (f"; [{args.adapter}.qa]: {len(config.qa)} mapped" if config.qa else "")
+                + (f"; qa_field {config.qa_field}" if config.qa_field else ""))
+    factory = trackers.adapter_factories().get(args.adapter)
+    if factory is None:
+        say("fail", f"no tracker adapter named {args.adapter!r}")
+        return 1
+    module = sys.modules.get(getattr(factory, "__module__", ""))
+    check = getattr(module, "check", None)
+    if not callable(check):
+        say("info", f"{args.adapter} has no check of its own")
+        return 0
+    try:
+        good = asyncio.run(check(config, say=say))
+    except KeyboardInterrupt:
+        return 130
+    if getattr(factory, "experimental", False):
+        say("info", f"{args.adapter} is experimental: report what does not match "
+                    "your instance")
+    if good:
+        say("info", "a running engine reads trackers.toml when it starts: "
+                    "lazyagent engine restart --restore")
+    return 0 if good else 1
 
 
 # ----------------------------------------------------------------------

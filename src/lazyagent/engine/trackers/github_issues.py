@@ -1,7 +1,8 @@
 """GitHub Issues, read through ``gh`` (its login: no credential of ours).
 
 The key is the issue number in the branch name (``fix-123-login``,
-``feature/123``, ``issue-45``). :meth:`GithubIssues.fetch` reads up to
+``feature/123``, ``issue-45``), but not the number of an upper-case key
+(``SHOP-12``, another tracker's). :meth:`GithubIssues.fetch` reads up to
 :data:`BATCH` issues per ``gh api graphql`` call; :meth:`assigned_to_me`
 lists the user's open issues with ``gh api`` and ``If-None-Match``, so an
 unchanged list costs a 304 (which GitHub does not count against the rate
@@ -116,7 +117,9 @@ class GithubIssues:
         self._assigned: list[TrackerTask] = []
 
     def key_pattern(self) -> str:
-        return r"(?:^|[/_-])#?(\d+)(?=$|[/_.-])"
+        # Not the number of an upper-case ``SHOP-12`` (a Jira-style key), so a
+        # branch ``SHOP-12-fix-123`` is issue 123 here and SHOP-12 there.
+        return r"(?:^|[/_]|(?<![A-Z])-)#?(\d+)(?=$|[/_.-])"
 
     # --- The status ---
 

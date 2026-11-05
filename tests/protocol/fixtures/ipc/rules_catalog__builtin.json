@@ -33,7 +33,7 @@
         },
         {
           "id": "open_tracker",
-          "key": "p",
+          "key": "Shift+P",
           "label": "The tracker task"
         },
         {
@@ -264,8 +264,13 @@
             "where": "home"
           },
           {
-            "does": "Its PR (or tracker task)",
+            "does": "Its PR (or, with none, its link)",
             "keys": "p",
+            "where": "home"
+          },
+          {
+            "does": "Its tracker task (e.g. the Jira issue)",
+            "keys": "\u21e7P",
             "where": "home"
           },
           {
@@ -899,6 +904,18 @@
           ],
           "source": "agent registry",
           "type": "text",
+          "values": []
+        },
+        {
+          "cost": "free",
+          "freshness": "on agent.* events",
+          "name": "agent.turned",
+          "phrase": "the agent has had a turn since it started (not a restore or a bare spawn at its prompt)",
+          "scopes": [
+            "item"
+          ],
+          "source": "agent registry",
+          "type": "bool",
           "values": []
         },
         {
@@ -2181,12 +2198,12 @@
           "level": "deep",
           "passable": true,
           "rank": 6,
-          "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on, nor one whose turn ends with a question (Asks you).",
-          "sentence": "The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is and the question the agent's finished turn ends with is empty",
+          "says": "Only when nothing else runs there and there is no PR yet; never the orchestrator, nor an agent whose report says it works on, nor one whose turn ends with a question (Asks you), nor one that has had no turn yet (a restore or a spawn at its prompt).",
+          "sentence": "The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is and the question the agent's finished turn ends with is empty and the agent has had a turn since it started",
           "state_text": "review: agent finished",
           "title": "Your turn",
           "verb": "Review",
-          "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agents.running == 0 and not pr.exists and not place.is_orchestrator and not agent.reported and agent.question == \"\"",
+          "when": "agent.status in [\"completed\", \"waiting\", \"interrupted\"] and agents.running == 0 and not pr.exists and not place.is_orchestrator and not agent.reported and agent.question == \"\" and agent.turned",
           "zone": "deep"
         },
         {

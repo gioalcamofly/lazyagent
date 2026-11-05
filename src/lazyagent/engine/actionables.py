@@ -283,6 +283,8 @@ class AgentSeen:
     label: str = ""
     # The question its finished turn ends with (engine/questions.py).
     question: str = ""
+    # Whether it has had a turn since it started (AgentState.turned).
+    turned: bool = True
 
 
 @dataclass(frozen=True)
@@ -979,7 +981,8 @@ class ActionableQueue:
             label = info.label if info is not None else ""
             self._labels[(path, agent_id)] = label
             out.append(AgentSeen(agent_id, status, state.detail if state else "", label,
-                                 state.question if state else ""))
+                                 state.question if state else "",
+                                 state.turned if state else True))
         return tuple(out)
 
     def flush(self, now: float | None = None) -> list[dict[str, Any]]:

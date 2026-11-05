@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": {
+    "self": "https://example.atlassian.net/rest/api/3/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+    "accountId": "5b10ac8d82e05b22cc7d4ef5",
+    "accountType": "atlassian",
+    "emailAddress": "dev@example.com",
+    "avatarUrls": {},
+    "displayName": "Alex Doe",
+    "active": true,
+    "timeZone": "UTC",
+    "locale": "en_US",
+    "groups": {
+      "size": 1,
+      "items": []
+    },
+    "applicationRoles": {
+      "size": 1,
+      "items": []
+    },
+    "expand": "groups,applicationRoles"
+  }
+}

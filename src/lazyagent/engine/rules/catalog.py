@@ -82,7 +82,7 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "open_terminal": ("o", "The agent's terminal"),
     "open_notes": ("n", "The agent's notes"),
     "open_pr": ("p", "The PR (you merge it, or review it, there)"),
-    "open_tracker": ("p", "The tracker task"),
+    "open_tracker": ("Shift+P", "The tracker task"),
     "dismiss": ("x", "Dismiss this occurrence of the item"),
     "park": ("z", "Park the item or the work item"),
     "label": ("l", "Put a ball and a text on the row"),

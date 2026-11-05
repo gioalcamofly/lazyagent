@@ -217,7 +217,7 @@ They share the TUI's keys (`s`, `x`, `c`, `d`, `r`, `Shift+R`, `?`, `j`/`k` outs
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Desktop: copy / paste in a terminal (`Ctrl+C` copies a selection, else sends ^C) |
 | `Shift+drag`, `Shift+wheel` | Desktop: select and scroll even when the program uses the mouse |
 
-The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent (only what an agent can fix: CI red, a conflict, changes requested, a dead agent), `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back (not on what only you can do: approve, answer, decide, review, merge, confirm), `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `w` why (the rule that put the line there, the facts it read, the rules above it), `f` fold, `?` How lazyagent works (`F1` anywhere). **Guide:** [docs/guides/how-lazyagent-works.md](docs/guides/how-lazyagent-works.md) (zones, the ball, every state, verb and key, your rules, the facts; generated from the rules catalog).
+The desktop app opens on **Home** (`g h`): what needs you (Now, Round, To sit down with), what is in flight, and what you parked. Its keys: `Enter` answer or expand, `o`/`n`/`p` terminal / notes / PR, `Shift+P` the tracker task (a Jira issue), `x` dismiss, `z` park (1 h, tomorrow 08:00, 1 week, until something changes, indefinitely; `w` the whole work item), `Shift+Z` show parked, `d` delegate to the branch's agent (only what an agent can fix: CI red, a conflict, changes requested, a dead agent), `l` label, `Shift+X` close, `Shift+O`/`u` pass to the orchestrator / take back (not on what only you can do: approve, answer, decide, review, merge, confirm), `m`/`Shift+M` seen / all seen, `Shift+U` revert the orchestrator's decision, `w` why (the rule that put the line there, the facts it read, the rules above it), `f` fold, `?` How lazyagent works (`F1` anywhere). **Guide:** [docs/guides/how-lazyagent-works.md](docs/guides/how-lazyagent-works.md) (zones, the ball, every state, verb and key, your rules, the facts; generated from the rules catalog).
 
 `?` in either shows the full list.
 
@@ -290,7 +290,7 @@ provider = "claude"
 # agent files a brief of its own). Nothing is sent, and no attempt counted,
 # while the branch's agent runs or holds the ball by its own status_report; an
 # attempt whose agent ends its turn waiting on you (a brief, a question, an
-# approval) is waiting, not failed. The desktop writes these keys too.
+# approval), or has not had its first turn yet, is waiting, not failed. The desktop writes these keys too.
 # auto_delegate = []
 # auto_delegate_target = "owner"   # or "orchestrator"
 # auto_delegate_max_per_day = 10
@@ -323,9 +323,9 @@ provider = "claude"
 # max_concurrent_agents = 8
 # Pass to orchestrator: how long a claim lasts (seconds).
 # claim_ttl_s = 7200
-# The finished work (agent done, changes requested) of agents the orchestrator
-# spawned is held for it this long first, then comes to you as "orchestrator
-# did not respond" (minutes; 0 turns it off).
+# The finished work (agent done after a turn, changes requested) of agents the
+# orchestrator spawned is held for it this long first, then comes to you as
+# "orchestrator did not respond" (minutes; 0 turns it off).
 # hold_spawned_ttl_min = 60
 # First responder: a worker's brief or question goes to a running orchestrator
 # first; it answers within its mandate or escalates. Unanswered after this many
@@ -416,16 +416,17 @@ inbox). Nothing changes until an adapter is enabled in
 
 | Adapter | Branch key | Credentials | Status |
 |---|---|---|---|
-| `github_issues` | the issue number (`fix-123-login`) | `gh`'s own login | stable |
-| `jira` (Jira Cloud) | the issue key (`SHOP-123-login`) | email + API token, by reference | **experimental** (tested against recorded responses only) |
+| `github_issues` | the issue number (`fix-123-login`; not the `12` of `SHOP-12`) | `gh`'s own login | stable |
+| `jira` (Jira Cloud) | the issue key (`SHOP-123-login`, `feat/SHOP-123-x`; with `projects`, also `shop-123-fix`) | email + API token, by reference | **experimental** (tested against recorded responses; check yours with `lazyagent trackers check jira`) |
 
 ```toml
 [jira]
 enabled = true
-base_url = "https://example.atlassian.net"   # https only
+base_url = "https://example.atlassian.net"   # your site, https only
 email_env = "JIRA_EMAIL"                     # or email = "you@example.com"
 token_env = "JIRA_TOKEN"                     # or keyring = "lazyagent/jira" (user "token")
-# projects = ["SHOP"]                        # only these keys in branch names
+# cloud_id = "…"                             # only for an API token *with scopes* (see below)
+# projects = ["SHOP"]                        # only these keys, in any case (shop-12-fix)
 # jql_assigned = "assignee = currentUser() AND statusCategory != Done"
 # poll_s = 300
 # max_calls_per_min = 30
@@ -439,7 +440,55 @@ token_env = "JIRA_TOKEN"                     # or keyring = "lazyagent/jira" (us
 A status mapped with a `level` opens an inbox item when the issue enters it
 and clears it when the issue leaves. The token (an
 [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens))
-is never written by lazyagent and is sent only to `base_url`.
+is never written by lazyagent and is sent only to the API: `base_url`, or,
+with `cloud_id`, Atlassian's gateway `https://api.atlassian.com/ex/jira/<cloud_id>`.
+
+- **Which token.** A classic token (no scopes) works against `base_url`. A
+  token *with scopes* works only through the gateway: set `cloud_id` (the
+  check prints your site's) and give the token `read:jira-work` and
+  `read:jira-user`. Tokens expire (at most a year): a 401 later means a new
+  one.
+- **Branch keys.** Without `projects`, an upper-case key anywhere after a
+  separator (`SHOP-12-x`, `feat/SHOP-12`, `feat_SHOP-12`). With `projects`,
+  only those projects' keys, in any case (`shop-12-fix` is `SHOP-12`;
+  project keys with `_` need `projects`). A branch can carry a GitHub issue
+  number and a Jira key at once (`SHOP-12-fix-123`): each adapter reads its
+  own; the row shows the first one found, in `trackers.toml`'s order.
+- **The link.** A linked row's `tracker.url` is `<base_url>/browse/<KEY>`:
+  `Shift+P` (or its button) on Home opens it, and `lazyagent status --links`
+  prints it under the row.
+- **Limits.** A 429 waits `Retry-After` (else `X-RateLimit-Reset`) and keeps
+  the last good value; `max_calls_per_min` (30) caps calls before Jira does.
+- **The config is read when the engine starts**: after editing
+  `trackers.toml`, `lazyagent engine restart --restore`.
+
+**First run: `lazyagent trackers check jira`.** Read-only and without an
+engine, it reads `trackers.toml` (and the repo's overrides) and reports
+parse errors, unknown keys, and a `token = …` pasted into the file (never
+read). Then it checks the credentials (it says where they come from, never
+the token), your site's cloudId, who you are signed in as (`/myself`), one
+`jql_assigned` search (the first five issues and their statuses), and every
+status name of your `projects` (or the site) with its category, marking
+those `[jira.status]` / `[jira.qa]` map and warning about mapped names that
+do not exist. With `qa_field`, it checks the field exists. Exit status 0
+when nothing failed.
+
+```text
+$ lazyagent trackers check jira
+ok   ~/.config/lazyagent/trackers.toml: [jira] enabled
+     [jira.status]: 3 mapped; [jira.qa]: 2 mapped
+ok   site https://example.atlassian.net; API https://example.atlassian.net
+     projects: SHOP
+ok   credentials: email from $JIRA_EMAIL, token from $JIRA_TOKEN (not shown)
+ok   signed in as Alex Doe (accountId 5b10…)
+ok   jql_assigned: 2 issue(s): SHOP-12 [In Review], SHOP-40 [To Do]
+     statuses (name · category; mapped ones marked):
+       Done · Done
+       In Review · In Progress   ← [jira.status]
+       QA passed · In Progress   ← [jira.qa]
+       Reopened · To Do   ← [jira.status]
+warn [jira.status] 'QA' is not a status (or category) of these projects
+```
 
 **QA.** A `[<adapter>.qa]` table gives your rules the `tracker.qa` fact
 (`tested` · `not_required` · `pending` · `failed`; anything not mapped is
@@ -479,8 +528,15 @@ the same names). lazyagent never starts a task on its own: it shows them.
   fields left out go back to their defaults, so send the whole item each
   time. At most `[status] max_open_per_source` (50) open items per
   `source`; `expires_at` (Unix time) forgets one on its own.
+- **Jira keys and links.** With the `jira` adapter on, `url` may be the
+  issue's link (`https://example.atlassian.net/browse/SHOP-12`) or the bare
+  key (`"SHOP-12"`, stored as its link; `work_items_close` takes it too), and
+  `ticket` any case: either way the item joins the branch the adapter
+  links to `SHOP-12` (`shop-12-fix` too, with `projects`), and an issue
+  both fed and assigned to you counts once in "not started".
 - **Not started, then a row.** While no local branch carries its ticket key
-  (given, or read from the URL with `[status] ticket_pattern`), the item
+  (given, or read from the URL: a tracker adapter's link first, else
+  `[status] ticket_pattern`), the item
   adds to Home's "N not started" (with the trackers' assigned issues, once
   per URL). Once a branch such as `SHOP-12-checkout` exists, it joins that
   row with its title, priority and project. A review someone asked of you

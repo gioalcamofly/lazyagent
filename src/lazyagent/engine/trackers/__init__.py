@@ -181,6 +181,11 @@ class TrackerAdapter(Protocol):
         """Open tasks assigned to the user; may raise NotImplementedError."""
         ...
 
+    # Optional (looked up with getattr): ``normalize_key(key) -> str`` (the
+    # key as the tracker spells it, for a case-insensitive pattern),
+    # ``key_of_url(url) -> str | None`` (the key a link to one of its tasks
+    # names) and ``url_for(key) -> str | None`` (a task's link).
+
 
 # (config, repo root) → adapter.
 AdapterFactory = Callable[[TrackerConfig, str], TrackerAdapter]
@@ -223,15 +228,25 @@ def config_dir() -> Path:
     return Path(base) / "lazyagent"
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
-    if tomllib is None or not path.is_file():
-        return {}
+def read_toml(path: Path) -> tuple[dict[str, Any], str | None]:
+    """The file's tables, and why it could not be read (None: it was, or
+    there is no file)."""
+    if not path.is_file():
+        return {}, None
+    if tomllib is None:
+        return {}, "no TOML reader: install tomli (Python 3.10)"
     try:
         with open(path, "rb") as f:
-            return tomllib.load(f)
+            return tomllib.load(f), None
     except (OSError, ValueError) as e:
-        log.warning("ignoring %s: %s", path, e)
-        return {}
+        return {}, str(e)
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    data, error = read_toml(path)
+    if error is not None:
+        log.warning("ignoring %s: %s", path, error)
+    return data
 
 
 def _status_rules(data: object) -> dict[str, StatusRule]:
@@ -322,6 +337,19 @@ def _tracker_config(name: str, data: dict[str, Any]) -> TrackerConfig:
     return config
 
 
+def tracker_config(
+    name: str, data: dict[str, Any], repo: dict[str, Any] | None = None
+) -> TrackerConfig:
+    """One adapter's config from its global table, with the repo's status
+    and QA mappings on top; enabled or not."""
+    config = _tracker_config(name, data)
+    repo_table = (repo or {}).get(name)
+    if isinstance(repo_table, dict):
+        config.status.update(_status_rules(repo_table.get("status")))
+        _apply_qa(config, repo_table.get("qa"))
+    return config
+
+
 def load_trackers(repo_root: str | Path | None = None) -> list[TrackerConfig]:
     """The enabled adapters' configs: global, with the repo's status and
     QA mappings on top (a repo can neither enable an adapter nor name a
@@ -332,13 +360,14 @@ def load_trackers(repo_root: str | Path | None = None) -> list[TrackerConfig]:
     for name, table in data.items():
         if not isinstance(table, dict):
             continue
-        config = _tracker_config(name, table)
+        config = tracker_config(name, table, repo)
         if not config.enabled:
             continue
-        repo_table = repo.get(name)
-        if isinstance(repo_table, dict):
-            config.status.update(_status_rules(repo_table.get("status")))
-            _apply_qa(config, repo_table.get("qa"))
+        if "token" in config.options:
+            log.warning(
+                "tracker %s: token = … in trackers.toml is never read; name it with "
+                "token_env or keyring", name,
+            )
         configs.append(config)
     return configs
 
@@ -430,7 +459,9 @@ class _Feed:
         self.calls: deque[float] = deque()
 
     def key(self, branch: str) -> str | None:
-        return branch_key(self.pattern, branch)
+        key = branch_key(self.pattern, branch)
+        normalize = getattr(self.adapter, "normalize_key", None)
+        return normalize(key) if key is not None and callable(normalize) else key
 
     def may_call(self, now: float) -> bool:
         while self.calls and now - self.calls[0] >= 60:
@@ -504,7 +535,7 @@ class TrackerHub:
             if getattr(adapter, "experimental", False):
                 log.warning(
                     "tracker adapter %s is experimental: not yet checked against "
-                    "a real instance", config.name,
+                    "a real instance (lazyagent trackers check %s)", config.name, config.name,
                 )
             adapters.append((adapter, config))
         return cls(adapters, clock=clock)
@@ -522,6 +553,28 @@ class TrackerHub:
             if key is not None:
                 out.append((feed, key))
         return out
+
+    def keys(self, branch: str | None) -> list[str]:
+        """Every adapter's key in ``branch`` (a feeder's ticket links by them)."""
+        return [key for _, key in self.links(branch)] if branch else []
+
+    def key_of_url(self, url: str) -> str | None:
+        """The key a link to an adapter's task names (a Jira browse URL)."""
+        for feed in self._feeds:
+            of_url = getattr(feed.adapter, "key_of_url", None)
+            key = of_url(url) if callable(of_url) else None
+            if key:
+                return key
+        return None
+
+    def url_for(self, key: str) -> str | None:
+        """A task's link from the first adapter that reads ``key``."""
+        for feed in self._feeds:
+            url_for = getattr(feed.adapter, "url_for", None)
+            url = url_for(key) if callable(url_for) else None
+            if url:
+                return url
+        return None
 
     def fact(self, branch: str | None) -> TrackerFact | None:
         """The first linked task found for ``branch``."""

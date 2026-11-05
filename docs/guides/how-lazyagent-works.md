@@ -151,7 +151,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | **Fix CI** | CI red: ‹the first failing check not explained by the base› | There is no PR and Actions on the head is red and the failing checks that gate the merge is not empty and not (the failing checks that gate the merge are all in the failing checks whose attestation waits for your confirmation) and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Resolve conflict** | conflict with base | The PR's state is open and the PR's mergeability is conflicting and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Fix job** | job failed | (jobs) |  |
-| **Update task** | Tracker | (tracker) | `p` The tracker task |
+| **Update task** | Tracker | (tracker) | `⇧P` The tracker task |
 | **Read** | Agent reports | (report) |  |
 | **Sync** | Sync with base: ‹the first check the base has fixed› | Actions on the head is red and the failing checks not explained by the base is empty and the unrelated checks the base has fixed since is not empty and no agent there has the ball | `d` Send the item to the branch's agent |
 | **Review** | review requested by ‹the PR's author› | The PR asks you for a review and the PR is not yours | `p` The PR (you merge it, or review it, there) |
@@ -166,7 +166,7 @@ Each line's state comes from the first rule that matches, top to bottom. An unkn
 | verb | state | when | key |
 |---|---|---|---|
 | **Address review** | changes requested | The PR's state is open and the PR's review decision is changes requested and (the PR is yours or it is not known whether the PR is yours) | `d` Send the item to the branch's agent |
-| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is and the question the agent's finished turn ends with is empty |  |
+| **Review** | review: agent finished | The agent's status is completed, waiting or interrupted and there are no agents at work and there is no PR and not the orchestrator's own place and the agent's report does not say where the ball is and the question the agent's finished turn ends with is empty and the agent has had a turn since it started |  |
 | **Decide** | Decide | (decision) | `v` Open the brief |
 
 ### Inbox (the top item decides)
@@ -278,7 +278,7 @@ What can land in your inbox, at which level, and the verb it shows.
 | **Resolve conflict** | Merge conflict | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
 | **Review** | Your turn | deep | deep |  | ⇧O |  |
 | **Fix job** | Job failed | round | quick |  | d · ⇧O |  |
-| **Update task** | Tracker | round | quick |  | d · ⇧O | `p` The tracker task |
+| **Update task** | Tracker | round | quick |  | d · ⇧O | `⇧P` The tracker task |
 | **Read** | Agent reports | round | quick |  | ⇧O |  |
 | **Decide** | Decide | deep | deep |  |  | `v` Open the brief |
 | **Sync** | Sync with base | round | quick |  | d · ⇧O | `d` Send the item to the branch's agent |
@@ -308,7 +308,8 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `w` | Why is this line here? |
 | `o` | The agent's terminal |
 | `n` | Its session notes |
-| `p` | Its PR (or tracker task) |
+| `p` | Its PR (or, with none, its link) |
+| `⇧P` | Its tracker task (e.g. the Jira issue) |
 | `x` | Dismiss the item (Undo 5 s) |
 | `z` | Park: 1 h, tomorrow, a week, on change, indefinitely (1-5; w whole work item) |
 | `⇧Z` | Show / hide Parked |
@@ -361,7 +362,7 @@ Single letters act on the selected line. Shifted keys ask first or are bigger.
 | `open_terminal` | `o` | The agent's terminal |
 | `open_notes` | `n` | The agent's notes |
 | `open_pr` | `p` | The PR (you merge it, or review it, there) |
-| `open_tracker` | `p` | The tracker task |
+| `open_tracker` | `⇧P` | The tracker task |
 | `dismiss` | `x` | Dismiss this occurrence of the item |
 | `park` | `z` | Park the item or the work item |
 | `label` | `l` | Put a ball and a text on the row |
@@ -422,6 +423,7 @@ What rules can read. The engine fetches a costly fact only when an active rule r
 | `agent.status` | the agent's status | enum agent_status (running, waiting, waiting_for_user, waiting_for_approval, completed, failed, interrupted, possibly_hanged, starting) | agent registry | on agent.* events | free |
 | `agent.detail` | the agent's detail line | text | agent registry | on agent.* events | free |
 | `agent.question` | the question the agent's finished turn ends with | text | agent registry | on agent.* events | free |
+| `agent.turned` | the agent has had a turn since it started (not a restore or a bare spawn at its prompt) | bool | agent registry | on agent.* events | free |
 | `place.is_orchestrator` | the orchestrator's own place | bool | agent registry | static | free |
 | `place.agent_holds` | an agent there has the ball (at work, or its report holds it) | bool | overlay | per pass | free |
 | `agent.reported` | the agent's report says where the ball is (it works on) | bool | overlay | per pass | free |
