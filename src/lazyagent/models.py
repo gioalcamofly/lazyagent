@@ -113,6 +113,9 @@ class AgentState:
     session_name: str = ""  # SendMessage address (Claude agents only)
     # The question its finished turn ends with, while idle (engine/questions.py).
     question: str = ""
+    # Whether it has had a turn since it started: one at its prompt with none
+    # (a restore, a spawn with no instruction) has finished nothing.
+    turned: bool = True
 
 
 # Priority order for rolling up several per-agent statuses into one summary

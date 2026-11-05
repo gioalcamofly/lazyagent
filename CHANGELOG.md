@@ -39,6 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The worktree list shows a ticket ID from the branch name for any project key
   (`TASK-123`, `ENG-42`), not only for one hard-coded prefix
 
+### Fixed
+- A freshly spawned or restored agent is no longer reported as finished
+  before its first turn. A Claude agent spawned with an instruction is
+  `running` ("starting") until that prompt is submitted, instead of `waiting`
+  "at its prompt" for a few seconds; a restore, or a spawn with no
+  instruction, still waits at its prompt but opens no "Your turn" item and no
+  hold for the orchestrator until it has had a turn (new item fact
+  `agent.turned`; `agents.idle` counts only agents that have had one).
+  Auto-delegation no longer counts an attempt as failed before its agent's
+  first turn, so a slow start spends one attempt and sends its brief once
+
 ## [0.8.0] - 2026-10-15
 
 ### Added

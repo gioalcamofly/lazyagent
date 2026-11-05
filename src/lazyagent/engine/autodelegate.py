@@ -106,6 +106,9 @@ PROTECTED = ("main", "master")
 _RUNNING = ("running", "starting")
 # The agent waits on the user: its attempt has not failed.
 _WAITING = ("waiting_for_user", "waiting_for_approval")
+# At its prompt: before its first turn (a restore given the brief by
+# letter), the agent has not tried yet, so its attempt has not failed.
+_AT_PROMPT = ("waiting",)
 _ASKS = ("approval", "question", "turn_question")
 _WHAT = {
     "conflict": "a merge conflict with its base",
@@ -317,14 +320,18 @@ class AutoDelegate:
         self._close_briefs(rows, open_items)
 
     def _waiting(self, key: str, attempt: dict[str, Any], items: list[dict[str, Any]]) -> bool:
-        """The attempt's agent waits on the user: an open brief or question
-        of its own, an approval, or its status says so."""
+        """The attempt's agent waits on the user (an open brief or question
+        of its own, an approval, or its status says so), or has not had its
+        first turn yet."""
         engine = self._engine
         agent_id = attempt.get("agent")
         path = engine.status.path_of(key)
         if path is not None and agent_id:
             state = engine.agent_states(path).get(agent_id)
-            if state is not None and state.status.value in _WAITING:
+            if state is not None and (
+                state.status.value in _WAITING
+                or (state.status.value in _AT_PROMPT and not state.turned)
+            ):
                 return True
         if any(i["work_item"] == key and i["kind"] in _ASKS
                and (not agent_id or i.get("agent_id") in (None, agent_id)) for i in items):

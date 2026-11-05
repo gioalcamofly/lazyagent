@@ -173,6 +173,8 @@ class StatusChanged:
     last_output_time: float | None
     # The question the finished turn ends with (AgentLifecycleEvent).
     question: str = ""
+    # Whether the agent has had a turn yet (AgentObserver.turned).
+    turned: bool = True
 
 
 @dataclass(frozen=True)
@@ -888,6 +890,8 @@ class AgentSession(TerminalSession):
         # The last CPU sample of the process tree: (time.monotonic(), ticks).
         self._cpu: tuple[float, int] | None = None
         self._observer = observer or AgentObserver()
+        # Whether it has had a turn since it started (AgentObserver.turned).
+        self.turned = bool(self._observer.turned)
         self._scan_timer: asyncio.TimerHandle | None = None
         # Predicted dispatch time of the latest scheduled scan; used in
         # _after_feed to enforce _SCAN_MIN_INTERVAL.
@@ -930,8 +934,11 @@ class AgentSession(TerminalSession):
         confidence: LifecycleConfidence = LifecycleConfidence.LOW,
         detail: str = "",
         question: str = "",
+        turned: bool | None = None,
     ) -> None:
-        if new_status == self.status and detail == self.detail and question == self.question:
+        turned = self.turned if turned is None else turned
+        if (new_status == self.status and detail == self.detail and question == self.question
+                and turned == self.turned):
             return
         diag.event(
             log,
@@ -946,6 +953,7 @@ class AgentSession(TerminalSession):
         self.confidence = confidence
         self.detail = detail
         self.question = question
+        self.turned = turned
         if not self._stopped:
             self._emit(
                 StatusChanged(
@@ -956,6 +964,7 @@ class AgentSession(TerminalSession):
                     detail,
                     self.last_output_time,
                     question,
+                    turned,
                 )
             )
 
@@ -963,7 +972,7 @@ class AgentSession(TerminalSession):
         for event in events:
             self._set_status(
                 event.status, confidence=event.confidence, detail=event.detail,
-                question=event.question,
+                question=event.question, turned=event.turned,
             )
 
     def _on_text(self, text: str) -> None:
