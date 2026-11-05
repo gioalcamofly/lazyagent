@@ -354,6 +354,11 @@ class Claims:
             if not live:
                 continue
             who = live[-1]
+            state = engine.agent_states(path).get(who)
+            if item["kind"] == "done" and state is not None and not state.turned:
+                # At its prompt before any turn (a user rule's done may not
+                # say agent.turned): it has finished nothing yet.
+                continue
             turn = (key, who, engine.status.turn(path, who), item["kind"])
             if turn in self._auto_turns:
                 continue

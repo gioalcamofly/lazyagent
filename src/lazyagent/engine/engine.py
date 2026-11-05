@@ -1353,7 +1353,9 @@ class Engine:
             env=env,
             resume_conversation=resume_conversation,
         )
-        return command, provider.create_observer_from_context(runtime_context)
+        return command, provider.create_observer_from_context(
+            runtime_context, prompted=bool(instruction)
+        )
 
     def _start_agent(
         self,
@@ -1396,6 +1398,7 @@ class Engine:
                 event.detail,
                 last_output_time=event.last_output_time,
                 question=event.question,
+                turned=event.turned,
             )
             # Every change, the detail-only ones included; agent.status
             # (the list_events log) only has the transitions.
