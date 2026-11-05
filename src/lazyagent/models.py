@@ -116,6 +116,18 @@ class AgentState:
     # Whether it has had a turn since it started: one at its prompt with none
     # (a restore, a spawn with no instruction) has finished nothing.
     turned: bool = True
+    # How many times it ran again after ending a turn with its background
+    # work running (AgentObserver.background_runs).
+    background_runs: int = 0
+    # Its turn ended with its own background work running: it reads as
+    # running, not finished (AgentObserver.waiting_on_background).
+    background: bool = False
+
+    @property
+    def at_prompt_on_background(self) -> bool:
+        """Waiting on its background work, with no turn going on: input
+        reaches it now, as at any prompt."""
+        return self.background and self.status == AgentStatus.RUNNING
 
 
 # Priority order for rolling up several per-agent statuses into one summary

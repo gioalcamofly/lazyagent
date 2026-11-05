@@ -175,6 +175,10 @@ class StatusChanged:
     question: str = ""
     # Whether the agent has had a turn yet (AgentObserver.turned).
     turned: bool = True
+    # AgentObserver.background_runs.
+    background_runs: int = 0
+    # AgentObserver.waiting_on_background.
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -892,6 +896,8 @@ class AgentSession(TerminalSession):
         self._observer = observer or AgentObserver()
         # Whether it has had a turn since it started (AgentObserver.turned).
         self.turned = bool(self._observer.turned)
+        self.background_runs = 0
+        self.background = False
         self._scan_timer: asyncio.TimerHandle | None = None
         # Predicted dispatch time of the latest scheduled scan; used in
         # _after_feed to enforce _SCAN_MIN_INTERVAL.
@@ -935,10 +941,15 @@ class AgentSession(TerminalSession):
         detail: str = "",
         question: str = "",
         turned: bool | None = None,
+        background_runs: int | None = None,
+        background: bool | None = None,
     ) -> None:
         turned = self.turned if turned is None else turned
+        runs = self.background_runs if background_runs is None else background_runs
+        background = self.background if background is None else background
         if (new_status == self.status and detail == self.detail and question == self.question
-                and turned == self.turned):
+                and turned == self.turned and runs == self.background_runs
+                and background == self.background):
             return
         diag.event(
             log,
@@ -954,6 +965,8 @@ class AgentSession(TerminalSession):
         self.detail = detail
         self.question = question
         self.turned = turned
+        self.background_runs = runs
+        self.background = background
         if not self._stopped:
             self._emit(
                 StatusChanged(
@@ -965,6 +978,8 @@ class AgentSession(TerminalSession):
                     self.last_output_time,
                     question,
                     turned,
+                    runs,
+                    background,
                 )
             )
 
@@ -973,6 +988,8 @@ class AgentSession(TerminalSession):
             self._set_status(
                 event.status, confidence=event.confidence, detail=event.detail,
                 question=event.question, turned=event.turned,
+                background_runs=event.background_runs,
+                background=event.background,
             )
 
     def _on_text(self, text: str) -> None:
@@ -989,9 +1006,10 @@ class AgentSession(TerminalSession):
     def check_hang(self, seconds: float = HANG_SECONDS) -> None:
         """Report POSSIBLY_HANGED when RUNNING with no output for ``seconds``
         and its process tree used no CPU since the last check (when /proc
-        tells)."""
+        tells). One waiting on its own background work is quiet by design:
+        its observer gives that wait up when it goes stale."""
         self.poll()
-        if self.status != AgentStatus.RUNNING:
+        if self.status != AgentStatus.RUNNING or self._observer.waiting_on_background:
             self._cpu = None
             return
         now = time.monotonic()

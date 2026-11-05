@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from lazyagent.engine.manifest import clip_instruction
 from lazyagent.engine.questions import last_assistant_text, turn_question
 from lazyagent.models import AgentStatus, LifecycleConfidence
+
+# How long a turn's "background work is running" holds with no wake-up: the
+# hook only tells at the end of a turn, so past this the agent reads as it
+# would without the signal. As long as a status_report's default ball "agent".
+BACKGROUND_STALE_SECONDS = 2 * 3600.0
 
 
 @dataclass(frozen=True)
@@ -23,6 +30,12 @@ class AgentLifecycleEvent:
     # Whether the agent has had a turn since its process started (see
     # AgentObserver.turned), as of this event.
     turned: bool = True
+    # How many times it has run again after ending a turn with background
+    # work running (see AgentObserver.background_runs), as of this event.
+    background_runs: int = 0
+    # Its turn ended with background work running (see
+    # AgentObserver.waiting_on_background), as of this event.
+    background: bool = False
 
 
 class AgentObserver:
@@ -46,6 +59,14 @@ class AgentObserver:
     #: has finished nothing: a restore, or a spawn with no instruction. True
     #: for the providers that do not say, so they read as before.
     turned: bool = True
+
+    #: Whether its turn ended with its own background work running, so it
+    #: will be woken: quiet, but neither hanged nor finished.
+    waiting_on_background: bool = False
+
+    #: How many times it has run again after such a turn. A status report
+    #: made before one no longer speaks for the turn that ends after it.
+    background_runs: int = 0
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return []
@@ -95,6 +116,14 @@ class CompositeObserver(AgentObserver):
     @property
     def turned(self) -> bool:  # type: ignore[override]
         return all(observer.turned for observer in self._observers)
+
+    @property
+    def waiting_on_background(self) -> bool:  # type: ignore[override]
+        return any(observer.waiting_on_background for observer in self._observers)
+
+    @property
+    def background_runs(self) -> int:  # type: ignore[override]
+        return max((o.background_runs for o in self._observers), default=0)
 
     def on_process_started(self) -> list[AgentLifecycleEvent]:
         return _flatten(observer.on_process_started() for observer in self._observers)
@@ -181,7 +210,12 @@ class ClaudeHooksObserver(JsonlTailObserver):
     """Observer that tails Claude hook events written to a JSONL file."""
 
     def __init__(
-        self, log_path: str, temp_dir: str | None = None, *, prompted: bool = False
+        self,
+        log_path: str,
+        temp_dir: str | None = None,
+        *,
+        prompted: bool = False,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(log_path, temp_dir=temp_dir)
         # False between the main agent's Stop and the next prompt.
@@ -192,12 +226,75 @@ class ClaudeHooksObserver(JsonlTailObserver):
         # SessionStart comes before that prompt's UserPromptSubmit.
         self._prompted = prompted
         self.turned = False
+        self._clock = clock
+        # While its turn ended with background work running: since when and
+        # what the row says.
+        self._background_since: float | None = None
+        self._background_detail = ""
+        # An approval or a dialog is up meanwhile (a subagent's): it stays
+        # the user's, whatever the staleness says.
+        self._background_asking = False
+        # This turn started by itself (a finished task, a monitor's event, a
+        # cron), not from a prompt someone sent.
+        self._self_woken = False
+        self._cron_prompts: tuple[str, ...] = ()
+        self.background_runs = 0
+
+    @property
+    def waiting_on_background(self) -> bool:  # type: ignore[override]
+        return self._background_since is not None
+
+    def poll(self) -> list[AgentLifecycleEvent]:
+        events = super().poll()
+        since = self._background_since
+        if (
+            since is not None
+            and not self._background_asking
+            and self._clock() - since >= BACKGROUND_STALE_SECONDS
+        ):
+            # No wake-up all this time: back to what a Stop says without the
+            # signal, which the user can see and act on.
+            self._background_since = None
+            events.append(
+                self._stamped(
+                    AgentLifecycleEvent(
+                        status=AgentStatus.WAITING,
+                        confidence=LifecycleConfidence.HIGH,
+                        detail="waiting for input",
+                    )
+                )
+            )
+        return events
+
+    def on_disconnect(self) -> list[AgentLifecycleEvent]:
+        self._background_since = None
+        return super().on_disconnect()
 
     def _map_event(self, data: dict) -> AgentLifecycleEvent | None:
         event = self._map(data)
-        if event is not None and event.turned != self.turned:
-            event = replace(event, turned=self.turned)
-        return event
+        return None if event is None else self._stamped(event)
+
+    def _stamped(self, event: AgentLifecycleEvent) -> AgentLifecycleEvent:
+        return replace(
+            event,
+            turned=self.turned,
+            background_runs=self.background_runs,
+            background=self.waiting_on_background,
+        )
+
+    def _ran_again(self) -> None:
+        """The main agent acts: a wait on background work is over."""
+        if self._background_since is not None:
+            self._background_since = None
+            self.background_runs += 1
+
+    def _background_event(self) -> AgentLifecycleEvent:
+        self._background_asking = False
+        return AgentLifecycleEvent(
+            status=AgentStatus.RUNNING,
+            confidence=LifecycleConfidence.HIGH,
+            detail=self._background_detail,
+        )
 
     def _map(self, data: dict) -> AgentLifecycleEvent | None:
 
@@ -212,10 +309,13 @@ class ClaudeHooksObserver(JsonlTailObserver):
             # PreToolUse with no PostToolUse or Stop, which left the agent
             # showing as running until the next idle_prompt notification.
             if not self._turn_open:
-                return None
+                return self._background_event() if self.waiting_on_background else None
+        elif event_name in ("PreToolUse", "PostToolUse"):
+            self._ran_again()
         if event_name == "Notification":
             notification_type = str(data.get("notification_type", "")).strip().lower()
             if notification_type == "permission_prompt":
+                self._background_asking = self.waiting_on_background
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_APPROVAL,
                     confidence=LifecycleConfidence.HIGH,
@@ -225,6 +325,8 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 # Claude's "still waiting for your input" reminder for an agent
                 # that finished its turn. It is not a dialog: reporting it as
                 # waiting_for_user would put idle agents in the "blocked" group.
+                if self.waiting_on_background:
+                    return self._background_event()
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING,
                     confidence=LifecycleConfidence.HIGH,
@@ -232,6 +334,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
                     question=self._question,
                 )
             if notification_type == "elicitation_dialog":
+                self._background_asking = self.waiting_on_background
                 return AgentLifecycleEvent(
                     status=AgentStatus.WAITING_FOR_USER,
                     confidence=LifecycleConfidence.HIGH,
@@ -241,6 +344,7 @@ class ClaudeHooksObserver(JsonlTailObserver):
         if event_name == "SessionStart" and not data.get("agent_id"):
             if data.get("source") == "compact":
                 return None  # mid-turn: the turn goes on
+            self._background_since = None
             if self._prompted and not self.turned:
                 # Spawned with an instruction: its first prompt is on the
                 # way, so it is not at its prompt, nor done with anything.
@@ -259,11 +363,13 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail="at its prompt",
             )
         if event_name == "UserPromptSubmit":
+            prompt = data.get("prompt")
             if not data.get("agent_id"):
                 self.turned = True
+                self._ran_again()
+                self._self_woken = _self_woken(prompt, self._cron_prompts)
             self._turn_open = True
             self._question = ""
-            prompt = data.get("prompt")
             if (
                 self.first_prompt is None
                 and not data.get("agent_id")
@@ -283,6 +389,17 @@ class ClaudeHooksObserver(JsonlTailObserver):
             self.turned = True
             self._turn_open = False
             self._question = _stop_question(data)
+            self._background_since = None
+            self._background_asking = False
+            crons = data.get("session_crons")
+            self._cron_prompts = _cron_prompts(crons)
+            detail = _own_work(data.get("background_tasks"), crons, self._self_woken)
+            if detail and not self._question:
+                # It will be woken: not finished, not the user's turn. A
+                # question still goes to the user, whatever else runs.
+                self._background_since = self._clock()
+                self._background_detail = detail
+                return self._background_event()
             # In interactive PTY sessions, Stop means Claude finished responding
             # and is waiting for the next user prompt — WAITING is correct here,
             # not COMPLETED (which is reserved for TaskCompleted/SessionEnd).
@@ -293,12 +410,15 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 question=self._question,
             )
         if event_name == "TaskCompleted":
+            if self.waiting_on_background:
+                return None  # one task of its list: the agent still waits
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.HIGH,
                 detail="task completed",
             )
         if event_name == "SessionEnd":
+            self._background_since = None
             return AgentLifecycleEvent(
                 status=AgentStatus.COMPLETED,
                 confidence=LifecycleConfidence.HIGH,
@@ -321,6 +441,55 @@ class ClaudeHooksObserver(JsonlTailObserver):
                 detail=f"{tool_name} done",
             )
         return None
+
+
+def _self_woken(prompt: object, cron_prompts: tuple[str, ...]) -> bool:
+    """Whether a submitted prompt is the session waking itself: a background
+    task's notification, or the text of one of its crons."""
+    if not isinstance(prompt, str):
+        return False
+    return prompt.lstrip().startswith("<task-notification>") or any(
+        prompt.startswith(cron) for cron in cron_prompts
+    )
+
+
+def _cron_prompts(crons: object) -> tuple[str, ...]:
+    """The prompts a Stop's ``session_crons`` will submit, without the mark
+    of a clipped one."""
+    if not isinstance(crons, list):
+        return ()
+    prompts = (c.get("prompt") for c in crons if isinstance(c, dict))
+    return tuple(p.split("\u2026 [+")[0] for p in prompts if isinstance(p, str) and p)
+
+
+def _own_work(tasks: object, crons: object, self_woken: bool) -> str:
+    """What a Stop's turn still waits on of its own (the row's detail), or
+    "": it is done.
+
+    Claude's Stop hook lists ``background_tasks`` and ``session_crons`` for
+    this. Not counted: type "monitor", the session-long watchers (an
+    artifact's live updates) that never end and wake nobody about the work;
+    a Monitor on a command is listed as a "shell". A recurring cron counts
+    only after a turn it (or another wake-up) started: a turn someone asked
+    for can end with the user's turn while a loop ticks on.
+    """
+    running = [
+        t for t in (tasks if isinstance(tasks, list) else ())
+        if isinstance(t, dict)
+        and t.get("status") in ("running", "pending")
+        and t.get("type") != "monitor"
+    ]
+    if len(running) == 1:
+        what = running[0].get("description")
+        if isinstance(what, str) and what.strip():
+            return f"background work: {' '.join(what.split())[:80]}"
+        return "background work"
+    if running:
+        return f"background work: {len(running)} tasks"
+    for cron in crons if isinstance(crons, list) else ():
+        if isinstance(cron, dict) and (self_woken or not cron.get("recurring", True)):
+            return "waiting for its next wake-up"
+    return ""
 
 
 def _stop_question(data: dict) -> str:

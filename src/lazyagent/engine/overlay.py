@@ -264,6 +264,8 @@ class Overlay:
         # key → the agent's turn its report was made in (status.turn); in
         # memory only, so a loaded report falls back to ``turn_over``.
         self._report_turns: dict[str, int] = {}
+        # The agent's background_runs at each report (AgentState).
+        self._report_runs: dict[str, int] = {}
         self._saved: str | None = None
         self._handle: asyncio.TimerHandle | None = None
 
@@ -684,6 +686,8 @@ class Overlay:
             self._report_turns.pop(key, None)
         else:
             self._report_turns[key] = turn
+        state = self._engine.agent_states(worktree_path).get(agent_id) if self._engine else None
+        self._report_runs[key] = state.background_runs if state is not None else 0
         self.changed()
         return r
 
@@ -708,7 +712,8 @@ class Overlay:
     def expire_reports(self, now: float) -> None:
         """A report's ``needs_user`` and ball last until its agent has ended
         a turn and runs again, or is gone; the ball also lapses at the
-        report's ``until``."""
+        report's ``until``. A turn that ended with background work running
+        has not ended here: the report outlives the wake-ups."""
         if self._engine is None:
             return
         from lazyagent.engine.status import _RUNNING, TURN_OVER
@@ -730,6 +735,11 @@ class Overlay:
                 self._answered(r)
             elif turn is not None and self._engine.status.turn(path, agent_id) > turn:
                 # A turn after the report's: it has not reported again.
+                self._answered(r)
+            elif state is not None and state.status.value in TURN_OVER \
+                    and state.background_runs > self._report_runs.get(key, state.background_runs):
+                # Its turn ended with background work, it woke, and now the
+                # turn really ended: the report spoke for the wait, not this.
                 self._answered(r)
             elif state is not None and state.status.value in TURN_OVER:
                 if not r.get("turn_over"):

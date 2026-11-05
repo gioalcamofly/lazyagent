@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`TASK-123`, `ENG-42`), not only for one hard-coded prefix
 
 ### Fixed
+- A Claude agent that ends a turn with its own background work running (a
+  background shell, a Monitor on a command, a subagent, a pending wake-up) or
+  that woke by itself and ended its turn again no longer reads as "agent
+  finished": no "Your turn", no hold for the orchestrator, no spent
+  auto-delegation attempt, no "possibly hanged". Read from the Stop hook's
+  `background_tasks` and `session_crons`. Its `status_report` survives the
+  wake-ups. Done and the hold fire once when the turn ends with nothing left;
+  with no wake-up for 2 h it falls back to the usual finished state. Questions
+  and approvals still reach you
 - A freshly spawned or restored agent is no longer reported as finished
   before its first turn. A Claude agent spawned with an instruction is
   `running` ("starting") until that prompt is submitted, instead of `waiting`

@@ -1399,6 +1399,8 @@ class Engine:
                 last_output_time=event.last_output_time,
                 question=event.question,
                 turned=event.turned,
+                background_runs=event.background_runs,
+                background=event.background,
             )
             # Every change, the detail-only ones included; agent.status
             # (the list_events log) only has the transitions.
