@@ -239,6 +239,8 @@ class AgentRegistry:
         last_output_time: float | None = None,
         question: str = "",
         turned: bool = True,
+        background_runs: int = 0,
+        background: bool = False,
     ) -> AgentState:
         """Record an agent's status; publish an event if the status changed.
 
@@ -251,6 +253,8 @@ class AgentRegistry:
         state.detail = detail
         state.question = question if status.value in _TURN_OVER else ""
         state.turned = turned
+        state.background_runs = background_runs
+        state.background = background
         if last_output_time is not None:
             state.last_output_time = last_output_time
         self._apply_identity(key, agent_id, state)

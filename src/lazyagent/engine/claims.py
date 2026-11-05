@@ -515,8 +515,9 @@ class Claims:
 
     def _orchestrator_idle(self) -> bool:
         states = self._engine.agent_states(ORCHESTRATOR_KEY)
-        statuses = {s.status.value for s in states.values()}
-        return bool(statuses) and statuses <= _IDLE
+        return bool(states) and all(
+            s.status.value in _IDLE or s.at_prompt_on_background for s in states.values()
+        )
 
     def _wake(self) -> None:
         """Send the waiting lines once the orchestrator's turn is over:

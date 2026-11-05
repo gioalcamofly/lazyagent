@@ -62,6 +62,7 @@ def _writes(emulator: _FakeEmulator) -> list:
 
 def _observer() -> MagicMock:
     observer = MagicMock(spec=AgentObserver)
+    observer.waiting_on_background = False
     observer.on_terminal_output.return_value = []
     observer.on_screen_update.return_value = []
     observer.on_disconnect.return_value = []

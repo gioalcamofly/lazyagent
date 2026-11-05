@@ -244,7 +244,7 @@ class Mailbox:
         if path != ORCHESTRATOR_KEY:
             # A worker at a question waits for exactly this.
             idle.add("waiting_for_user")
-        return state.status.value in idle
+        return state.status.value in idle or state.at_prompt_on_background
 
     def flush(self) -> None:
         slots: dict[tuple[str, str], list[_Letter]] = {}
