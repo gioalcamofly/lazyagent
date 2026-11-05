@@ -77,10 +77,10 @@ fn delegate_all_sends_every_delegable_item_and_one_goes_alone_from_its_line() {
         [json!({"key": "repo:feat", "kind": "delegate", "to": "agent"})],
         "no item: every one the row's delegates names"
     );
-    // One alone, from its own line under "Its items".
-    let alone = h.query_all_by_label("delegate this one").count();
+    // One alone, from its own section.
+    let alone = h.query_all_by_label("Delegate this one").count();
     assert_eq!(alone, 2, "one per delegable item");
-    h.query_all_by_label("delegate this one").nth(1).unwrap().click();
+    h.query_all_by_label("Delegate this one").nth(1).unwrap().click();
     h.run_steps(3);
     assert_eq!(
         calls_of(&calls, "status_gesture").pop().unwrap(),
@@ -128,24 +128,19 @@ fn why_and_notes_live_under_more_and_their_keys_still_show() {
 }
 
 #[test]
-fn the_bar_keeps_primary_verbs_and_sends_the_rest_under_more() {
-    let (shown, more) = crate::home_view::bar_texts(&[
-        ("Open terminal", false),
-        ("Notes", true),
-        ("Delegate all (2)", false),
-        ("Dismiss", false),
-        ("Park until…", false),
-        ("Pass to orchestrator", false),
-        ("Approve", false),
-        ("PR", false),
-        ("Why?", true),
+fn every_usable_action_is_inline_and_the_rare_ones_under_more() {
+    let (shown, more) = crate::home_view::split_texts(&[
+        ("Delegate all (2)", true, false),
+        ("Open terminal", true, false),
+        ("Notes", true, true),
+        ("Dismiss", true, false),
+        ("Park until…", true, false),
+        ("Pass to orchestrator", false, false),
+        ("PR", true, false),
+        ("Why?", true, true),
     ]);
-    assert_eq!(
-        shown,
-        ["Open terminal", "Delegate all (2)", "Dismiss", "Park until…", "Pass to orchestrator", "Approve"]
-    );
-    assert_eq!(more, ["PR", "Notes", "Why?"]);
-    assert!(shown.len() <= crate::home_view::PRIMARY_BUTTONS);
+    assert_eq!(shown, ["Delegate all (2)", "Open terminal", "Dismiss", "Park until…", "PR"]);
+    assert_eq!(more, ["Notes", "Pass to orchestrator", "Why?"]);
 }
 
 fn held(since: f64) -> serde_json::Value {
@@ -205,6 +200,7 @@ fn a_repeated_delegate_line_is_counted_once() {
     h.state_mut().state.home.selected = Some("repo:feat".into());
     h.key_press(egui::Key::Enter);
     h.run_steps(4);
+    show_more(&mut h);
     h.get_by_label_contains("delegated to agent a1: conflict with base ×3");
 }
 

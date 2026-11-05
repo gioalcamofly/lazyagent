@@ -184,6 +184,7 @@ fn why_shows_the_approval_with_revoke_and_the_timeline_says_it() {
     select(&mut h, "fix");
     h.key_press(egui::Key::Enter);
     h.run_steps(4);
+    show_more(&mut h);
     assert!(h.query_all_by_label_contains("review  you approved 3f2a9c1 · user").count() >= 1);
     h.key_press(egui::Key::W);
     h.run_steps(3);

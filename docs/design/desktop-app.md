@@ -642,6 +642,15 @@ Only a Home line's head row took a click, and its labels caught clicks of their 
 - Keys unchanged.
 - Tests (`tests/h1.rs`): a click on the left padding, the right edge, the state column, a second line, the gap between the lines and the bottom padding opens the line, a second click folds it; the pointer on hover; in an expanded line Delegate sends its gesture, More… opens its menu and a click on the details' empty space leaves the line expanded.
 
+### Home: one grid line, a shorter expanded item (2026-11-04)
+
+Home items showed too much: two layouts (inbox and In flight), up to five sub-lines per line, and an expanded item of ~20 lines with 7-8 buttons of equal weight. Picked from proposals on a shared sample: [home-items.md](home-items.md).
+
+- **The line** is one grid for every zone: *work item · next · state · PR · CI · agent · age*, the column names once above Now. The agent column shows only a running agent; nothing sits under a line.
+- **The expanded item**: the ask; a tinted section with a coloured left bar per problem (CI failed, merge conflict, changes requested, review requested), a red CI's log head in a framed monospace block; the answer; one facts line; who else has it; every action that applies inline (the primary stressed, wrapped at narrow widths), More… only for the rare ones and those you cannot use now; then **Show more** for the items, since you looked and every fact.
+- Keys unchanged. The how-it-works screenshots were regenerated.
+- Screenshots: [h2-ci-dark.png](desktop-screenshots/h2-ci-dark.png), [h2-ci-light.png](desktop-screenshots/h2-ci-light.png), [h2-ci-narrow-dark.png](desktop-screenshots/h2-ci-narrow-dark.png).
+
 ## 11. Final state (2026-10-18)
 
 | Web piece | Desktop | Notes |

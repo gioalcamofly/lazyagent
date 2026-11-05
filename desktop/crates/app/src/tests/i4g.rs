@@ -103,8 +103,8 @@ fn a_ghost_is_a_keyboard_stop_and_its_brief_is_answered_there() {
     assert!(s.decision.is_none(), "Enter expands a ghost; v opens the view");
     assert_eq!(s.home.expanded.as_deref(), Some(GHOST));
     h.get_by_label_contains("A  Exponential, cap 30 s");
+    show_more(&mut h);
     h.get_by_label_contains("2. Decide · decide: retries: fixed or exponential? · this line");
-    assert!(h.query_by_label("Failed log").is_none(), "the CI's details stay on its line");
     h.key_press(egui::Key::Num2);
     h.run_steps(2);
     assert_eq!(h.state().state.home.brief_choice, Some(("d1".into(), "B".into())));
@@ -152,6 +152,7 @@ fn a_brief_under_a_ci_top_is_answered_in_the_expanded_line() {
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
+    show_more(&mut h);
     h.get_by_label("Its items");
     h.get_by_label("Answer here").click();
     h.run_steps(3);
@@ -323,6 +324,7 @@ fn home_i4g_screenshots() {
             h.run_steps(2);
             h.key_press(egui::Key::Enter);
             h.run_steps(3);
+            show_more(&mut h);
             h.get_by_label("Answer here").click();
             h.run_steps(4);
             shot(&mut h, "i4g-answer-here-dark-1600");

@@ -188,20 +188,9 @@ fn an_accepted_attestation_is_the_rows_chip() {
     engine_answers(&h);
     merge_line(&tx, "tax", CHIP);
     settle(&mut h);
-    // Too long for the line: the attestation first, the rest on hover.
-    h.get_by_label("CI red · eval-suite attested by agent a1 +1");
-    assert_eq!(
-        crate::home_view::chip_text("CI red · unrelated (eval-suite attested by agent a3)"),
-        "CI red · eval-suite attested by agent a3"
-    );
-    assert_eq!(
-        crate::home_view::chip_text("CI red · unrelated (eval attested by agent a3)"),
-        "CI red · unrelated (eval attested by agent a3)"
-    );
-    assert_eq!(
-        crate::home_view::chip_text("CI red · unrelated (base also red: 2 tests in unit-tests and more)"),
-        crate::home::middle_ellipsis("CI red · unrelated (base also red: 2 tests in unit-tests and more)", 48)
-    );
+    // The CI cell is a grey ✖ (not the line's to fix), the note on hover.
+    let line = h.state().state.home.lines.values().find(|l| l.name.starts_with("tax")).cloned().unwrap();
+    assert!(line.ci_note().is_some_and(|n| n.contains("eval-suite attested by agent a1")), "{:?}", line.ci_note());
 }
 
 #[test]

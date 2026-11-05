@@ -621,7 +621,7 @@ where it is false, and Home does not offer it.
 Delegate sends **every** delegable item of the row to its agent in one
 letter, a numbered list (the button reads "Delegate all (2)" when there are
 several; an item about the agent itself, its own Hanged?, is left out); in
-the expanded line, "delegate this one" on an item's own line sends it alone.
+the expanded line, **Delegate this one** on an item's own section sends it alone.
 A letter goes once the agent's turn is over. Until then the row says why it
 waits ("waiting for a5 to be free (possibly hanged)"), and after a minute
 the expanded line offers **Send anyway** (typed at once, whatever the agent

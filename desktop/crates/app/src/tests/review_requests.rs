@@ -92,7 +92,10 @@ fn a_review_request_is_a_round_line_with_its_author_and_title_and_p_opens_the_pr
     h.key_press(egui::Key::Enter);
     h.run_steps(4);
     h.get_by_label("Open PR to review  (p)");
-    h.get_by_label("#12 Fix the CSV export · ana asked you for a review");
+    h.get_by_label("Review requested");
+    h.get_by_label("#12 Fix the CSV export");
+    h.get_by_label_contains("ana asked you for a review");
+    show_more(&mut h);
     h.get_by_label("review requested 3h ago · it goes once you review it on the PR");
     assert!(h.query_by_label("Open terminal  (o)").is_none());
     assert!(h.query_by_label("Delegate to its agent  (d)").is_none());
