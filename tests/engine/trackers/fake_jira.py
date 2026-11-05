@@ -12,6 +12,9 @@ from typing import Any
 
 FIXTURES = Path(__file__).parent / "fixtures" / "jira"
 BASE_URL = "https://example.atlassian.net"
+# Atlassian's gateway, for a token with scopes (``cloud_id``).
+GATEWAY = "https://api.atlassian.com"
+CLOUD_ID = "11111111-2222-4333-8444-555555555555"
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -23,6 +26,7 @@ class FakeJira:
         self.queue: list[str | dict[str, Any]] = list(responses)
         # (path, query, headers) per request.
         self.requests: list[tuple[str, dict[str, str], dict[str, str]]] = []
+        self.roots: list[str] = []
 
     def then(self, *responses: str | dict[str, Any]) -> FakeJira:
         self.queue += responses
@@ -30,7 +34,9 @@ class FakeJira:
 
     async def __call__(self, url: str, headers: dict[str, str]) -> tuple[int, dict[str, str], str]:
         parts = urllib.parse.urlsplit(url)
-        assert f"{parts.scheme}://{parts.netloc}" == BASE_URL
+        root = f"{parts.scheme}://{parts.netloc}"
+        assert root in (BASE_URL, GATEWAY), url
+        self.roots.append(root)
         self.requests.append(
             (parts.path, dict(urllib.parse.parse_qsl(parts.query)), dict(headers))
         )
@@ -44,6 +50,9 @@ class FakeJira:
             {k.lower(): v for k, v in response["headers"].items()},
             body if isinstance(body, str) else json.dumps(body),
         )
+
+    def paths(self) -> list[str]:
+        return [path for path, _, _ in self.requests]
 
     def jql(self, n: int = -1) -> str:
         return self.requests[n][1]["jql"]

@@ -178,8 +178,9 @@ async def test_fetch_batches_and_skips_what_is_not_a_key(monkeypatch):
     monkeypatch.setattr(jira_mod, "BATCH", 2)
     fake = FakeJira("search_page2", "search_page2")
     await adapter(fake).fetch(["SHOP-3", "SHOP-1", "SHOP-2", "shop-4", "123", 'X-1")'])
+    # A lower-case key is Jira's upper-case one.
     assert [fake.jql(0), fake.jql(1)] == [
-        'key in ("SHOP-1", "SHOP-2")', 'key in ("SHOP-3")',
+        'key in ("SHOP-1", "SHOP-2")', 'key in ("SHOP-3", "SHOP-4")',
     ]
     fake = FakeJira()
     assert await adapter(fake).fetch(["nothing"]) == []
@@ -260,8 +261,13 @@ async def test_429_raises_rate_limited_with_retry_after():
 async def test_an_auth_error_never_shows_the_credentials():
     with pytest.raises(TrackerError) as caught:
         await adapter(FakeJira("unauthorized")).fetch(["SHOP-1"])
-    assert str(caught.value) == "jira: HTTP 401"
+    # The body is plain text: a hint instead (never the body).
+    assert str(caught.value) == (
+        "jira: HTTP 401: the email or API token is wrong or expired "
+        "(a token with scopes also needs cloud_id)"
+    )
     assert "fake-api-token" not in repr(caught.value)
+    assert "dev@example.com" not in repr(caught.value)
 
 
 @pytest.mark.asyncio

@@ -445,6 +445,12 @@ impl State {
         } else if take(Modifiers::NONE, Key::N) {
             self.open_line(&line);
             self.notes_open = true;
+        } else if take(Modifiers::SHIFT, Key::P) {
+            // ⇧P before p: a shortcut without Shift also takes Shift.
+            match line.task_url() {
+                Some(url) => self.url_to_open = Some(url),
+                None => self.toast(Severity::Info, "No tracker task for this item."),
+            }
         } else if take(Modifiers::NONE, Key::P) {
             match line.url.clone() {
                 Some(url) => self.url_to_open = Some(url),
@@ -3477,11 +3483,19 @@ fn details(ui: &mut Ui, c: &LineCtx, l: &Line, cut: bool, forms: &mut Forms, act
             b.more = true;
             buttons.push(b);
         }
+        let task = l.task_url();
         if let Some(url) = &l.url
             && l.verb() != "Merge"
             && !reviewing
+            && task.as_ref() != Some(url)
         {
             buttons.push(button("PR  (p)", Act::Pr(url.clone())));
+        }
+        if let Some((key, url)) = l.task() {
+            // The tracker's issue (e.g. Jira), beside the PR.
+            let mut b = button(format!("{key}  (⇧P)"), Act::Pr(url));
+            b.hover = Some("Open the tracker's task");
+            buttons.push(b);
         }
         if row_gestures {
             let mut b = button("Label…  (l)", Act::LabelOpen(l.clone()));

@@ -16,9 +16,14 @@ feeder said and shows it.
 - **Linking.** A record joins the work item row of the branch named in its
   ``branch``, else of the branch whose ticket key (``[status]
   ticket_pattern``, by default the generic ``ABC-123``) equals its
-  ``ticket`` (ignoring case); with no ``ticket``, one is read from its URL
-  with the same pattern. A record no local branch links to is "not
-  started" (the counter), unless it is waiting.
+  ``ticket`` (ignoring case), or the key a tracker adapter reads from it
+  (Jira ``projects``: ``shop-12-fix`` is SHOP-12); with no ``ticket``, one
+  is read from its URL: an adapter's task link (``<jira>/browse/SHOP-12``)
+  first, else the same pattern. With an adapter on, ``url`` (and
+  ``depends_on`` entries, and ``work_items_close``'s ``url``) may be a bare
+  key it reads (``SHOP-12``): the task's link stands for it. A record no
+  local branch links to is "not started" (the counter), unless it is
+  waiting; a tracker's assigned task with the same key counts once.
 - **Waiting.** ``waiting {reason?, until?}`` parks the linked row as the
   user's park gesture does (rule 7, zone ``parked``), as ``waiting
   (<source>)`` or ``waiting: <reason>``. It ends at ``until`` (a time or a
@@ -242,6 +247,22 @@ class WorkItems:
         return config.max_open_per_source if config is not None else DEFAULT_MAX_OPEN_PER_SOURCE
 
     @property
+    def _trackers(self) -> Any:
+        hub = getattr(self._engine, "trackers", None)
+        return hub if hub is not None and getattr(hub, "enabled", False) else None
+
+    def _url(self, value: Any, name: str = "url") -> str:
+        """An http(s) URL; a bare key a tracker adapter reads (``SHOP-12``
+        with Jira on) is its task's link."""
+        hub = self._trackers
+        if hub is not None and isinstance(value, str) and value.strip() and not value.strip(
+        ).startswith(("http://", "https://")):
+            url = hub.url_for(value.strip())
+            if url:
+                return url
+        return _url(value, name)
+
+    @property
     def ticket_pattern(self) -> str | None:
         config = self._status_config
         return config.ticket_pattern if config is not None else None
@@ -316,7 +337,7 @@ class WorkItems:
     def upsert(self, params: dict[str, Any], now: float) -> tuple[dict[str, Any], bool]:
         """Create or replace the record of ``params['url']``. Returns it and
         whether it is new. Raises ValueError on a bad field or a cap."""
-        url = _url(params.get("url"))
+        url = self._url(params.get("url"))
         title = _text(params.get("title"), "title", TITLE_CHARS, required=True)
         source = params.get("source")
         if not isinstance(source, str) or not SOURCE_RE.fullmatch(source):
@@ -338,7 +359,7 @@ class WorkItems:
             raise ValueError("depends_on must be a list of URLs")
         if len(depends) > MAX_DEPENDS:
             raise ValueError(f"depends_on has more than {MAX_DEPENDS} URLs")
-        depends_on = list(dict.fromkeys(_url(d, "depends_on[]") for d in depends))
+        depends_on = list(dict.fromkeys(self._url(d, "depends_on[]") for d in depends))
         if url in depends_on:
             raise ValueError("an item cannot depend on itself")
         expires_at = params.get("expires_at")
@@ -403,7 +424,7 @@ class WorkItems:
 
     def close(self, url: Any) -> dict[str, Any] | None:
         """Drop the record of ``url``; None when there was none."""
-        url = _url(url)
+        url = self._url(url)
         record = self.records.pop(url, None)
         if record is None:
             return None
@@ -447,10 +468,23 @@ class WorkItems:
     # --- Reads ---
 
     def ticket(self, record: dict[str, Any]) -> str | None:
-        """The record's ticket, else the one its URL names."""
+        """The record's ticket, else the one its URL names: a tracker
+        adapter's task link (a Jira browse URL) first, else ``[status]
+        ticket_pattern``."""
         if record.get("ticket"):
             return record["ticket"]
-        return ticket_id(record["url"], self.ticket_pattern)
+        hub = self._trackers
+        key = hub.key_of_url(record["url"]) if hub is not None else None
+        return key or ticket_id(record["url"], self.ticket_pattern)
+
+    def branch_keys(self, branch: str) -> set[str]:
+        """The keys ``branch`` carries, folded: ``[status] ticket_pattern``'s
+        and every tracker adapter's (a Jira ``projects`` key in any case)."""
+        keys = {ticket_id(branch, self.ticket_pattern)}
+        hub = self._trackers
+        if hub is not None:
+            keys.update(hub.keys(branch))
+        return {k.casefold() for k in keys if k}
 
     def link(self, branch: str | None) -> dict[str, Any] | None:
         """The record ``branch`` links to: by its ``branch``, else by its
@@ -459,12 +493,11 @@ class WorkItems:
             return None
         found = [r for r in self.records.values() if r.get("branch") == branch]
         if not found:
-            key = ticket_id(branch, self.ticket_pattern)
-            if key is None:
+            keys = self.branch_keys(branch)
+            if not keys:
                 return None
-            folded = key.casefold()
             found = [r for r in self.records.values()
-                     if (t := self.ticket(r)) is not None and t.casefold() == folded]
+                     if (t := self.ticket(r)) is not None and t.casefold() in keys]
         return max(found, key=lambda r: r["updated_at"]) if found else None
 
     def link_request(self, url: str, branch: str, title: str) -> dict[str, Any] | None:

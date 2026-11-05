@@ -1,0 +1,43 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json;charset=UTF-8"
+  },
+  "body": [
+    {
+      "id": "summary",
+      "key": "summary",
+      "name": "Summary",
+      "custom": false,
+      "orderable": true,
+      "navigable": true,
+      "searchable": true,
+      "clauseNames": [
+        "summary"
+      ],
+      "schema": {
+        "type": "string",
+        "system": "summary"
+      }
+    },
+    {
+      "id": "customfield_10042",
+      "key": "customfield_10042",
+      "name": "QA state",
+      "untranslatedName": "QA state",
+      "custom": true,
+      "orderable": true,
+      "navigable": true,
+      "searchable": true,
+      "clauseNames": [
+        "cf[10042]",
+        "QA state"
+      ],
+      "schema": {
+        "type": "option",
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:select",
+        "customId": 10042
+      }
+    }
+  ]
+}
